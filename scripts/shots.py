@@ -8,6 +8,7 @@
 - 프레임은 cuts.py가 저장한 장면 대표 프레임에서 고르게 뽑는다. 각 프레임은 가까운 장면들을 대표하고,
   그 장면 길이 합이 가중치가 된다(분포는 '영상 시간 중 몇 %'의 뜻)
 - 결과는 영상 md 프런트매터 shots에만 쓴다. 본문은 건드리지 않는다
+- 프레임별 라벨(+섹션)은 workspace/shots/{id}.json에 남긴다 (콘티 참고 프레임 매칭용, 기계용 원본층)
 labels JSON: [{"frame", "size", "angle", "face", "hands_only", "broll", "text_overlay"}]
 """
 from __future__ import annotations
@@ -17,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from scripts import refstore
-from scripts.common import TEMPLATES_DIR, ArgParser, ScriptError, run, work_root
+from scripts.common import TEMPLATES_DIR, ArgParser, ScriptError, run, work_root, workspace_dir
 from scripts.cuts import pick_frame_scenes
 from scripts.features import SHOT_ANGLES, SHOT_FLAGS, SHOT_SIZES
 from scripts.videomd import load_cuts, video_md_path
@@ -106,6 +107,11 @@ def apply(video_id: str, category: str, labels_path: Path) -> dict:
         "frames": len(labels),
     }
     refstore.update_frontmatter(video_md_path(video_id, category), {"shots": result})
+    labels_out = workspace_dir("shots", f"{video_id}.json")
+    labels_out.parent.mkdir(parents=True, exist_ok=True)
+    labels_out.write_text(json.dumps({"id": video_id, "labels": [
+        {**{k: lab[k] for k in ("frame", "size", "angle", *SHOT_FLAGS)}, "section": by_frame[lab["frame"]]["section"]}
+        for lab in labels]}, ensure_ascii=False, indent=1), encoding="utf-8")
     Path(labels_path).unlink(missing_ok=True)
     return {"status": "applied", "id": video_id, "frames": len(labels), "shots": result}
 

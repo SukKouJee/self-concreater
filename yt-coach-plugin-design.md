@@ -1,6 +1,6 @@
 # yt-coach — 유튜브 콘텐츠 분석·발상 Claude Code 플러그인 설계서
 
-버전: v2 (2026-10-20) / 상태: 개발 착수용
+버전: v2.1 (2026-10-20, 콘티 추가) / 상태: 개발 착수용
 
 ## 1. 목적과 범위
 
@@ -9,7 +9,7 @@
 유형(아키타입) 분석은 모티브를 뽑기 위한 기반이고, 내 콘텐츠 진단과 일일 미션은 그 위에서 돌아가는 보조 루프다.
 
 ### 1.1 사용 흐름
-`/yt-init` → `/yt-add`(ref) → `/yt-typify` → `/yt-inspire` → `/yt-draft` → (제작) → `/yt-diagnose`(mine) → `/yt-mission`, `/yt-review`
+`/yt-init` → `/yt-add`(ref) → `/yt-typify` → `/yt-inspire` → `/yt-draft` → `/yt-conti` → (제작) → `/yt-diagnose`(mine) → `/yt-mission`, `/yt-review`
 
 ### 1.2 범위 안
 - 첫 실행 인터뷰와 프로필 생성
@@ -18,6 +18,7 @@
 - 카테고리별 유형화 판정(축별), 아키타입
 - 모티브 카드(흐름·기법·주제 각도·조합), 기법 카탈로그
 - 대본 골격 + 섹션별 샷 리스트
+- 콘티: 전체 대사 + 컷별 대사·자막·효과음·가이드, 도식 스케치와 레퍼런스 참고 프레임을 붙인 HTML 스토리보드
 - 내 콘텐츠 진단(선택), 일일 미션, 주간 회고
 - Vision 샷 분류 (후반 단계)
 
@@ -36,7 +37,7 @@
 ```
 yt-coach/
 ├── .claude-plugin/plugin.json
-├── commands/        yt-init, yt-add, yt-typify, yt-inspire, yt-draft,
+├── commands/        yt-init, yt-add, yt-typify, yt-inspire, yt-draft, yt-conti,
 │                    yt-diagnose, yt-mission, yt-review (.md)
 ├── skills/
 │   ├── yt-analyze/   시놉시스·섹션·기법·촬영 요약 규칙
@@ -44,6 +45,7 @@ yt-coach/
 │   ├── yt-typify/    축 정의·판정 기준·아키타입 포맷
 │   ├── yt-inspire/   모티브 카드 생성 규칙
 │   ├── yt-draft/     대본 골격 + 샷 리스트 규칙
+│   ├── yt-conti/     전체 대사 + 컷별 대사·가이드 규칙
 │   ├── yt-diagnose/  근접도·갭 서술 규칙
 │   └── yt-mission/   성장 단계·미션·회고 규칙
 ├── bin/ytc          스크립트 실행기 (.venv Python 선택, 작업 폴더 전달)
@@ -55,6 +57,7 @@ yt-coach/
 │   ├── features.py   프런트매터 → 수치 피처
 │   ├── cluster.py    축별 군집·판정 점수
 │   ├── similarity.py mine vs 아키타입 근접도
+│   ├── conti.py      draft → 콘티 검증·저장, 도식+참고 프레임 HTML 스토리보드
 │   └── report.py     HTML 리포트
 ├── templates/        video.md, index.md, techniques.md, profile.md, mission.md, thresholds.json
 ├── CLAUDE.md
@@ -69,6 +72,7 @@ yt-coach/
 │       └── videos/{video_id}.md
 ├── mine/{id}.md            내 콘텐츠·대본·진단 결과
 ├── drafts/{date}-{slug}.md 대본 골격 + 샷 리스트
+│   └── {date}-{slug}-conti.md / .html   콘티(프런트매터가 원본) + 스토리보드
 ├── missions/{YYYY-MM-DD}.md
 ├── reviews/{YYYY-Www}.md
 └── workspace/              gitignore: raw 자막 JSON, 프레임, 캐시
@@ -113,6 +117,13 @@ yt-coach/
 - 섹션별 대본 + 샷 리스트(샷 크기·앵글·길이·컷 수)
 - profile의 피하고 싶은 스타일 반영
 - `drafts/`에 저장
+
+### `/yt-conti <draft파일 | latest>`
+- draft의 샷 리스트를 컷 뼈대로 받아 **전체 대사**(영상 전체를 잇는 원고)를 쓰고, 컷마다 그 구간의 대사·자막·효과음·**가이드**(연기·촬영 지시)를 배정
+- 대사 길이 검사: 레퍼런스 자막에서 잰 말 속도(초당 글자, 중앙값)로 컷 길이에 들어가는지 경고
+- 시각화: 컷마다 샷 크기 도식(SVG) + 같은 샷 크기·섹션의 레퍼런스 대표 프레임(참고용, 구도만)
+- `drafts/{draft}-conti.md`(프런트매터 `script`·`cuts`가 원본) + 같은 이름 `.html`(외부 자원 없는 한 파일, 인쇄·폰 보기)
+- 사용자가 md를 고치면 `/yt-conti <conti.md>`로 HTML만 다시 그린다. AI 이미지 생성은 하지 않는다
 
 ### `/yt-diagnose <category> <link | draft파일 | 대본파일>`
 - 아키타입 대비 축별 근접도 + 갭. 단일 종합 점수 없음
@@ -162,7 +173,7 @@ body 하위: `list_item / story / explain / compare`
 ### 5.4 촬영 분석
 - `cuts.py`: yt-dlp 360p 이하 다운로드 → PySceneDetect → 컷 타임라인, 섹션별 평균 컷 길이 → 장면당 대표 프레임 1장(최대 40) 저장 → **원본 영상 즉시 삭제**
 - 카메라 움직임: optical flow로 고정/패닝/줌 추정, 참고값 표시
-- `yt-shots`(후반): Claude가 대표 프레임을 Read로 보고 샷 분류, 섹션에 매핑
+- `yt-shots`(후반): Claude가 대표 프레임을 Read로 보고 샷 분류, 섹션에 매핑. 프레임별 라벨은 `workspace/shots/{id}.json`에 남겨 콘티 참고 프레임 매칭에 쓴다
 
 ## 6. md 스키마
 
@@ -198,6 +209,27 @@ schema_version: 1
 ## 내 메모
 ```
 
+### 6.1.1 `drafts/{draft}-conti.md`
+```markdown
+---
+draft: drafts/2026-10-20-컵라면-4단계.md
+category: mukbang
+title: ...
+format: shorts          # target_sec ≤ 180이면 shorts(세로 9:16 스케치)
+target_sec: 45
+speech_cps: 4.4         # 레퍼런스 말 속도 중앙값(없으면 4.5)
+script:                 # 전체 대사, draft 섹션마다 하나
+  - {label: hook, start: 0, end: 2, text: "4단계 다 먹을 수 있을까?"}
+cuts:
+  - {n: 1, section: 0, start: 0, end: 1, size: 탑뷰, angle: 탑뷰, action: ..., line: ..., caption: ..., sfx: ..., guide: ...}
+schema_version: 1
+---
+## 개요
+## 전체 대사
+## 콘티      | # | 시간 | 섹션 | 샷 | 대사 | 자막 | 효과음 | 가이드 |
+## 내 메모
+```
+
 ### 6.2 `index.md` 섹션
 `## 개요` / `## 단계` / `## 판정` (축별 표) / `## 아키타입` / `## 모티브 카드` / `## 이상치`
 
@@ -210,6 +242,7 @@ schema_version: 1
 |---|---|---|
 | md 직접 수정 (섹션·유형·메모) | refs/ | 다음 typify·inspire, 분석 few-shot |
 | 모티브 ★ 선택 | index.md | draft·mission 재료 |
+| 콘티 프런트매터 수정 | drafts/*-conti.md | `/yt-conti <conti.md>`로 HTML 다시 그림 |
 | intentional 갭 | mine/ | 진단·미션 제외 |
 | 미션 난이도·skip 사유 | missions/ | 미션 크기·종류 조정 |
 | 주간 회고 승인 | reviews/, profile.md | 다음 주 방향 |

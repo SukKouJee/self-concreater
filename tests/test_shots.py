@@ -83,6 +83,8 @@ def test_apply_writes_weighted_distribution(home):
     assert s["by_section"]["hook"] == "탑뷰"
     assert body == body_before                                    # 본문은 건드리지 않는다
     assert not (home / "workspace" / "tmp" / "shots.json").exists()
+    kept = json.loads((home / "workspace" / "shots" / f"{VID}.json").read_text("utf-8"))["labels"]
+    assert len(kept) == 8 and kept[0]["size"] == "탑뷰" and kept[0]["section"] == "hook"
 
 
 @pytest.mark.parametrize("patch, word", [
