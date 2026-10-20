@@ -32,7 +32,7 @@ from scripts.common import ArgParser, ScriptError, run, work_root, workspace_dir
 
 SHORTS_MAX_SEC = 180
 # 공백 제외 글자 수 / 영상 길이(초)가 이보다 낮으면 말이 거의 없는 영상으로 본다
-SPARSE_CHARS_PER_SEC = 0.5
+SPARSE_CHARS_PER_SEC = 1.0  # 실측: 말하는 영상은 2.0 이상, "Love." 한마디짜리 33초 쇼츠가 0.67
 # 연속 요청 간 최소 간격(초). 짧은 시간에 많이 요청하면 자막 요청이 IP 단위로 막힌다 (YT_FETCH_INTERVAL)
 FETCH_INTERVAL_SEC = 3.0
 

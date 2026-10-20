@@ -9,7 +9,7 @@ VID = "dQw4w9WgXcQ"
 
 META = {
     "id": VID, "title": "제목", "channel": "채널", "channel_id": "UC1",
-    "duration": 58, "width": 1080, "height": 1920, "upload_date": "20260101",
+    "duration": 20, "width": 1080, "height": 1920, "upload_date": "20260101",
     "view_count": 10, "like_count": 1, "comment_count": 0,
     "description": "설명", "tags": ["a"], "chapters": None, "language": "ko",
 }
@@ -185,9 +185,9 @@ def test_fetch_writes_raw_json(home, net):
     assert raw["transcript"]["segments"][0]["text"].startswith("안녕하세요")
     assert out == {
         "id": VID, "status": "fetched", "raw": f"workspace/raw/{VID}.json",
-        "title": "제목", "channel": "채널", "duration_sec": 58, "format": "shorts",
+        "title": "제목", "channel": "채널", "duration_sec": 20, "format": "shorts",
         "transcript_source": "cc", "language": "ko", "segments": 2,
-        "chars_per_sec": 0.71, "sparse": False, "also_in": [],
+        "chars_per_sec": 2.05, "sparse": False, "also_in": [],
     }
 
 
@@ -202,10 +202,10 @@ def test_sparse_transcript_is_flagged(home, net):
                                             {"start": 9.0, "dur": 1.0, "text": "M ah"}]}
     out = fetch.fetch(VID)
     assert out["sparse"] is True
-    assert out["chars_per_sec"] == 0.09
+    assert out["chars_per_sec"] == 0.25
 
 
-@pytest.mark.parametrize("chars, duration, sparse", [(0, 30, True), (14, 30, True), (15, 30, False), (10, None, False)])
+@pytest.mark.parametrize("chars, duration, sparse", [(0, 30, True), (29, 30, True), (30, 30, False), (10, None, False)])
 def test_is_sparse(chars, duration, sparse):
     segments = [{"start": 0, "dur": 1, "text": "가" * chars}]
     assert fetch.speech_density(segments, duration)[1] is sparse
