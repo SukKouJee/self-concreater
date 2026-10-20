@@ -1,7 +1,7 @@
 """Vision 샷 분류: 분류할 대표 프레임을 고르고(context), Claude의 프레임별 분류를 장면 길이로 가중해 md에 쓴다(apply).
 
 사용법 (작업 폴더에서):
-  python -m scripts.shots pending <category>                          shots가 비어 있는 영상 목록
+  python -m scripts.shots pending <category>                          shots가 비었거나 프레임별 라벨이 없는 영상 목록
   python -m scripts.shots context <video_id> --category <cat>          분류할 프레임(최대 frames.shots_sample장)
   python -m scripts.shots apply <video_id> --category <cat> --labels <json>
 
@@ -60,11 +60,13 @@ def context(video_id: str, category: str) -> dict:
 
 def pending(category: str) -> dict:
     videos = refstore.existing_category_dir(category) / "videos"
-    todo = []
+    todo, relabel = [], []
     for p in sorted(videos.glob("*.md")):
         if not refstore.read_md(p)[0].get("shots"):
             todo.append(p.stem)
-    return {"category": category, "pending": todo}
+        elif not workspace_dir("shots", f"{p.stem}.json").exists():
+            relabel.append(p.stem)          # 비율만 있고 프레임별 라벨이 없음(Phase 12 이전 분류) → 콘티 참고 프레임용
+    return {"category": category, "pending": todo + relabel, "relabel": relabel}
 
 
 def _invalid(message: str) -> ScriptError:

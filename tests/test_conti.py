@@ -234,8 +234,8 @@ def test_match_frames_prefers_section_then_spreads(home):
     cuts = [{"n": i, "section": 1, "size": "클로즈업"} for i in (1, 2, 3)] + [{"n": 4, "section": 0, "size": "탑뷰"}]
     got = conti.match_frames(cuts, sections, pool)
     assert got[1]["frame"] == "f3"          # 같은 섹션 + exact 우선
-    assert got[2]["frame"] == "f1"          # 같은 섹션에서 아직 안 쓴 프레임
-    assert got[3]["frame"] == "f3"          # 같은 섹션 후보를 다 쓰면 덜 쓴 순으로 다시
+    assert got[2]["frame"] == "f3"          # exact가 있으면 근사보다 반복을 택한다(틀린 그림보다 낫다)
+    assert got[3]["frame"] == "f3"
     assert 4 not in got                     # 같은 크기 프레임이 없으면 없음
 
 

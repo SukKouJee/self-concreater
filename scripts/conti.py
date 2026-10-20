@@ -248,7 +248,7 @@ def frame_pool(category: str | None) -> list[dict]:
 
 
 def match_frames(cuts: list[dict], sections: list[dict], pool: list[dict]) -> dict[int, dict]:
-    """컷마다 참고 프레임 하나. 같은 크기+섹션 → 같은 크기 순, exact 우선, 덜 쓴 프레임 우선."""
+    """컷마다 참고 프레임 하나. 같은 크기+섹션 → 같은 크기 순. 각 단계에서 exact가 approx보다 먼저, 그다음 덜 쓴 프레임."""
     used: dict[str, int] = {}
     out = {}
     for c in cuts:
@@ -257,7 +257,7 @@ def match_frames(cuts: list[dict], sections: list[dict], pool: list[dict]) -> di
         for tier in tiers:
             cands = [p for p in pool if tier(p)]
             if cands:
-                best = min(cands, key=lambda p: (used.get(p["frame"], 0), p["match"] != "exact", p["frame"]))
+                best = min(cands, key=lambda p: (p["match"] != "exact", used.get(p["frame"], 0), p["frame"]))
                 used[best["frame"]] = used.get(best["frame"], 0) + 1
                 out[c["n"]] = best
                 break
@@ -426,7 +426,8 @@ def render_html(fm: dict) -> str:
         ref = refs.get(c["n"])
         uri = _data_uri(ref["frame"]) if ref else None
         ref_html = (f'<figure><img class="ref" src="{uri}" alt="참고 프레임: {_esc(ref["title"])}">'
-                    f'<figcaption title="{_esc(ref["title"])}">참고 · {_esc(ref["title"])}</figcaption></figure>'
+                    f'<figcaption title="{_esc(ref["title"])}">{"참고" if ref["match"] == "exact" else "참고(근사)"} · '
+                    f'{_esc(ref["title"])}</figcaption></figure>'
                     if uri else '<figure><div class="noref">같은 샷의 레퍼런스 프레임 없음</div>'
                                 '<figcaption>&nbsp;</figcaption></figure>')
         rows = [("화면", _esc(c["action"]), ""), ("대사", _esc(c["line"]) or "—", "line"), ("자막", _esc(c["caption"]) or "—", ""),
@@ -448,8 +449,11 @@ def render_html(fm: dict) -> str:
                        f'<td>{_esc(c["line"])}</td><td>{_esc(c["caption"])}</td><td>{_esc(c["sfx"])}</td>'
                        f'<td>{_esc(c["guide"])}</td></tr>' for c in cuts)
              + "</tbody></table></div></details>")
+    approx = sum(1 for r in refs.values() if r["match"] != "exact")
     note = ('<p class="sub" style="margin-top:24px;font-size:12px">참고 프레임은 같은 샷 크기의 레퍼런스 장면으로, '
-            "구도만 참고하세요. 도식은 샷 크기를 단순화한 그림입니다.</p>")
+            "구도만 참고하세요. 도식은 샷 크기를 단순화한 그림입니다."
+            + (f" '참고(근사)' {approx}장은 프레임별 샷 분류가 없어 섹션 대표 샷 크기로 고른 것이라 틀릴 수 있습니다. "
+               "/yt-coach:yt-add &lt;카테고리&gt; --shots-only로 보강하면 정확해집니다." if approx else "") + "</p>")
     return ('<!doctype html><html lang="ko"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             f"<title>{_esc(fm['title'])} 콘티</title><style>{CSS % (_vars(0), _vars(1), _vars(1))}"

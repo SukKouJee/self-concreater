@@ -150,6 +150,15 @@ def test_similarity_includes_shots_axis(home):
     assert out["axes"]["shots"]["proximity"] >= 0.7
 
 
+def test_pending_includes_videos_without_frame_labels(home):
+    frames = [f["frame"] for f in shots.context(VID, CAT)["frames"]]
+    shots.apply(VID, CAT, labels_file(home, [label(f) for f in frames]))
+    assert VID not in shots.pending(CAT)["pending"]
+    (home / "workspace" / "shots" / f"{VID}.json").unlink()        # Phase 12 이전 분류
+    out = shots.pending(CAT)
+    assert VID in out["pending"] and out["relabel"] == [VID]
+
+
 def test_main_routes(home):
     assert shots.main(["context", VID, "--category", CAT])["id"] == VID
     assert VID in shots.main(["pending", CAT])["pending"]
