@@ -174,17 +174,19 @@
 
 ## Phase 12. 콘티 — `/yt-conti` (반나절, 추가 요건)
 
-- [ ] 설계서 v2.1 반영 (커맨드·스키마·저장 위치)
-- [ ] `shots.py apply`가 프레임별 라벨을 `workspace/shots/{id}.json`에 남김
-- [ ] `conti.py context`: draft md(프런트매터 섹션 + 본문 샷 표) 파싱, 레퍼런스 말 속도 중앙값, 포맷
-- [ ] `conti.py save`: 검증(섹션별 컷 길이 합, 샷 크기 어휘), 경고(대사 길이 초과, 전체 대사와 컷 대사 불일치), `-conti.md` 저장(내 메모 보존)
-- [ ] HTML 스토리보드: 컷 카드(도식 SVG + 참고 프레임 base64 + 대사·자막·효과음·가이드), 전체 대사, 표 보기, 라이트/다크, 인쇄
-- [ ] 참고 프레임 매칭: 프레임별 라벨(샷 크기+섹션) → 섹션별 대표 샷 크기 근사, 같은 프레임 반복 최소화
-- [ ] `conti.py render <conti.md>`: 고친 프런트매터로 HTML 다시 그림
-- [ ] `skills/yt-conti/SKILL.md`, `commands/yt-conti.md`, README 표
+- [x] 설계서 v2.1 반영 (커맨드·스키마·저장 위치)
+- [x] `shots.py apply`가 프레임별 라벨을 `workspace/shots/{id}.json`에 남김
+- [x] `conti.py context`: draft md(프런트매터 섹션 + 본문 샷 표) 파싱, 레퍼런스 말 속도 중앙값, 포맷
+- [x] `conti.py save`: 검증(섹션별 컷 길이 합, 샷 크기 어휘), 경고(대사 길이 초과, 전체 대사와 컷 대사 불일치), `-conti.md` 저장(내 메모 보존)
+- [x] HTML 스토리보드: 컷 카드(도식 SVG + 참고 프레임 base64 + 대사·자막·효과음·가이드), 전체 대사, 표 보기, 라이트/다크, 인쇄
+- [x] 참고 프레임 매칭: 프레임별 라벨(샷 크기+섹션) → 섹션별 대표 샷 크기 근사, 같은 프레임 반복 최소화
+- [x] `conti.py render <conti.md>`: 고친 프런트매터로 HTML 다시 그림
+- [x] `skills/yt-conti/SKILL.md`, `commands/yt-conti.md`, README 표
 
 완료 조건
 - 실제 draft 1개로 콘티를 만들고, HTML에서 컷마다 도식·참고 프레임·대사·가이드가 보이며 대사 길이 경고가 맞게 나온다
+- 확인(2026-10-20): 컵라면 4단계 draft(36컷) → 전체 대사·컷 가이드 생성, 경고 0. 처음엔 섹션 대표 샷 근사로 참고 프레임이
+  틀렸음(인서트에 도로 장면) → 프레임별 라벨 저장 + `--shots-only` 재분류(12개) 후 36컷 모두 exact 매칭, 육안 일치
 
 ---
 
