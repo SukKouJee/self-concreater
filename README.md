@@ -76,9 +76,17 @@ Claude Code 안에서:
 |---|---|
 | `refstore` | `scaffold`, `init <cat>`, `categories`, `count <cat>`, `update-stage <cat>` |
 | `fetch` | `<url> [--category <cat>] [--role ref\|mine] [--force]` → `workspace/raw/{id}.json`. 요약에 `chars_per_sec`, `sparse`(말이 거의 없음) 포함 |
+| `cuts` | `<url\|video_id> [--force]` → `workspace/cuts/{id}.json`, `workspace/frames/{id}/`. 360p 이하로 받아 장면 감지·카메라 추정 후 영상 즉시 삭제 |
 | `stt` | `<video_id> [--force]` — 자막 없는 영상 음성 인식 (선택: `pip install faster-whisper`, 모델 `YT_STT_MODEL`, 기본 small) |
 
 `fetch` 실패 코드: `invalid_url`, `private`, `unavailable`, `age_restricted`, `blocked`, `proxy_failed`, `no_transcript`, `role_conflict`, `category_not_found`, `fetch_failed`, `transcript_failed`
+
+## 컷 통계 보정 기록
+
+2026-10-20, 먹방 쇼츠 3개·롱폼 1개 육안 대조:
+- ContentDetector 기본값(27)은 같은 구도 점프컷·짧은 디졸브를 절반 넘게 놓침 (쇼츠 60초: 육안 약 30컷 vs 13컷)
+- threshold 15, 최소 장면 12프레임으로 조정 → 32컷, 평균 1.87초 (육안 약 2초). 값은 `templates/thresholds.json`의 `cuts`
+- 카메라 판정은 장면 안 모든 지점이 같을 때만 pan/zoom (다수결은 고정 카메라를 pan 29%로 오판). 참고값으로만 쓴다
 
 ## 테스트
 

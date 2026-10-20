@@ -55,11 +55,11 @@
 ## Phase 3. 컷 통계 (1일)
 
 작업
-- [ ] `cuts.py <id>`: yt-dlp 360p 이하 다운로드 → PySceneDetect(ContentDetector) → 컷 타임라인
-- [ ] 장면당 대표 프레임 1장, 최대 40장 → `workspace/frames/{id}/`
-- [ ] optical flow로 장면별 고정/패닝/줌 비율 (참고값)
-- [ ] 원본 영상 삭제 보장 (try/finally)
-- [ ] 출력: `{cuts: [...], avg_cut_sec, camera: {...}, frames: [...]}`
+- [x] `cuts.py <id>`: yt-dlp 360p 이하 다운로드 → PySceneDetect(ContentDetector) → 컷 타임라인
+- [x] 장면당 대표 프레임 1장, 최대 40장 → `workspace/frames/{id}/`
+- [x] optical flow로 장면별 고정/패닝/줌 비율 (참고값)
+- [x] 원본 영상 삭제 보장 (try/finally)
+- [x] 출력: `{cuts: [...], avg_cut_sec, camera: {...}, frames: [...]}`
 
 완료 조건
 - 쇼츠 3개, 롱폼 1개에서 컷 통계 생성, 처리 후 영상 파일이 남아 있지 않다

@@ -216,7 +216,7 @@ def get_transcript(video_id: str, proxy: str | None, original: str | None = None
 
 # --- 수집 흐름 ----------------------------------------------------------------
 
-def _wait_turn() -> None:
+def wait_turn() -> None:
     """마지막 네트워크 수집 이후 최소 간격이 지날 때까지 기다린다 (프로세스 간 공유)."""
     interval = float(os.environ.get("YT_FETCH_INTERVAL") or FETCH_INTERVAL_SEC)
     stamp = workspace_dir(".last_fetch")
@@ -310,7 +310,7 @@ def fetch(url: str, category: str | None = None, role: str = "ref", force: bool 
         data, status = load_raw(video_id), "cached"
     else:
         proxy = os.environ.get("YT_PROXY") or None
-        _wait_turn()
+        wait_turn()
         meta = get_metadata(video_id, proxy)
         transcript = get_transcript(video_id, proxy, meta.get("language"))
         data = {

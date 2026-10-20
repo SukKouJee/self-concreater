@@ -1,7 +1,25 @@
 {
-  "stages": {"preliminary": 5, "formal": 10},
-  "typable": {"silhouette": 0.35, "max_cluster_share": 0.4},
-  "weak": {"silhouette": 0.2, "max_cluster_share": 0.3},
-  "frames": {"per_scene": 1, "max_per_video": 40},
-  "download": {"max_height": 360}
+  "stages": {
+    "preliminary": 5,
+    "formal": 10
+  },
+  "typable": {
+    "silhouette": 0.35,
+    "max_cluster_share": 0.4
+  },
+  "weak": {
+    "silhouette": 0.2,
+    "max_cluster_share": 0.3
+  },
+  "frames": {
+    "per_scene": 1,
+    "max_per_video": 40
+  },
+  "download": {
+    "max_height": 360
+  },
+  "cuts": {
+    "threshold": 15.0,
+    "min_scene_frames": 12
+  }
 }
