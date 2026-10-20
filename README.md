@@ -3,6 +3,7 @@
 직접 모은 유튜브 레퍼런스를 분석해 **무엇을 만들지, 어떤 흐름·촬영으로 갈지에 대한 모티브**를 주고,
 기획·진단·일일 미션으로 이어 주는 개인 크리에이터용 Claude Code 플러그인입니다.
 
+- 저장소: https://github.com/SukKouJee/self-concreater (비공개)
 - 설계: [`yt-coach-plugin-design.md`](yt-coach-plugin-design.md) (v2)
 - 개발 계획: [`PLAN.md`](PLAN.md)
 
@@ -32,7 +33,8 @@
 ### 2. Python 의존성
 
 ```bash
-cd <이 저장소>
+git clone https://github.com/SukKouJee/self-concreater.git
+cd self-concreater
 python -m venv .venv
 # Windows (Git Bash):  source .venv/Scripts/activate
 # macOS/Linux:         source .venv/bin/activate
