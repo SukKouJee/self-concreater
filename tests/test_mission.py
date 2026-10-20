@@ -1,0 +1,212 @@
+import json
+
+import pytest
+
+from scripts import cluster, mission, motif, refstore, similarity, draft
+from scripts.common import ScriptError
+from tests.typify_fixtures import CAT, standard_set
+
+
+def _json(home, name, data):
+    path = home / "workspace" / "tmp" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+PROFILE = ("---\ncreated: 2026-10-01\nupdated: 2026-10-01\nschema_version: 1\n---\n# 크리에이터 프로필\n\n"
+           "## 관심 주제\n- 자취 요리\n\n## 포맷\n쇼츠\n\n## 롤모델\n\n## 하루 시간\n20분\n\n"
+           "## 피하고 싶은 스타일\n- 얼굴 출연\n\n## 강점\n\n## 약점\n\n## 성장 단계\n관찰\n")
+
+
+@pytest.fixture
+def home(monkeypatch, tmp_path):
+    monkeypatch.setenv("YT_COACH_HOME", str(tmp_path))
+    (tmp_path / "profile.md").write_text(PROFILE, encoding="utf-8")
+    return tmp_path
+
+
+def mission_json(home, title="탑뷰 손 클로즈업 15초 찍기", kind="촬영", minutes=20, source="M-mukbang-001"):
+    return _json(home, "mission.json", {
+        "title": title, "kind": kind, "minutes": minutes, "source": source,
+        "why": "★카드의 탑뷰 기법을 연습", "steps": ["폰을 탑뷰로 고정", "면 들기 15초 촬영"],
+        "deliverable": "15초 클립 1개",
+    })
+
+
+# --- 난이도 조정 ------------------------------------------------------------------
+
+@pytest.mark.parametrize("history, base, expected", [
+    ([], 20, (20, "same")),
+    ([("submitted", "hard"), ("submitted", "hard"), ("submitted", "right")], 20, (15, "easier")),
+    ([("skipped", None), ("submitted", "hard"), ("submitted", "easy")], 20, (15, "easier")),
+    ([("submitted", "easy"), ("submitted", "easy"), ("submitted", "right")], 20, (25, "harder")),
+    ([("submitted", "easy"), ("submitted", "easy")], 30, (30, "harder")),        # 30분 상한
+    ([("submitted", "hard"), ("submitted", "hard")], 15, (15, "easier")),        # 15분 하한
+    ([("submitted", "right"), ("submitted", "easy"), ("submitted", "hard")], 20, (20, "same")),
+])
+def test_recommend_minutes(history, base, expected):
+    recent = [{"status": s, "difficulty": d, "minutes": base} for s, d in history]
+    assert mission.recommend(recent, base) == {"minutes": expected[0], "adjust": expected[1]}
+
+
+# --- 3일 시뮬레이션 (완료 조건) ------------------------------------------------------
+
+def test_three_day_simulation_adapts_difficulty(home):
+    days = ["2026-10-20", "2026-10-21", "2026-10-22"]
+    assert mission.context(date=days[0])["recommended"] == {"minutes": 20, "adjust": "same"}
+    for day in days[:2]:
+        mission.save(mission_json(home, minutes=mission.context(date=day)["recommended"]["minutes"]), date=day)
+        mission.submit("clip.mp4", "hard", "손이 화면 밖으로 나감", date=day)
+    ctx = mission.context(date=days[2])
+    assert ctx["recommended"] == {"minutes": 15, "adjust": "easier"}
+    assert [h["difficulty"] for h in ctx["history"]] == ["hard", "hard"]
+
+
+# --- context ----------------------------------------------------------------------
+
+def test_context_collects_materials(home):
+    standard_set(home)
+    cluster.run(CAT)
+    cluster.apply(CAT, _json(home, "n.json", {
+        "axes": {a: "근거" for a in ["structure", "hook", "narrative", "title", "pacing"]},
+        "archetypes": [{"id": "A1", "name": "결과 먼저"}, {"id": "A2", "name": "리스트"}]}))
+    motif.add(CAT, _json(home, "c.json", [{"type": "technique", "title": "탑뷰 손", "idea": "위에서 손만",
+                                           "evidence": ["a00"]}]))
+    motif.star(CAT, "M-mukbang-001")
+    d = draft.save(CAT, _json(home, "d.json", {
+        "title": "라면 이야기", "hook_type": "situation", "narrative_type": "problem_solution", "script_only": True,
+        "sections": [{"label": "intro", "start": 0, "end": 20, "script": "x"},
+                     {"label": "outro", "start": 20, "end": 60, "script": "y"}]}))
+    target = home / d["path"]
+    gaps = similarity.compare(CAT, target)["gaps"]
+    similarity.save(CAT, target, _json(home, "dn.json", {"summary": "s", "actions": ["a"],
+                                                          "gaps": {g["key"]: "x" for g in gaps}}))
+    similarity.intentional(CAT, target.stem, gaps[0]["key"])
+
+    ctx = mission.context(date="2026-10-20")
+    assert ctx["profile"]["성장 단계"] == "관찰"
+    assert ctx["base_minutes"] == 20
+    assert ctx["starred"] == [{"category": CAT, "id": "M-mukbang-001", "type": "기법", "title": "탑뷰 손"}]
+    assert ctx["drafts"][0]["path"] == d["path"]
+    diag = ctx["gaps"][0]
+    assert diag["name"] == target.stem
+    assert gaps[0]["key"] not in diag["gaps"]                 # intentional은 재료에서 빠진다
+    assert ctx["today"] is None
+
+
+def test_context_without_profile(home):
+    (home / "profile.md").unlink()
+    ctx = mission.context(date="2026-10-20")
+    assert ctx["profile"] is None and ctx["base_minutes"] == 20
+
+
+# --- save / submit / skip / swap -------------------------------------------------
+
+def test_save_writes_mission_md(home):
+    out = mission.save(mission_json(home), date="2026-10-20")
+    assert out["path"] == "missions/2026-10-20.md"
+    fm, body = refstore.read_md(home / out["path"])
+    assert fm["status"] == "open" and fm["minutes"] == 20 and fm["kind"] == "촬영"
+    assert fm["stage"] == "관찰" and fm["source"] == "M-mukbang-001"
+    assert "### 탑뷰 손 클로즈업 15초 찍기 (20분 · 촬영)" in body
+    assert "1. 폰을 탑뷰로 고정" in body and "- 결과물: 15초 클립 1개" in body
+
+
+def test_save_twice_needs_replace(home):
+    mission.save(mission_json(home), date="2026-10-20")
+    with pytest.raises(ScriptError) as exc:
+        mission.save(mission_json(home, title="다른 미션"), date="2026-10-20")
+    assert exc.value.code == "mission_exists"
+    mission.save(mission_json(home, title="다른 미션"), date="2026-10-20", replace=True)
+    fm, body = refstore.read_md(home / "missions" / "2026-10-20.md")
+    assert "다른 미션" in body and fm["swapped_from"] == "탑뷰 손 클로즈업 15초 찍기"
+
+
+def test_save_validates(home):
+    with pytest.raises(ScriptError) as exc:
+        mission.save(mission_json(home, minutes=60), date="2026-10-20")
+    assert exc.value.code == "invalid_mission" and "minutes" in exc.value.message
+    with pytest.raises(ScriptError) as exc:
+        mission.save(mission_json(home, kind="운동"), date="2026-10-20")
+    assert "kind" in exc.value.message
+
+
+def test_submit_and_skip(home):
+    mission.save(mission_json(home), date="2026-10-20")
+    mission.submit("clips/a.mp4", "right", "탑뷰 각도가 안정적이었다. 다음엔 손 위치를 화면 중앙에.", date="2026-10-20")
+    fm, body = refstore.read_md(home / "missions" / "2026-10-20.md")
+    assert fm["status"] == "submitted" and fm["difficulty"] == "right"
+    assert "clips/a.mp4" in body.split("## 제출")[1] and "탑뷰 각도가" in body.split("## 피드백")[1]
+
+    mission.save(mission_json(home), date="2026-10-21")
+    mission.skip("야근", date="2026-10-21")
+    fm, _ = refstore.read_md(home / "missions" / "2026-10-21.md")
+    assert fm["status"] == "skipped" and fm["skip_reason"] == "야근"
+
+
+def test_submit_without_mission(home):
+    with pytest.raises(ScriptError) as exc:
+        mission.submit("x", "easy", "f", date="2026-10-20")
+    assert exc.value.code == "no_mission"
+
+
+def test_submit_rejects_bad_difficulty(home):
+    mission.save(mission_json(home), date="2026-10-20")
+    with pytest.raises(ScriptError) as exc:
+        mission.submit("x", "medium", "f", date="2026-10-20")
+    assert exc.value.code == "usage"
+
+
+# --- 주간 회고 ---------------------------------------------------------------------
+
+def test_week_stats(home):
+    for day, status, diff in [("2026-10-19", "submitted", "easy"), ("2026-10-20", "submitted", "hard"),
+                              ("2026-10-21", "skipped", None), ("2026-10-27", "submitted", "right")]:
+        mission.save(mission_json(home, kind="촬영" if day != "2026-10-20" else "편집"), date=day)
+        if status == "submitted":
+            mission.submit("x", diff, "f", date=day)
+        else:
+            mission.skip("피곤", date=day)
+    week = mission.week("2026-W43")                  # 10/19(월) ~ 10/25(일)
+    assert week["range"] == ["2026-10-19", "2026-10-25"]
+    assert week["missions"] == {"total": 3, "submitted": 2, "skipped": 1, "open": 0, "completion": 0.67}
+    assert week["difficulty"] == {"easy": 1, "hard": 1}
+    assert week["skip_reasons"] == ["피곤"]
+    assert week["kinds"] == {"촬영": 2, "편집": 1}
+
+
+def test_review_save_and_profile_update(home):
+    out = mission.review_save("2026-W43", _json(home, "r.json", {
+        "summary": "촬영 미션은 꾸준했고 편집은 어려워했다.",
+        "repeated_weakness": ["손이 화면 밖으로 나감"],
+        "next_week": ["탑뷰 고정 촬영 3번", "컷 편집 1번"],
+        "profile_proposal": {"약점": "- 프레이밍(손 위치)", "성장 단계": "모방"},
+    }))
+    assert out["path"] == "reviews/2026-W43.md"
+    _, body = refstore.read_md(home / out["path"])
+    assert "탑뷰 고정 촬영 3번" in body and "성장 단계" in body
+
+    mission.profile_update(_json(home, "p.json", {"약점": "- 프레이밍(손 위치)", "성장 단계": "모방"}), date="2026-10-26")
+    fm, body = refstore.read_md(home / "profile.md")
+    assert fm["updated"] == "2026-10-26"
+    assert body.split("## 성장 단계")[1].strip() == "모방"
+    assert "- 프레이밍(손 위치)" in body.split("## 약점")[1].split("## 성장 단계")[0]
+    assert "- 자취 요리" in body                                  # 다른 섹션은 그대로
+
+
+def test_profile_update_rejects_unknown_section_and_stage(home):
+    with pytest.raises(ScriptError) as exc:
+        mission.profile_update(_json(home, "p.json", {"취미": "x"}), date="2026-10-26")
+    assert exc.value.code == "invalid_profile_update"
+    with pytest.raises(ScriptError) as exc:
+        mission.profile_update(_json(home, "p.json", {"성장 단계": "고수"}), date="2026-10-26")
+    assert "성장 단계" in exc.value.message
+
+
+def test_main_routes(home):
+    mission_json(home)
+    assert mission.main(["save", "--mission", "workspace/tmp/mission.json", "--date", "2026-10-20"])["status"] == "saved"
+    assert mission.main(["submit", "x.mp4", "--difficulty", "easy", "--feedback", "좋음", "--date", "2026-10-20"])["status"] == "submitted"
+    assert mission.main(["context", "--date", "2026-10-21"])["history"][0]["difficulty"] == "easy"
+    assert mission.main(["week", "2026-W43"])["missions"]["total"] == 1

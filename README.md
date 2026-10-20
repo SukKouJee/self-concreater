@@ -18,8 +18,8 @@
 | `/yt-inspire <category> [주제]` | 모티브 카드(흐름·기법·각도·조합) 생성·누적, `star <id>`로 ★ 표시, 기법 카탈로그 중복 병합 | ✅ |
 | `/yt-draft <category> <motif-id\|archetype> "<주제>"` | 섹션별 대본 + 샷 리스트 → `drafts/`, 아키타입 비율 비교 | ✅ |
 | `/yt-diagnose <category> <link\|draft\|대본>` | 내 콘텐츠를 아키타입과 축별 비교(근접도·갭·다음 행동) → `mine/`, `intentional`로 의도한 차이 제외 | ✅ |
-| `/yt-mission [today\|submit <file>\|skip\|swap]` | 하루 15~30분 미션 | 미구현 |
-| `/yt-review` | 주간 회고 → profile 갱신 제안 | 미구현 |
+| `/yt-mission [today\|submit <file>\|skip\|swap]` | 하루 15~30분 미션, 제출 피드백·난이도 기록, 난이도에 따라 크기 조정 | ✅ |
+| `/yt-review [YYYY-Www]` | 주간 회고 → `reviews/`, 승인 시 profile 갱신 | ✅ |
 
 ## 설치
 
@@ -58,6 +58,7 @@ Claude Code 안에서:
 | `yt-diagnose` | 근접도 읽는 법, 갭 설명, 다음 행동 작성 규칙 (`/yt-diagnose`가 사용) |
 | `yt-draft` | 대본(말·자막)과 샷 리스트(크기·앵글·길이) 작성 규칙 (`/yt-draft`가 사용) |
 | `yt-inspire` | 모티브 카드 4종 작성 규칙, 기법 병합 기준 (`/yt-inspire`가 사용) |
+| `yt-mission` | 성장 단계, 미션 재료 우선순위·크기, 피드백, 주간 회고 규칙 (`/yt-mission`, `/yt-review`가 사용) |
 | `yt-typify` | 유형화 결과 해석: 축별 근거 문장, 아키타입 이름 (`/yt-typify`가 사용) |
 
 ## 작업 폴더
@@ -93,6 +94,7 @@ Claude Code 안에서:
 | `motif` | `context <cat> [--topic]`, `add <cat> --cards <json>`, `star <cat> <id> [--off]`, `merge-techniques <cat> --plan <json>` |
 | `draft` | `context <cat> <motif-id\|A1>`, `save <cat> --draft <json>` (검증·계획 컷·아키타입 비교 → `drafts/`) |
 | `similarity` | `compare <cat> <target>`, `save <cat> <target> --notes <json>` (→ `mine/`), `intentional <cat> <name> <key> [--off]` |
+| `mission` | `context`, `save --mission <json> [--replace]`, `submit <file> --difficulty --feedback`, `skip --reason`, `week [YYYY-Www]`, `review-save`, `profile-update` (모두 `--date`로 날짜 지정 가능) |
 | `stt` | `<video_id> [--force]` — 자막 없는 영상 음성 인식 (선택: `pip install faster-whisper`, 모델 `YT_STT_MODEL`, 기본 small) |
 
 `fetch` 실패 코드: `invalid_url`, `private`, `unavailable`, `age_restricted`, `blocked`, `proxy_failed`, `no_transcript`, `role_conflict`, `category_not_found`, `fetch_failed`, `transcript_failed`
@@ -111,6 +113,18 @@ pytest tests/
 ```
 
 실제 링크 테스트용 목록은 `tests/fixtures/links.txt`에 둡니다.
+
+## 매일 미션 자동 실행 (선택)
+
+작업 폴더에서 매일 아침 미션을 만들어 두려면 OS 스케줄러로 헤드리스 실행을 걸 수 있습니다.
+
+```bash
+# macOS/Linux (crontab -e): 매일 오전 8시
+0 8 * * * cd /path/to/작업폴더 && claude -p "/yt-coach:yt-mission today (자동 실행: 확인 질문 없이 저장)" --allowedTools "Bash,Read,Write"
+
+# Windows (작업 스케줄러에 등록할 명령)
+cmd /c "cd /d C:\path	o\작업폴더 && claude -p \"/yt-coach:yt-mission today (자동 실행: 확인 질문 없이 저장)\" --allowedTools Bash,Read,Write"
+```
 
 ## 운영 메모
 
