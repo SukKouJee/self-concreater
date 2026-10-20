@@ -27,7 +27,12 @@ argument-hint: '[YYYY-Www]'
 ```
 회고는 확인 없이 기록해도 된다: `workspace/tmp/review.json`에 쓰고 `ytc mission review-save <week> --review workspace/tmp/review.json`
 
-## 3. 프로필 반영 (승인 필요)
+## 3. 리포트
+
+`ytc refstore categories`의 카테고리마다 `ytc report <category>`를 실행하고, 결과의 `abs_path`를 링크로 준다:
+"카테고리별 리포트(판정·아키타입·컷 분포·진단 추이)를 만들었습니다: <abs_path> — 브라우저로 열어 보세요."
+
+## 4. 프로필 반영 (승인 필요)
 
 "프로필 변경 제안을 반영할까요? (전부 / 일부 / 아니오)"
 - 승인한 섹션만 JSON으로 `workspace/tmp/profile_updates.json`에 쓰고 `ytc mission profile-update --updates workspace/tmp/profile_updates.json`
