@@ -7,7 +7,9 @@
 
 - 비교 대상: refs/ref_<cat>/videos/<id>.md(role: mine) 또는 drafts/*.md. ref 영상은 대상이 아니다
 - 근접도(0~1, 단일 종합 점수 없음)
-  structure·pacing: 아키타입 중심까지 거리가 그 아키타입 구성 영상들 중 몇 %보다 가까운가
+  structure·pacing: 1 − (아키타입 중심까지 거리 ÷ 다른 ref 영상들이 그 중심에서 떨어진 거리의 중앙값), 0~1로 자름
+                    1 = 중심과 같음, 0 = 다른 유형 영상만큼 다름 (백분위는 작은·촘촘한 아키타입에서 0%로 무너져 쓰지 않는다)
+- 가장 가까운 아키타입: structure 실제 거리가 가장 짧은 것
   hook·narrative: 구성 영상 중 같은 값의 비율 / title: 패턴 자카드 평균
 - 갭 키: structure:<label>(비중 차 ≥ 0.1), hook, narrative(아키타입의 50% 이상 우세 값과 다름), pacing:avg_cut(평균 컷 ±30%)
 - intentional로 표시한 갭은 이후 진단·미션에서 뺀다. 진단은 아키타입을 바꾸지 않는다
@@ -30,8 +32,7 @@ from scripts.common import ArgParser, ScriptError, run, work_root, workspace_dir
 STRUCTURE_GAP = 0.1
 PACING_GAP = 0.3
 DOMINANT_SHARE = 0.5      # hook·narrative는 아키타입 안에서 이 비율 이상인 값이 있을 때만 '기준'으로 본다
-# 이 정도 거리 차이는 같은 것으로 본다(촘촘한 아키타입에서 미세한 차이로 근접도가 떨어지지 않게)
-DISTANCE_TOLERANCE = {"structure": 0.05, "pacing": 0.1}
+FALLBACK_SCALE = {"structure": 0.5, "pacing": 0.7}   # 다른 ref가 없을 때(아키타입이 하나뿐) 쓰는 거리 척도
 
 
 # --- 대상 · 아키타입 ---------------------------------------------------------------
@@ -72,19 +73,21 @@ def _target(path: Path) -> dict:
 
 # --- 근접도 -----------------------------------------------------------------------
 
-def _percentile(target_d: float, member_ds: list[float], tolerance: float) -> float:
-    return round(sum(1 for d in member_ds if d >= target_d - tolerance) / len(member_ds), 2)
+def _vectors(axis: str, fms: list[dict]) -> np.ndarray:
+    return np.array([v for v in (features.VECTORS[axis](fm) for fm in fms) if v is not None])
 
 
-def _vector_proximity(axis: str, target_fm: dict, member_fms: list[dict]) -> float | None:
+def _vector_proximity(axis: str, target_fm: dict, member_fms: list[dict],
+                      other_fms: list[dict]) -> tuple[float | None, float | None]:
+    """(근접도, 중심까지 거리). other_fms = 이 아키타입에 속하지 않은 ref."""
     vec = features.VECTORS[axis](target_fm)
-    members = [v for v in (features.VECTORS[axis](fm) for fm in member_fms) if v is not None]
-    if vec is None or not members:
-        return None
-    X = np.array(members)
-    center = X.mean(axis=0)
-    return _percentile(float(np.linalg.norm(np.array(vec) - center)),
-                       [float(np.linalg.norm(x - center)) for x in X], DISTANCE_TOLERANCE[axis])
+    members, others = _vectors(axis, member_fms), _vectors(axis, other_fms)
+    if vec is None or not len(members):
+        return None, None
+    center = members.mean(axis=0)
+    dist = float(np.linalg.norm(np.array(vec) - center))
+    scale = float(np.median([np.linalg.norm(x - center) for x in others])) if len(others) else FALLBACK_SCALE[axis]
+    return round(min(1.0, max(0.0, 1 - dist / max(scale, 1e-6))), 2), dist
 
 
 def _share(value: Any, values: list[Any]) -> float:
@@ -100,10 +103,11 @@ def _title_proximity(target_fm: dict, member_fms: list[dict]) -> float:
     return round(float(np.mean(scores)), 2)
 
 
-def proximities(target_fm: dict, member_fms: list[dict]) -> dict:
-    pacing = _vector_proximity("pacing", target_fm, member_fms)
+def proximities(target_fm: dict, member_fms: list[dict], other_fms: list[dict]) -> dict:
+    structure, distance = _vector_proximity("structure", target_fm, member_fms, other_fms)
+    pacing, _ = _vector_proximity("pacing", target_fm, member_fms, other_fms)
     return {
-        "structure": {"proximity": _vector_proximity("structure", target_fm, member_fms)},
+        "structure": {"proximity": structure, "distance": None if distance is None else round(distance, 3)},
         "hook": {"proximity": _share(target_fm.get("hook_type"), [fm.get("hook_type") for fm in member_fms])},
         "narrative": {"proximity": _share(target_fm.get("narrative_type"),
                                           [fm.get("narrative_type") for fm in member_fms])},
@@ -154,10 +158,11 @@ def compare(category: str, target_path: Path) -> dict:
     for arc in typify["archetypes"]:
         member_fms = [by_id[m] for m in arc["members"] if m in by_id]
         if member_fms:
-            scored.append((arc, member_fms, proximities(target["fm"], member_fms)))
+            others = [fm for vid, fm in by_id.items() if vid not in arc["members"]]
+            scored.append((arc, member_fms, proximities(target["fm"], member_fms, others)))
     if not scored:
         raise ScriptError("no_archetype", "아키타입 구성 영상을 찾을 수 없습니다. /yt-typify를 다시 실행하세요.")
-    arc, member_fms, axes = max(scored, key=lambda s: (s[2]["structure"]["proximity"] or 0))
+    arc, member_fms, axes = min(scored, key=lambda s: s[2]["structure"]["distance"])
 
     intentional = _intentional(target["name"])
     all_gaps = gaps(target["fm"], arc, member_fms)

@@ -115,8 +115,8 @@
 ## Phase 7. 기획 — `/yt-draft` (1일)
 
 작업
-- [ ] `skills/yt-draft/SKILL.md`: 모티브 카드 또는 아키타입을 입력으로 섹션별 대본 + 샷 리스트(샷 크기·앵글·길이·컷 수), pacing 축의 컷 경향 반영, profile 피하고 싶은 스타일 반영
-- [ ] `drafts/{date}-{slug}.md` 저장 (출처 카드 ID 기록)
+- [x] `skills/yt-draft/SKILL.md`: 모티브 카드 또는 아키타입을 입력으로 섹션별 대본 + 샷 리스트(샷 크기·앵글·길이·컷 수), pacing 축의 컷 경향 반영, profile 피하고 싶은 스타일 반영
+- [x] `drafts/{date}-{slug}.md` 저장 (출처 카드 ID 기록)
 
 완료 조건
 - ★카드 하나로 쇼츠 대본 + 샷 리스트가 나오고, 섹션 비율이 아키타입과 대체로 맞는다
@@ -126,11 +126,11 @@
 ## Phase 8. 진단 — `/yt-diagnose` (1일)
 
 작업
-- [ ] mine 입력 3종: 링크(전체 파이프라인), draft 파일, 대본 텍스트(촬영·pacing 축 제외)
-- [ ] `similarity.py`: 축별 근접도, 가장 가까운 아키타입, 수치 갭
-- [ ] `skills/yt-diagnose/SKILL.md`: 갭 서술, intentional 처리, 다음 행동 제안 1~3개
-- [ ] `mine/{id}.md` 저장, 아키타입 불변 테스트
-- [ ] ref 10개 미만이면 "예비 진단"으로 표시 (설계서 4절)
+- [x] mine 입력 3종: 링크(전체 파이프라인), draft 파일, 대본 텍스트(촬영·pacing 축 제외)
+- [x] `similarity.py`: 축별 근접도, 가장 가까운 아키타입, 수치 갭
+- [x] `skills/yt-diagnose/SKILL.md`: 갭 서술, intentional 처리, 다음 행동 제안 1~3개
+- [x] `mine/{id}.md` 저장, 아키타입 불변 테스트
+- [x] ref 10개 미만이면 "예비 진단"으로 표시 (설계서 4절)
 
 완료 조건
 - Phase 7의 draft를 진단하면 높은 근접도, 일부러 구조를 바꾼 대본은 낮은 근접도가 나온다

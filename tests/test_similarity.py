@@ -56,13 +56,22 @@ def test_draft_following_archetype_is_close(home):
     assert out["preliminary"] is False
 
 
+def test_small_tight_archetype_still_recognized(home):
+    # 실사용에서 나온 회귀: A2(3개, 거의 같은 영상들)를 따라 만든 기획인데 섹션 수가 하나 달라
+    # 구성 영상 기준 백분위가 0%가 되고 가장 가까운 아키타입도 A1로 잘못 골랐다
+    like_a2_fewer_sections = [("hook", None, 0, 5), ("body", "list_item", 5, 52), ("outro", None, 52, 60)]
+    out = similarity.compare(CAT, make_draft(home, like_a2_fewer_sections, narrative="list"))
+    assert out["nearest"]["id"] == "A2"
+    assert out["axes"]["structure"]["proximity"] >= 0.5
+
+
 def test_restructured_draft_is_far_with_gaps(home):
     out = similarity.compare(CAT, make_draft(home, UNLIKE, hook="shock_line"))
     assert out["axes"]["structure"]["proximity"] <= 0.2
     keys = [g["key"] for g in out["gaps"]]
     assert "structure:body" in keys and "structure:demo" in keys and "hook" in keys
     body = next(g for g in out["gaps"] if g["key"] == "structure:body")
-    assert body["target"] == 0 and body["archetype"] > 0.7
+    assert body["target"] == 0 and body["archetype"] > 0.5
 
 
 def test_script_only_skips_pacing(home):
@@ -94,32 +103,34 @@ def test_ref_video_is_not_a_diagnosis_target(home):
 
 # --- save · intentional ------------------------------------------------------------
 
-NOTES = {"summary": "구조가 A1과 다르다.", "gaps": {"structure:body": "본론이 없다", "structure:demo": "시연이 길다",
-                                                "structure:intro": "인트로가 길다", "hook": "충격 훅",
-                                                "structure:cta": "구독 요청 없음", "structure:outro": "끝맺음"},
-         "actions": ["본론을 40초 이상으로", "훅을 결과 선공개로"]}
+NOTES = {"summary": "구조가 아키타입과 다르다.", "actions": ["본론을 40초 이상으로", "훅을 결과 선공개로"]}
+
+
+def notes_for(home, target):
+    """compare가 낸 갭마다 설명을 붙인 notes 파일."""
+    gaps = similarity.compare(CAT, target)["gaps"]
+    return _json(home, "notes.json", {**NOTES, "gaps": {g["key"]: f"{g['key']} 설명" for g in gaps}})
 
 
 def test_save_writes_mine_md_and_history(home):
     target = make_draft(home, UNLIKE, hook="shock_line")
-    similarity.compare(CAT, target)
-    out = similarity.save(CAT, target, _json(home, "notes.json", NOTES))
+    out = similarity.save(CAT, target, notes_for(home, target))
     path = home / out["path"]
     assert out["path"] == f"mine/{target.stem}.md"
     fm, body = refstore.read_md(path)
-    assert fm["nearest"] == {"id": "A1", "name": "결과 먼저 몰아먹기"}
+    assert fm["nearest"] == {"id": "A2", "name": "사이즈별 리스트 비교"}
     assert fm["target"] == f"drafts/{target.name}"
     assert "structure:body" in fm["gaps"]
     assert len(fm["history"]) == 1
     assert "## 다음 행동" in body and "1. 본론을 40초 이상으로" in body
+    assert "structure:body 설명" in body
     assert "| structure |" in body
     assert body.rstrip().endswith("## 내 메모")
 
 
 def test_intentional_gap_excluded_on_rediagnosis(home):
     target = make_draft(home, UNLIKE, hook="shock_line")
-    similarity.compare(CAT, target)
-    similarity.save(CAT, target, _json(home, "notes.json", NOTES))
+    similarity.save(CAT, target, notes_for(home, target))
     p = home / "mine" / f"{target.stem}.md"
     p.write_text(p.read_text("utf-8") + "직접 쓴 메모\n", encoding="utf-8", newline="")
 
@@ -128,7 +139,7 @@ def test_intentional_gap_excluded_on_rediagnosis(home):
     assert "hook" not in [g["key"] for g in out["gaps"]]
     assert out["intentional"] == ["hook"]
 
-    similarity.save(CAT, target, _json(home, "notes.json", NOTES))
+    similarity.save(CAT, target, notes_for(home, target))
     fm, body = refstore.read_md(p)
     assert fm["intentional"] == ["hook"] and "hook" not in fm["gaps"]
     assert len(fm["history"]) == 2
@@ -140,7 +151,6 @@ def test_intentional_gap_excluded_on_rediagnosis(home):
 
 def test_save_rejects_missing_gap_notes(home):
     target = make_draft(home, UNLIKE, hook="shock_line")
-    similarity.compare(CAT, target)
     with pytest.raises(ScriptError) as exc:
         similarity.save(CAT, target, _json(home, "notes.json", {**NOTES, "gaps": {}}))
     assert exc.value.code == "invalid_notes"
@@ -149,8 +159,7 @@ def test_save_rejects_missing_gap_notes(home):
 def test_diagnosis_never_changes_archetypes(home):
     before = json.loads((home / "workspace" / "typify" / f"{CAT}.json").read_text("utf-8"))["archetypes"]
     target = make_draft(home, UNLIKE, hook="shock_line")
-    similarity.compare(CAT, target)
-    similarity.save(CAT, target, _json(home, "notes.json", NOTES))
+    similarity.save(CAT, target, notes_for(home, target))
     write_video(home, "mine01", role="mine")
     after = cluster.run(CAT)["archetypes"]
     strip = lambda arcs: [{k: v for k, v in a.items() if k != "prev_name"} for a in arcs]
