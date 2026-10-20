@@ -32,7 +32,7 @@ from scripts.common import ArgParser, ScriptError, run, work_root, workspace_dir
 STRUCTURE_GAP = 0.1
 PACING_GAP = 0.3
 DOMINANT_SHARE = 0.5      # hook·narrative는 아키타입 안에서 이 비율 이상인 값이 있을 때만 '기준'으로 본다
-FALLBACK_SCALE = {"structure": 0.5, "pacing": 0.7}   # 다른 ref가 없을 때(아키타입이 하나뿐) 쓰는 거리 척도
+FALLBACK_SCALE = {"structure": 0.5, "pacing": 0.7, "shots": 0.7}   # 다른 ref가 없을 때(아키타입이 하나뿐) 쓰는 거리 척도
 
 
 # --- 대상 · 아키타입 ---------------------------------------------------------------
@@ -106,6 +106,7 @@ def _title_proximity(target_fm: dict, member_fms: list[dict]) -> float:
 def proximities(target_fm: dict, member_fms: list[dict], other_fms: list[dict]) -> dict:
     structure, distance = _vector_proximity("structure", target_fm, member_fms, other_fms)
     pacing, _ = _vector_proximity("pacing", target_fm, member_fms, other_fms)
+    shots, _ = _vector_proximity("shots", target_fm, member_fms, other_fms)
     return {
         "structure": {"proximity": structure, "distance": None if distance is None else round(distance, 3)},
         "hook": {"proximity": _share(target_fm.get("hook_type"), [fm.get("hook_type") for fm in member_fms])},
@@ -113,6 +114,7 @@ def proximities(target_fm: dict, member_fms: list[dict], other_fms: list[dict]) 
                                           [fm.get("narrative_type") for fm in member_fms])},
         "title": {"proximity": _title_proximity(target_fm, member_fms)},
         "pacing": {"proximity": pacing, **({"note": "컷 정보 없음"} if pacing is None else {})},
+        "shots": {"proximity": shots, **({"note": "샷 분류 없음"} if shots is None else {})},
     }
 
 

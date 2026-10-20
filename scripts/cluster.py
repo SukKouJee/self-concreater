@@ -28,7 +28,7 @@ import numpy as np
 from scripts import features, refstore
 from scripts.common import TEMPLATES_DIR, ArgParser, ScriptError, run as run_main, work_root, workspace_dir
 
-NUMERIC_AXES = ["structure", "pacing"]
+NUMERIC_AXES = ["structure", "pacing", "shots"]
 CATEGORICAL_AXES = ["hook", "narrative", "title"]
 MAX_K = 5
 PREV_NAME_OVERLAP = 0.5
@@ -127,12 +127,24 @@ def _pacing_summary(fms: list[dict]) -> dict:
     }
 
 
+def shots_summary(fms: list[dict]) -> dict | None:
+    shots = [fm["shots"] for fm in fms if fm.get("shots")]
+    if not shots:
+        return None
+    sizes = {s: float(np.mean([(x.get("size") or {}).get(s, 0) for x in shots])) for s in features.SHOT_SIZES}
+    top = sorted(((s, round(v, 2)) for s, v in sizes.items() if v > 0), key=lambda kv: -kv[1])[:3]
+    return {"top_sizes": [list(kv) for kv in top],
+            **{f: _mean([x.get(f) for x in shots]) for f in features.SHOT_FLAGS}}
+
+
 def summarize(axis: str, fms: list[dict]) -> dict:
     if axis == "structure":
         return {"skeleton": _skeleton(fms), "mean_ratio": _mean_ratio(fms),
                 "mean_duration": _mean([features.duration(fm) for fm in fms])}
     if axis == "pacing":
         return _pacing_summary(fms)
+    if axis == "shots":
+        return shots_summary(fms)
     if axis == "hook":
         return {"hook_type": dict(Counter(fm.get("hook_type") for fm in fms)),
                 "hook_sec": _mean([features.hook_seconds(fm) for fm in fms])}
@@ -218,6 +230,7 @@ def archetypes(structure: dict, records: list[dict], previous: list[dict]) -> li
             "narrative_type": dict(Counter(fm.get("narrative_type") for fm in fms)),
             "pacing": _pacing_summary(fms),
             "camera": {k: _mean([c.get(k) for c in cameras]) for k in ("static", "pan", "zoom")} if cameras else None,
+            "shots": shots_summary(fms),
             "prev_name": _prev_name(members, previous),
         })
     return result
@@ -310,10 +323,16 @@ def render_archetypes(result: dict, names: dict) -> str:
             f"- 훅: {_counts(a['hook_type'])} / 서사: {_counts(a['narrative_type'])}",
             f"- 페이싱: {pace}",
             f"- 촬영 경향: {camera}",
+            *([f"- 샷 경향: {_shot_line(a['shots'])}"] if a.get("shots") else []),
             f"- 대표 영상: [{rep['title']}](videos/{rep['id']}.md)",
             f"- 구성: {', '.join(_link(v) for v in a['members'])}",
         ]))
     return "\n\n".join(blocks)
+
+
+def _shot_line(shots: dict) -> str:
+    sizes = " · ".join(f"{s} {_pct(v)}" for s, v in shots["top_sizes"])
+    return f"{sizes} / 얼굴 {_pct(shots['face'])} · 손만 {_pct(shots['hands_only'])} · 자막 {_pct(shots['text_overlay'])}"
 
 
 def render_outliers(result: dict) -> str:
@@ -337,7 +356,8 @@ def apply(category: str, notes_path: Path) -> dict:
 
     axis_notes = notes.get("axes") or {}
     names = {a["id"]: str(a.get("name") or "").strip() for a in notes.get("archetypes") or []}
-    missing = [a for a in result["axes"] if not str(axis_notes.get(a) or "").strip()]
+    missing = [a for a, res in result["axes"].items()
+               if res["verdict"] != "insufficient" and not str(axis_notes.get(a) or "").strip()]
     missing += [a["id"] for a in result["archetypes"] if not names.get(a["id"])]
     if missing:
         raise ScriptError("invalid_notes", f"근거 문장 또는 아키타입 이름이 빠졌습니다: {', '.join(missing)}")

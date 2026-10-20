@@ -13,7 +13,8 @@
   },
   "frames": {
     "per_scene": 1,
-    "max_per_video": 40
+    "max_per_video": 40,
+    "shots_sample": 8
   },
   "download": {
     "max_height": 360
@@ -24,6 +25,7 @@
   },
   "single_type_spread": {
     "structure": 0.08,
-    "pacing": 0.15
+    "pacing": 0.15,
+    "shots": 0.15
   }
 }

@@ -13,7 +13,7 @@
 | 커맨드 | 하는 일 | 상태 |
 |---|---|---|
 | `/yt-init [category]` | 작업 폴더·템플릿 생성, 인터뷰로 `profile.md` 작성, 첫 카테고리 생성 | ✅ |
-| `/yt-add <category> [ref\|mine] <links...> [--force]` | 링크별 자막·컷 통계 수집 → 분석 → 확인 후 영상별 md 생성, 기법 카탈로그 갱신 | ✅ |
+| `/yt-add <category> [ref\|mine] <links...> [--force] [--shots]` | 링크별 자막·컷 통계 수집 → 분석 → 확인 후 영상별 md 생성, 기법 카탈로그 갱신. `--shots-only`로 기존 영상 샷 분류 보강 | ✅ |
 | `/yt-typify <category>` | ref 영상으로 축별 유형화 판정·아키타입·이상치 → index.md | ✅ |
 | `/yt-inspire <category> [주제]` | 모티브 카드(흐름·기법·각도·조합) 생성·누적, `star <id>`로 ★ 표시, 기법 카탈로그 중복 병합 | ✅ |
 | `/yt-draft <category> <motif-id\|archetype> "<주제>"` | 섹션별 대본 + 샷 리스트 → `drafts/`, 아키타입 비율 비교 | ✅ |
@@ -59,6 +59,7 @@ Claude Code 안에서:
 | `yt-draft` | 대본(말·자막)과 샷 리스트(크기·앵글·길이) 작성 규칙 (`/yt-draft`가 사용) |
 | `yt-inspire` | 모티브 카드 4종 작성 규칙, 기법 병합 기준 (`/yt-inspire`가 사용) |
 | `yt-mission` | 성장 단계, 미션 재료 우선순위·크기, 피드백, 주간 회고 규칙 (`/yt-mission`, `/yt-review`가 사용) |
+| `yt-shots` | 프레임 샷 분류 기준(크기·앵글·얼굴·손만·B롤·자막) (`/yt-add --shots`가 사용) |
 | `yt-typify` | 유형화 결과 해석: 축별 근거 문장, 아키타입 이름 (`/yt-typify`가 사용) |
 
 ## 작업 폴더
@@ -95,6 +96,7 @@ Claude Code 안에서:
 | `draft` | `context <cat> <motif-id\|A1>`, `save <cat> --draft <json>` (검증·계획 컷·아키타입 비교 → `drafts/`) |
 | `similarity` | `compare <cat> <target>`, `save <cat> <target> --notes <json>` (→ `mine/`), `intentional <cat> <name> <key> [--off]` |
 | `mission` | `context`, `save --mission <json> [--replace]`, `submit <file> --difficulty --feedback`, `skip --reason`, `week [YYYY-Www]`, `review-save`, `profile-update` (모두 `--date`로 날짜 지정 가능) |
+| `shots` | `pending <cat>`, `context <id> --category`, `apply <id> --category --labels <json>` (장면 길이 가중 분포 → md `shots`) |
 | `stt` | `<video_id> [--force]` — 자막 없는 영상 음성 인식 (선택: `pip install faster-whisper`, 모델 `YT_STT_MODEL`, 기본 small) |
 
 `fetch` 실패 코드: `invalid_url`, `private`, `unavailable`, `age_restricted`, `blocked`, `proxy_failed`, `no_transcript`, `role_conflict`, `category_not_found`, `fetch_failed`, `transcript_failed`

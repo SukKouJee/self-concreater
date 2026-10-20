@@ -118,9 +118,9 @@ def _typify(category: str, index_fm: dict) -> dict | None:
                "clusters": [{"size": c["size"], "summary": c["summary"]} for c in res["clusters"]]}
         for axis, res in result["axes"].items()
     }
-    archetypes = [{**{k: a[k] for k in ("id", "size", "skeleton", "mean_ratio", "hook_type",
-                                          "narrative_type", "pacing", "camera", "representative", "members")},
-                   "name": names.get(a["id"])} for a in result["archetypes"]]
+    keys = ("id", "size", "skeleton", "mean_ratio", "hook_type", "narrative_type", "pacing", "camera",
+            "shots", "representative", "members")
+    archetypes = [{**{k: a.get(k) for k in keys}, "name": names.get(a["id"])} for a in result["archetypes"]]
     return {"status": result["status"], "axes": axes, "archetypes": archetypes,
             "outliers": result["outliers"]}
 

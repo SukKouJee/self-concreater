@@ -20,10 +20,10 @@ from pathlib import Path
 from typing import Any
 
 from scripts import motif, refstore
+from scripts.features import SHOT_SIZES
 from scripts.common import ArgParser, ScriptError, run, work_root
 from scripts.videomd import BODY_SUBS, HOOK_TYPES, LABELS, NARRATIVE_TYPES, fmt_time, title_patterns
 
-SHOT_SIZES = ["익스트림 클로즈업", "클로즈업", "바스트", "미디엄", "와이드", "탑뷰", "POV", "인서트"]
 _ARCHETYPE_RE = re.compile(r"^A\d+$")
 
 

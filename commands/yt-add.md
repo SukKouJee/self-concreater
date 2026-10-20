@@ -1,6 +1,6 @@
 ---
 description: 레퍼런스(또는 내 영상) 링크를 분석해 영상별 md를 만든다
-argument-hint: '<category> [ref|mine] <links...> [--force] [--refetch]'
+argument-hint: '<category> [ref|mine] <links...> [--force] [--refetch] [--shots] | <category> --shots-only'
 ---
 링크를 하나씩 수집·분석해 `refs/ref_<category>/videos/<id>.md`를 만든다. 대화는 한국어로 한다.
 
@@ -15,6 +15,9 @@ argument-hint: '<category> [ref|mine] <links...> [--force] [--refetch]'
 - `--refetch`: 자막·컷까지 **다시 수집**한 뒤 분석한다(자막 요청이 늘어 차단 위험이 있으니 꼭 필요할 때만).
 - category가 없으면 `ytc refstore categories`로 목록을 보여 주고 고르게 한다. 없는 카테고리면 `/yt-coach:yt-init`이나 `ytc refstore init <category>`를 제안한다.
 - 링크가 없으면 링크를 달라고 한다. 채널·재생목록을 자동으로 긁어 오지 않는다(링크는 사용자가 직접 고른다).
+
+- `--shots`: 저장 뒤 샷 분류(2-g)까지 한다. 프레임 이미지를 보므로 시간·사용량이 늘어난다.
+- `--shots-only`: 링크 없이 실행. 카테고리에서 샷 분류가 비어 있는 영상만 골라 2-g만 한다(아래 4절).
 
 ## 2. 영상마다 순서대로 (한 번에 하나씩)
 
@@ -53,6 +56,11 @@ argument-hint: '<category> [ref|mine] <links...> [--force] [--refetch]'
 - `invalid_analysis` → message대로 JSON을 고쳐 다시 실행한다(사용자에게 묻지 않는다).
 - `status: exists` → 이미 있음(`--force` 없이 실행된 경우).
 
+**g. 샷 분류 (`--shots`일 때)** 규칙: `${CLAUDE_PLUGIN_ROOT}/skills/yt-shots/SKILL.md`
+`ytc shots context <id> --category <cat>` → frames를 하나씩 Read로 보고 분류 → `workspace/tmp/shots_<id>.json`에 쓰고
+`ytc shots apply <id> --category <cat> --labels workspace/tmp/shots_<id>.json` (`invalid_shots`면 고쳐서 다시)
+- `no_frames` → "컷 통계가 없어 샷 분류를 건너뜁니다"
+
 ## 3. 마무리 보고
 
 ```
@@ -65,3 +73,8 @@ argument-hint: '<category> [ref|mine] <links...> [--force] [--refetch]'
 <마지막 write 결과의 stage_text>
 ```
 그리고 한 줄 덧붙인다: "분석이 틀린 곳은 md를 직접 고치고 `reviewed: true`로 바꿔 두세요. 다음 분석부터 그 방식을 따릅니다."
+
+## 4. `--shots-only` (기존 영상 샷 분류 보강)
+
+`ytc shots pending <category>` → 목록의 영상마다 2-g를 한 번에 하나씩 한다(확인 질문 없이 저장, 진행은 `[3/12]`처럼 알림).
+끝나면: "샷 분류 {n}개 완료. /yt-coach:yt-typify <category>를 다시 하면 shots 축 판정이 나옵니다." 

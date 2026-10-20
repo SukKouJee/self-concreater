@@ -6,7 +6,7 @@
 - narrative: 서사 유형 one-hot
 - title:     제목 패턴(제목에서 다시 계산) + 길이
 - pacing:    평균 컷 길이, 훅·본론 컷 길이 (로그)
-- shots:     Phase 10(Vision)에서 추가
+- shots:     샷 크기·앵글 분포 + 얼굴·손만·B롤·자막 비율 (Vision 분류가 있는 영상만)
 """
 from __future__ import annotations
 
@@ -16,7 +16,10 @@ from pathlib import Path
 from scripts import refstore
 from scripts.videomd import BODY_SUBS, HOOK_TYPES, LABELS, NARRATIVE_TYPES, title_patterns
 
-AXES = ["structure", "hook", "narrative", "title", "pacing"]
+AXES = ["structure", "hook", "narrative", "title", "pacing", "shots"]
+SHOT_SIZES = ["익스트림 클로즈업", "클로즈업", "바스트", "미디엄", "와이드", "탑뷰", "POV", "인서트"]
+SHOT_ANGLES = ["정면", "측면", "탑뷰", "하이앵글", "로우앵글", "POV"]
+SHOT_FLAGS = ["face", "hands_only", "broll", "text_overlay"]
 TITLE_PATTERNS = ["number", "question", "bracket", "exclaim"]
 STRUCTURE_FIELDS = [f"share:{l}" for l in LABELS] + [f"sub:{s}" for s in BODY_SUBS] + ["sections", "duration"]
 
@@ -87,9 +90,18 @@ def pacing_vec(fm: dict) -> list[float] | None:
     return [math.log(avg), math.log(by.get("hook") or avg), math.log(by.get("body") or avg)]
 
 
+def shots_vec(fm: dict) -> list[float] | None:
+    shots = fm.get("shots")
+    if not shots:
+        return None
+    size, angle = shots.get("size") or {}, shots.get("angle") or {}
+    return ([float(size.get(s, 0)) for s in SHOT_SIZES] + [float(angle.get(a, 0)) for a in SHOT_ANGLES]
+            + [float(shots.get(f) or 0) for f in SHOT_FLAGS])
+
+
 VECTORS = {
     "structure": structure_vec, "hook": hook_vec, "narrative": narrative_vec,
-    "title": title_vec, "pacing": pacing_vec,
+    "title": title_vec, "pacing": pacing_vec, "shots": shots_vec,
 }
 
 
