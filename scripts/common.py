@@ -33,11 +33,37 @@ class ScriptError(Exception):
         self.details = details
 
 
+_DASH_ID_RE = re.compile(r"^-[A-Za-z0-9_-]{10}$")
+_ID_MARK = "\x00"
+
+
 class ArgParser(argparse.ArgumentParser):
-    """인자 오류를 stderr 출력 대신 ScriptError("usage")로 돌려준다."""
+    """인자 오류를 stderr 출력 대신 ScriptError("usage")로 돌려준다.
+
+    유튜브 영상 ID는 '-'로 시작할 수 있다(예: -C8U1fizcms). argparse가 옵션으로 읽지 않도록
+    11자 ID 모양의 토큰은 잠시 표시를 붙여 넘기고 결과에서 떼어 낸다.
+    """
 
     def error(self, message: str):
         raise ScriptError("usage", f"{message}\n{self.format_usage().strip()}")
+
+    def _known_options(self) -> set[str]:
+        known = set(self._option_string_actions)
+        for action in self._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                for sub in action.choices.values():
+                    known |= set(sub._option_string_actions)
+        return known
+
+    def parse_args(self, args=None, namespace=None):
+        args = list(sys.argv[1:] if args is None else args)
+        known = self._known_options()
+        args = [_ID_MARK + a if _DASH_ID_RE.match(a) and a not in known else a for a in args]
+        ns = super().parse_args(args, namespace)
+        for key, value in vars(ns).items():
+            if isinstance(value, str) and value.startswith(_ID_MARK):
+                setattr(ns, key, value[len(_ID_MARK):])
+        return ns
 
 
 def _utf8_stdout() -> None:

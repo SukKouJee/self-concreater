@@ -1,6 +1,6 @@
 ---
 description: 레퍼런스(또는 내 영상) 링크를 분석해 영상별 md를 만든다
-argument-hint: '<category> [ref|mine] <links...> [--force]'
+argument-hint: '<category> [ref|mine] <links...> [--force] [--refetch]'
 ---
 링크를 하나씩 수집·분석해 `refs/ref_<category>/videos/<id>.md`를 만든다. 대화는 한국어로 한다.
 
@@ -10,13 +10,17 @@ argument-hint: '<category> [ref|mine] <links...> [--force]'
 
 ## 1. 인자 해석
 
-- 첫 단어 = category. 다음 단어가 `ref` 또는 `mine`이면 role(기본 `ref`). 나머지 = 링크들(공백·줄바꿈 구분). `--force`가 있으면 기존 결과를 무시하고 다시 분석한다.
+- 첫 단어 = category. 다음 단어가 `ref` 또는 `mine`이면 role(기본 `ref`). 나머지 = 링크들(공백·줄바꿈 구분).
+- `--force`: 이미 분석한 영상도 **다시 분석**한다. 수집 데이터(자막·컷)는 캐시를 쓴다. `## 내 메모`는 유지된다.
+- `--refetch`: 자막·컷까지 **다시 수집**한 뒤 분석한다(자막 요청이 늘어 차단 위험이 있으니 꼭 필요할 때만).
 - category가 없으면 `ytc refstore categories`로 목록을 보여 주고 고르게 한다. 없는 카테고리면 `/yt-coach:yt-init`이나 `ytc refstore init <category>`를 제안한다.
 - 링크가 없으면 링크를 달라고 한다. 채널·재생목록을 자동으로 긁어 오지 않는다(링크는 사용자가 직접 고른다).
 
 ## 2. 영상마다 순서대로 (한 번에 하나씩)
 
-진행 상황을 `[2/5] <제목 앞부분>` 처럼 짧게 알린다. `--force`가 있으면 아래 각 스크립트에 `--force`를 붙인다.
+진행 상황을 `[2/5] <제목 앞부분>` 처럼 짧게 알린다.
+- `--force`: fetch에 `--reanalyze`, videomd write에 `--force`를 붙인다(cuts는 그대로 캐시).
+- `--refetch`: fetch·cuts에 `--force`, videomd write에 `--force`를 붙인다.
 
 **a. 수집** `ytc fetch <링크> --category <cat> --role <role>`
 - `status: exists` → "이미 분석됨, 건너뜀" 후 다음 영상.

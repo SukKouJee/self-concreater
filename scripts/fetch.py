@@ -1,11 +1,12 @@
 """영상 메타데이터·자막 수집 → workspace/raw/{id}.json
 
 사용법 (작업 폴더에서):
-  python -m scripts.fetch <url> [--category <cat>] [--role ref|mine] [--force]
+  python -m scripts.fetch <url> [--category <cat>] [--role ref|mine] [--force | --reanalyze]
 
 - --category를 주면 중복을 검사한다: 같은 카테고리·같은 role의 md가 있으면 건너뛰고(status: exists),
   다른 role로 이미 등록된 영상이면 role_conflict.
 - raw JSON이 이미 있으면 네트워크 없이 그대로 쓴다(status: cached). --force는 둘 다 무시하고 다시 받는다.
+- --reanalyze: md가 있어도 건너뛰지 않되 수집은 캐시를 쓴다(분석 규칙이 바뀌었을 때 다시 분석)
 - 자막 우선순위: 원어(수동 → 자동) → 수동 ko → 수동 en → 자동 ko → 자동 en → 그 외 수동 → 그 외 자동
   (원어는 yt-dlp의 language. 번역 자막보다 원어 자동 자막이 분석에 맞다)
 - 초당 글자 수가 SPARSE_CHARS_PER_SEC 미만이면 sparse: true (말이 거의 없음, 자동 자막이 엉터리일 수 있음)
@@ -296,13 +297,14 @@ def _summary(data: dict, status: str, also_in: list[str]) -> dict:
     }
 
 
-def fetch(url: str, category: str | None = None, role: str = "ref", force: bool = False) -> dict:
+def fetch(url: str, category: str | None = None, role: str = "ref", force: bool = False,
+          reanalyze: bool = False) -> dict:
     video_id = parse_video_id(url)
 
     also_in: list[str] = []
     if category:
         same, also_in = check_duplicates(video_id, category, role)
-        if same and not force:
+        if same and not (force or reanalyze):
             return {"id": video_id, "status": "exists", "md": same["md"], "also_in": also_in}
 
     path = raw_path(video_id)
@@ -340,9 +342,10 @@ def main(argv: list[str]) -> Any:
     parser.add_argument("url")
     parser.add_argument("--category")
     parser.add_argument("--role", choices=["ref", "mine"], default="ref")
-    parser.add_argument("--force", action="store_true")
+    parser.add_argument("--force", action="store_true", help="캐시를 무시하고 다시 수집")
+    parser.add_argument("--reanalyze", action="store_true", help="md가 있어도 건너뛰지 않음 (수집은 캐시 사용)")
     args = parser.parse_args(argv)
-    return fetch(args.url, args.category, args.role, args.force)
+    return fetch(args.url, args.category, args.role, args.force, args.reanalyze)
 
 
 if __name__ == "__main__":

@@ -74,6 +74,34 @@ def test_run_emits_returned_value(capsys):
     assert json.loads(capsys.readouterr().out) == {"ok": True, "argv": ["a"]}
 
 
+def test_argparser_accepts_video_ids_starting_with_dash():
+    parser = common.ArgParser()
+    parser.add_argument("video_id")
+    parser.add_argument("--category")
+    parser.add_argument("--force", action="store_true")
+    args = parser.parse_args(["-C8U1fizcms", "--category", "mukbang", "--force"])
+    assert args.video_id == "-C8U1fizcms"
+    assert args.category == "mukbang" and args.force is True
+
+
+def test_argparser_keeps_real_options_shaped_like_ids():
+    parser = common.ArgParser()
+    sub = parser.add_subparsers(dest="cmd")
+    p = sub.add_parser("run")
+    p.add_argument("video_id")
+    p.add_argument("--reanalyze", action="store_true")   # 11자: ID 모양과 같다
+    args = parser.parse_args(["run", "-C8U1fizcms", "--reanalyze"])
+    assert args.video_id == "-C8U1fizcms" and args.reanalyze is True
+
+
+def test_argparser_still_rejects_unknown_options():
+    parser = common.ArgParser()
+    parser.add_argument("video_id")
+    with pytest.raises(common.ScriptError) as exc:
+        parser.parse_args(["abc", "--bogus"])
+    assert exc.value.code == "usage"
+
+
 def test_work_root_prefers_env(monkeypatch, tmp_path):
     monkeypatch.setenv("YT_COACH_HOME", str(tmp_path))
     assert common.work_root() == tmp_path

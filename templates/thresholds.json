@@ -21,5 +21,9 @@
   "cuts": {
     "threshold": 15.0,
     "min_scene_frames": 12
+  },
+  "single_type_spread": {
+    "structure": 0.08,
+    "pacing": 0.15
   }
 }

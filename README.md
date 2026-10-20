@@ -14,7 +14,7 @@
 |---|---|---|
 | `/yt-init [category]` | 작업 폴더·템플릿 생성, 인터뷰로 `profile.md` 작성, 첫 카테고리 생성 | ✅ |
 | `/yt-add <category> [ref\|mine] <links...> [--force]` | 링크별 자막·컷 통계 수집 → 분석 → 확인 후 영상별 md 생성, 기법 카탈로그 갱신 | ✅ |
-| `/yt-typify <category>` | ref 영상으로 축별 유형화 판정·아키타입 | 미구현 |
+| `/yt-typify <category>` | ref 영상으로 축별 유형화 판정·아키타입·이상치 → index.md | ✅ |
 | `/yt-inspire <category> [주제]` | 모티브 카드(흐름·기법·각도·조합) 생성 | 미구현 |
 | `/yt-draft <category> <motif-id\|archetype> "<주제>"` | 섹션별 대본 + 샷 리스트 | 미구현 |
 | `/yt-diagnose <category> <link\|draft\|대본>` | 내 콘텐츠를 아키타입과 축별 비교 | 미구현 |
@@ -55,6 +55,7 @@ Claude Code 안에서:
 | 스킬 | 하는 일 |
 |---|---|
 | `yt-analyze` | 영상 한 편의 섹션·훅·서사·기법 분석 규칙 (`/yt-add`가 사용) |
+| `yt-typify` | 유형화 결과 해석: 축별 근거 문장, 아키타입 이름 (`/yt-typify`가 사용) |
 
 ## 작업 폴더
 
@@ -84,6 +85,8 @@ Claude Code 안에서:
 | `fetch` | `<url> [--category <cat>] [--role ref\|mine] [--force]` → `workspace/raw/{id}.json`. 요약에 `chars_per_sec`, `sparse`(말이 거의 없음) 포함 |
 | `cuts` | `<url\|video_id> [--force]` → `workspace/cuts/{id}.json`, `workspace/frames/{id}/`. 360p 이하로 받아 장면 감지·카메라 추정 후 영상 즉시 삭제 |
 | `videomd` | `context <id> --category <cat>` (분석 입력), `write <id> --category <cat> [--role] --analysis <json> [--force]` (검증·계산·저장) |
+| `features` | (라이브러리) md 프런트매터 → 축별 피처 |
+| `cluster` | `run <cat>` (ref만 축별 군집·판정·아키타입·이상치 → `workspace/typify/<cat>.json`), `apply <cat> --notes <json>` (index.md 기록) |
 | `stt` | `<video_id> [--force]` — 자막 없는 영상 음성 인식 (선택: `pip install faster-whisper`, 모델 `YT_STT_MODEL`, 기본 small) |
 
 `fetch` 실패 코드: `invalid_url`, `private`, `unavailable`, `age_restricted`, `blocked`, `proxy_failed`, `no_transcript`, `role_conflict`, `category_not_found`, `fetch_failed`, `transcript_failed`

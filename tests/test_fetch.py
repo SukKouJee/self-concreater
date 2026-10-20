@@ -277,6 +277,15 @@ def test_fetch_existing_md_with_force_refetches(home, net):
     assert fetch.fetch(VID, category="cooking", role="ref", force=True)["status"] == "fetched"
 
 
+def test_fetch_reanalyze_skips_exists_but_uses_cache(home, net):
+    add_video_md(home, "cooking", "ref")
+    fetch.save_raw({"id": VID, "url": f"https://youtu.be/{VID}", "format": "shorts",
+                    "meta": dict(META), "transcript": TRANSCRIPT})
+    out = fetch.fetch(VID, category="cooking", role="ref", reanalyze=True)
+    assert out["status"] == "cached"
+    assert net["meta"] == 0
+
+
 def test_fetch_role_conflict(home, net):
     add_video_md(home, "cooking", "ref")
     with pytest.raises(ScriptError) as exc:
@@ -311,6 +320,7 @@ def test_main_cli_options(home, net):
     refstore.init_category("cooking")
     out = fetch.main([VID, "--category", "cooking", "--role", "ref"])
     assert out["status"] == "fetched"
+    assert fetch.main([VID, "--category", "cooking", "--reanalyze"])["status"] == "cached"
     with pytest.raises(ScriptError) as exc:
         fetch.main([VID, "--role", "other"])
     assert exc.value.code == "usage"
