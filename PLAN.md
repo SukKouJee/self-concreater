@@ -155,10 +155,10 @@
 ## Phase 10. Vision 샷 분류 (1.5일, 후반)
 
 작업
-- [ ] `skills/yt-shots/SKILL.md`: 샷 크기·앵글·얼굴출연·손만·B롤·텍스트오버레이 분류 기준과 예시
-- [ ] Claude가 `workspace/frames/{id}/`를 Read로 보고 장면별 분류 → 섹션 매핑 → `shots` 프런트매터
-- [ ] 기존 영상 일괄 보강 옵션(`/yt-add --shots-only <cat>`)
-- [ ] features·cluster에 shots 축 추가, draft 샷 리스트에 반영
+- [x] `skills/yt-shots/SKILL.md`: 샷 크기·앵글·얼굴출연·손만·B롤·텍스트오버레이 분류 기준과 예시
+- [x] Claude가 `workspace/frames/{id}/`를 Read로 보고 장면별 분류 → 섹션 매핑 → `shots` 프런트매터
+- [x] 기존 영상 일괄 보강 옵션(`/yt-add --shots-only <cat>`)
+- [x] features·cluster에 shots 축 추가, draft 샷 리스트에 반영
 
 완료 조건
 - 쇼츠 5개에서 샷 분류가 육안과 대체로 일치하고, typify에 shots 축 판정이 나온다
@@ -167,8 +167,8 @@
 
 ## Phase 11. 리포트 (1일, 선택)
 
-- [ ] `report.py <cat>`: 축별 판정, 아키타입 비교, pacing 분포, mine 근접도 추이를 단일 HTML로
-- [ ] `/yt-review`에서 링크 제공
+- [x] `report.py <cat>`: 축별 판정, 아키타입 비교, pacing 분포, mine 근접도 추이를 단일 HTML로
+- [x] `/yt-review`에서 링크 제공
 
 ---
 
