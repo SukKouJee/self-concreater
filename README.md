@@ -123,7 +123,7 @@ pytest tests/
 0 8 * * * cd /path/to/작업폴더 && claude -p "/yt-coach:yt-mission today (자동 실행: 확인 질문 없이 저장)" --allowedTools "Bash,Read,Write"
 
 # Windows (작업 스케줄러에 등록할 명령)
-cmd /c "cd /d C:\path	o\작업폴더 && claude -p \"/yt-coach:yt-mission today (자동 실행: 확인 질문 없이 저장)\" --allowedTools Bash,Read,Write"
+cmd /c "cd /d C:\path\to\작업폴더 && claude -p \"/yt-coach:yt-mission today (자동 실행: 확인 질문 없이 저장)\" --allowedTools Bash,Read,Write"
 ```
 
 ## 운영 메모
