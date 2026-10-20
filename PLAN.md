@@ -141,10 +141,10 @@
 ## Phase 9. 미션·회고 (1.5일)
 
 작업
-- [ ] `skills/yt-mission/SKILL.md`: 성장 단계 판단, 재료 우선순위(★카드 → draft → 갭), 15~30분 크기, 촬영 미션 포함, 난이도 적응 규칙
-- [ ] `/yt-mission today|submit|skip|swap`, `missions/{date}.md` 기록
-- [ ] `/yt-review`: 주간 집계 → 제안 → 승인 시 profile 갱신
-- [ ] (선택) cron 예시: `claude -p "/yt-mission today"` 를 README에
+- [x] `skills/yt-mission/SKILL.md`: 성장 단계 판단, 재료 우선순위(★카드 → draft → 갭), 15~30분 크기, 촬영 미션 포함, 난이도 적응 규칙
+- [x] `/yt-mission today|submit|skip|swap`, `missions/{date}.md` 기록
+- [x] `/yt-review`: 주간 집계 → 제안 → 승인 시 profile 갱신
+- [x] (선택) cron 예시: `claude -p "/yt-mission today"` 를 README에
 
 완료 조건
 - 3일 연속 미션 생성·제출 시뮬레이션에서 난이도 평가가 다음 미션에 반영된다
