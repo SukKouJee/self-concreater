@@ -70,10 +70,10 @@
 ## Phase 4. 단일 분석 — `/yt-add` 완성 (1.5일)
 
 작업
-- [ ] `skills/yt-analyze/SKILL.md`: 섹션 라벨 정의·판단 예시, 훅·서사 유형 정의, 출력 포맷(video.md 템플릿 그대로), 같은 카테고리의 사용자 수정본 2~3개를 few-shot으로 읽는 규칙
-- [ ] 섹션별 컷 통계 매핑(pacing.by_section)
-- [ ] `/yt-add` 흐름: 링크 파싱 → 영상별 fetch → cuts → 분석 → 확인 → md 저장 → techniques.md 갱신 → 단계 안내
-- [ ] 이미 md 있으면 건너뜀, `--force` 지원
+- [x] `skills/yt-analyze/SKILL.md`: 섹션 라벨 정의·판단 예시, 훅·서사 유형 정의, 출력 포맷(video.md 템플릿 그대로), 같은 카테고리의 사용자 수정본 2~3개를 few-shot으로 읽는 규칙
+- [x] 섹션별 컷 통계 매핑(pacing.by_section)
+- [x] `/yt-add` 흐름: 링크 파싱 → 영상별 fetch → cuts → 분석 → 확인 → md 저장 → techniques.md 갱신 → 단계 안내
+- [x] 이미 md 있으면 건너뜀, `--force` 지원
 
 완료 조건
 - 링크 3개 입력 → `videos/*.md` 3개, 프런트매터가 스키마대로 채워짐

@@ -13,7 +13,7 @@
 | 커맨드 | 하는 일 | 상태 |
 |---|---|---|
 | `/yt-init [category]` | 작업 폴더·템플릿 생성, 인터뷰로 `profile.md` 작성, 첫 카테고리 생성 | ✅ |
-| `/yt-add <category> [ref\|mine] <links...>` | 링크별 자막·컷 통계 수집 → 영상별 md 생성 | 미구현 |
+| `/yt-add <category> [ref\|mine] <links...> [--force]` | 링크별 자막·컷 통계 수집 → 분석 → 확인 후 영상별 md 생성, 기법 카탈로그 갱신 | ✅ |
 | `/yt-typify <category>` | ref 영상으로 축별 유형화 판정·아키타입 | 미구현 |
 | `/yt-inspire <category> [주제]` | 모티브 카드(흐름·기법·각도·조합) 생성 | 미구현 |
 | `/yt-draft <category> <motif-id\|archetype> "<주제>"` | 섹션별 대본 + 샷 리스트 | 미구현 |
@@ -50,6 +50,12 @@ Claude Code 안에서:
 
 설치 후 Claude Code를 재시작하고 `/help` 또는 `/`를 입력해 `yt-` 커맨드 8개가 보이는지 확인합니다.
 
+## 스킬
+
+| 스킬 | 하는 일 |
+|---|---|
+| `yt-analyze` | 영상 한 편의 섹션·훅·서사·기법 분석 규칙 (`/yt-add`가 사용) |
+
 ## 작업 폴더
 
 플러그인 저장소와 별도로, 레퍼런스가 쌓일 작업 폴더에서 Claude Code를 실행합니다.
@@ -77,6 +83,7 @@ Claude Code 안에서:
 | `refstore` | `scaffold`, `init <cat>`, `categories`, `count <cat>`, `update-stage <cat>` |
 | `fetch` | `<url> [--category <cat>] [--role ref\|mine] [--force]` → `workspace/raw/{id}.json`. 요약에 `chars_per_sec`, `sparse`(말이 거의 없음) 포함 |
 | `cuts` | `<url\|video_id> [--force]` → `workspace/cuts/{id}.json`, `workspace/frames/{id}/`. 360p 이하로 받아 장면 감지·카메라 추정 후 영상 즉시 삭제 |
+| `videomd` | `context <id> --category <cat>` (분석 입력), `write <id> --category <cat> [--role] --analysis <json> [--force]` (검증·계산·저장) |
 | `stt` | `<video_id> [--force]` — 자막 없는 영상 음성 인식 (선택: `pip install faster-whisper`, 모델 `YT_STT_MODEL`, 기본 small) |
 
 `fetch` 실패 코드: `invalid_url`, `private`, `unavailable`, `age_restricted`, `blocked`, `proxy_failed`, `no_transcript`, `role_conflict`, `category_not_found`, `fetch_failed`, `transcript_failed`

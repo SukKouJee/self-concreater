@@ -251,7 +251,7 @@ def save_raw(data: dict) -> Path:
     return path
 
 
-def _check_duplicates(video_id: str, category: str, role: str) -> tuple[dict | None, list[str]]:
+def check_duplicates(video_id: str, category: str, role: str) -> tuple[dict | None, list[str]]:
     refstore.existing_category_dir(category)
     found = refstore.find_video(video_id)
     conflict = [f for f in found if f["role"] != role]
@@ -301,7 +301,7 @@ def fetch(url: str, category: str | None = None, role: str = "ref", force: bool 
 
     also_in: list[str] = []
     if category:
-        same, also_in = _check_duplicates(video_id, category, role)
+        same, also_in = check_duplicates(video_id, category, role)
         if same and not force:
             return {"id": video_id, "status": "exists", "md": same["md"], "also_in": also_in}
 

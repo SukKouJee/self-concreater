@@ -187,6 +187,7 @@ title_pattern: [number, bracket]
 pacing: {avg_cut_sec: 1.8, by_section: {hook: 0.9, body: 2.1}}
 shots: null          # 후반 단계에서 채움
 camera: {static: 0.7, pan: 0.2, zoom: 0.1}
+reviewed: false      # 사용자가 고친 뒤 true → 분석 few-shot 예시
 schema_version: 1
 ---
 ## 한 줄 요약

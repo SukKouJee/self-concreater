@@ -14,6 +14,7 @@ title_pattern: []       # number | question | bracket | exclaim
 pacing: {avg_cut_sec: null, by_section: {}}
 shots: null             # 후반 단계(Vision)에서 채움
 camera: {static: null, pan: null, zoom: null}
+reviewed: false         # 내용을 직접 고쳤으면 true → 다음 분석의 예시(few-shot)로 쓰인다
 schema_version: 1
 ---
 ## 한 줄 요약

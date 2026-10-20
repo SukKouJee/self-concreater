@@ -47,7 +47,7 @@ def test_video_template_frontmatter_matches_schema():
     for key in [
         "id", "url", "role", "channel", "title", "duration_sec", "format",
         "transcript_source", "sections", "hook_type", "narrative_type",
-        "title_pattern", "pacing", "shots", "camera", "schema_version",
+        "title_pattern", "pacing", "shots", "camera", "reviewed", "schema_version",
     ]:
         assert key in fm, key
     assert fm["schema_version"] == 1
