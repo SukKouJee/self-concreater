@@ -40,7 +40,7 @@ main{max-width:960px;margin:0 auto;padding:24px 16px 64px}h1{font-size:24px;marg
 h2{font-size:18px;margin:36px 0 12px}.sub{color:var(--ink2);margin:0}
 .card{background:var(--surface);border:1px solid var(--grid);border-radius:10px;padding:16px;margin:12px 0;overflow-x:auto}
 table{border-collapse:collapse;width:100%%;font-size:14px}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--grid);
-vertical-align:top}th{color:var(--ink2);font-weight:600}td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+vertical-align:top}th{color:var(--ink2);font-weight:600;white-space:nowrap}td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
 .legend{display:flex;flex-wrap:wrap;gap:12px;margin:8px 0;font-size:13px;color:var(--ink2)}
 .legend span{display:inline-flex;align-items:center;gap:6px}.sw{width:12px;height:12px;border-radius:3px;display:inline-block}
 .badge{white-space:nowrap}svg text{fill:var(--muted);font-size:11px}svg .lbl{fill:var(--ink2);font-size:12px}
@@ -182,7 +182,7 @@ def build(category: str, date: str | None = None) -> dict:
     out.append("<h2>아키타입 비교</h2>")
     if archetypes:
         table = "".join(
-            f'<tr><td><i class="sw" style="background:var(--s{i + 1})"></i> {_esc(a["id"])} {_esc(names.get(a["id"]))}</td>'
+            f'<tr><td>{_esc(a["id"])} {_esc(names.get(a["id"]))}</td>'
             f'<td class="num">{a["size"]}개</td><td>{_esc(a["skeleton"])}</td>'
             f'<td class="num">{a["pacing"]["avg_cut_sec"] or "-"}초</td>'
             f'<td>{_esc(" · ".join(f"{k} {_pct(v)}" for k, v in (a.get("camera") or {}).items()))}</td>'
