@@ -60,6 +60,7 @@ def fake_audio(monkeypatch, home):
         return path
 
     monkeypatch.setattr(stt, "download_audio", download_audio)
+    monkeypatch.setattr(stt, "decode_audio", lambda path: f"decoded:{path.name}")
 
 
 def test_transcribe_fills_raw_and_deletes_audio(home, fake_whisper, fake_audio):
@@ -99,3 +100,51 @@ def test_model_from_env(home, fake_whisper, fake_audio, monkeypatch):
     monkeypatch.setenv("YT_STT_MODEL", "medium")
     stt.transcribe(VID)
     assert fake_whisper["model"] == "medium"
+
+
+def test_transcribe_gets_decoded_audio(home, fake_whisper, fake_audio):
+    stt.transcribe(VID)
+    assert fake_whisper["audio"] == f"decoded:{VID}.m4a"
+
+
+def test_decode_audio_with_pyav(tmp_path):
+    av = pytest.importorskip("av")
+    np = pytest.importorskip("numpy")
+    wav = tmp_path / "tone.wav"
+    with av.open(str(wav), mode="w") as out:
+        stream = out.add_stream("pcm_s16le", rate=44100, layout="stereo")
+        tone = (np.sin(np.arange(44100) * 2 * np.pi * 440 / 44100) * 12000).astype(np.int16)
+        frame = av.AudioFrame.from_ndarray(np.stack([tone, tone]).reshape(1, -1), format="s16", layout="stereo")
+        frame.rate = 44100
+        for packet in stream.encode(frame):
+            out.mux(packet)
+        for packet in stream.encode(None):
+            out.mux(packet)
+    audio = stt.decode_audio(wav)
+    assert audio.dtype.name == "float32"
+    assert abs(len(audio) - stt.SAMPLE_RATE) < 200                 # 1초 → 16000 샘플
+    assert 0.3 < abs(audio).max() <= 1.0
+
+
+def test_decode_audio_rejects_garbage(tmp_path):
+    pytest.importorskip("av")
+    bad = tmp_path / "bad.m4a"
+    bad.write_bytes(b"not audio")
+    with pytest.raises(ScriptError) as exc:
+        stt.decode_audio(bad)
+    assert exc.value.code == "stt_failed"
+
+
+def test_no_speech_keeps_empty_transcript(home, fake_audio, monkeypatch):
+    class Silent:
+        def __init__(self, *a, **k):
+            pass
+
+        def transcribe(self, *a, **k):
+            return iter([types.SimpleNamespace(start=0.0, end=1.0, text="  ")]), types.SimpleNamespace(language="en")
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=Silent))
+    out = stt.transcribe(VID)
+    assert out["speech"] is False and out["segments"] == 0 and out["language"] is None
+    raw = fetch.load_raw(VID)
+    assert raw["transcript"] == {"source": "stt", "language": None, "segments": []}

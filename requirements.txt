@@ -7,4 +7,4 @@ numpy>=1.26
 scikit-learn>=1.4
 pytest>=8.0
 # 선택: 자막이 없을 때 STT (stt.py)
-# faster-whisper>=1.0
+# faster-whisper>=1.0   (av 19와 내장 디코더가 충돌해 stt.py가 PyAV로 직접 디코딩한다)
