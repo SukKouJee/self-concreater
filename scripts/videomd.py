@@ -259,6 +259,23 @@ def _existing_memo(path: Path) -> str:
 
 # --- 기법 카탈로그 -------------------------------------------------------------------
 
+def drop_video_techniques(category: str, video_id: str) -> None:
+    """다시 분석할 때 그 영상의 예전 기법 출처를 뺀다. 출처가 하나도 안 남은 항목은 지운다."""
+    path = refstore.existing_category_dir(category) / "techniques.md"
+    fm, body = refstore.read_md(path)
+    link = f"[{video_id}](videos/{video_id}.md)"
+    kept = []
+    for line in body.split("\n"):
+        if line.startswith("- **") and link in line:
+            head, _, sources = line.partition(" — ")
+            remaining = [s for s in sources.split(", ") if s and s != link]
+            if not remaining:
+                continue
+            line = f"{head} — {', '.join(remaining)}"
+        kept.append(line)
+    path.write_bytes(refstore.join_frontmatter(fm, "\n".join(kept)).encode("utf-8"))
+
+
 def append_techniques(category: str, video_id: str, techniques: list[dict]) -> tuple[int, int]:
     """techniques.md의 종류별 섹션에 추가. 같은 이름이 있으면 출처 링크만 붙인다."""
     path = refstore.existing_category_dir(category) / "techniques.md"
@@ -298,6 +315,7 @@ def write(video_id: str, category: str, role: str, analysis_path: Path, force: b
     if path.exists() and not force:
         return {"id": video_id, "status": "exists", "md": _rel(path)}
     check_duplicates(video_id, category, role)
+    rewriting = path.exists()
 
     raw = load_raw(video_id)
     cuts = load_cuts(video_id)
@@ -339,6 +357,8 @@ def write(video_id: str, category: str, role: str, analysis_path: Path, force: b
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(refstore.join_frontmatter(fm, body, nl).encode("utf-8"))
 
+    if rewriting:
+        drop_video_techniques(category, video_id)
     added, merged = append_techniques(category, video_id, analysis["techniques"])
     stage = refstore.update_stage(category)
     Path(analysis_path).unlink(missing_ok=True)

@@ -293,6 +293,27 @@ def test_techniques_are_appended_under_kind_and_merged_by_name(home):
     assert "**탑뷰 손 클로즈업**" in body.split("## 촬영")[1]
 
 
+def test_rewrite_drops_stale_techniques_of_that_video(home):
+    other = "bbbbbbbbbbb"
+    fetch.save_raw({**RAW, "id": other})
+    videomd.write(VID, CAT, "ref", write_analysis(home))          # 결과 선공개, 구독 요청 반복
+    videomd.write(other, CAT, "ref", write_analysis(home, name=other))   # 같은 두 기법에 출처 추가
+    videomd.write(VID, CAT, "ref", write_analysis(home, {**ANALYSIS, "techniques": [
+        {"kind": "촬영", "name": "탑뷰", "desc": "위에서"}]}), force=True)
+    _, body = refstore.read_md(home / "refs" / f"ref_{CAT}" / "techniques.md")
+    hook = body.split("## 훅")[1].split("## 전환")[0]
+    assert f"[{VID}]" not in hook                                  # 예전 분석의 출처는 빠지고
+    assert f"**결과 선공개**" in hook and f"[{other}]" in hook       # 다른 영상 출처는 남는다
+    assert f"**탑뷰**" in body and body.count(f"[{VID}]") == 1
+
+
+def test_stale_technique_line_removed_when_no_sources_left(home):
+    videomd.write(VID, CAT, "ref", write_analysis(home))
+    videomd.write(VID, CAT, "ref", write_analysis(home, {**ANALYSIS, "techniques": []}), force=True)
+    _, body = refstore.read_md(home / "refs" / f"ref_{CAT}" / "techniques.md")
+    assert "결과 선공개" not in body and "구독 요청 반복" not in body
+
+
 def test_rewrite_does_not_duplicate_technique_sources(home):
     videomd.write(VID, CAT, "ref", write_analysis(home))
     videomd.write(VID, CAT, "ref", write_analysis(home), force=True)
