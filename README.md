@@ -75,6 +75,10 @@ Claude Code 안에서:
 | 스크립트 | 하위 명령 |
 |---|---|
 | `refstore` | `scaffold`, `init <cat>`, `categories`, `count <cat>`, `update-stage <cat>` |
+| `fetch` | `<url> [--category <cat>] [--role ref\|mine] [--force]` → `workspace/raw/{id}.json` |
+| `stt` | `<video_id> [--force]` — 자막 없는 영상 음성 인식 (선택: `pip install faster-whisper`, 모델 `YT_STT_MODEL`, 기본 small) |
+
+`fetch` 실패 코드: `invalid_url`, `private`, `unavailable`, `age_restricted`, `blocked`, `proxy_failed`, `no_transcript`, `role_conflict`, `category_not_found`, `fetch_failed`, `transcript_failed`
 
 ## 테스트
 
@@ -86,5 +90,8 @@ pytest tests/
 
 ## 운영 메모
 
-- 자막 수집이 차단되면 `YT_PROXY` 환경변수로 프록시를 지정합니다. (Phase 2에서 차단 여부 확인 후 결과 기록 예정)
+- 자막 수집이 차단되면 `YT_PROXY` 환경변수로 프록시를 지정합니다 (예: `http://user:pass@host:port`).
+- 차단 확인 기록:
+  - 2026-10-20, 개발 PC(Windows, 가정용 회선): 프록시 없이 메타데이터·자막 수집 정상. 차단 없음.
+  - 클라우드·데이터센터 IP에서는 자막 요청이 막히는 경우가 많습니다. 그때 `blocked` 에러와 프록시 안내가 나옵니다.
 - 영상 원본은 360p 이하로 받아 프레임 추출 직후 삭제합니다. 개인 분석 용도로만 사용합니다.

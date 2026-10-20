@@ -1,0 +1,308 @@
+"""영상 메타데이터·자막 수집 → workspace/raw/{id}.json
+
+사용법 (작업 폴더에서):
+  python -m scripts.fetch <url> [--category <cat>] [--role ref|mine] [--force]
+
+- --category를 주면 중복을 검사한다: 같은 카테고리·같은 role의 md가 있으면 건너뛰고(status: exists),
+  다른 role로 이미 등록된 영상이면 role_conflict.
+- raw JSON이 이미 있으면 네트워크 없이 그대로 쓴다(status: cached). --force는 둘 다 무시하고 다시 받는다.
+- 자막 우선순위: 수동 ko → 수동 en → 자동 ko → 자동 en → 그 외 수동 → 그 외 자동
+- 프록시: YT_PROXY 환경변수 (예: http://user:pass@host:port)
+
+실패 코드: invalid_url, private, unavailable, age_restricted, blocked, proxy_failed, no_transcript,
+          role_conflict, category_not_found, fetch_failed, transcript_failed
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, urlparse
+
+from scripts import refstore
+from scripts.common import ArgParser, ScriptError, run, work_root, workspace_dir
+
+SHORTS_MAX_SEC = 180
+
+BLOCKED_MESSAGE = (
+    "YouTube가 이 네트워크의 요청을 막았습니다. 잠시 후 다시 시도하거나, "
+    "YT_PROXY 환경변수에 프록시를 지정하세요 (예: YT_PROXY=http://user:pass@host:port)."
+)
+
+_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+_HOSTS = {"youtube.com", "m.youtube.com", "music.youtube.com", "youtube-nocookie.com", "youtu.be"}
+_PATH_PREFIXES = ("shorts", "embed", "live", "v")
+
+_META_KEYS = [
+    "title", "channel", "channel_id", "uploader", "duration", "width", "height",
+    "upload_date", "view_count", "like_count", "comment_count", "description",
+    "tags", "chapters",
+]
+
+
+# --- 링크 해석 ----------------------------------------------------------------
+
+def parse_video_id(url: str) -> str:
+    text = url.strip()
+    if _ID_RE.match(text):
+        return text
+    if not re.match(r"^https?://", text):
+        text = "https://" + text
+    parsed = urlparse(text)
+    host = (parsed.hostname or "").removeprefix("www.")
+    parts = [p for p in parsed.path.split("/") if p]
+
+    candidate = None
+    if host == "youtu.be" and parts:
+        candidate = parts[0]
+    elif host in _HOSTS:
+        if parts[:1] == ["watch"]:
+            candidate = (parse_qs(parsed.query).get("v") or [None])[0]
+        elif len(parts) >= 2 and parts[0] in _PATH_PREFIXES:
+            candidate = parts[1]
+
+    if candidate and _ID_RE.match(candidate):
+        return candidate
+    raise ScriptError("invalid_url", f"유튜브 영상 링크로 읽을 수 없습니다: {url!r}")
+
+
+def canonical_url(video_id: str) -> str:
+    return f"https://youtu.be/{video_id}"
+
+
+def detect_format(meta: dict, url: str) -> str:
+    if "/shorts/" in url:
+        return "shorts"
+    duration, width, height = meta.get("duration"), meta.get("width"), meta.get("height")
+    if duration and width and height and duration <= SHORTS_MAX_SEC and height > width:
+        return "shorts"
+    return "long"
+
+
+# --- 네트워크 (테스트에서 교체) -------------------------------------------------
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def clean_error(message: str) -> str:
+    """yt-dlp 에러에서 색상 코드, 'ERROR:' 머리말, 버그 신고 안내를 뗀다."""
+    text = _ANSI_RE.sub("", message).strip()
+    text = re.sub(r"^ERROR:\s*", "", text)
+    return re.split(r";\s*please report this issue", text)[0].strip()
+
+
+class _QuietLogger:
+    """yt-dlp가 stderr에 직접 찍지 않게 한다 (에러는 예외로 받아 JSON으로 낸다)."""
+
+    def debug(self, msg): pass
+    def info(self, msg): pass
+    def warning(self, msg): pass
+    def error(self, msg): pass
+
+
+def ytdlp_options(proxy: str | None, **extra: Any) -> dict[str, Any]:
+    opts: dict[str, Any] = {"quiet": True, "no_warnings": True, "logger": _QuietLogger(), **extra}
+    if proxy:
+        opts["proxy"] = proxy
+    return opts
+
+
+def classify_ytdlp_error(message: str) -> str:
+    m = message.lower()
+    if "proxy" in m:
+        return "proxy_failed"
+    if "confirm your age" in m or "age-restricted" in m:
+        return "age_restricted"
+    if "not a bot" in m or "429" in m or "too many requests" in m:
+        return "blocked"
+    if "private video" in m or "members-only" in m or "join this channel" in m:
+        return "private"
+    if "unavailable" in m or "removed" in m or "not available" in m:
+        return "unavailable"
+    return "fetch_failed"
+
+
+_YTDLP_MESSAGES = {
+    "private": "비공개 또는 멤버십 전용 영상이라 볼 수 없습니다.",
+    "unavailable": "삭제됐거나 볼 수 없는 영상입니다.",
+    "age_restricted": "연령 제한 영상이라 로그인 없이는 수집할 수 없습니다.",
+    "blocked": BLOCKED_MESSAGE,
+    "proxy_failed": "YT_PROXY에 지정한 프록시에 연결할 수 없습니다. 주소·포트·계정을 확인하세요.",
+}
+
+
+def ytdlp_error(e: Exception, action: str) -> ScriptError:
+    code = classify_ytdlp_error(str(e))
+    return ScriptError(code, _YTDLP_MESSAGES.get(code, f"{action} 실패: {clean_error(str(e))}"))
+
+
+def get_metadata(video_id: str, proxy: str | None) -> dict:
+    import yt_dlp
+
+    try:
+        with yt_dlp.YoutubeDL(ytdlp_options(proxy, skip_download=True)) as ydl:
+            info = ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False)
+    except yt_dlp.utils.DownloadError as e:
+        raise ytdlp_error(e, "메타데이터 수집") from e
+    return {"id": video_id, **{k: info.get(k) for k in _META_KEYS}}
+
+
+def pick_transcript(transcript_list):
+    """선호 순서대로 자막 트랙을 고른다. 없으면 None."""
+    from youtube_transcript_api import NoTranscriptFound
+
+    for finder, langs in [
+        (transcript_list.find_manually_created_transcript, ["ko"]),
+        (transcript_list.find_manually_created_transcript, ["en"]),
+        (transcript_list.find_generated_transcript, ["ko"]),
+        (transcript_list.find_generated_transcript, ["en"]),
+    ]:
+        try:
+            return finder(langs)
+        except NoTranscriptFound:
+            pass
+    tracks = list(transcript_list)
+    manual = [t for t in tracks if not t.is_generated]
+    return (manual or tracks or [None])[0]
+
+
+def get_transcript(video_id: str, proxy: str | None) -> dict | None:
+    import youtube_transcript_api as yta
+    from youtube_transcript_api.proxies import GenericProxyConfig
+
+    config = GenericProxyConfig(http_url=proxy, https_url=proxy) if proxy else None
+    try:
+        track = pick_transcript(yta.YouTubeTranscriptApi(proxy_config=config).list(video_id))
+        if track is None:
+            return None
+        fetched = track.fetch()
+    except (yta.TranscriptsDisabled, yta.NoTranscriptFound):
+        return None
+    except yta.RequestBlocked as e:  # IpBlocked 포함
+        raise ScriptError("blocked", BLOCKED_MESSAGE) from e
+    except (yta.VideoUnavailable, yta.VideoUnplayable) as e:
+        raise ScriptError("unavailable", _YTDLP_MESSAGES["unavailable"]) from e
+    except yta.AgeRestricted as e:
+        raise ScriptError("age_restricted", _YTDLP_MESSAGES["age_restricted"]) from e
+    except yta.CouldNotRetrieveTranscript as e:
+        raise ScriptError("transcript_failed", f"자막 수집 실패: {type(e).__name__}") from e
+
+    return {
+        "source": "auto" if track.is_generated else "cc",
+        "language": track.language_code,
+        "segments": [
+            {"start": round(s.start, 2), "dur": round(s.duration, 2), "text": s.text}
+            for s in fetched.snippets
+        ],
+    }
+
+
+# --- 수집 흐름 ----------------------------------------------------------------
+
+def raw_path(video_id: str) -> Path:
+    return workspace_dir("raw", f"{video_id}.json")
+
+
+def load_raw(video_id: str) -> dict:
+    path = raw_path(video_id)
+    if not path.exists():
+        raise ScriptError("raw_not_found", f"수집 데이터가 없습니다: {video_id} (먼저 fetch)")
+    return json.loads(path.read_text("utf-8"))
+
+
+def save_raw(data: dict) -> Path:
+    path = raw_path(data["id"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(path)
+    return path
+
+
+def _check_duplicates(video_id: str, category: str, role: str) -> tuple[dict | None, list[str]]:
+    refstore.existing_category_dir(category)
+    found = refstore.find_video(video_id)
+    conflict = [f for f in found if f["role"] != role]
+    if conflict:
+        f = conflict[0]
+        raise ScriptError(
+            "role_conflict",
+            f"이 영상은 이미 {f['category']} 카테고리에 {f['role']}로 등록돼 있습니다. "
+            "같은 영상을 ref와 mine에 동시에 넣을 수 없습니다.",
+            md=f["md"],
+        )
+    same = next((f for f in found if f["category"] == category), None)
+    others = [f["category"] for f in found if f["category"] != category]
+    return same, others
+
+
+def _summary(data: dict, status: str, also_in: list[str]) -> dict:
+    meta, transcript = data["meta"], data["transcript"] or {}
+    return {
+        "id": data["id"],
+        "status": status,
+        "raw": raw_path(data["id"]).relative_to(work_root()).as_posix(),
+        "title": meta.get("title"),
+        "channel": meta.get("channel"),
+        "duration_sec": meta.get("duration"),
+        "format": data["format"],
+        "transcript_source": transcript.get("source"),
+        "language": transcript.get("language"),
+        "segments": len(transcript.get("segments", [])),
+        "also_in": also_in,
+    }
+
+
+def fetch(url: str, category: str | None = None, role: str = "ref", force: bool = False) -> dict:
+    video_id = parse_video_id(url)
+
+    also_in: list[str] = []
+    if category:
+        same, also_in = _check_duplicates(video_id, category, role)
+        if same and not force:
+            return {"id": video_id, "status": "exists", "md": same["md"], "also_in": also_in}
+
+    path = raw_path(video_id)
+    if path.exists() and not force:
+        data, status = load_raw(video_id), "cached"
+    else:
+        proxy = os.environ.get("YT_PROXY") or None
+        meta = get_metadata(video_id, proxy)
+        transcript = get_transcript(video_id, proxy)
+        data = {
+            "id": video_id,
+            "url": canonical_url(video_id),
+            "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "format": detect_format(meta, url),
+            "meta": meta,
+            "transcript": transcript,
+        }
+        save_raw(data)
+        status = "fetched"
+
+    summary = _summary(data, status, also_in)
+    if not data["transcript"]:
+        raise ScriptError(
+            "no_transcript",
+            "이 영상에는 쓸 수 있는 자막이 없습니다. 음성 인식(STT)으로 만들 수 있습니다: "
+            f"python -m scripts.stt {video_id}",
+            **{k: summary[k] for k in ["id", "raw", "title", "duration_sec", "format"]},
+        )
+    return summary
+
+
+def main(argv: list[str]) -> Any:
+    parser = ArgParser(prog="python -m scripts.fetch")
+    parser.add_argument("url")
+    parser.add_argument("--category")
+    parser.add_argument("--role", choices=["ref", "mine"], default="ref")
+    parser.add_argument("--force", action="store_true")
+    args = parser.parse_args(argv)
+    return fetch(args.url, args.category, args.role, args.force)
+
+
+if __name__ == "__main__":
+    run(main)

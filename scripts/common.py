@@ -25,11 +25,12 @@ _CATEGORY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 class ScriptError(Exception):
     """사용자에게 보여줄 수 있는, 예상된 실패."""
 
-    def __init__(self, code: str, message: str, exit_code: int = 1):
+    def __init__(self, code: str, message: str, exit_code: int = 1, **details: Any):
         super().__init__(message)
         self.code = code
         self.message = message
         self.exit_code = exit_code
+        self.details = details
 
 
 class ArgParser(argparse.ArgumentParser):
@@ -56,7 +57,7 @@ def run(main: Callable[[list[str]], Any], argv: list[str] | None = None) -> None
     try:
         result = main(args)
     except ScriptError as e:
-        emit({"error": e.code, "message": e.message})
+        emit({"error": e.code, "message": e.message, **e.details})
         sys.exit(e.exit_code)
     except Exception as e:  # noqa: BLE001 - 규약상 모든 실패를 JSON으로 돌려준다
         emit({"error": "internal", "message": f"{type(e).__name__}: {e}"})

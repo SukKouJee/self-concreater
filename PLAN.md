@@ -38,11 +38,11 @@
 ## Phase 2. 수집 (1~1.5일)
 
 작업
-- [ ] `fetch.py <url>`: video id 정규화(watch/shorts/youtu.be), yt-dlp 메타데이터, youtube-transcript-api 자막(ko → en → 자동생성 순), `workspace/raw/{id}.json`
-- [ ] 실패 유형 구분: `no_transcript`, `blocked`, `private`, `invalid_url`
-- [ ] `YT_PROXY` 지원
-- [ ] `stt.py` (선택 의존성, 없으면 친절한 에러)
-- [ ] 중복 검사: 이미 같은 카테고리에 있음 / ref·mine 충돌
+- [x] `fetch.py <url>`: video id 정규화(watch/shorts/youtu.be), yt-dlp 메타데이터, youtube-transcript-api 자막(ko → en → 자동생성 순), `workspace/raw/{id}.json`
+- [x] 실패 유형 구분: `no_transcript`, `blocked`, `private`, `invalid_url`
+- [x] `YT_PROXY` 지원
+- [x] `stt.py` (선택 의존성, 없으면 친절한 에러)
+- [x] 중복 검사: 이미 같은 카테고리에 있음 / ref·mine 충돌
 
 완료 조건
 - 테스트 링크 15개 중 자막 있는 영상은 모두 raw JSON 생성

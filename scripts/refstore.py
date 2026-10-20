@@ -189,7 +189,7 @@ def init_category(category: str) -> dict:
     return {"category": category, "path": _rel(cat), "created": created, "skipped": skipped}
 
 
-def _existing_category_dir(category: str) -> Path:
+def existing_category_dir(category: str) -> Path:
     cat = category_dir(category)
     if not cat.is_dir():
         raise ScriptError("category_not_found", f"카테고리가 없습니다: {category} (먼저 init)")
@@ -208,8 +208,20 @@ def _role_counts(cat: Path) -> tuple[int, int]:
 
 
 def count(category: str) -> dict:
-    ref, mine = _role_counts(_existing_category_dir(category))
+    ref, mine = _role_counts(existing_category_dir(category))
     return {"ref": ref, "mine": mine, "stage": stage_for(ref)}
+
+
+def find_video(video_id: str) -> list[dict]:
+    """모든 카테고리에서 videos/{video_id}.md를 찾는다."""
+    found = []
+    for path in sorted((work_root() / "refs").glob(f"ref_*/videos/{video_id}.md")):
+        found.append({
+            "category": path.parent.parent.name.removeprefix("ref_"),
+            "role": read_md(path)[0].get("role"),
+            "md": _rel(path),
+        })
+    return found
 
 
 def list_categories() -> list[dict]:
@@ -223,7 +235,7 @@ def list_categories() -> list[dict]:
 
 
 def update_stage(category: str) -> dict:
-    cat = _existing_category_dir(category)
+    cat = existing_category_dir(category)
     index = cat / "index.md"
     ref, mine = _role_counts(cat)
     text = _read_text(index)

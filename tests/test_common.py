@@ -46,6 +46,17 @@ def test_run_reports_script_error_as_json_with_nonzero_exit(capsys):
     }
 
 
+def test_run_includes_error_details(capsys):
+    def main(argv):
+        raise common.ScriptError("no_transcript", "자막 없음", raw="workspace/raw/x.json")
+
+    with pytest.raises(SystemExit):
+        common.run(main, [])
+    assert json.loads(capsys.readouterr().out) == {
+        "error": "no_transcript", "message": "자막 없음", "raw": "workspace/raw/x.json",
+    }
+
+
 def test_run_reports_unexpected_exception_as_internal_error(capsys):
     def main(argv):
         raise RuntimeError("boom")
