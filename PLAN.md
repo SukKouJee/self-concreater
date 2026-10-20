@@ -38,7 +38,8 @@
 ## Phase 2. 수집 (1~1.5일)
 
 작업
-- [x] `fetch.py <url>`: video id 정규화(watch/shorts/youtu.be), yt-dlp 메타데이터, youtube-transcript-api 자막(ko → en → 자동생성 순), `workspace/raw/{id}.json`
+- [x] `fetch.py <url>`: video id 정규화(watch/shorts/youtu.be), yt-dlp 메타데이터, youtube-transcript-api 자막(원어 → ko → en, 각각 수동 → 자동 순), `workspace/raw/{id}.json`
+- [x] 말이 거의 없는 영상 표시(`sparse`), 요청 간격(`YT_FETCH_INTERVAL`)
 - [x] 실패 유형 구분: `no_transcript`, `blocked`, `private`, `invalid_url`
 - [x] `YT_PROXY` 지원
 - [x] `stt.py` (선택 의존성, 없으면 친절한 에러)

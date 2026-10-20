@@ -6,8 +6,11 @@
 - --category를 주면 중복을 검사한다: 같은 카테고리·같은 role의 md가 있으면 건너뛰고(status: exists),
   다른 role로 이미 등록된 영상이면 role_conflict.
 - raw JSON이 이미 있으면 네트워크 없이 그대로 쓴다(status: cached). --force는 둘 다 무시하고 다시 받는다.
-- 자막 우선순위: 수동 ko → 수동 en → 자동 ko → 자동 en → 그 외 수동 → 그 외 자동
+- 자막 우선순위: 원어(수동 → 자동) → 수동 ko → 수동 en → 자동 ko → 자동 en → 그 외 수동 → 그 외 자동
+  (원어는 yt-dlp의 language. 번역 자막보다 원어 자동 자막이 분석에 맞다)
+- 초당 글자 수가 SPARSE_CHARS_PER_SEC 미만이면 sparse: true (말이 거의 없음, 자동 자막이 엉터리일 수 있음)
 - 프록시: YT_PROXY 환경변수 (예: http://user:pass@host:port)
+- 요청 간격: 네트워크 수집 사이에 최소 YT_FETCH_INTERVAL초(기본 3) 쉰다
 
 실패 코드: invalid_url, private, unavailable, age_restricted, blocked, proxy_failed, no_transcript,
           role_conflict, category_not_found, fetch_failed, transcript_failed
@@ -17,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -26,6 +30,10 @@ from scripts import refstore
 from scripts.common import ArgParser, ScriptError, run, work_root, workspace_dir
 
 SHORTS_MAX_SEC = 180
+# 공백 제외 글자 수 / 영상 길이(초)가 이보다 낮으면 말이 거의 없는 영상으로 본다
+SPARSE_CHARS_PER_SEC = 0.5
+# 연속 요청 간 최소 간격(초). 짧은 시간에 많이 요청하면 자막 요청이 IP 단위로 막힌다 (YT_FETCH_INTERVAL)
+FETCH_INTERVAL_SEC = 3.0
 
 BLOCKED_MESSAGE = (
     "YouTube가 이 네트워크의 요청을 막았습니다. 잠시 후 다시 시도하거나, "
@@ -39,7 +47,7 @@ _PATH_PREFIXES = ("shorts", "embed", "live", "v")
 _META_KEYS = [
     "title", "channel", "channel_id", "uploader", "duration", "width", "height",
     "upload_date", "view_count", "like_count", "comment_count", "description",
-    "tags", "chapters",
+    "tags", "chapters", "language",
 ]
 
 
@@ -150,11 +158,17 @@ def get_metadata(video_id: str, proxy: str | None) -> dict:
     return {"id": video_id, **{k: info.get(k) for k in _META_KEYS}}
 
 
-def pick_transcript(transcript_list):
+def pick_transcript(transcript_list, original: str | None = None):
     """선호 순서대로 자막 트랙을 고른다. 없으면 None."""
     from youtube_transcript_api import NoTranscriptFound
 
-    for finder, langs in [
+    preferred = []
+    if original:
+        preferred = [
+            (transcript_list.find_manually_created_transcript, [original]),
+            (transcript_list.find_generated_transcript, [original]),
+        ]
+    for finder, langs in preferred + [
         (transcript_list.find_manually_created_transcript, ["ko"]),
         (transcript_list.find_manually_created_transcript, ["en"]),
         (transcript_list.find_generated_transcript, ["ko"]),
@@ -169,13 +183,13 @@ def pick_transcript(transcript_list):
     return (manual or tracks or [None])[0]
 
 
-def get_transcript(video_id: str, proxy: str | None) -> dict | None:
+def get_transcript(video_id: str, proxy: str | None, original: str | None = None) -> dict | None:
     import youtube_transcript_api as yta
     from youtube_transcript_api.proxies import GenericProxyConfig
 
     config = GenericProxyConfig(http_url=proxy, https_url=proxy) if proxy else None
     try:
-        track = pick_transcript(yta.YouTubeTranscriptApi(proxy_config=config).list(video_id))
+        track = pick_transcript(yta.YouTubeTranscriptApi(proxy_config=config).list(video_id), original)
         if track is None:
             return None
         fetched = track.fetch()
@@ -201,6 +215,21 @@ def get_transcript(video_id: str, proxy: str | None) -> dict | None:
 
 
 # --- 수집 흐름 ----------------------------------------------------------------
+
+def _wait_turn() -> None:
+    """마지막 네트워크 수집 이후 최소 간격이 지날 때까지 기다린다 (프로세스 간 공유)."""
+    interval = float(os.environ.get("YT_FETCH_INTERVAL") or FETCH_INTERVAL_SEC)
+    stamp = workspace_dir(".last_fetch")
+    if stamp.exists():
+        try:
+            wait = float(stamp.read_text("utf-8")) + interval - time.time()
+        except ValueError:
+            wait = 0
+        if wait > 0:
+            time.sleep(wait)
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.write_text(str(time.time()), encoding="utf-8")
+
 
 def raw_path(video_id: str) -> Path:
     return workspace_dir("raw", f"{video_id}.json")
@@ -239,8 +268,17 @@ def _check_duplicates(video_id: str, category: str, role: str) -> tuple[dict | N
     return same, others
 
 
+def speech_density(segments: list[dict], duration: float | None) -> tuple[float | None, bool]:
+    """(초당 글자 수, sparse 여부). 길이를 모르면 (None, False)."""
+    if not duration:
+        return None, False
+    chars = sum(len(re.sub(r"\s", "", s["text"])) for s in segments)
+    return round(chars / duration, 2), chars / duration < SPARSE_CHARS_PER_SEC
+
+
 def _summary(data: dict, status: str, also_in: list[str]) -> dict:
     meta, transcript = data["meta"], data["transcript"] or {}
+    cps, sparse = speech_density(transcript.get("segments", []), meta.get("duration"))
     return {
         "id": data["id"],
         "status": status,
@@ -252,6 +290,8 @@ def _summary(data: dict, status: str, also_in: list[str]) -> dict:
         "transcript_source": transcript.get("source"),
         "language": transcript.get("language"),
         "segments": len(transcript.get("segments", [])),
+        "chars_per_sec": cps,
+        "sparse": sparse,
         "also_in": also_in,
     }
 
@@ -270,8 +310,9 @@ def fetch(url: str, category: str | None = None, role: str = "ref", force: bool 
         data, status = load_raw(video_id), "cached"
     else:
         proxy = os.environ.get("YT_PROXY") or None
+        _wait_turn()
         meta = get_metadata(video_id, proxy)
-        transcript = get_transcript(video_id, proxy)
+        transcript = get_transcript(video_id, proxy, meta.get("language"))
         data = {
             "id": video_id,
             "url": canonical_url(video_id),

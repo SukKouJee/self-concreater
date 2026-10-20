@@ -1,3 +1,23 @@
 # 테스트용 링크 (PLAN.md 참고): 같은 카테고리 쇼츠 10~12개 + 롱폼 3개
 # 한 줄에 하나. watch / shorts / youtu.be 형식 모두 가능. '#'으로 시작하는 줄은 무시한다.
 # 형식: <링크>  [# 메모]
+# 카테고리: mukbang (2026-10-20 유튜브 검색 "먹방 쇼츠" / "먹방" 4~20분에서 수집)
+
+# 쇼츠 12
+https://www.youtube.com/shorts/yr1S2AHebcU  # 안성탕면 5봉지 먹방
+https://www.youtube.com/shorts/21ct92VlmsM  # 나라별 먹방 특
+https://www.youtube.com/shorts/eFa_VFnZhno  # 사이즈별 버블티 먹방
+https://www.youtube.com/shorts/WJqWquKkWK4  # 여고생 먹방러의 조회수 100만 치트키
+https://www.youtube.com/shorts/MoJipkzcVJM  # 통장상태에 따라 먹방은
+https://www.youtube.com/shorts/G8JCzlT-3RQ  # 급식 1분 먹방
+https://www.youtube.com/shorts/hkEyv66lyBs  # 멕시카나 고추화삭 먹방
+https://www.youtube.com/shorts/5QklR_CIr1Y  # 한우휴게소 30분 2000kcal
+https://www.youtube.com/shorts/n6_YTMx9288  # 매운맛 5단계 챌린지
+https://www.youtube.com/shorts/tojfRy67hn4  # 마라로제찜닭
+https://www.youtube.com/shorts/-C8U1fizcms  # 밥과 김치 꿀조합
+https://www.youtube.com/shorts/9VUCJVLduFw  # 엽기떡볶이 ASMR (말 없음 → no_transcript 예상)
+
+# 롱폼 3
+https://www.youtube.com/watch?v=GzAECmhO9b8  # 문복희 크림진짬뽕 허니콤보
+https://www.youtube.com/watch?v=Y0AvnFaLOAo  # 상여자들 매운짬뽕 10단계 도전
+https://www.youtube.com/watch?v=9hNqOiUY4DY  # 상해기 동네중국집 짜장면

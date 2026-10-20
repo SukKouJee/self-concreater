@@ -75,7 +75,7 @@ Claude Code 안에서:
 | 스크립트 | 하위 명령 |
 |---|---|
 | `refstore` | `scaffold`, `init <cat>`, `categories`, `count <cat>`, `update-stage <cat>` |
-| `fetch` | `<url> [--category <cat>] [--role ref\|mine] [--force]` → `workspace/raw/{id}.json` |
+| `fetch` | `<url> [--category <cat>] [--role ref\|mine] [--force]` → `workspace/raw/{id}.json`. 요약에 `chars_per_sec`, `sparse`(말이 거의 없음) 포함 |
 | `stt` | `<video_id> [--force]` — 자막 없는 영상 음성 인식 (선택: `pip install faster-whisper`, 모델 `YT_STT_MODEL`, 기본 small) |
 
 `fetch` 실패 코드: `invalid_url`, `private`, `unavailable`, `age_restricted`, `blocked`, `proxy_failed`, `no_transcript`, `role_conflict`, `category_not_found`, `fetch_failed`, `transcript_failed`
@@ -93,5 +93,8 @@ pytest tests/
 - 자막 수집이 차단되면 `YT_PROXY` 환경변수로 프록시를 지정합니다 (예: `http://user:pass@host:port`).
 - 차단 확인 기록:
   - 2026-10-20, 개발 PC(Windows, 가정용 회선): 프록시 없이 메타데이터·자막 수집 정상. 차단 없음.
-  - 클라우드·데이터센터 IP에서는 자막 요청이 막히는 경우가 많습니다. 그때 `blocked` 에러와 프록시 안내가 나옵니다.
+  - 같은 날 15:40경: 약 10분 사이 자막 요청 30여 회 후 **자막 다운로드만 IP 차단**(`IpBlocked`, timedtext HTTP 429).
+    메타데이터·자막 목록 조회는 계속 정상. `blocked` 에러와 프록시 안내가 실제로 나오는 것 확인.
+    → 요청 사이 최소 간격(`YT_FETCH_INTERVAL`, 기본 3초)을 넣었습니다. 차단되면 시간을 두고 다시 시도하거나 `YT_PROXY`를 씁니다.
+  - 클라우드·데이터센터 IP에서는 자막 요청이 처음부터 막히는 경우가 많습니다.
 - 영상 원본은 360p 이하로 받아 프레임 추출 직후 삭제합니다. 개인 분석 용도로만 사용합니다.

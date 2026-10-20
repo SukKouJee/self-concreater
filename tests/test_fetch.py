@@ -11,10 +11,11 @@ META = {
     "id": VID, "title": "제목", "channel": "채널", "channel_id": "UC1",
     "duration": 58, "width": 1080, "height": 1920, "upload_date": "20260101",
     "view_count": 10, "like_count": 1, "comment_count": 0,
-    "description": "설명", "tags": ["a"], "chapters": None,
+    "description": "설명", "tags": ["a"], "chapters": None, "language": "ko",
 }
 TRANSCRIPT = {"source": "cc", "language": "ko",
-              "segments": [{"start": 0.0, "dur": 1.5, "text": "안녕하세요"}]}
+              "segments": [{"start": 0.0, "dur": 1.5, "text": "안녕하세요 오늘은 라면 다섯 봉지를 먹어 볼게요"},
+                           {"start": 2.0, "dur": 3.0, "text": "물은 많이 넣고 스프는 조금만 넣는 게 제 비법입니다"}]}
 
 
 @pytest.fixture
@@ -34,12 +35,15 @@ def net(monkeypatch):
         calls["proxy"].append(proxy)
         return dict(META, id=video_id)
 
-    def get_transcript(video_id, proxy):
+    def get_transcript(video_id, proxy, original=None):
         calls["transcript"] += 1
+        calls["original"] = original
         return calls.get("transcript_value", TRANSCRIPT)
 
     monkeypatch.setattr(fetch, "get_metadata", get_metadata)
     monkeypatch.setattr(fetch, "get_transcript", get_transcript)
+    calls["sleeps"] = []
+    monkeypatch.setattr(fetch.time, "sleep", lambda s: calls["sleeps"].append(s))
     return calls
 
 
@@ -154,6 +158,21 @@ def test_pick_transcript_order(tracks, expected):
     assert got == expected
 
 
+@pytest.mark.parametrize("original, tracks, expected", [
+    # 원어(ko) 자동 자막이 번역된 수동 en보다 우선
+    ("ko", [("en", False), ("ja", False), ("ko", True)], ("ko", True)),
+    # 원어 수동 > 원어 자동
+    ("ja", [("ja", True), ("ja", False), ("ko", False)], ("ja", False)),
+    # 원어 트랙이 없으면 기본 순서
+    ("ja", [("en", False), ("ko", True)], ("en", False)),
+    (None, [("en", False), ("ko", True)], ("en", False)),
+])
+def test_pick_transcript_prefers_original_language(original, tracks, expected):
+    picked = fetch.pick_transcript(FakeList([FakeTrack(*t) for t in tracks]), original)
+    got = None if picked is None else (picked.language_code, picked.is_generated)
+    assert got == expected
+
+
 # --- fetch 흐름 ---------------------------------------------------------------
 
 def test_fetch_writes_raw_json(home, net):
@@ -163,12 +182,33 @@ def test_fetch_writes_raw_json(home, net):
     assert raw["url"] == f"https://youtu.be/{VID}"
     assert raw["format"] == "shorts"
     assert raw["meta"]["title"] == "제목"
-    assert raw["transcript"]["segments"][0]["text"] == "안녕하세요"
+    assert raw["transcript"]["segments"][0]["text"].startswith("안녕하세요")
     assert out == {
         "id": VID, "status": "fetched", "raw": f"workspace/raw/{VID}.json",
         "title": "제목", "channel": "채널", "duration_sec": 58, "format": "shorts",
-        "transcript_source": "cc", "language": "ko", "segments": 1, "also_in": [],
+        "transcript_source": "cc", "language": "ko", "segments": 2,
+        "chars_per_sec": 0.71, "sparse": False, "also_in": [],
     }
+
+
+def test_fetch_passes_original_language(home, net):
+    fetch.fetch(VID)
+    assert net["original"] == "ko"
+
+
+def test_sparse_transcript_is_flagged(home, net):
+    net["transcript_value"] = {"source": "auto", "language": "en",
+                               "segments": [{"start": 1.0, "dur": 1.0, "text": "Ki"},
+                                            {"start": 9.0, "dur": 1.0, "text": "M ah"}]}
+    out = fetch.fetch(VID)
+    assert out["sparse"] is True
+    assert out["chars_per_sec"] == 0.09
+
+
+@pytest.mark.parametrize("chars, duration, sparse", [(0, 30, True), (14, 30, True), (15, 30, False), (10, None, False)])
+def test_is_sparse(chars, duration, sparse):
+    segments = [{"start": 0, "dur": 1, "text": "가" * chars}]
+    assert fetch.speech_density(segments, duration)[1] is sparse
 
 
 def test_fetch_uses_cache_without_network(home, net):
@@ -274,3 +314,30 @@ def test_main_cli_options(home, net):
     with pytest.raises(ScriptError) as exc:
         fetch.main([VID, "--role", "other"])
     assert exc.value.code == "usage"
+
+
+# --- 요청 간격 ----------------------------------------------------------------
+
+def test_network_requests_are_spaced(home, net, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(fetch.time, "time", lambda: clock[0])
+    fetch.fetch(VID)
+    assert net["sleeps"] == []
+    clock[0] += 1.0
+    fetch.fetch(VID, force=True)
+    assert net["sleeps"] == [pytest.approx(2.0)]
+
+
+def test_cache_hits_do_not_wait(home, net):
+    fetch.fetch(VID)
+    fetch.fetch(VID)
+    assert net["sleeps"] == []
+
+
+def test_interval_from_env(home, net, monkeypatch):
+    monkeypatch.setenv("YT_FETCH_INTERVAL", "10")
+    clock = [1000.0]
+    monkeypatch.setattr(fetch.time, "time", lambda: clock[0])
+    fetch.fetch(VID)
+    fetch.fetch(VID, force=True)
+    assert net["sleeps"] == [pytest.approx(10.0)]
