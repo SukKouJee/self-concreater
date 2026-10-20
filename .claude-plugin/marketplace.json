@@ -1,0 +1,15 @@
+{
+  "name": "nahon-local",
+  "description": "nahon 개인 크리에이터 도구 로컬 마켓플레이스",
+  "owner": {
+    "name": "nahon"
+  },
+  "plugins": [
+    {
+      "name": "yt-coach",
+      "source": "./",
+      "description": "직접 모은 유튜브 레퍼런스를 분석해 콘텐츠 모티브·기획·진단·일일 미션을 주는 개인 크리에이터용 플러그인",
+      "version": "0.1.0"
+    }
+  ]
+}

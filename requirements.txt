@@ -1,0 +1,10 @@
+pyyaml>=6.0
+yt-dlp>=2025.1.1
+youtube-transcript-api>=1.0
+scenedetect>=0.6.4
+opencv-python-headless>=4.9
+numpy>=1.26
+scikit-learn>=1.4
+pytest>=8.0
+# 선택: 자막이 없을 때 STT (stt.py)
+# faster-whisper>=1.0

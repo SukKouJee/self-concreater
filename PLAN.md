@@ -9,12 +9,12 @@
 ## Phase 0. 뼈대 (0.5일)
 
 작업
-- [ ] `.claude-plugin/plugin.json` (name: yt-coach, version 0.1.0)
-- [ ] `commands/` 8개 파일: 프런트매터(description, argument-hint)만, 본문은 "미구현" 안내
-- [ ] `templates/`: video.md, index.md, techniques.md, profile.md, mission.md, thresholds.json
-- [ ] `scripts/` 패키지 구조, `requirements.txt`, `scripts/common.py`(경로·JSON 출력·에러 규약)
-- [ ] `README.md` 커맨드 표, 설치 방법 (로컬 마켓플레이스 등록)
-- [ ] `tests/` pytest 설정
+- [x] `.claude-plugin/plugin.json` (name: yt-coach, version 0.1.0)
+- [x] `commands/` 8개 파일: 프런트매터(description, argument-hint)만, 본문은 "미구현" 안내
+- [x] `templates/`: video.md, index.md, techniques.md, profile.md, mission.md, thresholds.json
+- [x] `scripts/` 패키지 구조, `requirements.txt`, `scripts/common.py`(경로·JSON 출력·에러 규약)
+- [x] `README.md` 커맨드 표, 설치 방법 (로컬 마켓플레이스 등록)
+- [x] `tests/` pytest 설정
 
 완료 조건
 - 로컬에 플러그인 설치 후 8개 커맨드가 목록에 보인다
