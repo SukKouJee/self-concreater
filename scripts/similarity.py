@@ -1,0 +1,282 @@
+"""진단: 내 콘텐츠(mine 영상 md · draft · 대본)를 아키타입과 축별로 비교하고 결과를 mine/에 쓴다.
+
+사용법 (작업 폴더에서):
+  python -m scripts.similarity compare <category> <target.md>
+  python -m scripts.similarity save <category> <target.md> --notes <json>     → mine/<name>.md
+  python -m scripts.similarity intentional <category> <name> <gap-key> [--off]
+
+- 비교 대상: refs/ref_<cat>/videos/<id>.md(role: mine) 또는 drafts/*.md. ref 영상은 대상이 아니다
+- 근접도(0~1, 단일 종합 점수 없음)
+  structure·pacing: 아키타입 중심까지 거리가 그 아키타입 구성 영상들 중 몇 %보다 가까운가
+  hook·narrative: 구성 영상 중 같은 값의 비율 / title: 패턴 자카드 평균
+- 갭 키: structure:<label>(비중 차 ≥ 0.1), hook, narrative(아키타입의 50% 이상 우세 값과 다름), pacing:avg_cut(평균 컷 ±30%)
+- intentional로 표시한 갭은 이후 진단·미션에서 뺀다. 진단은 아키타입을 바꾸지 않는다
+notes JSON: {"summary", "gaps": {<gap-key>: 설명}, "actions": [1~3개]}
+"""
+from __future__ import annotations
+
+import json
+import math
+from collections import Counter
+from datetime import date
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+from scripts import features, refstore
+from scripts.common import ArgParser, ScriptError, run, work_root, workspace_dir
+
+STRUCTURE_GAP = 0.1
+PACING_GAP = 0.3
+DOMINANT_SHARE = 0.5      # hook·narrative는 아키타입 안에서 이 비율 이상인 값이 있을 때만 '기준'으로 본다
+# 이 정도 거리 차이는 같은 것으로 본다(촘촘한 아키타입에서 미세한 차이로 근접도가 떨어지지 않게)
+DISTANCE_TOLERANCE = {"structure": 0.05, "pacing": 0.1}
+
+
+# --- 대상 · 아키타입 ---------------------------------------------------------------
+
+def _load_typify(category: str) -> dict:
+    path = workspace_dir("typify", f"{category}.json")
+    if not path.exists():
+        raise ScriptError("no_typify_result", f"유형화 결과가 없습니다. 먼저 /yt-typify {category}")
+    result = json.loads(path.read_text("utf-8"))
+    if not result.get("archetypes"):
+        raise ScriptError("no_archetype", "비교할 아키타입이 없습니다(구조가 비슷한 ref 묶음이 아직 없음).")
+    return result
+
+
+def _names(category: str) -> dict:
+    fm, _ = refstore.read_md(refstore.existing_category_dir(category) / "index.md")
+    return {a["id"]: a.get("name") for a in fm.get("archetypes") or []}
+
+
+def _diag_path(name: str) -> Path:
+    return work_root() / "mine" / f"{name}.md"
+
+
+def _target(path: Path) -> dict:
+    path = Path(path)
+    if not path.is_absolute():
+        path = work_root() / path
+    if not path.exists():
+        raise ScriptError("target_not_found", f"진단할 파일이 없습니다: {path}")
+    fm, _ = refstore.read_md(path)
+    if fm.get("role") == "ref":
+        raise ScriptError("not_mine", "ref 영상은 진단 대상이 아닙니다. 내 영상은 /yt-add <cat> mine <링크>로 넣으세요.")
+    if not fm.get("sections"):
+        raise ScriptError("no_sections", "섹션 정보가 없어 비교할 수 없습니다.")
+    name = str(fm.get("id") or path.stem) if fm.get("role") == "mine" else path.stem
+    return {"name": name, "path": path, "fm": fm, "rel": path.relative_to(work_root()).as_posix()}
+
+
+# --- 근접도 -----------------------------------------------------------------------
+
+def _percentile(target_d: float, member_ds: list[float], tolerance: float) -> float:
+    return round(sum(1 for d in member_ds if d >= target_d - tolerance) / len(member_ds), 2)
+
+
+def _vector_proximity(axis: str, target_fm: dict, member_fms: list[dict]) -> float | None:
+    vec = features.VECTORS[axis](target_fm)
+    members = [v for v in (features.VECTORS[axis](fm) for fm in member_fms) if v is not None]
+    if vec is None or not members:
+        return None
+    X = np.array(members)
+    center = X.mean(axis=0)
+    return _percentile(float(np.linalg.norm(np.array(vec) - center)),
+                       [float(np.linalg.norm(x - center)) for x in X], DISTANCE_TOLERANCE[axis])
+
+
+def _share(value: Any, values: list[Any]) -> float:
+    return round(sum(1 for v in values if v == value) / len(values), 2)
+
+
+def _title_proximity(target_fm: dict, member_fms: list[dict]) -> float:
+    t = set(features.title_patterns(str(target_fm.get("title") or "")))
+    scores = []
+    for fm in member_fms:
+        m = set(features.title_patterns(str(fm.get("title") or "")))
+        scores.append(1.0 if not (t | m) else len(t & m) / len(t | m))
+    return round(float(np.mean(scores)), 2)
+
+
+def proximities(target_fm: dict, member_fms: list[dict]) -> dict:
+    pacing = _vector_proximity("pacing", target_fm, member_fms)
+    return {
+        "structure": {"proximity": _vector_proximity("structure", target_fm, member_fms)},
+        "hook": {"proximity": _share(target_fm.get("hook_type"), [fm.get("hook_type") for fm in member_fms])},
+        "narrative": {"proximity": _share(target_fm.get("narrative_type"),
+                                          [fm.get("narrative_type") for fm in member_fms])},
+        "title": {"proximity": _title_proximity(target_fm, member_fms)},
+        "pacing": {"proximity": pacing, **({"note": "컷 정보 없음"} if pacing is None else {})},
+    }
+
+
+# --- 갭 ---------------------------------------------------------------------------
+
+def _ratios(fm: dict) -> dict:
+    vec = features.structure_vec(fm)
+    return {l: vec[features.STRUCTURE_FIELDS.index(f"share:{l}")] for l in features.LABELS}
+
+
+def gaps(target_fm: dict, archetype: dict, member_fms: list[dict]) -> list[dict]:
+    found = []
+    ratios = _ratios(target_fm)
+    for label in features.LABELS:
+        t, a = round(ratios[label], 2), archetype["mean_ratio"].get(label, 0.0)
+        if abs(t - a) >= STRUCTURE_GAP:
+            found.append({"key": f"structure:{label}", "target": t, "archetype": a})
+    for axis, field in (("hook", "hook_type"), ("narrative", "narrative_type")):
+        dominant, count = Counter(fm.get(field) for fm in member_fms).most_common(1)[0]
+        if count / len(member_fms) >= DOMINANT_SHARE and target_fm.get(field) != dominant:
+            found.append({"key": axis, "target": target_fm.get(field), "archetype": dominant})
+    t_cut = (target_fm.get("pacing") or {}).get("avg_cut_sec")
+    a_cut = (archetype.get("pacing") or {}).get("avg_cut_sec")
+    if t_cut and a_cut and abs(math.log(t_cut / a_cut)) >= math.log(1 + PACING_GAP):
+        found.append({"key": "pacing:avg_cut", "target": t_cut, "archetype": a_cut})
+    return found
+
+
+# --- compare ----------------------------------------------------------------------
+
+def _intentional(name: str) -> list[str]:
+    path = _diag_path(name)
+    return list(refstore.read_md(path)[0].get("intentional") or []) if path.exists() else []
+
+
+def compare(category: str, target_path: Path) -> dict:
+    typify = _load_typify(category)
+    names = _names(category)
+    target = _target(target_path)
+    by_id = {r["id"]: r["fm"] for r in features.load_videos(category)}
+
+    scored = []
+    for arc in typify["archetypes"]:
+        member_fms = [by_id[m] for m in arc["members"] if m in by_id]
+        if member_fms:
+            scored.append((arc, member_fms, proximities(target["fm"], member_fms)))
+    if not scored:
+        raise ScriptError("no_archetype", "아키타입 구성 영상을 찾을 수 없습니다. /yt-typify를 다시 실행하세요.")
+    arc, member_fms, axes = max(scored, key=lambda s: (s[2]["structure"]["proximity"] or 0))
+
+    intentional = _intentional(target["name"])
+    all_gaps = gaps(target["fm"], arc, member_fms)
+    return {
+        "category": category,
+        "target": {"name": target["name"], "path": target["rel"], "title": target["fm"].get("title"),
+                   "kind": "video" if target["fm"].get("role") == "mine" else target["fm"].get("status", "draft")},
+        "preliminary": typify["status"] != "formal",
+        "nearest": {"id": arc["id"], "name": names.get(arc["id"]), "skeleton": arc["skeleton"],
+                    "mean_ratio": arc["mean_ratio"], "pacing": arc["pacing"]},
+        "axes": axes,
+        "others": [{"id": a["id"], "name": names.get(a["id"]), "structure": p["structure"]["proximity"]}
+                   for a, _, p in scored if a["id"] != arc["id"]],
+        "target_sequence": " → ".join(features.sequence(target["fm"])),
+        "gaps": [g for g in all_gaps if g["key"] not in intentional],
+        "intentional": intentional,
+    }
+
+
+# --- save · intentional ------------------------------------------------------------
+
+def _pct(x: float | None) -> str:
+    return "-" if x is None else f"{round(x * 100)}%"
+
+
+def _memo(path: Path) -> str:
+    if not path.exists():
+        return ""
+    body = refstore.read_md(path)[1].replace("\r\n", "\n")
+    idx = body.find("## 내 메모")
+    return body[idx + len("## 내 메모"):].lstrip("\n") if idx >= 0 else ""
+
+
+def save(category: str, target_path: Path, notes_path: Path) -> dict:
+    result = compare(category, target_path)
+    try:
+        notes = json.loads(Path(notes_path).read_text("utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        raise ScriptError("invalid_notes", f"notes JSON을 읽을 수 없습니다: {e}") from e
+    gap_notes = notes.get("gaps") or {}
+    missing = [g["key"] for g in result["gaps"] if not str(gap_notes.get(g["key"]) or "").strip()]
+    actions = [a for a in notes.get("actions") or [] if str(a).strip()]
+    if missing or not str(notes.get("summary") or "").strip() or not 1 <= len(actions) <= 3:
+        raise ScriptError("invalid_notes", "요약, 모든 갭의 설명, 다음 행동 1~3개가 필요합니다"
+                          + (f" (빠진 갭: {', '.join(missing)})" if missing else ""))
+
+    path = _diag_path(result["target"]["name"])
+    old = refstore.read_md(path)[0] if path.exists() else {}
+    prox = {axis: v["proximity"] for axis, v in result["axes"].items()}
+    history = list(old.get("history") or []) + [{"date": date.today().isoformat(),
+                                                 "nearest": result["nearest"]["id"], **prox}]
+    fm = {
+        "target": result["target"]["path"], "category": category, "date": date.today().isoformat(),
+        "nearest": {"id": result["nearest"]["id"], "name": result["nearest"]["name"]},
+        "proximity": prox, "gaps": [g["key"] for g in result["gaps"]],
+        "intentional": result["intentional"], "preliminary": result["preliminary"],
+        "history": history, "schema_version": 1,
+    }
+    near = result["nearest"]
+    lines = [f"# 진단: {result['target']['title'] or result['target']['name']}", "",
+             f"_{date.today().isoformat()} · 가장 가까운 아키타입 {near['id']} {near['name']}"
+             + (" · 예비 진단(ref 10개 미만)" if result["preliminary"] else "") + "_", "",
+             "## 요약", str(notes["summary"]).strip(), "",
+             "## 축별 근접도", f"내 골격: {result['target_sequence']} / 아키타입 골격: {near['skeleton']}", "",
+             "| 축 | 근접도 |", "|---|---|",
+             *[f"| {axis} | {_pct(v['proximity'])}{' (' + v['note'] + ')' if v.get('note') else ''} |"
+               for axis, v in result["axes"].items()], "",
+             "## 갭"]
+    lines += [f"- **{g['key']}** (나 {g['target']} / 아키타입 {g['archetype']}): {gap_notes[g['key']]}"
+              for g in result["gaps"]] or ["- 없음"]
+    lines += ["", "## 다음 행동", *[f"{i}. {a}" for i, a in enumerate(actions, 1)], ""]
+    if result["intentional"]:
+        lines += ["## 의도한 차이", *[f"- {k}" for k in result["intentional"]], ""]
+    lines += ["## 내 메모", ""]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(refstore.join_frontmatter(fm, "\n".join(lines) + _memo(path)).encode("utf-8"))
+    Path(notes_path).unlink(missing_ok=True)
+    return {"status": "saved", "path": path.relative_to(work_root()).as_posix(),
+            "nearest": fm["nearest"], "proximity": prox, "gaps": fm["gaps"]}
+
+
+def intentional(category: str, name: str, key: str, off: bool = False) -> dict:
+    refstore.existing_category_dir(category)
+    path = _diag_path(name)
+    if not path.exists():
+        raise ScriptError("diagnosis_not_found", f"진단 기록이 없습니다: mine/{name}.md (먼저 진단)")
+    keys = list(refstore.read_md(path)[0].get("intentional") or [])
+    if off:
+        keys = [k for k in keys if k != key]
+    elif key not in keys:
+        keys.append(key)
+    refstore.update_frontmatter(path, {"intentional": keys})
+    return {"name": name, "intentional": keys}
+
+
+def main(argv: list[str]) -> Any:
+    parser = ArgParser(prog="python -m scripts.similarity")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    c = sub.add_parser("compare")
+    c.add_argument("category")
+    c.add_argument("target")
+    s = sub.add_parser("save")
+    s.add_argument("category")
+    s.add_argument("target")
+    s.add_argument("--notes", required=True)
+    i = sub.add_parser("intentional")
+    i.add_argument("category")
+    i.add_argument("name")
+    i.add_argument("key")
+    i.add_argument("--off", action="store_true")
+    args = parser.parse_args(argv)
+
+    if args.cmd == "compare":
+        return compare(args.category, Path(args.target))
+    if args.cmd == "save":
+        notes = Path(args.notes)
+        return save(args.category, Path(args.target), notes if notes.is_absolute() else work_root() / notes)
+    return intentional(args.category, args.name, args.key, args.off)
+
+
+if __name__ == "__main__":
+    run(main)

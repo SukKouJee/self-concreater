@@ -95,9 +95,9 @@ def validate(data: dict) -> dict:
         s["start"], s["end"] = prev, float(s["end"])
         if s["end"] <= s["start"]:
             raise _invalid(f"섹션 {s['label']}의 구간이 비었습니다")
-        if not s.get("shots"):
+        if not s.get("shots") and not data.get("script_only"):
             raise _invalid(f"섹션 {s['label']}에 샷이 없습니다")
-        for shot in s["shots"]:
+        for shot in s.get("shots") or []:
             if shot.get("size") not in SHOT_SIZES:
                 raise _invalid(f"샷 크기 {shot.get('size')!r} (허용: {', '.join(SHOT_SIZES)})")
         prev = s["end"]
@@ -105,6 +105,8 @@ def validate(data: dict) -> dict:
 
 
 def planned_pacing(sections: list[dict]) -> dict:
+    if any(not s.get("shots") for s in sections):
+        return {"avg_cut_sec": None, "by_section": {}}   # 대본만 있는 기획: 컷 정보 없음
     by: dict[str, list[float]] = {}
     for s in sections:
         dur, n = by.get(s["label"], [0.0, 0])
@@ -147,22 +149,25 @@ def render(data: dict, pacing: dict, comp: dict | None) -> str:
     out = [f"# {data['title']}", "", "## 개요",
            f"- 주제: {data.get('topic') or '-'}",
            f"- 출처: {data.get('source') or '-'}" + (f" · 아키타입 {comp['archetype']} {comp['name']}" if comp else ""),
-           f"- 길이: {fmt_time(data['sections'][-1]['end'])} · 계획 컷 {sum(len(s['shots']) for s in data['sections'])}개 "
-           f"(평균 {pacing['avg_cut_sec']}초)",
+           f"- 길이: {fmt_time(data['sections'][-1]['end'])} · " + (
+               f"계획 컷 {sum(len(s['shots']) for s in data['sections'])}개 (평균 {pacing['avg_cut_sec']}초)"
+               if pacing["avg_cut_sec"] else "대본만 (샷 리스트 없음)"),
            f"- 훅: {data['hook_type']} · 서사: {data['narrative_type']}", "", "## 대본"]
     n = 0
     for s in data["sections"]:
         label = f"{s['label']}/{s['sub']}" if s.get("sub") else s["label"]
         out += ["", f"### {fmt_time(s['start'])}–{fmt_time(s['end'])} · {label} ({round(s['end'] - s['start'])}초)",
-                f"{str(s.get('script') or '').strip()}", "",
-                "| # | 샷 | 앵글 | 길이 | 내용 |", "|---|---|---|---|---|"]
-        for shot in s["shots"]:
+                f"{str(s.get('script') or '').strip()}"]
+        if s.get("shots"):
+            out += ["", "| # | 샷 | 앵글 | 길이 | 내용 |", "|---|---|---|---|---|"]
+        for shot in s.get("shots") or []:
             n += 1
             action = str(shot.get("action") or "").replace("|", "\\|")
             out.append(f"| {n} | {shot['size']} | {shot.get('angle') or '-'} | {shot.get('sec', '-')}초 | {action} |")
     if comp:
         out += ["", "## 아키타입 비교", f"{comp['archetype']} {comp['name']} 평균과 섹션 비율 비교 "
-                f"(아키타입 평균 컷 {comp['archetype_avg_cut']}초 · 이 기획 {pacing['avg_cut_sec']}초)", "",
+                f"(아키타입 평균 컷 {comp['archetype_avg_cut']}초 · 이 기획 "
+                f"{str(pacing['avg_cut_sec']) + '초' if pacing['avg_cut_sec'] else '컷 정보 없음'})", "",
                 "| 섹션 | 기획 | 아키타입 | 차이 |", "|---|---|---|---|"]
         out += [f"| {r['label']} | {_pct(r['draft'])} | {_pct(r['archetype'])} | {r['gap']:+.0%} |" for r in comp["ratio"]]
     if data.get("prep"):
@@ -199,7 +204,8 @@ def save(category: str, draft_path: Path) -> dict:
         "sections": [{"label": s["label"], **({"sub": s["sub"]} if s.get("sub") else {}),
                       "start": round(s["start"], 2), "end": round(s["end"], 2)} for s in data["sections"]],
         "hook_type": data["hook_type"], "narrative_type": data["narrative_type"],
-        "title_pattern": title_patterns(data["title"]), "pacing": pacing, "status": "draft", "schema_version": 1,
+        "title_pattern": title_patterns(data["title"]), "pacing": pacing,
+        "status": "script" if data.get("script_only") else "draft", "schema_version": 1,
     }
     path.write_bytes(refstore.join_frontmatter(fm, render(data, pacing, comp)).encode("utf-8"))
     Path(draft_path).unlink(missing_ok=True)
