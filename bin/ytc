@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# yt-coach 스크립트 실행기: ytc <script> [args...]
+#   예) "${CLAUDE_PLUGIN_ROOT}/bin/ytc" refstore count cooking
+# - 플러그인 .venv의 Python을 우선 사용한다
+# - 현재 폴더(또는 YT_COACH_HOME)를 작업 폴더로 넘긴다
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if [ -z "${YT_COACH_HOME:-}" ]; then
+  # Git Bash에서는 Windows 경로(C:/...)로 넘겨야 Python이 알아듣는다
+  YT_COACH_HOME="$(pwd -W 2>/dev/null || pwd)"
+fi
+export YT_COACH_HOME
+
+if [ -x "$ROOT/.venv/Scripts/python.exe" ]; then
+  PY="$ROOT/.venv/Scripts/python.exe"
+elif [ -x "$ROOT/.venv/bin/python" ]; then
+  PY="$ROOT/.venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+  PY=python3
+else
+  PY=python
+fi
+
+if [ $# -lt 1 ]; then
+  echo '{"error": "usage", "message": "사용법: ytc <script> [args...]"}'
+  exit 1
+fi
+
+script="$1"
+shift
+cd "$ROOT"
+exec "$PY" -m "scripts.$script" "$@"

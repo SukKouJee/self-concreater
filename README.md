@@ -12,7 +12,7 @@
 
 | 커맨드 | 하는 일 | 상태 |
 |---|---|---|
-| `/yt-init` | 작업 폴더·템플릿 생성, 인터뷰로 `profile.md` 작성, 첫 카테고리 생성 | 미구현 |
+| `/yt-init [category]` | 작업 폴더·템플릿 생성, 인터뷰로 `profile.md` 작성, 첫 카테고리 생성 | ✅ |
 | `/yt-add <category> [ref\|mine] <links...>` | 링크별 자막·컷 통계 수집 → 영상별 md 생성 | 미구현 |
 | `/yt-typify <category>` | ref 영상으로 축별 유형화 판정·아키타입 | 미구현 |
 | `/yt-inspire <category> [주제]` | 모티브 카드(흐름·기법·각도·조합) 생성 | 미구현 |
@@ -66,10 +66,15 @@ Claude Code 안에서:
 
 ## 스크립트 규약 (개발자용)
 
-- 호출: 작업 폴더에서 `PYTHONPATH="${CLAUDE_PLUGIN_ROOT}" python -m scripts.<name> ...`
+- 호출: 작업 폴더에서 `"${CLAUDE_PLUGIN_ROOT}/bin/ytc" <name> [args...]`
+  (`bin/ytc`가 플러그인 `.venv`의 Python을 고르고, 현재 폴더를 `YT_COACH_HOME`으로 넘깁니다)
 - 성공: JSON 한 개를 stdout으로 출력하고 종료 코드 0
 - 실패: `{"error": "<code>", "message": "..."}`를 stdout으로 출력하고 0이 아닌 종료 코드
 - 자가 점검: `python -m scripts.common --selftest` → `{"ok": true}`
+
+| 스크립트 | 하위 명령 |
+|---|---|
+| `refstore` | `scaffold`, `init <cat>`, `categories`, `count <cat>`, `update-stage <cat>` |
 
 ## 테스트
 

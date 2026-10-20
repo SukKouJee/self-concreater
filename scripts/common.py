@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
@@ -29,6 +30,13 @@ class ScriptError(Exception):
         self.code = code
         self.message = message
         self.exit_code = exit_code
+
+
+class ArgParser(argparse.ArgumentParser):
+    """인자 오류를 stderr 출력 대신 ScriptError("usage")로 돌려준다."""
+
+    def error(self, message: str):
+        raise ScriptError("usage", f"{message}\n{self.format_usage().strip()}")
 
 
 def _utf8_stdout() -> None:

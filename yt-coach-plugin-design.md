@@ -46,6 +46,7 @@ yt-coach/
 │   ├── yt-draft/     대본 골격 + 샷 리스트 규칙
 │   ├── yt-diagnose/  근접도·갭 서술 규칙
 │   └── yt-mission/   성장 단계·미션·회고 규칙
+├── bin/ytc          스크립트 실행기 (.venv Python 선택, 작업 폴더 전달)
 ├── scripts/
 │   ├── fetch.py      메타데이터·자막 → workspace/raw/{id}.json
 │   ├── stt.py        자막 없을 때 Whisper (선택)

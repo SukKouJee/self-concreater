@@ -25,9 +25,9 @@
 ## Phase 1. 초기화와 레퍼런스 저장소 (1일)
 
 작업
-- [ ] `refstore.py`: md 프런트매터 읽기/쓰기(본문 보존), 카테고리 목록, ref 수 집계, `index.md` 단계 섹션 갱신
-- [ ] `/yt-init`: 폴더·템플릿 생성, git init 제안, 인터뷰 → `profile.md` → 첫 카테고리 생성
-- [ ] 단위 테스트: 프런트매터 수정 시 본문·사용자 메모가 손실되지 않음
+- [x] `refstore.py`: md 프런트매터 읽기/쓰기(본문 보존), 카테고리 목록, ref 수 집계, `index.md` 단계 섹션 갱신
+- [x] `/yt-init`: 폴더·템플릿 생성, git init 제안, 인터뷰 → `profile.md` → 첫 카테고리 생성
+- [x] 단위 테스트: 프런트매터 수정 시 본문·사용자 메모가 손실되지 않음
 
 완료 조건
 - 빈 폴더에서 `/yt-init` 실행 → `profile.md`, `refs/ref_<cat>/index.md`, `techniques.md` 생성
