@@ -29,7 +29,7 @@
 ### 1.4 전제
 - **로컬 Claude Code** 실행 (YouTube 접근 필요)
 - 의미 해석은 Claude, 수집·계산은 Python 스크립트. 별도 LLM API 키 없음
-- Python 3.11+, ffmpeg, `yt-dlp`, `youtube-transcript-api`, `scenedetect`, `opencv-python-headless`, `scikit-learn`, `pyyaml`, (선택) `faster-whisper`
+- Python 3.11+, `yt-dlp`, `youtube-transcript-api`, `scenedetect`, `opencv-python-headless`, `scikit-learn`, `pyyaml`, (선택) `faster-whisper`, (선택) ffmpeg — 현재 미사용(컷: OpenCV, STT 디코딩: PyAV)
 
 ## 2. 저장소 구조
 

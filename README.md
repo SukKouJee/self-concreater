@@ -27,7 +27,7 @@
 ### 1. 준비물
 
 - Python 3.11+
-- ffmpeg (PATH에 있어야 함)
+- (선택) ffmpeg — 지금은 필요 없습니다. 컷 분석은 OpenCV, STT 디코딩은 PyAV로 합니다
 - Claude Code (로컬 실행. YouTube 접근이 필요합니다)
 
 ### 2. Python 의존성

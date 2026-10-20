@@ -22,7 +22,7 @@
 - 다운로드한 영상은 프레임 추출 직후 삭제(try/finally). 360p 이하만 받는다.
 
 ## 개발 환경
-- Python 3.11+, ffmpeg 필요. 의존성은 `requirements.txt`.
+- Python 3.11+. 의존성은 `requirements.txt`. ffmpeg는 선택(현재 코드는 쓰지 않음: 컷은 OpenCV, STT는 PyAV).
 - 로컬 실행 전제. 자막 차단 시 `YT_PROXY` 안내.
 - 테스트: `pytest tests/`. 실제 링크는 `tests/fixtures/links.txt`.
 
