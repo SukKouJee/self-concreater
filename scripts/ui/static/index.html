@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>yt-coach</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<a class="skip" href="#main">본문으로 건너뛰기</a>
+<div class="head">
+<div id="banner" class="banner" role="alert" hidden></div>
+<header class="topbar" id="topbar"></header>
+</div>
+<div class="layout">
+  <nav id="menu" class="menu" aria-label="주 메뉴"></nav>
+  <div id="scrim" class="scrim" hidden></div>
+  <main id="main" class="main" tabindex="-1"></main>
+</div>
+<div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+<noscript><p class="noscript">이 화면은 JavaScript가 필요합니다.</p></noscript>
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>

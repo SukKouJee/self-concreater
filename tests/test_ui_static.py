@@ -1,0 +1,155 @@
+import re
+
+from scripts.ui.server import STATIC_DIR
+from tests.test_ui_server import client, no_browser  # noqa: F401  (fixture 재사용)
+
+MENU_NAMES = ["홈", "레퍼런스 추가", "레퍼런스 목록", "유형화", "리포트", "모티브", "기획안", "콘티", "진단", "미션"]
+COMMANDS = ["/yt-coach:yt-typify", "/yt-coach:yt-review", "/yt-coach:yt-inspire",
+            "/yt-coach:yt-draft", "/yt-coach:yt-diagnose", "/yt-coach:yt-mission"]
+
+
+def test_index_loads_modules(client):
+    status, _, raw = client.call("GET", f"/?key={client.app.token}", token=False)
+    assert status == 200
+    html = raw.decode("utf-8")
+    assert re.search(r'<script[^>]*type="module"[^>]*src="/static/app\.js"', html) or \
+        re.search(r'<script[^>]*src="/static/app\.js"[^>]*type="module"', html)
+    assert "/static/app.css" in html
+
+
+def test_static_files_served(client):
+    for rel in ["app.css", "app.js", "api.js", "pages/home.js", "pages/placeholder.js", "pages/add.js"]:
+        status, headers, _ = client.call("GET", f"/static/{rel}")
+        assert status == 200, rel
+    status, headers, _ = client.call("GET", "/static/app.js")
+    assert "javascript" in headers["Content-Type"]
+
+
+def test_menu_definition_has_all_items():
+    text = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    for name in MENU_NAMES:
+        assert f'"{name}"' in text, name
+    for cmd in COMMANDS:
+        assert cmd in text, cmd
+
+
+def test_no_external_resources():
+    for path in STATIC_DIR.rglob("*"):
+        if path.is_file():
+            text = path.read_text(encoding="utf-8")
+            assert not re.search(r"https?://", text), path.name
+
+
+def test_page_contract_guards_present():
+    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    for token in ["isCurrent", "signal", "onCategory", 'startsWith("#/")', "preventDefault"]:
+        assert token in app, token
+    home = (STATIC_DIR / "pages" / "home.js").read_text(encoding="utf-8")
+    assert home.count("isCurrent()") >= 4
+    assert "renderTopbar" not in app
+
+
+ADD_OPTION_LABELS = [
+    "샷 분류도 함께", "이미 분석한 영상도 다시 분석",
+    "자막·컷을 새로 받기(요청이 늘어 차단될 수 있어요)", "추가 시작", "샷 분류만 보강",
+]
+SECTION_LABELS = ["hook", "intro", "body", "demo", "transition", "cta", "outro"]
+
+
+def test_add_page_has_option_labels():
+    text = (STATIC_DIR / "pages" / "add.js").read_text(encoding="utf-8")
+    for label in ADD_OPTION_LABELS:
+        assert label in text, label
+
+
+def test_add_page_confirm_card_and_guards():
+    text = (STATIC_DIR / "pages" / "add.js").read_text(encoding="utf-8")
+    assert ", ".join(f'"{x}"' for x in SECTION_LABELS) in text
+    for token in ["isCurrent()", "/api/jobs/current?kind=collect", "encodeURIComponent", "filesUrl",
+                  "clearTimeout", "음성 인식(STT)으로", "화면만 보고 분석", "남은 영상 모두 저장", "reviewed: true"]:
+        assert token in text, token
+    for banned in ["innerHTML", "window.confirm", "confirm(", "alert(", "prompt("]:
+        assert banned not in text, banned
+
+
+def test_add_page_shots_opt_in_and_polling_safety():
+    text = (STATIC_DIR / "pages" / "add.js").read_text(encoding="utf-8")
+    assert "shots: false" in text and "shots: true" not in text
+    for token in ["job_not_found", "POLL_MAX_MS", 'aria-live']:
+        assert token in text, token
+    assert 'role: "status" }, text' not in text
+
+
+RECREATE_WARNING = "다시 만들면 화면에서 바꾼 대사·가이드·고정한 참고 프레임이 사라지고 내 메모만 남습니다"
+
+
+def test_conti_page_served_with_recreate_warning(client):
+    status, headers, raw = client.call("GET", "/static/pages/conti.js")
+    assert status == 200
+    assert "javascript" in headers["Content-Type"]
+    assert RECREATE_WARNING in raw.decode("utf-8")
+
+
+def test_conti_page_contract_and_safety():
+    text = (STATIC_DIR / "pages" / "conti.js").read_text(encoding="utf-8")
+    for token in [
+        "isCurrent()", "/api/drafts", "/api/conti/create", "/api/conti/save", "/api/conti/scenes",
+        "/api/conti/alternatives", "/api/conti/cut", "/api/jobs/current?kind=conti", "conti_exists",
+        "conti_changed", "파일이 밖에서 바뀌었습니다 — 다시 불러오기", "저장했습니다 · 스토리보드도 다시 그렸습니다",
+        "레퍼런스 실제 장면", "대사 대안", "대안 더 보기", "이걸로 바꾸기", "고정 해제", "콘티 만들기", "다시 만들기",
+        "스토리보드 HTML", "exclude", "hash", "DOMParser", "filesUrl", "clearTimeout", "aria-live", "noopener",
+    ]:
+        assert token in text, token
+    for banned in ["innerHTML", "outerHTML", "insertAdjacentHTML", "window.confirm", "confirm(", "alert(", "prompt("]:
+        assert banned not in text, banned
+
+
+def test_conti_svg_sanitizer_strips_dangerous_parts():
+    text = (STATIC_DIR / "pages" / "conti.js").read_text(encoding="utf-8")
+    for token in ["foreignObject", "script", 'startsWith("on")', "importNode"]:
+        assert token in text, token
+
+
+def test_section_colors_match_storyboard_mapping():
+    # conti.render_html colors a section var(--s{LABELS.index(label)+1}); the UI must use the same slots.
+    from scripts.conti import LABELS
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    for i, label in enumerate(LABELS, start=1):
+        rules = re.findall(rf"\.lb-{label}\s*\{{\s*background:\s*var\((--[\w-]+)\)", css)
+        assert rules == [f"--s{i}"], (label, rules)
+
+
+def test_conti_alternatives_are_requested_only_by_button():
+    text = (STATIC_DIR / "pages" / "conti.js").read_text(encoding="utf-8")
+    for gone in ["AUTO_ALT_DELAY_MS", "scheduleAutoAlts", "clearAutoAlts", "altTimer", "altSkipped", "잠시 뒤 대사 대안을 요청합니다"]:
+        assert gone not in text, gone
+    render = text[text.index("function renderPanel"):text.index("// ---- alternatives")]
+    assert "requestAlts(" not in render                     # 컷을 열기만 해서는 Claude를 부르지 않는다
+    alts = text[text.index("function renderAlts"):text.index("// ---- edit form")]
+    assert '"대안 받기"' in alts and "누르면 Claude 호출이 한 번 일어납니다" in alts
+    assert "대안을 만들지 못했습니다" in alts and '"다시 시도"' in alts
+    assert '"대안 더 보기"' in alts
+    assert "if (rec.loading) return;" in text               # 같은 컷 중복 요청 막기는 그대로
+
+def _luminance(hex_color):
+    rgb = [int(hex_color.lstrip("#")[i:i + 2], 16) / 255 for i in (0, 2, 4)]
+    lin = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in rgb]
+    return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+
+
+def _contrast(a, b):
+    hi, lo = sorted([_luminance(a), _luminance(b)], reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def test_text_on_danger_and_ok_meets_contrast_in_both_schemes():
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    dark_at = css.index("@media (prefers-color-scheme: dark)")
+    for block in (css[:dark_at], css[dark_at:css.index("}", css.index("--danger", dark_at)) + 1]):
+        tokens = dict(re.findall(r"(--[\w-]+):\s*(#[0-9a-fA-F]{6})", block))
+        assert _contrast(tokens["--on-danger"], tokens["--danger"]) >= 4.5
+        assert _contrast(tokens["--on-ok"], tokens["--ok"]) >= 4.5
+    for selector in (".banner", ".toast-error", ".btn-danger"):
+        rule = re.search(rf"^{re.escape(selector)}\s*\{{([^}}]*)\}}", css, re.M).group(1)
+        assert "color: var(--on-danger)" in rule, selector
+    assert "color: var(--on-ok)" in re.search(r"\.step-done \.step-dot\s*\{([^}]*)\}", css).group(1)

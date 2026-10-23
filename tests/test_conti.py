@@ -280,3 +280,131 @@ def test_main_routes(draft_md, home):
     assert conti.main(["context", rel])["title"] == DRAFT["title"]
     saved = conti.main(["save", rel, "--conti", conti_file(home).relative_to(home).as_posix()])
     assert conti.main(["render", saved["path"]])["cuts"] == 4
+
+
+# --- 컷 편집 · 참고 프레임 고정 · 장면 후보 ------------------------------------------------
+
+@pytest.fixture
+def saved(draft_md, home):
+    return home / conti.save(draft_md, conti_file(home))["path"]
+
+
+def pin_frame(home, name="pin.jpg"):
+    rel = f"workspace/frames/{name}"
+    (home / rel).parent.mkdir(parents=True, exist_ok=True)
+    (home / rel).write_bytes(b"\xff\xd8\xff\xe0pinned")
+    return rel
+
+
+def test_update_line_resyncs_section_text(saved, home):
+    memo = "## 내 메모\n소품 미리 사기\n"
+    saved.write_text(saved.read_text("utf-8").replace("## 내 메모\n", memo), encoding="utf-8")
+    out = conti.update_cut(saved, 2, {"line": "1단계 시작!"})
+    fm, body = refstore.read_md(saved)
+    assert out["status"] == "updated" and out["cut"]["line"] == "1단계 시작!"
+    assert fm["script"][1]["text"] == "1단계 시작! 와 순하다"
+    assert not [w for w in out["warnings"] if w["kind"] == "script_mismatch"]
+    assert "1단계 시작!" in body and "소품 미리 사기" in body
+    assert (home / out["html"]).exists()
+
+
+@pytest.mark.parametrize("fields", [{"size": "바스트"}, {"guide": " "}, {"guide": ""}])
+def test_update_rejects_unknown_field_and_empty_guide(saved, fields):
+    with pytest.raises(ScriptError) as exc:
+        conti.update_cut(saved, 1, fields)
+    assert exc.value.code == "invalid_edit"
+
+
+def test_update_cut_not_found(saved):
+    with pytest.raises(ScriptError) as exc:
+        conti.update_cut(saved, 99, {"line": "x"})
+    assert exc.value.code == "cut_not_found"
+
+
+def test_update_hash_conflict(saved):
+    old = conti.content_hash(saved)
+    saved.write_bytes(saved.read_bytes() + "추가 메모\n".encode("utf-8"))
+    with pytest.raises(ScriptError) as exc:
+        conti.update_cut(saved, 1, {"sfx": "쿵"}, expected_hash=old)
+    assert exc.value.code == "conti_changed" and "다시 불러오세요" in exc.value.message
+    new = conti.content_hash(saved)
+    out = conti.update_cut(saved, 1, {"sfx": "쿵"}, expected_hash=new)
+    assert out["hash"] != new and out["hash"] == conti.content_hash(saved)
+
+
+def test_ref_frame_pin_and_clear(saved, home):
+    rel = pin_frame(home)
+    out = conti.update_cut(saved, 1, {"ref_frame": rel})
+    fm, _ = refstore.read_md(saved)
+    assert fm["schema_version"] == 2 and fm["cuts"][0]["ref_frame"] == rel
+    assert "참고(고정)" in (home / out["html"]).read_text("utf-8")
+    conti.update_cut(saved, 1, {"ref_frame": ""})
+    fm, _ = refstore.read_md(saved)
+    assert "ref_frame" not in fm["cuts"][0]
+
+
+def test_ref_frame_must_exist(saved, home):
+    with pytest.raises(ScriptError) as exc:
+        conti.update_cut(saved, 1, {"ref_frame": "workspace/frames/none.jpg"})
+    assert exc.value.code == "invalid_edit"
+
+
+def test_render_missing_ref_frame_falls_back(saved, home):
+    rel = pin_frame(home)
+    conti.update_cut(saved, 1, {"ref_frame": rel})
+    (home / rel).unlink()
+    res = conti.render(saved)
+    assert res["status"] == "rendered" and "참고(고정)" not in (home / res["html"]).read_text("utf-8")
+
+
+def test_v1_file_still_renders(saved):
+    fm, _ = refstore.read_md(saved)
+    assert "ref_frame" not in fm["cuts"][0]
+    refstore.update_frontmatter(saved, {"schema_version": 1})
+    assert conti.render(saved)["status"] == "rendered"
+
+
+def test_crlf_preserved_on_update(saved):
+    saved.write_bytes(saved.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+    conti.update_cut(saved, 1, {"sfx": "쿵"})
+    data = saved.read_bytes()
+    assert data.startswith(b"---\r\n") and b"\n" not in data.replace(b"\r\n", b"")
+
+
+def test_scenes_order_and_limit(saved, home):
+    f = make_frames(home, "a00")
+    shots = home / "workspace" / "shots" / "a00.json"
+    shots.parent.mkdir(parents=True, exist_ok=True)
+    shots.write_text(json.dumps({"labels": [
+        {"frame": f[0], "size": "클로즈업", "section": "hook"},
+        {"frame": f[1], "size": "클로즈업", "section": "body"},
+        {"frame": f[2], "size": "탑뷰", "section": "body"}]}), encoding="utf-8")
+    g = make_frames(home, "a01")
+    refstore.update_frontmatter(home / "refs" / f"ref_{CAT}" / "videos" / "a01.md",
+                                {"shots": {"by_section": {"body": "클로즈업"}}})
+    got = conti.scenes(saved, 2, limit=10)
+    frames = [s["frame"] for s in got]
+    assert frames[0] == f[1] and got[0]["match"] == "exact"
+    assert frames[-1] == f[0]                                   # 같은 크기만 맞는 것은 뒤
+    assert f[2] not in frames and len(frames) == len(set(frames))
+    assert [s["match"] for s in got[1:-1]] == ["approx"] * (len(got) - 2) and set(frames[1:-1]) <= set(g)
+    assert [s["frame"] for s in conti.scenes(saved, 2, limit=2)] == frames[:2]
+    assert set(got[0]) == {"frame", "size", "section", "video", "title", "match"}
+
+
+def test_cut_context_values(saved):
+    ctx = conti.cut_context(saved, 2)
+    assert ctx["prev_line"] == "4단계 다 먹을 수 있을까?" and ctx["next_line"] == "와 순하다"
+    assert ctx["max_chars"] == int(ctx["speech_cps"] * 2) and ctx["hook_type"] == "question"
+    assert ctx["narrative_type"] == "list" and ctx["section_label"] == "body"
+    assert ctx["section_text"] == "1단계부터 갑니다. 와 순하다" and ctx["cut"]["n"] == 2
+    assert {"title", "profile"} <= set(ctx)
+
+
+def test_main_update_scenes_cut_context(saved, home):
+    rel = saved.relative_to(home).as_posix()
+    assert conti.main(["update", rel, "--cut", "1", "--sfx", "쿵"])["cut"]["sfx"] == "쿵"
+    assert conti.main(["update", rel, "--cut", "1", "--caption", "새 자막", "--expect-hash",
+                       conti.content_hash(saved)])["cut"]["caption"] == "새 자막"
+    assert isinstance(conti.main(["scenes", rel, "--cut", "1", "--limit", "3"]), list)
+    assert conti.main(["cut-context", rel, "--cut", "1"])["cut"]["n"] == 1

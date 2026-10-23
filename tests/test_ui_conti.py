@@ -1,0 +1,216 @@
+"""Task 6: 콘티 API. claude 호출은 가짜로 바꾼다."""
+import shutil
+from urllib.parse import quote
+
+import pytest
+
+from scripts import claude_cli, conti
+from scripts.common import ScriptError
+from scripts.ui import api_conti
+from tests.test_conti import CONTI, DRAFT, conti_file, draft_md, home, pin_frame  # noqa: F401 - fixtures
+from tests.test_ui_add import wait_for
+from tests.test_ui_server import Client, _start, _stop, no_browser  # noqa: F401 - fixture
+
+
+class Fakes:
+    def __init__(self):
+        self.asks = []
+        self.alt_result = {"alternatives": [{"line": "짧다", "intent": "짧게"}]}
+        self.alt_error = None
+
+    def ask_validated(self, rules, payload, task, validate, **kw):
+        self.asks.append((rules, payload, task, kw))
+        return CONTI, validate(CONTI)
+
+    def ask(self, rules, payload, task, **kw):
+        self.asks.append((rules, payload, task, kw))
+        if self.alt_error:
+            raise self.alt_error
+        return self.alt_result
+
+
+@pytest.fixture
+def fakes(monkeypatch):
+    f = Fakes()
+    monkeypatch.setattr(claude_cli, "ask_validated", f.ask_validated)
+    monkeypatch.setattr(claude_cli, "ask", f.ask)
+    monkeypatch.setattr(claude_cli, "find_claude", lambda: "C:/bin/claude.exe")
+    return f
+
+
+def _no_claude(monkeypatch):
+    def missing():
+        raise ScriptError("claude_missing", "Claude Code CLI(claude)를 찾을 수 없습니다")
+    monkeypatch.setattr(claude_cli, "find_claude", missing)
+
+
+@pytest.fixture
+def client(home, fakes, no_browser):  # noqa: F811
+    srv, app, thread = _start(home)
+    yield Client(srv, app)
+    app.jobs.shutdown(timeout=5)
+    _stop(srv, thread)
+
+
+def rel(home, path):
+    return path.relative_to(home).as_posix()
+
+
+def saved_conti(home, draft_md):  # noqa: F811
+    return home / conti.save(draft_md, conti_file(home))["path"]
+
+
+def q(value):
+    return quote(value, safe="")
+
+
+def test_list_drafts_with_conti_flag(client, home, draft_md):
+    status, body = client.json("GET", "/api/drafts")
+    assert status == 200
+    [d] = body["drafts"]
+    assert d["path"] == rel(home, draft_md) and d["title"] == DRAFT["title"]
+    assert d["conti"] is None and d["html"] is None and d["category"]
+    saved = saved_conti(home, draft_md)
+    drafts = client.json("GET", "/api/drafts")[1]["drafts"]
+    [d] = drafts
+    assert d["conti"] == rel(home, saved) and d["html"].endswith(".html")
+
+
+def test_create_job_previews_then_save(client, home, draft_md, fakes):
+    draft = rel(home, draft_md)
+    status, body = client.json("POST", "/api/conti/create", {"draft": draft, "force": False})
+    assert status == 200 and body["job"]["kind"] == "conti"
+    job = wait_for(client, body["job"]["id"], lambda j: j["status"] == "done")
+    item = job["items"][0]
+    assert item["state"] == "awaiting" and item["step"] == "preview" and item["id"] == draft
+    assert len(item["preview"]["cuts"]) == 4 and item["preview"]["conti"] == CONTI
+    assert "warnings" in item["preview"] and len(item["preview"]["script"]) == 3
+    rules, payload, _, _ = fakes.asks[0]
+    assert rules == [claude_cli.SKILLS_DIR / "yt-conti" / "SKILL.md"] and payload["draft"] == draft
+
+    status, saved = client.json("POST", "/api/conti/save", {"draft": draft, "conti": CONTI, "force": False})
+    assert status == 200, saved
+    assert (home / saved["path"]).exists() and len(saved["hash"]) == 64
+    assert saved["hash"] == conti.content_hash(saved["path"])
+
+
+def test_create_rejects_existing_without_force(client, home, draft_md, fakes):
+    saved_conti(home, draft_md)
+    status, body = client.json("POST", "/api/conti/create", {"draft": rel(home, draft_md)})
+    assert status == 400 and body["error"] == "conti_exists" and not fakes.asks
+
+
+def test_save_existing_requires_force(client, home, draft_md):
+    saved_conti(home, draft_md)
+    body = {"draft": rel(home, draft_md), "conti": CONTI, "force": False}
+    status, resp = client.json("POST", "/api/conti/save", body)
+    assert status == 400 and resp["error"] == "conti_exists"
+    status, resp = client.json("POST", "/api/conti/save", {**body, "force": True})
+    assert status == 200 and not (home / "workspace" / "tmp" / "conti_ui.json").exists()
+
+
+@pytest.mark.parametrize("bad", ["../secret.md", "refs/x.md", "drafts/a.txt"])
+def test_paths_outside_drafts_rejected(client, bad):
+    status, resp = client.json("GET", f"/api/conti?path={q(bad)}")
+    assert status == 400 and resp["error"] == "bad_path"
+
+
+def test_get_conti_korean_path(client, home, draft_md):
+    src = saved_conti(home, draft_md)
+    korean = home / "drafts" / "라면 콘티 test-conti.md"
+    shutil.copy(src, korean)
+    status, body = client.json("GET", f"/api/conti?path={q(rel(home, korean))}")
+    assert status == 200, body
+    assert body["hash"] == conti.content_hash(korean) and body["fm"]["title"] == DRAFT["title"]
+    assert len(body["cuts"]) == 4 and body["cuts"][0]["sketch"].startswith("<svg")
+    c0 = body["cuts"][0]
+    assert c0["label"] == "hook" and c0["max_chars"] == int(body["fm"]["speech_cps"] * c0["sec"])
+    assert c0["ref"] is None and body["html"].endswith(".html") and isinstance(body["warnings"], list)
+
+
+def test_get_conti_marks_pinned_ref(client, home, draft_md):
+    src = saved_conti(home, draft_md)
+    frame = pin_frame(home)
+    conti.update_cut(src, 2, {"ref_frame": frame})
+    cuts = client.json("GET", f"/api/conti?path={q(rel(home, src))}")[1]["cuts"]
+    assert cuts[1]["ref"]["match"] == "pinned" and cuts[1]["ref"]["frame"] == frame
+    assert cuts[0]["ref"] is None or cuts[0]["ref"]["match"] != "pinned"
+
+
+def test_scenes_route(client, home, draft_md):
+    src = saved_conti(home, draft_md)
+    status, body = client.json("GET", f"/api/conti/scenes?path={q(rel(home, src))}&n=2")
+    assert status == 200 and body["scenes"] == conti.scenes(src, 2)
+    status, body = client.json("GET", f"/api/conti/scenes?path={q(rel(home, src))}&n=x")
+    assert status == 400 and body["error"] == "bad_request"
+
+
+def test_alternatives_counts_and_over_flag(client, home, draft_md, fakes):
+    src = saved_conti(home, draft_md)
+    long_line = "아주아주아주 긴 대사" * 3
+    fakes.alt_result = {"alternatives": [{"line": "짧다", "intent": "a"}, {"line": long_line, "intent": "b"}]}
+    status, body = client.json("POST", "/api/conti/alternatives",
+                               {"path": rel(home, src), "n": 2, "count": 3, "exclude": ["이전 안"]})
+    assert status == 200, body
+    first, second = body["alternatives"]
+    cps = conti.cut_context(src, 2)["speech_cps"]
+    assert body["max_chars"] == int(cps * 2)
+    assert first == {"line": "짧다", "intent": "a", "chars": 2, "over": False}
+    assert second["over"] is True and second["chars"] == len(conti._norm(long_line))
+    rules, payload, task, kw = fakes.asks[0]
+    assert rules == [claude_cli.SKILLS_DIR / "yt-conti" / "SKILL.md"]
+    assert payload["exclude"] == ["이전 안"] and payload["count"] == 3
+    assert payload["prev_line"] == "4단계 다 먹을 수 있을까?"
+    assert task == "7절 규칙으로 컷 대사 대안을 3개 만드세요"
+    assert kw["schema"] == api_conti.ALT_SCHEMA and not kw.get("tools")
+
+
+def test_alternatives_claude_missing_returns_400(client, home, draft_md, fakes):
+    src = saved_conti(home, draft_md)
+    fakes.alt_error = ScriptError("claude_missing", "Claude Code CLI(claude)를 찾을 수 없습니다")
+    status, body = client.json("POST", "/api/conti/alternatives", {"path": rel(home, src), "n": 1})
+    assert status == 400 and body["error"] == "claude_missing" and "찾을 수 없습니다" in body["message"]
+
+
+def test_alternatives_checks_claude_before_calling(client, home, draft_md, fakes, monkeypatch):
+    src = saved_conti(home, draft_md)
+    _no_claude(monkeypatch)
+    status, body = client.json("POST", "/api/conti/alternatives", {"path": rel(home, src), "n": 1})
+    assert status == 400 and body["error"] == "claude_missing"
+    assert fakes.asks == []
+
+
+def test_create_checks_claude_before_job(client, home, draft_md, fakes, monkeypatch):
+    _no_claude(monkeypatch)
+    status, body = client.json("POST", "/api/conti/create", {"draft": rel(home, draft_md)})
+    assert status == 400 and body["error"] == "claude_missing"
+    assert fakes.asks == []
+    status, body = client.json("GET", "/api/jobs/current?kind=conti")
+    assert body["job"] is None
+
+
+def test_alternatives_malformed_answer(client, home, draft_md, fakes):
+    src = saved_conti(home, draft_md)
+    fakes.alt_result = {"alternatives": [{"intent": "line 없음"}]}
+    status, body = client.json("POST", "/api/conti/alternatives", {"path": rel(home, src), "n": 1})
+    assert status == 400 and body["error"] == "claude_failed"
+
+
+def test_cut_update_and_conflict(client, home, draft_md):
+    src = saved_conti(home, draft_md)
+    old = conti.content_hash(src)
+    body = {"path": rel(home, src), "n": 1, "fields": {"guide": "새 가이드"}, "hash": old}
+    status, resp = client.json("POST", "/api/conti/cut", body)
+    assert status == 200 and resp["hash"] != old and resp["cut"]["guide"] == "새 가이드"
+    status, resp = client.json("POST", "/api/conti/cut", body)
+    assert status == 400 and resp["error"] == "conti_changed"
+
+
+@pytest.mark.parametrize("hash_body", [{}, {"hash": ""}, {"hash": None}, {"hash": 5}])
+def test_cut_requires_hash(client, home, draft_md, hash_body):
+    src = saved_conti(home, draft_md)
+    before = src.read_bytes()
+    body = {"path": rel(home, src), "n": 1, "fields": {"guide": "새 가이드"}, **hash_body}
+    status, resp = client.json("POST", "/api/conti/cut", body)
+    assert status == 400 and resp["error"] == "bad_request" and "hash" in resp["message"]
+    assert src.read_bytes() == before

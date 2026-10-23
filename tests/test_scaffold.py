@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 COMMANDS = [
     "yt-init", "yt-add", "yt-typify", "yt-inspire",
-    "yt-draft", "yt-conti", "yt-diagnose", "yt-mission", "yt-review",
+    "yt-draft", "yt-conti", "yt-diagnose", "yt-mission", "yt-review", "yt-ui",
 ]
 
 

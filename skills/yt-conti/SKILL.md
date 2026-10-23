@@ -85,3 +85,30 @@ description: yt-coach에서 저장된 기획안(draft)을 컷 단위 콘티로 �
 …
 ```
 묻는다: "이대로 저장하고 스토리보드(HTML)를 만들까요? 대사나 가이드를 고칠 곳이 있으면 말해 주세요."
+
+## 7. 컷 대사 대안
+
+로컬 UI가 컷 하나의 대사만 다시 쓰고 싶을 때 쓴다. 전체 콘티는 건드리지 않는다.
+
+입력: `conti cut-context` JSON(`cut`, `prev_line`, `next_line`, `section_label`, `section_text`, `speech_cps`, `max_chars`, `hook_type`, `narrative_type`, `title`, `profile`)과 `count`(만들 개수), `exclude`(이미 보여 준 대사들).
+
+규칙:
+- 대안은 정확히 `count`개. 각 `line`은 `max_chars` 이하.
+- 서로 다른 방향으로 쓴다(톤, 담는 정보, 리액션 등). 한 방향의 말 바꿔 쓰기는 대안이 아니다.
+- `exclude`에 있는 대사와 같은 말, 말만 바꾼 대사는 쓰지 않는다.
+- `prev_line`에서 자연스럽게 받아 `next_line`으로 이어져야 한다. 앞뒤와 같은 말을 되풀이하지 않는다.
+- `section_label`이 훅이면 `hook_type`을 지킨다.
+- 말 없는 컷 스타일(`narrative_type` 등으로 보아 대사 없이 가는 컷)이면 빈 대사 `""`도 대안 하나가 될 수 있다.
+- 각 대안에 `intent`(이 대사를 고른 의도, 한 줄)를 붙인다.
+
+출력은 JSON 하나만:
+
+```json
+{
+  "alternatives": [
+    {"line": "끝까지 갈 수 있을까?", "intent": "질문으로 궁금증을 남긴다"},
+    {"line": "일단 먹어 보자.", "intent": "담담한 톤으로 바로 행동에 들어간다"},
+    {"line": "", "intent": "말 없이 표정과 소리로 보여 준다"}
+  ]
+}
+```

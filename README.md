@@ -4,7 +4,8 @@
 기획·진단·일일 미션으로 이어 주는 개인 크리에이터용 Claude Code 플러그인입니다.
 
 - 저장소: https://github.com/SukKouJee/self-concreater (비공개)
-- 설계: [`yt-coach-plugin-design.md`](yt-coach-plugin-design.md) (v2)
+- 설계: [`yt-coach-plugin-design.md`](yt-coach-plugin-design.md) (v2.2)
+- 로컬 UI 설계: [`docs/superpowers/specs/2026-10-23-local-ui-design.md`](docs/superpowers/specs/2026-10-23-local-ui-design.md)
 - 개발 계획: [`PLAN.md`](PLAN.md)
 
 ## 커맨드
@@ -22,6 +23,35 @@
 | `/yt-diagnose <category> <link\|draft\|대본>` | 내 콘텐츠를 아키타입과 축별 비교(근접도·갭·다음 행동) → `mine/`, `intentional`로 의도한 차이 제외 | ✅ |
 | `/yt-mission [today\|submit <file>\|skip\|swap]` | 하루 15~30분 미션, 제출 피드백·난이도 기록, 난이도에 따라 크기 조정 | ✅ |
 | `/yt-review [YYYY-Www]` | 주간 회고 → `reviews/`, 카테고리 HTML 리포트 링크, 승인 시 profile 갱신 | ✅ |
+| `/yt-ui [stop]` | 작업 폴더를 브라우저 화면(로컬 전용)으로 연다. Claude Code를 닫아도 화면은 남고, `stop`으로 끈다 | ✅ |
+
+## 로컬 UI
+
+커맨드를 외우지 않고 브라우저 화면에서 같은 일을 합니다. 내 PC(127.0.0.1)에서만 열리고, 주소에 든 key가 있어야 접근됩니다.
+화면에서 Claude가 필요한 일은 설치된 `claude` CLI(내 구독)로 실행하며, 별도 API 키는 필요 없습니다.
+md 프런트매터가 여전히 유일한 원본이고, 화면은 그것을 읽고 쓰는 창입니다. AI 결과는 저장/바꾸기 버튼을 눌러야만 파일에 기록됩니다.
+
+```bash
+ytc ui                   # 작업 폴더에서 실행. 빈 포트로 띄우고 브라우저를 엽니다
+bin\ytc.cmd ui           # Git Bash 없는 Windows
+/yt-coach:yt-ui          # Claude Code 안에서. 세션과 분리돼 Claude Code를 닫아도 남습니다
+```
+
+- 옵션: `--port N`, `--no-open`(브라우저 안 열기), `--detach`(분리 실행, 로그 `workspace/ui.log`), `--stop`(끄기. `/yt-coach:yt-ui stop`도 같음)
+- 작업 폴더당 서버는 하나입니다. 이미 떠 있으면 새로 띄우지 않고 그 주소를 돌려줍니다.
+- 끄기: 화면 위쪽 "서버 끄기" 또는 `ytc ui --stop`. 진행 중인 작업이 있으면 경고합니다.
+
+| 묶음 | 메뉴 | 상태 |
+|---|---|---|
+| 홈 | 카테고리별 진행 단계, 다음 할 일, 최근 결과물 | 1차 ✅ |
+| 모으기 | 레퍼런스 추가 (`/yt-add` 전체: 진행, 확인 카드, 섹션 라벨 수정, 다시 분석) | 1차 ✅ |
+| 모으기 | 레퍼런스 목록 | 2차 (터미널: `/yt-coach:yt-add`) |
+| 분석 | 유형화, 리포트 | 2차 (터미널: `/yt-coach:yt-typify`, `/yt-coach:yt-review`) |
+| 만들기 | 콘티 (컷별 레퍼런스 장면·대사 대안을 클릭으로 고르기) | 1차 ✅ |
+| 만들기 | 모티브, 기획안 | 2차 (터미널: `/yt-coach:yt-inspire`, `/yt-coach:yt-draft`) |
+| 성장 | 진단, 미션 | 2차 (터미널: `/yt-coach:yt-diagnose`, `/yt-coach:yt-mission`) |
+
+2차 메뉴는 화면에 보이되 "준비 중"과 같은 일을 하는 터미널 커맨드만 안내합니다.
 
 ## 설치
 
@@ -51,7 +81,7 @@ Claude Code 안에서:
 /plugin install yt-coach@nahon-local
 ```
 
-설치 후 Claude Code를 재시작하고 `/help` 또는 `/`를 입력해 `yt-` 커맨드 8개가 보이는지 확인합니다.
+설치 후 Claude Code를 재시작하고 `/help` 또는 `/`를 입력해 `yt-` 커맨드 10개가 보이는지 확인합니다.
 
 ## 스킬
 
@@ -83,7 +113,8 @@ Claude Code 안에서:
 ## 스크립트 규약 (개발자용)
 
 - 호출: 작업 폴더에서 `"${CLAUDE_PLUGIN_ROOT}/bin/ytc" <name> [args...]`
-  (`bin/ytc`가 플러그인 `.venv`의 Python을 고르고, 현재 폴더를 `YT_COACH_HOME`으로 넘깁니다)
+  (`bin/ytc`가 플러그인 `.venv`의 Python을 고르고, 현재 폴더를 `YT_COACH_HOME`으로 넘깁니다.
+  Git Bash 없는 Windows에서는 `bin\ytc.cmd <name> [args...]`가 같은 일을 합니다)
 - 성공: JSON 한 개를 stdout으로 출력하고 종료 코드 0
 - 실패: `{"error": "<code>", "message": "..."}`를 stdout으로 출력하고 0이 아닌 종료 코드
 - 자가 점검: `python -m scripts.common --selftest` → `{"ok": true}`
@@ -98,12 +129,15 @@ Claude Code 안에서:
 | `cluster` | `run <cat>` (ref만 축별 군집·판정·아키타입·이상치 → `workspace/typify/<cat>.json`), `apply <cat> --notes <json>` (index.md 기록) |
 | `motif` | `context <cat> [--topic]`, `add <cat> --cards <json>`, `star <cat> <id> [--off]`, `merge-techniques <cat> --plan <json>` |
 | `draft` | `context <cat> <motif-id\|A1>`, `save <cat> --draft <json>` (검증·계획 컷·아키타입 비교 → `drafts/`) |
-| `conti` | `context <draft.md>`, `save <draft.md> --conti <json> [--force]`, `render <conti.md>` (검증·대사 길이 경고·참고 프레임 매칭 → `drafts/*-conti.md`·`.html`) |
+| `conti` | `context <draft.md>`, `save <draft.md> --conti <json> [--force]`, `render <conti.md>`, `update`, `scenes`, `cut-context` (검증·대사 길이 경고·참고 프레임 매칭 → `drafts/*-conti.md`·`.html`. 뒤 셋은 화면의 컷 단위 편집·장면 후보·대사 대안 입력) |
 | `similarity` | `compare <cat> <target>`, `save <cat> <target> --notes <json>` (→ `mine/`), `intentional <cat> <name> <key> [--off]` |
 | `mission` | `context`, `save --mission <json> [--replace]`, `submit <file> --difficulty --feedback`, `skip --reason`, `week [YYYY-Www]`, `review-save`, `profile-update` (모두 `--date`로 날짜 지정 가능) |
 | `shots` | `pending <cat>`, `context <id> --category`, `apply <id> --category --labels <json>` (장면 길이 가중 분포 → md `shots`) |
 | `report` | `<cat> [--date]` → `reports/<cat>-<date>.html` (축별 판정·아키타입 비교·컷 길이 분포·진단 추이, 외부 자원 없는 한 파일) |
 | `stt` | `<video_id> [--force]` — 자막 없는 영상 음성 인식 (선택: `pip install faster-whisper`, 모델 `YT_STT_MODEL`, 기본 small). CPU에서 1분 쇼츠 약 30초(첫 실행은 모델 다운로드 ~460MB). 말이 없으면 `speech: false`, 빈 자막으로 기록돼 `sparse` 처리 |
+| `status` | `[category]` — 카테고리별 진행 단계(레퍼런스 수·유형화·기획안·콘티·진단), 다음 할 일, 최근 결과물, 오늘 미션. 화면 홈과 같은 JSON |
+| `claude_cli` | (라이브러리) 화면이 `claude -p`를 부르는 실행기. 구조화 JSON 출력, 도구 최소 허용(기본 없음, 프레임을 볼 때만 `Read`), 세션 미저장 |
+| `ui` | `[--port N] [--no-open] [--detach] [--stop]` — 로컬 전용 화면 서버(127.0.0.1, 주소의 key로만 접근). 작업 폴더당 하나(`workspace/ui.lock`), 이미 떠 있으면 그 주소를 돌려줌. `--detach`는 분리 프로세스(로그 `workspace/ui.log`) |
 
 `fetch` 실패 코드: `invalid_url`, `private`, `unavailable`, `age_restricted`, `blocked`, `proxy_failed`, `no_transcript`, `role_conflict`, `category_not_found`, `fetch_failed`, `transcript_failed`
 

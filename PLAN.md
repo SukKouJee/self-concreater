@@ -190,6 +190,43 @@
 
 ---
 
+## Phase 13. 로컬 UI 1차 (추가 요건)
+
+설계: `docs/superpowers/specs/2026-10-23-local-ui-design.md`, 계획: `docs/superpowers/plans/2026-10-23-local-ui.md`
+
+- [x] Task 1: `status` 스크립트 (홈 데이터)
+- [x] Task 2: 콘티 컷 편집 · 참고 프레임 고정 · 장면 후보 (`conti update`·`scenes`, schema_version 2)
+- [x] Task 3: Claude CLI 호출기 + 컷 대사 대안 규칙 (`claude_cli`, `cut-context`, SKILL 7절)
+- [x] Task 4: UI 서버 뼈대 · 보안 · 실행기 (`ytc ui`, `bin/ytc.cmd`)
+- [x] Task 5: 레퍼런스 추가 작업(job) + API
+- [x] Task 6: 콘티 API
+- [x] Task 7: 화면 뼈대 · 왼쪽 메뉴 · 홈
+- [x] Task 8: 레퍼런스 추가 화면
+- [x] Task 9: 콘티 화면
+- [x] Task 10: `/yt-ui` 커맨드 · 문서
+- [x] Task 11: 실제 링크로 완료 확인
+
+확인(2026-10-24): 작업 폴더 복사본에서 `ytc ui --detach` → 두 번째 실행은 같은 주소(`running`). 롱폼 2개(GzAECmhO9b8, 9hNqOiUY4DY)를 API로 추가 → 실제 Claude 분석 확인 카드 표시(스크린샷), 라벨 하나 고쳐 '남은 영상 모두 저장' → md 프런트매터에 고친 라벨 반영, 다운로드 영상 잔여 없음. 36컷 콘티 컷 20: 대사 대안 3개(실제 호출 11초) → 적용, 장면 6장(exact) 중 하나 고정 → md `ref_frame`·HTML '참고(고정)' 반영. 에디터로 md 수정 후 옛 해시 저장 → `conti_changed`. 터미널 `conti render` 후에도 대사·고정·메모 유지. `--stop` 후 lock 삭제.
+
+완료 조건
+- `tests/fixtures/links.txt`의 링크 2~3개를 화면에서 추가·저장하고, 기존 콘티에서 컷 하나의 대사 대안 받기·바꾸기·참고 프레임 고정 후 HTML을 육안 확인한다. Chrome 헤드리스 스크린샷으로 레이아웃을 확인한다
+
+---
+
+## Phase 14. 로컬 UI 2차 (추가 요건)
+
+2차 메뉴는 1차에서 "준비 중"으로 표시만 한다. 각 화면은 해당 커맨드와 같은 규칙·검증을 쓰고, 저장은 사용자 클릭 뒤에만 한다.
+
+- [ ] 레퍼런스 목록 화면 (영상별 md 요약, 섹션 라벨 수정, `reviewed` 표시)
+- [ ] 유형화 화면 (`cluster` 결과, 축별 판정·아키타입)
+- [ ] 리포트 화면 (`report` HTML 보기)
+- [ ] 모티브 화면 (카드 생성·★)
+- [ ] 기획안 화면 (`draft`)
+- [ ] 진단 화면 (`similarity`)
+- [ ] 미션 화면 (`mission`: 오늘 미션·제출·건너뛰기·교체)
+
+---
+
 ## 일정 요약
 
 | Phase | 내용 | 예상 |
@@ -201,6 +238,8 @@
 | 9 | 미션·회고 | 1.5일 |
 | 10~11 | Vision 샷, 리포트 | 2.5일 |
 | 12 | 콘티 (추가) | 반나절 |
+| 13 | 로컬 UI 1차 (추가) | 계획서 참조 |
+| 14 | 로컬 UI 2차 (추가) | 미정 |
 
 **첫 마일스톤(Phase 0~4)**: 링크를 넣으면 영상별 md가 쌓이는 상태. 여기서 한 번 실사용하며 섹션 라벨·md 양식을 다듬고 나서 Phase 5로 간다.
 
