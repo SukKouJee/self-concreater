@@ -130,3 +130,26 @@ def test_conti_alternatives_are_requested_only_by_button():
     assert "대안을 만들지 못했습니다" in alts and '"다시 시도"' in alts
     assert '"대안 더 보기"' in alts
     assert "if (rec.loading) return;" in text               # 같은 컷 중복 요청 막기는 그대로
+
+def _luminance(hex_color):
+    rgb = [int(hex_color.lstrip("#")[i:i + 2], 16) / 255 for i in (0, 2, 4)]
+    lin = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in rgb]
+    return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+
+
+def _contrast(a, b):
+    hi, lo = sorted([_luminance(a), _luminance(b)], reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def test_text_on_danger_and_ok_meets_contrast_in_both_schemes():
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    dark_at = css.index("@media (prefers-color-scheme: dark)")
+    for block in (css[:dark_at], css[dark_at:css.index("}", css.index("--danger", dark_at)) + 1]):
+        tokens = dict(re.findall(r"(--[\w-]+):\s*(#[0-9a-fA-F]{6})", block))
+        assert _contrast(tokens["--on-danger"], tokens["--danger"]) >= 4.5
+        assert _contrast(tokens["--on-ok"], tokens["--ok"]) >= 4.5
+    for selector in (".banner", ".toast-error", ".btn-danger"):
+        rule = re.search(rf"^{re.escape(selector)}\s*\{{([^}}]*)\}}", css, re.M).group(1)
+        assert "color: var(--on-danger)" in rule, selector
+    assert "color: var(--on-ok)" in re.search(r"\.step-done \.step-dot\s*\{([^}]*)\}", css).group(1)
