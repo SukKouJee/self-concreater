@@ -43,7 +43,7 @@ function freshState(el, ctx) {
     openFeedback: new Set(), // item ids whose feedback input is open
     feedbackText: new Map(),
     busy: new Map(),       // item id -> preview signature at decision time (cleared once the item moves on)
-    draft: { role: "ref", links: "", shots: true, force: false, refetch: false },
+    draft: { role: "ref", links: "", shots: false, force: false, refetch: false },
     category: ctx.category, names: [],
   };
 }
@@ -59,6 +59,12 @@ async function fetchJob(id) {
   return data.job;
 }
 
+const POLL_MAX_MS = 15000;
+
+function pollDelay(errors) {
+  return errors > 0 ? Math.min(POLL_MS * 2 ** errors, POLL_MAX_MS) : POLL_MS;
+}
+
 function schedulePoll() {
   stopPolling();
   const mine = S;
@@ -68,34 +74,46 @@ function schedulePoll() {
     try {
       const job = await fetchJob(mine.job.id);
       if (S !== mine || !mine.ctx.isCurrent()) return;
+      if (mine.pollErrors) mine.ctx.toast("다시 연결되었습니다", "info");
       mine.pollErrors = 0;
       applyJob(job);
     } catch (e) {
-      if (S !== mine || !mine.ctx.isCurrent()) return;
+      if (S !== mine || !mine.ctx.isCurrent() || e.error === "aborted") return;
+      if (e.error === "job_not_found" || e.status === 404) {
+        // Server restarted and forgot the job: stop polling and fall back to whatever the server has now.
+        mine.ctx.toast("작업을 찾을 수 없어 처음 화면으로 돌아갑니다", "error");
+        mine.job = null;
+        mine.pollErrors = 0;
+        renderForm();
+        await resume();
+        return;
+      }
       mine.pollErrors = (mine.pollErrors || 0) + 1;
-      if (mine.pollErrors === 3) mine.ctx.toast("진행 상황을 가져오지 못하고 있습니다. 다시 시도합니다", "error");
+      if (mine.pollErrors === 1) mine.ctx.toast("진행 상황을 가져오지 못하고 있습니다. 계속 다시 시도합니다", "error");
     }
     if (S === mine && mine.ctx.isCurrent() && isActive(mine.job)) schedulePoll();
-  }, POLL_MS);
+  }, pollDelay(mine.pollErrors || 0));
 }
 
 async function startJob(path, body) {
+  const mine = S;
   try {
-    const data = await S.ctx.api("POST", path, body);
-    if (!S.ctx.isCurrent()) return;
-    S.rows.clear();
-    S.edits.clear();
-    S.openFeedback.clear();
-    S.feedbackText.clear();
+    const data = await mine.ctx.api("POST", path, body);
+    if (S !== mine || !mine.ctx.isCurrent()) return;
+    mine.rows.clear();
+    mine.edits.clear();
+    mine.openFeedback.clear();
+    mine.feedbackText.clear();
+    mine.pollErrors = 0;
     applyJob(data.job);
-    if (isActive(S.job)) schedulePoll();
+    if (isActive(mine.job)) schedulePoll();
   } catch (e) {
-    if (!S || !S.ctx.isCurrent()) return;
+    if (S !== mine || !mine.ctx.isCurrent()) return;
     if (e.error === "job_running") {
-      S.ctx.toast("이미 진행 중인 작업이 있습니다. 이어서 보여 드립니다", "error");
+      mine.ctx.toast("이미 진행 중인 작업이 있습니다. 이어서 보여 드립니다", "error");
       await resume();
     } else if (e.error !== "aborted") {
-      S.ctx.toast(e.message, "error");
+      mine.ctx.toast(e.message, "error");
     }
   }
 }
@@ -175,11 +193,24 @@ function renderJobView() {
     S.head = h("div", { class: "job-head" });
     S.list = h("ul", { class: "job-items", "aria-label": "영상별 진행 상황" });
     S.foot = h("div", { class: "job-foot" });
-    S.el.append(S.head, S.list, S.foot);
+    S.live = h("div", { class: "sr-only", "aria-live": "polite", "aria-atomic": "true" });
+    S.lastAnnounce = "";
+    S.el.append(S.live, S.head, S.list, S.foot);
   }
   renderJobHead(job);
   syncItems(job);
   renderJobFoot(job);
+  announce(job);
+}
+
+function announce(job) {
+  let text;
+  if (!isActive(job)) text = `작업이 끝났습니다. ${FINISHED_TEXT[job.status] || ""}`.trim();
+  else {
+    const idx = job.items.findIndex((i) => i.state === "awaiting");
+    text = idx >= 0 ? `${idx + 1}번째 영상이 확인을 기다립니다` : `${job.items.filter((i) => i.state === "saved").length}개 저장됨`;
+  }
+  if (text !== S.lastAnnounce) { S.lastAnnounce = text; S.live.textContent = text; }
 }
 
 function renderJobHead(job) {
@@ -191,7 +222,7 @@ function renderJobHead(job) {
     : `${job.category || ""} · ${FINISHED_TEXT[job.status] || "끝났습니다"}`;
   const head = h("div", { class: "job-title" },
     h("h2", {}, active ? "분석 진행 중" : "분석 끝"),
-    h("span", { class: "muted", role: "status" }, text));
+    h("span", { class: "muted" }, text));
   S.head.replaceChildren(head);
 }
 

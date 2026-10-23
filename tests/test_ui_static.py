@@ -70,3 +70,11 @@ def test_add_page_confirm_card_and_guards():
         assert token in text, token
     for banned in ["innerHTML", "window.confirm", "confirm(", "alert(", "prompt("]:
         assert banned not in text, banned
+
+
+def test_add_page_shots_opt_in_and_polling_safety():
+    text = (STATIC_DIR / "pages" / "add.js").read_text(encoding="utf-8")
+    assert "shots: false" in text and "shots: true" not in text
+    for token in ["job_not_found", "POLL_MAX_MS", 'aria-live']:
+        assert token in text, token
+    assert 'role: "status" }, text' not in text
