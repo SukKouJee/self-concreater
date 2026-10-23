@@ -83,7 +83,8 @@ Claude Code 안에서:
 ## 스크립트 규약 (개발자용)
 
 - 호출: 작업 폴더에서 `"${CLAUDE_PLUGIN_ROOT}/bin/ytc" <name> [args...]`
-  (`bin/ytc`가 플러그인 `.venv`의 Python을 고르고, 현재 폴더를 `YT_COACH_HOME`으로 넘깁니다)
+  (`bin/ytc`가 플러그인 `.venv`의 Python을 고르고, 현재 폴더를 `YT_COACH_HOME`으로 넘깁니다.
+  Git Bash 없는 Windows에서는 `bin\ytc.cmd <name> [args...]`가 같은 일을 합니다)
 - 성공: JSON 한 개를 stdout으로 출력하고 종료 코드 0
 - 실패: `{"error": "<code>", "message": "..."}`를 stdout으로 출력하고 0이 아닌 종료 코드
 - 자가 점검: `python -m scripts.common --selftest` → `{"ok": true}`
@@ -104,6 +105,7 @@ Claude Code 안에서:
 | `shots` | `pending <cat>`, `context <id> --category`, `apply <id> --category --labels <json>` (장면 길이 가중 분포 → md `shots`) |
 | `report` | `<cat> [--date]` → `reports/<cat>-<date>.html` (축별 판정·아키타입 비교·컷 길이 분포·진단 추이, 외부 자원 없는 한 파일) |
 | `stt` | `<video_id> [--force]` — 자막 없는 영상 음성 인식 (선택: `pip install faster-whisper`, 모델 `YT_STT_MODEL`, 기본 small). CPU에서 1분 쇼츠 약 30초(첫 실행은 모델 다운로드 ~460MB). 말이 없으면 `speech: false`, 빈 자막으로 기록돼 `sparse` 처리 |
+| `ui` | `[--port N] [--no-open] [--detach] [--stop]` — 로컬 전용 화면 서버(127.0.0.1, 주소의 key로만 접근). 작업 폴더당 하나(`workspace/ui.lock`), 이미 떠 있으면 그 주소를 돌려줌. `--detach`는 분리 프로세스(로그 `workspace/ui.log`) |
 
 `fetch` 실패 코드: `invalid_url`, `private`, `unavailable`, `age_restricted`, `blocked`, `proxy_failed`, `no_transcript`, `role_conflict`, `category_not_found`, `fetch_failed`, `transcript_failed`
 
