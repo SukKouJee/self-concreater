@@ -130,6 +130,7 @@ def fakes(monkeypatch):
     monkeypatch.setattr(videomd, "context", f.context)
     monkeypatch.setattr(videomd, "write", f.write)
     monkeypatch.setattr(claude_cli, "ask_validated", f.ask_validated)
+    monkeypatch.setattr(claude_cli, "find_claude", lambda: "C:/bin/claude.exe")
     monkeypatch.setattr(shots, "context", f.shots_context)
     monkeypatch.setattr(shots, "apply", f.shots_apply)
     monkeypatch.setattr(shots, "pending", f.shots_pending)
@@ -301,6 +302,50 @@ def test_add_claude_failure_marks_video_and_continues(client, fakes):
     assert job["items"][1]["preview"] is not None
 
 
+@pytest.mark.parametrize("code", ["claude_missing", "claude_login"])
+def test_claude_unusable_stops_remaining(client, fakes, code):
+    fakes.ask_errors = [ScriptError(code, "Claude에 로그인되어 있지 않습니다")]
+    job = start_add(client, [url(A), url(B), url(C)])
+    job = wait_for(client, job["id"], finished)
+    assert job["status"] == "stopped"
+    assert [i["state"] for i in job["items"]] == ["failed", "skipped", "skipped"]
+    assert job["items"][1]["message"] == api_add.MSG_CLAUDE_STOP
+    assert [c["vid"] for c in fakes.fetch_calls] == [A]       # 남은 영상은 받지 않는다
+
+
+def test_unexpected_error_fails_only_that_video(client, fakes, monkeypatch):
+    real_context = fakes.context
+
+    def flaky(vid, category):
+        if vid == A:
+            raise KeyError("meta")
+        return real_context(vid, category)
+
+    monkeypatch.setattr(videomd, "context", flaky)
+    job = start_add(client, [url(A), url(B)])
+    job = wait_for(client, job["id"], item_state(1, "awaiting"))
+    assert job["items"][0]["state"] == "failed"
+    assert job["items"][0]["message"] == "예상치 못한 오류: KeyError: 'meta'"
+    assert job["items"][1]["preview"] is not None
+
+
+@pytest.mark.parametrize("path,body", [
+    ("/api/add", {"category": CAT, "links": [url(A)]}),
+    ("/api/add/shots-only", {"category": CAT}),
+])
+def test_add_routes_require_claude_before_job(client, fakes, monkeypatch, path, body):
+    def missing():
+        raise ScriptError("claude_missing", "Claude Code CLI(claude)를 찾을 수 없습니다")
+
+    monkeypatch.setattr(claude_cli, "find_claude", missing)
+    fakes.pending = [A]
+    status, resp = client.json("POST", path, body)
+    assert status == 400 and resp["error"] == "claude_missing"
+    assert fakes.fetch_calls == [] and fakes.asks == []
+    status, resp = client.json("GET", "/api/jobs/current?kind=collect")
+    assert resp["job"] is None
+
+
 def test_cuts_failure_keeps_going(client, fakes, monkeypatch):
     def broken(vid, force=False):
         raise ScriptError("download_failed", "영상 파일을 받지 못했습니다.")
@@ -377,6 +422,16 @@ def test_shots_only_job(client, fakes):
     assert [i["state"] for i in job["items"]] == ["saved", "failed"]
     assert [v for v, _ in fakes.applied] == [A]
     assert job["summary"] == {"saved": 1, "skipped": 0, "failed": 1, "stage_text": None}
+
+
+def test_shots_only_stops_when_claude_unusable(client, fakes):
+    fakes.pending = [A, B]
+    fakes.ask_errors = [ScriptError("claude_login", "로그인 필요")]
+    status, body = client.json("POST", "/api/add/shots-only", {"category": CAT})
+    job = wait_for(client, body["job"]["id"], finished)
+    assert job["status"] == "stopped"
+    assert [i["state"] for i in job["items"]] == ["failed", "skipped"]
+    assert len(fakes.asks) == 1
 
 
 # ---- API / 잠금 -----------------------------------------------------------------

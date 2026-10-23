@@ -34,7 +34,14 @@ def fakes(monkeypatch):
     f = Fakes()
     monkeypatch.setattr(claude_cli, "ask_validated", f.ask_validated)
     monkeypatch.setattr(claude_cli, "ask", f.ask)
+    monkeypatch.setattr(claude_cli, "find_claude", lambda: "C:/bin/claude.exe")
     return f
+
+
+def _no_claude(monkeypatch):
+    def missing():
+        raise ScriptError("claude_missing", "Claude Code CLI(claude)를 찾을 수 없습니다")
+    monkeypatch.setattr(claude_cli, "find_claude", missing)
 
 
 @pytest.fixture
@@ -163,6 +170,23 @@ def test_alternatives_claude_missing_returns_400(client, home, draft_md, fakes):
     fakes.alt_error = ScriptError("claude_missing", "Claude Code CLI(claude)를 찾을 수 없습니다")
     status, body = client.json("POST", "/api/conti/alternatives", {"path": rel(home, src), "n": 1})
     assert status == 400 and body["error"] == "claude_missing" and "찾을 수 없습니다" in body["message"]
+
+
+def test_alternatives_checks_claude_before_calling(client, home, draft_md, fakes, monkeypatch):
+    src = saved_conti(home, draft_md)
+    _no_claude(monkeypatch)
+    status, body = client.json("POST", "/api/conti/alternatives", {"path": rel(home, src), "n": 1})
+    assert status == 400 and body["error"] == "claude_missing"
+    assert fakes.asks == []
+
+
+def test_create_checks_claude_before_job(client, home, draft_md, fakes, monkeypatch):
+    _no_claude(monkeypatch)
+    status, body = client.json("POST", "/api/conti/create", {"draft": rel(home, draft_md)})
+    assert status == 400 and body["error"] == "claude_missing"
+    assert fakes.asks == []
+    status, body = client.json("GET", "/api/jobs/current?kind=conti")
+    assert body["job"] is None
 
 
 def test_alternatives_malformed_answer(client, home, draft_md, fakes):

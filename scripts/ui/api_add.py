@@ -4,6 +4,8 @@
 - force: fetch reanalyze=True, write force=True (cuts 캐시 유지)
 - refetch: fetch force=True, cuts force=True, write force=True
 - blocked/proxy_failed(수집·STT·컷 어디서든): 그 영상 failed, 남은 영상 skipped("차단으로 중단"), job stopped
+- claude_missing/claude_login: 같은 방식으로 멈춘다(남은 영상을 받지 않는다). 라우트는 작업 전에 claude를 확인한다.
+- 예상치 못한 예외: 그 영상만 failed("예상치 못한 오류: ...")로 두고 다음 영상으로 간다.
 - 분석 호출은 항상 Read 도구를 준다(yt-analyze 0단계: examples md를 읽고, 필요하면 frame 1~2장).
   화면 위주 분석 안내(SCREEN_HINT)는 sparse이거나 화면 분석을 고른 경우에만 task에 붙인다.
 - 단계 사이마다 `job.check_cancelled()`: 서버 종료 시 진행 중인 단계(다운로드 정리 try/finally 포함)를
@@ -12,6 +14,8 @@
 from __future__ import annotations
 
 import json
+import sys
+import traceback
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,12 +23,14 @@ from typing import Any
 
 from scripts import claude_cli, cuts, fetch, refstore, shots, stt, videomd
 from scripts.common import ScriptError, workspace_dir
-from scripts.ui.jobs import Job, new_item
+from scripts.ui.jobs import Job, JobCancelled, new_item
 from scripts.ui.server import Request, route
 
 KIND = "collect"
 ROLES = ("ref", "mine")
-STOP_CODES = frozenset({"blocked", "proxy_failed"})
+BLOCK_CODES = frozenset({"blocked", "proxy_failed"})
+CLAUDE_CODES = frozenset({"claude_missing", "claude_login"})
+STOP_CODES = BLOCK_CODES | CLAUDE_CODES
 PREVIEW_ACTIONS = frozenset({"save", "save_all", "skip", "reanalyze"})
 TRANSCRIPT_ACTIONS = frozenset({"stt", "screen", "skip"})
 SAVE_ACTIONS = frozenset({"save", "save_all"})
@@ -38,6 +44,7 @@ SHOTS_TASK = (
 )
 MSG_EXISTS = "이미 분석됨"
 MSG_BLOCKED = "차단으로 중단"
+MSG_CLAUDE_STOP = "Claude를 쓸 수 없어 중단"
 MSG_SKIPPED = "건너뜀"
 MSG_NO_FRAMES = "컷 통계가 없어 샷 분류를 건너뜁니다"
 
@@ -69,6 +76,10 @@ class AddOptions:
     shots: bool = False
     force: bool = False
     refetch: bool = False
+
+
+def _stop_message(code: str) -> str:
+    return MSG_CLAUDE_STOP if code in CLAUDE_CODES else MSG_BLOCKED
 
 
 def _summary(job: Job, stage_text: str | None) -> dict:
@@ -110,12 +121,17 @@ class Collector:
             job.check_cancelled()
             try:
                 self._one(job, index)
+            except JobCancelled:
+                raise
             except ScriptError as e:
                 job.update(index, state="failed", message=e.message)
                 if e.code in STOP_CODES:
-                    job.skip_rest(index + 1, MSG_BLOCKED)
+                    job.skip_rest(index + 1, _stop_message(e.code))
                     job.finish("stopped", _summary(job, self.stage_text), e.message)
                     return
+            except Exception as e:  # noqa: BLE001 - 한 영상의 버그가 남은 영상까지 막지 않게 한다
+                traceback.print_exc(file=sys.stderr)
+                job.update(index, state="failed", message=f"예상치 못한 오류: {type(e).__name__}: {e}")
         job.finish("done", _summary(job, self.stage_text))
 
     # ---- 영상 하나 -------------------------------------------------------------------
@@ -284,8 +300,12 @@ def run_shots_only(category: str) -> Any:
             except ScriptError as e:
                 if e.code == "no_frames":
                     job.update(index, state="skipped", step="done", message=MSG_NO_FRAMES)
-                else:
-                    job.update(index, state="failed", message=e.message)
+                    continue
+                job.update(index, state="failed", message=e.message)
+                if e.code in CLAUDE_CODES:
+                    job.skip_rest(index + 1, MSG_CLAUDE_STOP)
+                    job.finish("stopped", _summary(job, None), e.message)
+                    return
                 continue
             job.update(index, state="saved", step="done")
         job.finish("done", _summary(job, None))
@@ -327,6 +347,7 @@ def _add(req: Request) -> dict:
         raise ScriptError("no_links", "분석할 유튜브 링크를 넣어 주세요")
     opts = AddOptions(category=category, role=role, shots=_flag(body, "shots"),
                       force=_flag(body, "force"), refetch=_flag(body, "refetch"))
+    claude_cli.find_claude()              # claude가 없으면 영상을 받기 전에 400으로 알린다
     items = [new_item(link, url=link) for link in links]
     job = req.app.jobs.start(KIND, Collector(opts), items=items, category=category)
     return {"job": job.snapshot()}
@@ -335,6 +356,7 @@ def _add(req: Request) -> dict:
 @route("POST", "/api/add/shots-only")
 def _shots_only(req: Request) -> dict:
     category = _category(req.json)
+    claude_cli.find_claude()
     pending = shots.pending(category)["pending"]
     items = [new_item(vid, step="shots") for vid in pending]
     job = req.app.jobs.start(KIND, run_shots_only(category), items=items, category=category)
