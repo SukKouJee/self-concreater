@@ -390,3 +390,16 @@ def test_detach_reports_child_exit(monkeypatch, tmp_path, no_browser):
         ui_main.main(["--detach", "--no-open"])
     assert err.value.code == "ui_start_failed"
     assert "boom" in err.value.message
+
+
+def test_fixed_port_in_use_is_rejected(monkeypatch, tmp_path):
+    monkeypatch.setenv("YT_COACH_HOME", str(tmp_path))
+    srv, app, thread = _start(tmp_path)
+    other = tmp_path / "other"
+    other.mkdir()
+    try:
+        with pytest.raises(ScriptError) as err:
+            server.make_app(other, app.port)
+        assert err.value.code == "port_unavailable"
+    finally:
+        _stop(srv, thread)

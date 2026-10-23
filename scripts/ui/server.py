@@ -355,6 +355,10 @@ class _Handler(BaseHTTPRequestHandler):
 
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
+    # On Windows SO_REUSEADDR lets a second socket bind a port that is already listening
+    # (double-bind / port hijack), so "port_unavailable" would never fire. POSIX keeps it
+    # so a restart can rebind a port still in TIME_WAIT.
+    allow_reuse_address = sys.platform != "win32"
     app: App
 
 
