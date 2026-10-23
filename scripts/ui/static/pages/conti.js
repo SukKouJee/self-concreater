@@ -8,7 +8,6 @@ import { h, filesUrl } from "/static/dom.js";
 const POLL_MS = 1000;
 const POLL_MAX_MS = 15000;
 const ALT_COUNT = 3;
-const AUTO_ALT_DELAY_MS = 600;   // auto alternatives fire only if the cut is still selected after this delay
 const NARROW = "(max-width: 900px)";
 const HANDLED_KEY = "ytc.conti.handled";
 const RECREATE_WARNING = "다시 만들면 화면에서 바꾼 대사·가이드·고정한 참고 프레임이 사라지고 내 메모만 남습니다";
@@ -98,16 +97,11 @@ function freshState(el, params, ctx) {
     data: null, hash: null, sel: null, conflict: false,
     scenes: new Map(), alts: new Map(), forms: new Map(),
     nodes: {}, live: null, lastAnnounce: "",
-    altTimer: null, altSkipped: null,
   };
 }
 
 function stopPolling() {
   if (S && S.timer) { clearTimeout(S.timer); S.timer = null; }
-}
-
-function clearAutoAlts() {
-  if (S && S.altTimer) { clearTimeout(S.altTimer); S.altTimer = null; }
 }
 
 function announce(text) {
@@ -675,7 +669,6 @@ function renderPanel() {
   renderScenes(cut.n);
   renderAlts(cut.n);
   if (!S.scenes.has(cut.n)) loadScenes(cut.n);
-  scheduleAutoAlts(cut.n);
   if (focusKey) {
     const el = panel.querySelector(`[data-fk="${CSS.escape(focusKey)}"]`);
     if (el) {
@@ -751,24 +744,8 @@ function renderScenes(n) {
 
 // ---- alternatives -------------------------------------------------------------------------
 
-// Opening a cut asks for alternatives automatically, but only after a short pause (skimming cuts costs nothing)
-// and only when no other alternatives request is in flight (at most one paid Claude call at a time from auto).
-// The buttons (대안 받기 · 다시 시도 · 대안 더 보기) stay manual.
-function scheduleAutoAlts(n) {
-  clearAutoAlts();
-  if (S.alts.has(n)) return;
-  const mine = S;
-  mine.altTimer = setTimeout(() => {
-    mine.altTimer = null;
-    if (!alive(mine) || mine.sel !== n || mine.alts.has(n)) return;
-    if ([...mine.alts.values()].some((r) => r.loading)) {
-      mine.altSkipped = n;
-      renderAlts(n);
-      return;
-    }
-    requestAlts(n);
-  }, AUTO_ALT_DELAY_MS);
-}
+// Every alternatives request is a paid Claude call, so all of them start from a button
+// (대안 받기 · 다시 시도 · 대안 더 보기). Opening a cut never calls Claude.
 
 async function requestAlts(n) {
   const mine = S;
@@ -808,14 +785,9 @@ function renderAlts(n) {
   const rec = S.alts.get(n);
   box.replaceChildren();
   if (!rec) {
-    if (S.altSkipped === n && !S.altTimer) {
-      const ask = h("button", { type: "button", class: "btn", "data-fk": "alts-ask" }, "대안 받기");
-      ask.addEventListener("click", () => requestAlts(n));
-      box.append(h("p", { class: "muted small" }, "다른 컷의 대안을 만드는 중이라 자동으로 요청하지 않았습니다."),
-        h("div", { class: "btn-row" }, ask, h("span", { class: "muted small" }, "누르면 Claude 호출이 한 번 일어납니다")));
-    } else {
-      box.append(h("p", { class: "muted small" }, "잠시 뒤 대사 대안을 요청합니다…"));
-    }
+    const ask = h("button", { type: "button", class: "btn", "data-fk": "alts-ask" }, "대안 받기");
+    ask.addEventListener("click", () => requestAlts(n));
+    box.append(h("div", { class: "btn-row" }, ask, h("span", { class: "muted small" }, "누르면 Claude 호출이 한 번 일어납니다")));
     return;
   }
   const max = rec.max || cut.max_chars;
@@ -845,6 +817,12 @@ function renderAlts(n) {
     const retry = h("button", { type: "button", class: "btn", "data-fk": "alts-retry" }, "다시 시도");
     retry.addEventListener("click", () => requestAlts(n));
     box.append(h("div", { class: "alt-error" }, h("p", { class: "error" }, rec.error), retry));
+    return;
+  }
+  if (!rec.items.length) {
+    const retry = h("button", { type: "button", class: "btn", "data-fk": "alts-retry" }, "다시 시도");
+    retry.addEventListener("click", () => requestAlts(n));
+    box.append(h("div", { class: "btn-row" }, h("span", { class: "muted small" }, "대안을 만들지 못했습니다 —"), retry));
     return;
   }
   const more = h("button", { type: "button", class: "btn", "data-fk": "alts-more" }, "대안 더 보기");
@@ -987,7 +965,6 @@ async function saveCut(n, fields, focusKey) {
 
 export async function mount(el, params, ctx) {
   stopPolling();
-  clearAutoAlts();
   S = freshState(el, params, ctx);
   const path = params.path;
   if (path && isContiPath(path)) await loadEditor(false);
@@ -996,6 +973,5 @@ export async function mount(el, params, ctx) {
 
 export function unmount() {
   stopPolling();
-  clearAutoAlts();
   S = null;
 }

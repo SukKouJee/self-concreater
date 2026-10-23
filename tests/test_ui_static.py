@@ -119,9 +119,14 @@ def test_section_colors_match_storyboard_mapping():
         assert rules == [f"--s{i}"], (label, rules)
 
 
-def test_conti_auto_alternatives_debounced_single_flight():
+def test_conti_alternatives_are_requested_only_by_button():
     text = (STATIC_DIR / "pages" / "conti.js").read_text(encoding="utf-8")
-    for token in ["AUTO_ALT_DELAY_MS = 600", "scheduleAutoAlts", "clearAutoAlts", "r.loading", "mine.sel !== n"]:
-        assert token in text, token
-    unmount = text[text.index("export function unmount"):]
-    assert "clearAutoAlts()" in unmount
+    for gone in ["AUTO_ALT_DELAY_MS", "scheduleAutoAlts", "clearAutoAlts", "altTimer", "altSkipped", "잠시 뒤 대사 대안을 요청합니다"]:
+        assert gone not in text, gone
+    render = text[text.index("function renderPanel"):text.index("// ---- alternatives")]
+    assert "requestAlts(" not in render                     # 컷을 열기만 해서는 Claude를 부르지 않는다
+    alts = text[text.index("function renderAlts"):text.index("// ---- edit form")]
+    assert '"대안 받기"' in alts and "누르면 Claude 호출이 한 번 일어납니다" in alts
+    assert "대안을 만들지 못했습니다" in alts and '"다시 시도"' in alts
+    assert '"대안 더 보기"' in alts
+    assert "if (rec.loading) return;" in text               # 같은 컷 중복 요청 막기는 그대로
