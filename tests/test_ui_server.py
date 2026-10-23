@@ -77,7 +77,7 @@ def temp_routes():
 def test_binds_loopback_only(client):
     assert client.srv.server_address[0] == "127.0.0.1"
     assert client.app.root == client.app.root.resolve()
-    assert client.app.jobs is None
+    assert client.app.jobs is not None   # Task 5: make_app이 JobManager를 붙인다
 
 
 def test_make_app_sets_work_root(client, tmp_path):

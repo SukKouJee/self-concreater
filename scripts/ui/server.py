@@ -15,7 +15,7 @@
 - 라우트 모듈(예: `scripts.ui.api_add`, `scripts.ui.api_conti`)은 `ROUTE_MODULES`에 이름을 더한다.
   `make_app()`이 `register_routes()`로 그 모듈들을 import하고, import 때 데코레이터가 같은 `ROUTES`에 등록한다.
   (라우트 모듈은 `from scripts.ui.server import route`만 하면 되고, 순환 import가 생기지 않는다.)
-- `App.jobs`는 Task 5에서 `make_app()` 안에서 붙인다(초기 None).
+- `App.jobs`는 `make_app()`이 붙이는 `jobs.JobManager`다. `/api/shutdown`은 진행 중인 작업을 먼저 멈춘다.
 """
 from __future__ import annotations
 
@@ -38,6 +38,7 @@ from urllib.parse import parse_qsl, unquote, urlsplit
 
 from scripts import refstore, status
 from scripts.common import PLUGIN_ROOT, ScriptError
+from scripts.ui.jobs import JobManager
 
 HOST = "127.0.0.1"
 LOCK = "ui.lock"
@@ -49,7 +50,7 @@ MAX_BODY = 10 * 1024 * 1024
 PING_TIMEOUT = 1.0
 
 # 라우트 모듈: Task 5/6이 여기에 이름을 더한다(예: "scripts.ui.api_add").
-ROUTE_MODULES: list[str] = []
+ROUTE_MODULES: list[str] = ["scripts.ui.api_add"]
 
 BAD_TOKEN = {"error": "bad_token", "message": "주소의 key가 맞지 않습니다. 터미널에 나온 새 주소로 여세요"}
 
@@ -78,7 +79,7 @@ class App:
     token: str
     port: int
     server: ThreadingHTTPServer | None = None
-    jobs: Any = None
+    jobs: JobManager | None = None
 
 
 @dataclass
@@ -222,6 +223,8 @@ def _init(req: Request) -> dict:
 @route("POST", "/api/shutdown")
 def _shutdown(req: Request) -> dict:
     srv = req.app.server
+    if req.app.jobs is not None:
+        req.app.jobs.shutdown(timeout=0)   # 결정 대기 중인 작업 스레드를 깨워 멈춘다
     if srv is not None:
         # 응답을 먼저 보내도록 다른 스레드에서 끈다
         threading.Thread(target=srv.shutdown, daemon=True).start()
@@ -371,7 +374,8 @@ def make_app(root: Path, port: int = 0) -> tuple[ThreadingHTTPServer, App]:
         srv = _Server((HOST, port), _Handler)
     except OSError as e:
         raise ScriptError("port_unavailable", f"{HOST}:{port}에 서버를 열 수 없습니다: {e}") from e
-    app = App(root=root, token=secrets.token_urlsafe(24), port=srv.server_address[1], server=srv)
+    app = App(root=root, token=secrets.token_urlsafe(24), port=srv.server_address[1], server=srv,
+              jobs=JobManager())
     srv.app = app
     return srv, app
 
