@@ -180,3 +180,13 @@ def test_cut_update_and_conflict(client, home, draft_md):
     assert status == 200 and resp["hash"] != old and resp["cut"]["guide"] == "새 가이드"
     status, resp = client.json("POST", "/api/conti/cut", body)
     assert status == 400 and resp["error"] == "conti_changed"
+
+
+@pytest.mark.parametrize("hash_body", [{}, {"hash": ""}, {"hash": None}, {"hash": 5}])
+def test_cut_requires_hash(client, home, draft_md, hash_body):
+    src = saved_conti(home, draft_md)
+    before = src.read_bytes()
+    body = {"path": rel(home, src), "n": 1, "fields": {"guide": "새 가이드"}, **hash_body}
+    status, resp = client.json("POST", "/api/conti/cut", body)
+    assert status == 400 and resp["error"] == "bad_request" and "hash" in resp["message"]
+    assert src.read_bytes() == before

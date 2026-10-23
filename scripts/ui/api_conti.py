@@ -218,6 +218,6 @@ def _cut(req: Request) -> dict:
     if not isinstance(fields, dict):
         raise ScriptError("bad_request", "fields는 JSON 객체여야 합니다")
     expected = body.get("hash")
-    if expected is not None and not isinstance(expected, str):
-        raise ScriptError("bad_request", "hash는 문자열이어야 합니다")
+    if not isinstance(expected, str) or not expected:
+        raise ScriptError("bad_request", "hash가 필요합니다. 콘티를 다시 불러오세요")
     return conti.update_cut(path, _int(body.get("n"), "n"), fields, expected_hash=expected)
