@@ -66,6 +66,18 @@ def test_ask_uses_stdin_and_flags(home, monkeypatch):
     assert "규칙본문XYZ" in kw["input"] and "할일ABC" in kw["input"] and '"k"' in kw["input"]
     assert kw["cwd"] == home
     assert kw["encoding"] == "utf-8"
+    assert kw["errors"] == "replace"
+
+
+def test_ask_isolates_from_user_context(home, monkeypatch):
+    fake = _install(monkeypatch, Fake(_ok({"a": 1})))
+    claude_cli.ask([], {}, "t", tools=["Read"])
+    cmd, _ = fake.calls[0]
+    assert "--strict-mcp-config" in cmd
+    assert "--disable-slash-commands" in cmd
+    assert cmd[cmd.index("--setting-sources") + 1] == "project,local"
+    assert cmd[cmd.index("--system-prompt") + 1] == claude_cli.SYSTEM_PROMPT
+    assert "--bare" not in cmd
 
 
 def test_ask_without_tools_disables_all_and_omits_schema(home, monkeypatch):
@@ -99,7 +111,7 @@ def test_ask_is_error_login_message(home, monkeypatch):
     _install(monkeypatch, Fake(_proc(json.dumps({"is_error": True, "result": "Please run /login"}))))
     with pytest.raises(ScriptError) as e:
         claude_cli.ask([], {}, "t")
-    assert e.value.code == "claude_failed"
+    assert e.value.code == "claude_login"
     assert "로그인" in e.value.message
 
 
@@ -155,3 +167,11 @@ def test_ask_validated_does_not_retry_other_errors(home, monkeypatch):
         claude_cli.ask_validated([], {}, "t", validate)
     assert e.value.code == "conti_changed"
     assert len(fake.calls) == 1
+
+
+@pytest.mark.parametrize("exc", [FileNotFoundError("claude"), PermissionError("denied"), OSError("boom")])
+def test_ask_spawn_failure_is_claude_missing(home, monkeypatch, exc):
+    _install(monkeypatch, Fake(exc))
+    with pytest.raises(ScriptError) as e:
+        claude_cli.ask([], {}, "t")
+    assert e.value.code == "claude_missing"

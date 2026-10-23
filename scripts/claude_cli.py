@@ -15,6 +15,15 @@ SKILLS_DIR = PLUGIN_ROOT / "skills"
 
 _LOGIN_HINTS = ("login", "/login", "authenticate")
 _LOGIN_MESSAGE = "Claude에 로그인되어 있지 않습니다. 터미널에서 claude를 실행해 로그인하세요"
+# 사용자 전역 설정(플러그인·훅·스킬 목록·MCP 서버)을 싣지 않도록 고정한다. 규칙은 stdin 프롬프트로 간다.
+# 측정(2026-10-24, 작은 프로브): 기본 37.1k 입력 토큰 $0.297 → 아래 플래그 1.8k 토큰 $0.014. --bare는 OAuth를 못 써서 쓰지 않는다.
+SYSTEM_PROMPT = "You are a JSON-only analysis helper for a YouTube creator coaching tool. Follow the rules in the user message."
+_ISOLATION_FLAGS = [
+    "--strict-mcp-config",
+    "--setting-sources", "project,local",
+    "--disable-slash-commands",
+    "--system-prompt", SYSTEM_PROMPT,
+]
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
 
@@ -60,7 +69,7 @@ def _interpret(proc: subprocess.CompletedProcess[str]) -> dict:
     result = str(envelope.get("result") or "")
     if envelope.get("is_error"):
         if any(h in result.lower() for h in _LOGIN_HINTS):
-            raise ScriptError("claude_failed", _LOGIN_MESSAGE)
+            raise ScriptError("claude_login", _LOGIN_MESSAGE)
         raise ScriptError("claude_failed", result[:200] or "Claude가 오류를 돌려줬습니다")
     structured = envelope.get("structured_output")
     if isinstance(structured, dict):
@@ -77,7 +86,7 @@ def ask(
     tools: list[str] | None = None,
     timeout: int = 600,
 ) -> dict:
-    cmd = [find_claude(), "-p", "--output-format", "json", "--no-session-persistence"]
+    cmd = [find_claude(), "-p", "--output-format", "json", "--no-session-persistence", *_ISOLATION_FLAGS]
     if schema is not None:
         cmd += ["--json-schema", json.dumps(schema, ensure_ascii=False)]
     # 빈 문자열이면 도구 전부 끔
@@ -89,11 +98,14 @@ def ask(
             capture_output=True,
             text=True,
             encoding="utf-8",
+            errors="replace",
             cwd=work_root(),
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as e:
         raise ScriptError("claude_failed", f"Claude 응답 시간 초과({timeout}초)") from e
+    except OSError as e:
+        raise ScriptError("claude_missing", f"Claude Code CLI(claude)를 실행하지 못했습니다: {e}") from e
     return _interpret(proc)
 
 
