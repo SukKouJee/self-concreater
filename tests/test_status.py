@@ -135,3 +135,31 @@ def test_main_category_filter(home):
     out = status.main([CAT])
     assert len(out["categories"]) == 1
     assert out["categories"][0]["category"] == CAT
+
+
+def test_frontmatterless_notes_do_not_break_overview(home):
+    standard_set(home)
+    (home / "drafts").mkdir(exist_ok=True)
+    (home / "drafts" / "notes.md").write_text("그냥 메모\n", encoding="utf-8")
+    (home / "mine").mkdir(exist_ok=True)
+    (home / "mine" / "scratch.md").write_text("# 메모\n", encoding="utf-8")
+    c = _cat(status.overview())
+    assert c["steps"][2]["detail"] == "기획안 0개"
+    assert c["steps"][4]["detail"] == "내 영상 0개"
+
+
+def test_crlf_draft_does_not_break_overview(home):
+    standard_set(home)
+    path = _save_draft(home)
+    path.write_bytes(path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+    out = status.overview()
+    assert _cat(out)["category"] == CAT
+
+
+def test_broken_mission_md_does_not_break_overview(home):
+    day = mission._today(None)
+    path = mission._mission_path(day)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("프런트매터 없음\n", encoding="utf-8")
+    card = status.overview()["mission"]
+    assert card["exists"] is True and card["status"] is None and card["kind"] is None

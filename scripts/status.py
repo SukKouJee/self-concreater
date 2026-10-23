@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from scripts import mission, refstore
-from scripts.common import ArgParser, run, work_root, workspace_dir
+from scripts.common import ArgParser, ScriptError, run, work_root, workspace_dir
 
 RECENT_LIMIT = 5
 
@@ -31,7 +31,11 @@ def _rel(path: Path) -> str:
 
 
 def _category_of(path: Path) -> Any:
-    return refstore.read_md(path)[0].get("category")
+    """프런트매터가 없거나 깨진 md(메모 등)는 어느 카테고리에도 세지 않는다(/api/drafts와 같은 처리)."""
+    try:
+        return refstore.read_md(path)[0].get("category")
+    except ScriptError:
+        return None
 
 
 def _drafts(category: str) -> list[Path]:
@@ -86,7 +90,10 @@ def _mission_card() -> dict:
     path = mission._mission_path(day)
     if not path.exists():
         return {"date": day, "exists": False, "status": None, "kind": None, "path": None}
-    fm, _ = refstore.read_md(path)
+    try:
+        fm, _ = refstore.read_md(path)
+    except ScriptError:
+        fm = {}                           # 사용자가 고치는 중인 미션 md가 홈 화면을 막지 않게 한다
     return {"date": day, "exists": True, "status": fm.get("status"), "kind": fm.get("kind"), "path": _rel(path)}
 
 
