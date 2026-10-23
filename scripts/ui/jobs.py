@@ -20,6 +20,7 @@ import secrets
 import sys
 import threading
 import traceback
+from collections.abc import Iterable, Mapping
 from typing import Any, Callable
 
 from scripts.common import ScriptError
@@ -141,12 +142,23 @@ class Job:
         awaiting = [i for i in matches if self._items[i]["state"] == "awaiting"]
         return (awaiting or matches)[0]
 
-    def decide(self, item_id: str, decision: dict) -> None:
+    def decide(self, item_id: str, decision: dict, allowed: Mapping[str | None, Iterable[str]] | None = None) -> None:
+        """결정을 넣고 대기 중인 작업 스레드를 깨운다.
+
+        allowed: 항목의 `ask` 값 → 허용 action 목록. 주면 lock 안에서 확인하고, 밖이면 `bad_action`.
+        """
         with self._lock:
             index = self._index_of(item_id)
             item = self._items[index]
             if item["state"] != "awaiting" or item_id in self._decisions:
                 raise ScriptError("not_awaiting", "이 항목은 결정을 기다리고 있지 않습니다")
+            if allowed is not None:
+                choices = sorted(allowed.get(item.get("ask"), ()))
+                if decision.get("action") not in choices:
+                    raise ScriptError(
+                        "bad_action",
+                        f"이 항목에서 할 수 없는 결정입니다: {decision.get('action')!r} (가능: {', '.join(choices)})",
+                    )
             item["state"] = "running"
             if self._status == "awaiting":
                 self._status = "running"

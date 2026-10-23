@@ -1,5 +1,6 @@
 """Task 5: 레퍼런스 추가 작업(job) + API. 네트워크·claude 호출은 모두 가짜로 바꾼다."""
 import json
+import threading
 import time
 
 import pytest
@@ -7,7 +8,9 @@ import pytest
 from scripts import claude_cli, cuts, fetch, refstore, shots, stt, videomd
 from scripts.common import ScriptError
 from scripts.ui import api_add, jobs
-from tests.test_ui_server import Client, _start, _stop
+from scripts.ui import __main__ as ui_main
+from scripts.ui import server
+from tests.test_ui_server import Client, _start, _stop, no_browser  # noqa: F401 - fixture
 
 CAT = "food"
 A, B, C = "AAAAAAAAAAA", "BBBBBBBBBBB", "CCCCCCCCCCC"
@@ -192,7 +195,8 @@ def test_add_happy_path_awaits_then_saves(client, fakes, tmp_path):
     assert item["frames"] == [f"workspace/frames/{A}/scene001_0.5s.jpg"]
     rules, payload, _, kw = fakes.asks[0]
     assert rules == [claude_cli.SKILLS_DIR / "yt-analyze" / "SKILL.md"]
-    assert payload["id"] == A and kw["tools"] is None
+    assert payload["id"] == A and kw["tools"] == ["Read"]   # examples(사용자 교정 md)를 읽어야 한다
+    assert api_add.SCREEN_HINT not in fakes.asks[0][2]
 
     status, body = decide(client, job["id"], A, action="save")
     assert status == 200 and body["job"]["id"] == job["id"]
@@ -274,6 +278,7 @@ def test_no_transcript_screen_uses_read_tool(client, fakes):
     wait_for(client, job["id"], lambda j: j["items"][0]["preview"] is not None)
     assert fakes.stt_calls == []
     assert fakes.analyze_asks()[0][3]["tools"] == ["Read"]
+    assert api_add.SCREEN_HINT in fakes.analyze_asks()[0][2]
 
 
 def test_stt_unavailable_falls_back_to_screen(client, fakes):
@@ -284,7 +289,7 @@ def test_stt_unavailable_falls_back_to_screen(client, fakes):
     decide(client, job["id"], A, action="stt")
     job = wait_for(client, job["id"], lambda j: j["items"][0]["preview"] is not None)
     assert "faster-whisper가 없습니다" in job["items"][0]["message"]
-    assert fakes.analyze_asks()[0][3]["tools"] == ["Read"]
+    assert api_add.SCREEN_HINT in fakes.analyze_asks()[0][2]
 
 
 def test_add_claude_failure_marks_video_and_continues(client, fakes):
@@ -485,3 +490,67 @@ def test_job_unexpected_error_marks_failed():
     assert job.status == "failed" and "boom" in job.snapshot()["message"]
     assert job.snapshot()["items"][0]["state"] == "failed"
     mgr.start("collect", lambda j: None).join(5)   # 끝난 작업은 새 작업을 막지 않는다
+
+
+# ---- 수정 1차: 종료 시 작업 정리 · 결정 검증 -------------------------------------------
+
+def test_cancel_during_cuts_stops_before_analysis(client, fakes, monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_cuts(vid, force=False):
+        entered.set()
+        assert release.wait(5)
+        return {"id": vid, "status": "analyzed", "frames": []}
+    monkeypatch.setattr(cuts, "cut_stats", slow_cuts)
+    job = start_add(client, [url(A), url(B)])
+    assert entered.wait(5)
+    stopper = threading.Thread(target=client.app.jobs.shutdown, kwargs={"timeout": 5})
+    stopper.start()
+    release.set()
+    stopper.join(5)
+    job = snap(client, job["id"])
+    assert job["status"] == "stopped"
+    assert [i["state"] for i in job["items"]] == ["skipped", "skipped"]
+    assert fakes.asks == [] and fakes.writes == []
+    assert [c["vid"] for c in fakes.fetch_calls] == [A]
+
+
+def test_serve_waits_for_jobs_on_exit(monkeypatch, tmp_path, no_browser):
+    monkeypatch.setenv("YT_COACH_HOME", str(tmp_path))
+    calls = []
+    real = jobs.JobManager.shutdown
+
+    def record(self, timeout=None):
+        calls.append(timeout)
+        real(self, timeout=timeout)
+    monkeypatch.setattr(jobs.JobManager, "shutdown", record)
+    fg = threading.Thread(target=lambda: ui_main.main(["--no-open"]), daemon=True)
+    fg.start()
+    lock = tmp_path / "workspace" / server.LOCK
+    deadline = time.monotonic() + 5
+    while not lock.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert ui_main.main(["--stop"]) == {"status": "stopped"}
+    fg.join(5)
+    assert not fg.is_alive()
+    assert calls[0] == 0                                   # /api/shutdown: 응답을 막지 않는다
+    assert calls[-1] == ui_main.JOB_STOP_TIMEOUT_SEC       # _serve finally: 작업 정리를 기다린다
+
+
+def test_decide_checks_action_under_lock(client, fakes):
+    job = start_add(client, [url(A)])
+    wait_for(client, job["id"], item_state(0, "awaiting"))
+    live = client.app.jobs.get(job["id"])
+    with pytest.raises(ScriptError) as err:
+        live.decide(A, {"action": "explode"}, allowed={None: api_add.PREVIEW_ACTIONS})
+    assert err.value.code == "bad_action"
+    assert live.snapshot()["items"][0]["state"] == "awaiting"
+
+
+def test_unknown_action_never_writes(client, fakes):
+    job = start_add(client, [url(A)])
+    wait_for(client, job["id"], item_state(0, "awaiting"))
+    client.app.jobs.get(job["id"]).decide(A, {"action": "explode"})   # 라우트 검증을 건너뛴 결정
+    job = wait_for(client, job["id"], finished)
+    assert job["items"][0]["state"] == "failed"
+    assert fakes.writes == []

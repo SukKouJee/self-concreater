@@ -4,6 +4,10 @@
 - force: fetch reanalyze=True, write force=True (cuts 캐시 유지)
 - refetch: fetch force=True, cuts force=True, write force=True
 - blocked/proxy_failed(수집·STT·컷 어디서든): 그 영상 failed, 남은 영상 skipped("차단으로 중단"), job stopped
+- 분석 호출은 항상 Read 도구를 준다(yt-analyze 0단계: examples md를 읽고, 필요하면 frame 1~2장).
+  화면 위주 분석 안내(SCREEN_HINT)는 sparse이거나 화면 분석을 고른 경우에만 task에 붙인다.
+- 단계 사이마다 `job.check_cancelled()`: 서버 종료 시 진행 중인 단계(다운로드 정리 try/finally 포함)를
+  끝까지 마친 뒤 다음 단계로 가지 않고 멈춘다.
 """
 from __future__ import annotations
 
@@ -23,6 +27,8 @@ ROLES = ("ref", "mine")
 STOP_CODES = frozenset({"blocked", "proxy_failed"})
 PREVIEW_ACTIONS = frozenset({"save", "save_all", "skip", "reanalyze"})
 TRANSCRIPT_ACTIONS = frozenset({"stt", "screen", "skip"})
+SAVE_ACTIONS = frozenset({"save", "save_all"})
+ALLOWED_ACTIONS: dict[str | None, frozenset[str]] = {None: PREVIEW_ACTIONS, "no_transcript": TRANSCRIPT_ACTIONS}
 
 ANALYZE_TASK = "yt-analyze 규칙대로 입력 영상의 분석 JSON을 만드세요(5절 출력 형식)."
 SCREEN_HINT = "\n자막이 없거나 말이 거의 없는 영상입니다. scenes의 frame 이미지를 Read로 보고 화면 위주로 분석하세요(0단계)."
@@ -130,6 +136,8 @@ class Collector:
             if choice == "skip":
                 job.update(index, state="skipped", step="done", ask=None, message=MSG_SKIPPED)
                 return
+            if choice not in {"stt", "screen"}:
+                raise ScriptError("bad_action", f"알 수 없는 결정입니다: {choice!r}")
             job.update(index, ask=None, message=None)
             if choice == "stt":
                 screen = not self._transcribe(job, index, video_id, notes)
@@ -141,6 +149,7 @@ class Collector:
                 job.update(index, state="skipped", step="done", message=MSG_EXISTS)
                 return
 
+        job.check_cancelled()
         job.update(index, step="cuts")
         try:
             stats = cuts.cut_stats(video_id, force=opts.refetch)
@@ -151,6 +160,7 @@ class Collector:
             notes.append(f"컷 통계 없이 계속합니다: {e.message}")
         job.update(index, message=" / ".join(notes) or None)
 
+        job.check_cancelled()
         self._analyze_and_save(job, index, video_id, screen)
 
     def _identify(self, job: Job, index: int, video_id: Any, title: Any) -> str:
@@ -187,12 +197,11 @@ class Collector:
         cut_data = videomd.load_cuts(video_id)
         duration = float(raw["meta"].get("duration") or (cut_data or {}).get("duration_sec") or 0)
         cut_times = cut_data["cuts"] if cut_data else []
-        tools = ["Read"] if (ctx.get("sparse") or screen) else None
-        task = ANALYZE_TASK + (SCREEN_HINT if tools else "")
+        task = ANALYZE_TASK + (SCREEN_HINT if (ctx.get("sparse") or screen) else "")
         if feedback:
             task += f"\n사용자 의견: {feedback}"
         _, analysis = claude_cli.ask_validated(
-            _analyze_rules(), ctx, task, lambda d: videomd.validate(d, duration, cut_times), tools=tools,
+            _analyze_rules(), ctx, task, lambda d: videomd.validate(d, duration, cut_times), tools=["Read"],
         )
         return analysis
 
@@ -211,10 +220,14 @@ class Collector:
                 job.update(index, state="skipped", step="done", message=MSG_SKIPPED)
                 return
             if action == "reanalyze":
+                job.check_cancelled()
                 job.update(index, state="running", step="analyze")
                 feedback = str(decision.get("feedback") or "").strip() or None
                 preview = self._analyze(video_id, screen, feedback)
                 continue
+            if action not in SAVE_ACTIONS:
+                # 저장 버튼을 누르지 않은 결정으로는 절대 쓰지 않는다
+                raise ScriptError("bad_action", f"알 수 없는 결정입니다: {action!r}")
             if action == "save_all":
                 self.save_all = True
             edited = decision.get("analysis")
@@ -236,6 +249,7 @@ class Collector:
             return
         self.stage_text = result.get("stage_text")
         if self.opts.shots:
+            job.check_cancelled()
             job.update(index, step="shots")
             self._shots_after_save(job, index, video_id)
         job.update(index, state="saved", step="done")
@@ -343,10 +357,6 @@ def _decision(req: Request, job_id: str, item_id: str) -> dict:
     job = req.app.jobs.get(job_id)
     body = req.json
     action = body.get("action")
-    item = job.find(item_id)
-    allowed = TRANSCRIPT_ACTIONS if item.get("ask") == "no_transcript" else PREVIEW_ACTIONS
-    if action not in allowed:
-        raise ScriptError("bad_action", f"이 항목에서 할 수 없는 결정입니다: {action!r} (가능: {', '.join(sorted(allowed))})")
     decision: dict[str, Any] = {"action": action}
     if action == "reanalyze":
         decision["feedback"] = str(body.get("feedback") or "")
@@ -354,5 +364,5 @@ def _decision(req: Request, job_id: str, item_id: str) -> dict:
         if not isinstance(body["analysis"], dict):
             raise ScriptError("bad_request", "analysis는 JSON 객체여야 합니다")
         decision["analysis"] = body["analysis"]
-    job.decide(item_id, decision)
+    job.decide(item_id, decision, allowed=ALLOWED_ACTIONS)
     return {"job": job.snapshot()}

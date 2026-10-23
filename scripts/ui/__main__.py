@@ -22,6 +22,9 @@ from scripts.ui import server
 from scripts.ui.server import read_live_lock
 
 START_TIMEOUT_SEC = 15.0
+# 서버가 끝날 때(--stop, Ctrl+C) 진행 중인 작업이 지금 단계를 마칠 때까지 기다리는 최대 시간.
+# 단계 안의 try/finally(받은 영상·오디오 삭제)가 돌 시간을 준다. 영상 하나 다운로드+컷 분석이 보통 이 안에 끝난다.
+JOB_STOP_TIMEOUT_SEC = 120.0
 STOP_TIMEOUT_SEC = 5.0
 POLL_SEC = 0.2
 LOG = "ui.log"
@@ -94,6 +97,8 @@ def _serve(root: Path, port: int, open_browser: bool) -> None:
     except KeyboardInterrupt:
         emit({"status": "stopped"})  # 터미널 Ctrl+C: 정상 종료 경로
     finally:
+        if app.jobs is not None:
+            app.jobs.shutdown(timeout=JOB_STOP_TIMEOUT_SEC)
         server.remove_lock(app.root)
         srv.server_close()
 
