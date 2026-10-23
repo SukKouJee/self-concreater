@@ -18,7 +18,7 @@ def test_index_loads_modules(client):
 
 
 def test_static_files_served(client):
-    for rel in ["app.css", "app.js", "api.js", "pages/home.js", "pages/placeholder.js"]:
+    for rel in ["app.css", "app.js", "api.js", "pages/home.js", "pages/placeholder.js", "pages/add.js"]:
         status, headers, _ = client.call("GET", f"/static/{rel}")
         assert status == 200, rel
     status, headers, _ = client.call("GET", "/static/app.js")
@@ -47,3 +47,26 @@ def test_page_contract_guards_present():
     home = (STATIC_DIR / "pages" / "home.js").read_text(encoding="utf-8")
     assert home.count("isCurrent()") >= 4
     assert "renderTopbar" not in app
+
+
+ADD_OPTION_LABELS = [
+    "샷 분류도 함께", "이미 분석한 영상도 다시 분석",
+    "자막·컷을 새로 받기(요청이 늘어 차단될 수 있어요)", "추가 시작", "샷 분류만 보강",
+]
+SECTION_LABELS = ["hook", "intro", "body", "demo", "transition", "cta", "outro"]
+
+
+def test_add_page_has_option_labels():
+    text = (STATIC_DIR / "pages" / "add.js").read_text(encoding="utf-8")
+    for label in ADD_OPTION_LABELS:
+        assert label in text, label
+
+
+def test_add_page_confirm_card_and_guards():
+    text = (STATIC_DIR / "pages" / "add.js").read_text(encoding="utf-8")
+    assert ", ".join(f'"{x}"' for x in SECTION_LABELS) in text
+    for token in ["isCurrent()", "/api/jobs/current?kind=collect", "encodeURIComponent", "filesUrl",
+                  "clearTimeout", "음성 인식(STT)으로", "화면만 보고 분석", "남은 영상 모두 저장", "reviewed: true"]:
+        assert token in text, token
+    for banned in ["innerHTML", "window.confirm", "confirm(", "alert(", "prompt("]:
+        assert banned not in text, banned
