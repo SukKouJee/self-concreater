@@ -78,3 +78,33 @@ def test_add_page_shots_opt_in_and_polling_safety():
     for token in ["job_not_found", "POLL_MAX_MS", 'aria-live']:
         assert token in text, token
     assert 'role: "status" }, text' not in text
+
+
+RECREATE_WARNING = "다시 만들면 화면에서 바꾼 대사·가이드·고정한 참고 프레임이 사라지고 내 메모만 남습니다"
+
+
+def test_conti_page_served_with_recreate_warning(client):
+    status, headers, raw = client.call("GET", "/static/pages/conti.js")
+    assert status == 200
+    assert "javascript" in headers["Content-Type"]
+    assert RECREATE_WARNING in raw.decode("utf-8")
+
+
+def test_conti_page_contract_and_safety():
+    text = (STATIC_DIR / "pages" / "conti.js").read_text(encoding="utf-8")
+    for token in [
+        "isCurrent()", "/api/drafts", "/api/conti/create", "/api/conti/save", "/api/conti/scenes",
+        "/api/conti/alternatives", "/api/conti/cut", "/api/jobs/current?kind=conti", "conti_exists",
+        "conti_changed", "파일이 밖에서 바뀌었습니다 — 다시 불러오기", "저장했습니다 · 스토리보드도 다시 그렸습니다",
+        "레퍼런스 실제 장면", "대사 대안", "대안 더 보기", "이걸로 바꾸기", "고정 해제", "콘티 만들기", "다시 만들기",
+        "스토리보드 HTML", "exclude", "hash", "DOMParser", "filesUrl", "clearTimeout", "aria-live", "noopener",
+    ]:
+        assert token in text, token
+    for banned in ["innerHTML", "outerHTML", "insertAdjacentHTML", "window.confirm", "confirm(", "alert(", "prompt("]:
+        assert banned not in text, banned
+
+
+def test_conti_svg_sanitizer_strips_dangerous_parts():
+    text = (STATIC_DIR / "pages" / "conti.js").read_text(encoding="utf-8")
+    for token in ["foreignObject", "script", 'startsWith("on")', "importNode"]:
+        assert token in text, token
