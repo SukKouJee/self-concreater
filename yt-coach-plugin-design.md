@@ -1,6 +1,6 @@
 # yt-coach — 유튜브 콘텐츠 분석·발상 Claude Code 플러그인 설계서
 
-버전: v2.1 (2026-10-20, 콘티 추가) / 상태: 개발 착수용
+버전: v2.2 (2026-10-23, 로컬 UI 추가; v2.1 2026-10-20 콘티 추가) / 상태: 개발 착수용
 
 ## 1. 목적과 범위
 
@@ -25,12 +25,21 @@
 ### 1.3 보류
 - 채널 자동 수집, 신규 영상 감지
 - YouTube Analytics(OAuth) 리텐션 연동
-- 웹 대시보드 (HTML 리포트로 대체)
+- 호스팅·다중 사용자 웹 서비스 (로컬 전용 UI `ytc ui`는 허용, 1.5절)
 
 ### 1.4 전제
 - **로컬 Claude Code** 실행 (YouTube 접근 필요)
 - 의미 해석은 Claude, 수집·계산은 Python 스크립트. 별도 LLM API 키 없음
 - Python 3.11+, `yt-dlp`, `youtube-transcript-api`, `scenedetect`, `opencv-python-headless`, `scikit-learn`, `pyyaml`, (선택) `faster-whisper`, (선택) ffmpeg — 현재 미사용(컷: OpenCV, STT 디코딩: PyAV)
+
+### 1.5 로컬 UI (v2.2)
+기능을 내 PC에서만 열리는 웹 화면으로도 쓴다. 서버 중앙화·개인화·호스팅은 아니다. 전체 설계: [`docs/superpowers/specs/2026-10-23-local-ui-design.md`](docs/superpowers/specs/2026-10-23-local-ui-design.md)
+- 실행: `ytc ui [--port N] [--no-open] [--detach] [--stop]`, Windows는 `bin/ytc.cmd`, Claude Code 안은 `/yt-ui [stop]`. `127.0.0.1`에만 바인딩하고 실행마다 만든 key를 주소에 넣어 key 없는 요청은 거부. 작업 폴더당 서버 하나(`workspace/ui.lock`).
+- 구조: 서버(Python)가 `scripts.*`를 함수로 직접 호출하고, 해석이 필요한 일은 `claude -p`(사용자 구독, `skills/*/SKILL.md` 규칙 재사용)로 실행. 정적 HTML/CSS/JS, 빌드 단계 없음.
+- 메뉴: 홈 / 모으기(레퍼런스 추가 1차, 목록 2차) / 분석(유형화·리포트 2차) / 만들기(콘티 1차, 모티브·기획안 2차) / 성장(진단·미션 2차).
+- 원칙: md 프런트매터가 유일한 원본이고 화면은 읽고 쓰는 창. 저장·바꾸기 클릭이 사용자 확인이며, 클릭 없이 AI 출력이 파일에 쓰이지 않는다(`--shots-only`, `script_mismatch` 자동 맞춤 제외). 화면 밖 수정은 내용 해시로 감지해 저장을 거부한다.
+- 오래 걸리는 수집은 job으로 돌리고(동시에 하나), 화면을 닫아도 계속된다. 서버를 끄면 멈춘다.
+- 새 스크립트: `status`(홈 데이터), `claude_cli`(Claude 호출기), `ui`(서버). `conti`에 `update`·`scenes`·`cut-context` 추가.
 
 ## 2. 저장소 구조
 
@@ -38,7 +47,7 @@
 yt-coach/
 ├── .claude-plugin/plugin.json
 ├── commands/        yt-init, yt-add, yt-typify, yt-inspire, yt-draft, yt-conti,
-│                    yt-diagnose, yt-mission, yt-review (.md)
+│                    yt-diagnose, yt-mission, yt-review, yt-ui (.md)
 ├── skills/
 │   ├── yt-analyze/   시놉시스·섹션·기법·촬영 요약 규칙
 │   ├── yt-shots/     프레임 기반 샷 분류 규칙 (후반)
@@ -48,7 +57,7 @@ yt-coach/
 │   ├── yt-conti/     전체 대사 + 컷별 대사·가이드 규칙
 │   ├── yt-diagnose/  근접도·갭 서술 규칙
 │   └── yt-mission/   성장 단계·미션·회고 규칙
-├── bin/ytc          스크립트 실행기 (.venv Python 선택, 작업 폴더 전달)
+├── bin/ytc, ytc.cmd 스크립트 실행기 (.venv Python 선택, 작업 폴더 전달. .cmd는 Git Bash 없는 Windows용)
 ├── scripts/
 │   ├── fetch.py      메타데이터·자막 → workspace/raw/{id}.json
 │   ├── stt.py        자막 없을 때 Whisper (선택)
@@ -58,7 +67,10 @@ yt-coach/
 │   ├── cluster.py    축별 군집·판정 점수
 │   ├── similarity.py mine vs 아키타입 근접도
 │   ├── conti.py      draft → 콘티 검증·저장, 도식+참고 프레임 HTML 스토리보드
-│   └── report.py     HTML 리포트
+│   ├── report.py     HTML 리포트
+│   ├── status.py     카테고리별 진행 단계·다음 할 일 (UI 홈)
+│   ├── claude_cli.py claude -p 호출기 (UI)
+│   └── ui/           로컬 UI 서버 + 정적 화면
 ├── templates/        video.md, index.md, techniques.md, profile.md, mission.md, thresholds.json
 ├── CLAUDE.md
 └── README.md
@@ -124,6 +136,9 @@ yt-coach/
 - 시각화: 컷마다 샷 크기 도식(SVG) + 같은 샷 크기·섹션의 레퍼런스 대표 프레임(참고용, 구도만)
 - `drafts/{draft}-conti.md`(프런트매터 `script`·`cuts`가 원본) + 같은 이름 `.html`(외부 자원 없는 한 파일, 인쇄·폰 보기)
 - 사용자가 md를 고치면 `/yt-conti <conti.md>`로 HTML만 다시 그린다. AI 이미지 생성은 하지 않는다
+
+### `/yt-ui [stop]`
+- 작업 폴더를 로컬 전용 브라우저 화면으로 연다(1.5절). `ytc ui --detach`로 세션과 분리해 띄우고 주소를 알린다. `stop`이면 `ytc ui --stop`
 
 ### `/yt-diagnose <category> <link | draft파일 | 대본파일>`
 - 아키타입 대비 축별 근접도 + 갭. 단일 종합 점수 없음
@@ -221,14 +236,15 @@ speech_cps: 4.4         # 레퍼런스 말 속도 중앙값(없으면 4.5)
 script:                 # 전체 대사, draft 섹션마다 하나
   - {label: hook, start: 0, end: 2, text: "4단계 다 먹을 수 있을까?"}
 cuts:
-  - {n: 1, section: 0, start: 0, end: 1, size: 탑뷰, angle: 탑뷰, action: ..., line: ..., caption: ..., sfx: ..., guide: ...}
-schema_version: 1
+  - {n: 1, section: 0, start: 0, end: 1, size: 탑뷰, angle: 탑뷰, action: ..., line: ..., caption: ..., sfx: ..., guide: ..., ref_frame: workspace/frames/<id>/<file>.jpg}   # ref_frame은 선택
+schema_version: 2       # 2: 컷의 선택 필드 ref_frame(고정한 참고 프레임, 작업 폴더 기준 경로) 추가
 ---
 ## 개요
 ## 전체 대사
 ## 콘티      | # | 시간 | 섹션 | 샷 | 대사 | 자막 | 효과음 | 가이드 |
 ## 내 메모
 ```
+`render`는 `ref_frame`이 있으면 자동 매칭 대신 그 프레임을 쓰고, 없거나 파일이 사라졌으면 자동 매칭으로 돌아간다. schema_version 1 파일도 그대로 읽는다.
 
 ### 6.2 `index.md` 섹션
 `## 개요` / `## 단계` / `## 판정` (축별 표) / `## 아키타입` / `## 모티브 카드` / `## 이상치`
