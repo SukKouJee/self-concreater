@@ -3,8 +3,9 @@
 보안
 - `127.0.0.1`에만 바인딩한다. `Host` 헤더가 `127.0.0.1:<port>`/`localhost:<port>`가 아니면 403 `bad_host`
   (DNS rebinding 차단). `Origin`이 있는데 이 서버가 아니면 403 `bad_origin`.
-- `/`는 `?key=<token>`(또는 이미 받은 쿠키)로 열고, 성공하면 `ytc_key` 쿠키(HttpOnly, SameSite=Strict)를 준다.
-  그 밖의 모든 경로(`/static/` 포함)는 쿠키 `ytc_key` 또는 헤더 `X-YTC-Key`가 필요하다. 실패는 403 `bad_token`.
+- `/`는 `?key=<token>`(또는 이미 받은 쿠키)로 열고, 성공하면 `ytc_key_<port>` 쿠키(HttpOnly, SameSite=Strict)를 준다.
+  쿠키 이름에 포트를 넣어 같은 127.0.0.1의 다른 포트 서버(이전 실행 등)와 쿠키가 섞이지 않게 한다.
+  그 밖의 모든 경로(`/static/` 포함)는 쿠키 `ytc_key_<port>` 또는 헤더 `X-YTC-Key`가 필요하다. 실패는 403 `bad_token`.
 - `/files/<path>`는 작업 폴더 안의 `workspace/frames`, `drafts`, `reports`만 내준다. 그 밖은 모두 404.
 
 라우트 등록 규약 (다음 Task들이 이 방식으로 붙인다)
@@ -42,7 +43,7 @@ from scripts.ui.jobs import JobManager
 
 HOST = "127.0.0.1"
 LOCK = "ui.lock"
-COOKIE = "ytc_key"
+COOKIE_PREFIX = "ytc_key"
 HEADER = "X-YTC-Key"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 FILE_DIRS: tuple[tuple[str, ...], ...] = (("workspace", "frames"), ("drafts",), ("reports",))
@@ -146,6 +147,11 @@ def token_ok(given: str | None, token: str) -> bool:
     return secrets.compare_digest(given.encode("utf-8"), token.encode("utf-8"))
 
 
+def cookie_name(port: int) -> str:
+    """쿠키는 포트를 가리지 않으므로 이름에 포트를 넣는다."""
+    return f"{COOKIE_PREFIX}_{port}"
+
+
 def _cookie(header: str | None, name: str) -> str | None:
     for part in (header or "").split(";"):
         key, sep, value = part.strip().partition("=")
@@ -180,11 +186,12 @@ NOT_FOUND = (404, {"error": "not_found", "message": "없는 경로입니다"})
 @route("GET", "/", auth=False)
 def _index(req: Request) -> Response | tuple[int, dict]:
     key = req.query.get("key")
-    cookie = _cookie(req.headers.get("cookie"), COOKIE)
+    name = cookie_name(req.app.port)
+    cookie = _cookie(req.headers.get("cookie"), name)
     if not (token_ok(key, req.app.token) or token_ok(cookie, req.app.token)):
         return 403, BAD_TOKEN
     resp = _file_response(STATIC_DIR / "index.html")
-    resp.headers.append(("Set-Cookie", f"{COOKIE}={req.app.token}; Path=/; HttpOnly; SameSite=Strict"))
+    resp.headers.append(("Set-Cookie", f"{name}={req.app.token}; Path=/; HttpOnly; SameSite=Strict"))
     return resp
 
 
@@ -293,7 +300,7 @@ class _Handler(BaseHTTPRequestHandler):
             return NOT_FOUND
         rt, groups = found
         if rt.auth:
-            given = self.headers.get(HEADER) or _cookie(self.headers.get("Cookie"), COOKIE)
+            given = self.headers.get(HEADER) or _cookie(self.headers.get("Cookie"), cookie_name(app.port))
             if not token_ok(given, app.token):
                 return 403, BAD_TOKEN
         req = Request(

@@ -89,7 +89,7 @@ def test_root_sets_cookie_with_key(client):
     status, headers, raw = client.call("GET", f"/?key={client.app.token}", token=False)
     assert status == 200
     cookie = headers["Set-Cookie"]
-    assert f"ytc_key={client.app.token}" in cookie
+    assert f"ytc_key_{client.app.port}={client.app.token}" in cookie
     assert "HttpOnly" in cookie and "SameSite=Strict" in cookie
     assert headers["Content-Type"].startswith("text/html")
     assert b"yt-coach" in raw
@@ -97,8 +97,22 @@ def test_root_sets_cookie_with_key(client):
 
 def test_cookie_authorizes_api(client):
     status, body = client.json("GET", "/api/ping", token=False,
-                               headers={"Cookie": f"other=1; ytc_key={client.app.token}"})
+                               headers={"Cookie": f"other=1; {server.cookie_name(client.app.port)}={client.app.token}"})
     assert status == 200 and body["ok"] is True
+
+
+def test_cookie_name_includes_port():
+    assert server.cookie_name(8765) == "ytc_key_8765"
+
+
+def test_cookie_for_other_port_is_rejected(client):
+    other = server.cookie_name(client.app.port + 1)
+    status, body = client.json("GET", "/api/ping", token=False, headers={"Cookie": f"{other}={client.app.token}"})
+    assert status == 403 and body["error"] == "bad_token"
+    status, body = client.json("GET", "/", token=False, headers={"Cookie": f"{other}={client.app.token}"})
+    assert status == 403 and body["error"] == "bad_token"
+    status, body = client.json("GET", "/api/ping", token=False, headers={"Cookie": f"ytc_key={client.app.token}"})
+    assert status == 403
 
 
 @pytest.mark.parametrize("query", ["/?key=wrong", "/", "/?key=%ED%95%9C"])
