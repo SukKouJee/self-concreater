@@ -152,3 +152,4 @@ code { background: var(--grid); padding: 1px 6px; border-radius: 4px; }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+.stage-notes { margin: 0 0 var(--sp-3); padding-left: var(--sp-5); color: var(--muted); font-size: 13px; }

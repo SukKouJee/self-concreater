@@ -26,8 +26,13 @@ function stepBar(cat) {
 function categoryCard(cat, selected) {
   const card = h("article", { class: "card" + (selected ? " card-selected" : "") });
   const head = h("div", { class: "card-head" });
-  head.append(h("h2", {}, cat.category), h("span", { class: "muted" }, cat.stage_text || ""));
-  card.append(head, stepBar(cat));
+  head.append(h("h2", {}, cat.category));
+  card.append(head);
+  const lines = (cat.stage_text || "").split("\n").map((l) => l.replace(/^\s*-\s*/, "").trim()).filter(Boolean);
+  if (lines.length) {
+    card.append(h("ul", { class: "stage-notes" }, ...lines.map((l) => h("li", {}, l))));
+  }
+  card.append(stepBar(cat));
   if (cat.next) {
     const row = h("div", { class: "next-row" });
     row.append(h("p", { class: "next-text" }, cat.next.text));
@@ -81,11 +86,13 @@ export async function mount(el, params, ctx) {
   try {
     st = await ctx.api("GET", "/api/status");
   } catch (e) {
+    if (!ctx.isCurrent()) return;
     const retry = h("button", { type: "button", class: "btn" }, "다시 시도");
-    retry.addEventListener("click", () => mount(el, params, ctx));
+    retry.addEventListener("click", () => { if (ctx.isCurrent()) mount(el, params, ctx); });
     el.replaceChildren(h("h1", {}, "홈"), h("p", { class: "error", role: "alert" }, e.message), retry);
     return;
   }
+  if (!ctx.isCurrent()) return;
   el.replaceChildren(h("h1", {}, "홈"));
   if (!st.initialized) {
     const card = h("section", { class: "card" });
@@ -96,10 +103,13 @@ export async function mount(el, params, ctx) {
       btn.disabled = true;
       try {
         await ctx.api("POST", "/api/init", {});
+        if (!ctx.isCurrent()) return;
         ctx.toast("작업 폴더를 만들었습니다", "ok");
         await ctx.refreshCategories();
+        if (!ctx.isCurrent()) return;
         mount(el, params, ctx);
       } catch (e) {
+        if (!ctx.isCurrent()) return;
         btn.disabled = false;
         ctx.toast(e.message, "error");
       }

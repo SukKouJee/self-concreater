@@ -38,3 +38,12 @@ def test_no_external_resources():
         if path.is_file():
             text = path.read_text(encoding="utf-8")
             assert not re.search(r"https?://", text), path.name
+
+
+def test_page_contract_guards_present():
+    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    for token in ["isCurrent", "signal", "onCategory", 'startsWith("#/")', "preventDefault"]:
+        assert token in app, token
+    home = (STATIC_DIR / "pages" / "home.js").read_text(encoding="utf-8")
+    assert home.count("isCurrent()") >= 4
+    assert "renderTopbar" not in app

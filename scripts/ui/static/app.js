@@ -1,3 +1,11 @@
+// Page contract (pages/<name>.js):
+//   export function mount(el, params, ctx)   // may be async
+//   export function unmount()                // optional, called before the next route
+//   export function onCategory(category)     // optional; called when the category changes while this page is
+//                                            // open. Non-home pages are NOT remounted (keeps in-progress state).
+// ctx: { category, setCategory(name), refreshCategories(), toast(msg, kind), api(method, path, body),
+//        signal (AbortSignal, aborted when the user navigates away), isCurrent() (false once navigated away) }
+// Rule: after EVERY await in mount/handlers, `if (!ctx.isCurrent()) return;` before touching the DOM.
 import { api, showBanner } from "/static/api.js";
 import { h } from "/static/dom.js";
 
@@ -44,7 +52,7 @@ const SOON = {};
 for (const g of MENU) for (const it of g.items) if (it.soon) SOON[it.soon] = it;
 
 const $ = (id) => document.getElementById(id);
-const state = { status: null, categories: [], current: null, navToken: 0 };
+const state = { status: null, categories: [], current: null, currentPage: null, navToken: 0, abort: null };
 
 // ---- ctx ---------------------------------------------------------------
 
@@ -61,6 +69,7 @@ function toast(msg, kind = "info") {
   setTimeout(() => t.remove(), kind === "error" ? 7000 : 3500);
 }
 
+// Shared (app-level) context. Pages receive a per-mount view of it, see pageCtx().
 const ctx = {
   category: null,
   api,
@@ -68,11 +77,28 @@ const ctx = {
   setCategory(name) {
     ctx.category = name || null;
     if (name) storeCategory(name);
-    renderTopbar();
-    route();
+    updateTopbar();
+    if (state.currentPage === "home") {
+      route();
+    } else if (state.current && typeof state.current.onCategory === "function") {
+      state.current.onCategory(ctx.category);
+    }
   },
   refreshCategories,
 };
+
+// Per-mount ctx: adds liveness guards so late async work never touches a page the user left.
+function pageCtx(token, signal) {
+  return {
+    get category() { return ctx.category; },
+    setCategory: ctx.setCategory,
+    refreshCategories,
+    toast,
+    api: (method, path, body) => api(method, path, body, signal),
+    signal,
+    isCurrent: () => token === state.navToken,
+  };
+}
 
 async function refreshCategories() {
   try {
@@ -86,7 +112,7 @@ async function refreshCategories() {
   const stored = readStoredCategory();
   ctx.category = names.includes(ctx.category) ? ctx.category
     : names.includes(stored) ? stored : (names[0] || null);
-  renderTopbar();
+  updateTopbar();
 }
 
 // ---- menu ----------------------------------------------------------------
@@ -131,30 +157,42 @@ function setDrawer(open) {
 
 // ---- top bar ----------------------------------------------------------------
 
-function renderTopbar() {
+function buildTopbar() {
   const bar = $("topbar");
-  bar.replaceChildren();
   const toggle = h("button", {
     type: "button", class: "btn btn-icon menu-toggle", id: "menu-toggle", "aria-label": "메뉴 열기",
-    "aria-controls": "menu", "aria-expanded": String(document.body.classList.contains("drawer-open")),
+    "aria-controls": "menu", "aria-expanded": "false",
   }, "☰");
   toggle.addEventListener("click", () => setDrawer(!document.body.classList.contains("drawer-open")));
-  bar.append(toggle, h("a", { class: "brand", href: "#/home" }, "yt-coach"));
-
   const sel = h("select", { id: "category-select", "aria-label": "카테고리" });
-  if (state.categories.length === 0) {
-    sel.append(h("option", { value: "" }, "카테고리 없음"));
-    sel.disabled = true;
-  }
-  for (const c of state.categories) {
-    sel.append(h("option", { value: c.category, selected: c.category === ctx.category }, c.category));
-  }
   sel.addEventListener("change", () => ctx.setCategory(sel.value));
-  bar.append(h("div", { class: "cat-select" }, sel));
+  bar.append(
+    toggle,
+    h("a", { class: "brand", href: "#/home" }, "yt-coach"),
+    h("div", { class: "cat-select" }, sel),
+    h("span", { class: "work-root", id: "work-root" }),
+    shutdownArea(),
+  );
+  updateTopbar();
+}
 
+// Only refresh dynamic parts so focus and a pending shutdown confirm survive.
+function updateTopbar() {
+  const sel = $("category-select");
+  if (!sel) return;
+  const names = state.categories.map((c) => c.category);
+  const same = sel.options.length === names.length && names.every((n, i) => sel.options[i].value === n);
+  if (!same) {
+    sel.replaceChildren();
+    if (names.length === 0) sel.append(h("option", { value: "" }, "카테고리 없음"));
+    for (const n of names) sel.append(h("option", { value: n }, n));
+  }
+  sel.disabled = names.length === 0;
+  if (ctx.category && sel.value !== ctx.category) sel.value = ctx.category;
   const root = state.status ? state.status.work_root : "";
-  bar.append(h("span", { class: "work-root", title: root }, root));
-  bar.append(shutdownArea());
+  const rootEl = $("work-root");
+  rootEl.textContent = root;
+  rootEl.title = root;
 }
 
 function shutdownArea() {
@@ -228,11 +266,15 @@ function parseHash() {
 
 async function route() {
   const token = ++state.navToken;
+  if (state.abort) state.abort.abort();
+  state.abort = new AbortController();
+  const signal = state.abort.signal;
   const main = $("main");
   if (state.current && typeof state.current.unmount === "function") {
     try { state.current.unmount(); } catch { /* ignore page cleanup errors */ }
   }
   state.current = null;
+  state.currentPage = null;
   setDrawer(false);
   markActive();
   const { page, params } = parseHash();
@@ -241,8 +283,9 @@ async function route() {
     const mod = await import(`/static/pages/${page}.js`);
     if (token !== state.navToken) return;
     state.current = mod;
+    state.currentPage = page;
     main.replaceChildren();
-    await mod.mount(main, params, ctx);
+    await mod.mount(main, params, pageCtx(token, signal));
   } catch (e) {
     if (token !== state.navToken) return;
     main.replaceChildren(h("p", { class: "error", role: "alert" }, `화면을 열지 못했습니다: ${e && e.message ? e.message : e}`));
@@ -253,9 +296,17 @@ async function route() {
 
 async function start() {
   renderMenu();
+  buildTopbar();
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") setDrawer(false); });
   $("scrim").addEventListener("click", () => setDrawer(false));
-  window.addEventListener("hashchange", route);
+  window.addEventListener("hashchange", () => {
+    // Ignore non-route hashes (e.g. the skip link's "#main"); only "#/..." drives the router.
+    if (location.hash === "" || location.hash.startsWith("#/")) route();
+  });
+  document.querySelector(".skip").addEventListener("click", (e) => {
+    e.preventDefault();
+    $("main").focus();
+  });
   await refreshCategories();
   await route();
 }
