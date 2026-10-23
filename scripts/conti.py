@@ -4,6 +4,10 @@
   python -m scripts.conti context <draft.md>                          draft 파싱 + 말 속도 + 포맷
   python -m scripts.conti save <draft.md> --conti <json> [--force]    → drafts/{draft}-conti.md + .html
   python -m scripts.conti render <conti.md>                           고친 프런트매터로 HTML만 다시 그린다
+  python -m scripts.conti update <conti.md> --cut N [--line S] [--guide S] [--caption S] [--sfx S]
+                          [--ref-frame S] [--expect-hash H]           컷 하나 고치기 (--ref-frame ""은 고정 해제)
+  python -m scripts.conti scenes <conti.md> --cut N [--limit 6]       그 컷에 쓸 참고 장면 후보
+  python -m scripts.conti cut-context <conti.md> --cut N              컷 하나의 앞뒤 대사·섹션·글자 수 한도
 
 conti JSON (yt-conti 규칙)
   {"script": [{"text"}],                                      draft 섹션마다 하나, 같은 순서 (전체 대사)
@@ -16,6 +20,7 @@ conti JSON (yt-conti 규칙)
 from __future__ import annotations
 
 import base64
+import hashlib
 import html
 import json
 import re
@@ -33,7 +38,8 @@ from scripts.videomd import LABELS, _existing_memo, fmt_time, load_cuts
 DEFAULT_CPS = 4.5
 SEC_TOLERANCE = 0.3
 OVERFLOW_SLACK = 1.15          # 말 속도 × 컷 길이의 115%까지는 허용
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+EDITABLE_FIELDS = ("line", "guide", "caption", "sfx", "ref_frame")
 
 _HEAD_RE = re.compile(r"^### (\d+:\d{2})–(\d+:\d{2}) · (\w+)(?:/(\w+))? \(")
 _ROW_RE = re.compile(r"^\| (\d+) \| (.+?) \| (.*?) \| ([\d.]+)초 \| (.*) \|\s*$")
@@ -182,6 +188,9 @@ def validate(data: dict, sections: list[dict]) -> tuple[list[dict], list[dict]]:
                 raise _invalid(f"컷 {i}의 {field}가 비어 있습니다")
         out_cuts.append({"n": i, "section": sec_idx, "size": c["size"], "angle": c.get("angle") or None, "sec": sec,
                          **{f: str(c.get(f) or "").strip() for f in ("action", "line", "caption", "sfx", "guide")}})
+        pinned = c.get("ref_frame")
+        if isinstance(pinned, str) and pinned.strip():
+            out_cuts[-1]["ref_frame"] = pinned.strip()
     for s in sections:
         mine = [c for c in out_cuts if c["section"] == s["idx"]]
         total, length = sum(c["sec"] for c in mine), s["end"] - s["start"]
@@ -424,9 +433,13 @@ def render_html(fm: dict) -> str:
     for c in cuts:
         label = script[c["section"]]["label"]
         ref = refs.get(c["n"])
+        pinned = c.get("ref_frame")
+        if pinned and (work_root() / pinned).exists():            # 사용자가 고정한 프레임이 자동 매칭보다 먼저
+            ref = {"frame": pinned, "title": Path(pinned).name, "match": "pinned"}
         uri = _data_uri(ref["frame"]) if ref else None
+        tag = {"exact": "참고", "pinned": "참고(고정)"}.get(ref["match"] if ref else "", "참고(근사)")
         ref_html = (f'<figure><img class="ref" src="{uri}" alt="참고 프레임: {_esc(ref["title"])}">'
-                    f'<figcaption title="{_esc(ref["title"])}">{"참고" if ref["match"] == "exact" else "참고(근사)"} · '
+                    f'<figcaption title="{_esc(ref["title"])}">{tag} · '
                     f'{_esc(ref["title"])}</figcaption></figure>'
                     if uri else '<figure><div class="noref">같은 샷의 레퍼런스 프레임 없음</div>'
                                 '<figcaption>&nbsp;</figcaption></figure>')
@@ -449,7 +462,8 @@ def render_html(fm: dict) -> str:
                        f'<td>{_esc(c["line"])}</td><td>{_esc(c["caption"])}</td><td>{_esc(c["sfx"])}</td>'
                        f'<td>{_esc(c["guide"])}</td></tr>' for c in cuts)
              + "</tbody></table></div></details>")
-    approx = sum(1 for r in refs.values() if r["match"] != "exact")
+    approx = sum(1 for c in cuts if c["n"] in refs and refs[c["n"]]["match"] != "exact"
+                 and not (c.get("ref_frame") and (work_root() / c["ref_frame"]).exists()))
     note = ('<p class="sub" style="margin-top:24px;font-size:12px">참고 프레임은 같은 샷 크기의 레퍼런스 장면으로, '
             "구도만 참고하세요. 도식은 샷 크기를 단순화한 그림입니다."
             + (f" '참고(근사)' {approx}장은 프레임별 샷 분류가 없어 섹션 대표 샷 크기로 고른 것이라 틀릴 수 있습니다. "
@@ -508,6 +522,117 @@ def render(conti: str | Path) -> dict:
             "warnings": warnings(script, cuts, fm["speech_cps"])}
 
 
+# --- 컷 하나 편집 · 장면 후보 ----------------------------------------------------------
+
+def content_hash(path: str | Path) -> str:
+    """파일 바이트 sha256. 화면이 불러온 뒤 파일이 밖에서 바뀌었는지 확인하는 데 쓴다."""
+    return hashlib.sha256(_resolve(path).read_bytes()).hexdigest()
+
+
+def _load_conti(path: Path) -> dict:
+    if not path.exists():
+        raise ScriptError("conti_not_found", f"콘티가 없습니다: {_rel(path)}")
+    fm, _ = refstore.read_md(path)
+    if not fm.get("cuts") or not fm.get("script"):
+        raise ScriptError("invalid_conti", "콘티 프런트매터에 script·cuts가 없습니다")
+    sections = [{"idx": i, "label": s["label"], "start": float(s["start"]), "end": float(s["end"])}
+                for i, s in enumerate(fm["script"])]
+    script, cuts = validate({"script": fm["script"], "cuts": fm["cuts"]}, sections)
+    return {**fm, "script": script, "cuts": cuts}
+
+
+def _find_cut(cuts: list[dict], n: int) -> dict:
+    cut = next((c for c in cuts if c["n"] == n), None)
+    if cut is None:
+        raise ScriptError("cut_not_found", f"컷 {n}번이 없습니다 (1~{len(cuts)})")
+    return cut
+
+
+def _check_edit(fields: dict) -> dict:
+    unknown = sorted(set(fields) - set(EDITABLE_FIELDS))
+    if unknown:
+        raise ScriptError("invalid_edit", f"고칠 수 없는 필드입니다: {', '.join(unknown)} (허용: {', '.join(EDITABLE_FIELDS)})")
+    edit = {k: ("" if v is None else str(v)).strip() for k, v in fields.items()}
+    if "guide" in edit and not edit["guide"]:
+        raise ScriptError("invalid_edit", "가이드는 비울 수 없습니다")
+    ref = edit.get("ref_frame")
+    if ref:
+        target = _resolve(ref)
+        try:
+            rel = target.resolve().relative_to(work_root().resolve()).as_posix()
+        except ValueError as e:
+            raise ScriptError("invalid_edit", f"작업 폴더 밖의 파일은 고정할 수 없습니다: {ref}") from e
+        if not target.is_file():
+            raise ScriptError("invalid_edit", f"참고 프레임 파일이 없습니다: {ref}")
+        edit["ref_frame"] = rel
+    return edit
+
+
+def update_cut(conti: str | Path, n: int, fields: dict, expected_hash: str | None = None) -> dict:
+    """컷 하나의 line·guide·caption·sfx·ref_frame을 고친다. 본문은 다시 그리되 '## 내 메모'와 줄바꿈 방식은 보존."""
+    path = _resolve(conti)
+    if not path.exists():
+        raise ScriptError("conti_not_found", f"콘티가 없습니다: {_rel(path)}")
+    raw = path.read_bytes()
+    if expected_hash is not None and hashlib.sha256(raw).hexdigest() != expected_hash:
+        raise ScriptError("conti_changed", "파일이 밖에서 바뀌었습니다. 다시 불러오세요")
+    edit = _check_edit(fields)
+    fm = _load_conti(path)
+    cut = _find_cut(fm["cuts"], n)
+    for key, value in edit.items():
+        if key == "ref_frame" and not value:
+            cut.pop("ref_frame", None)
+        else:
+            cut[key] = value
+    if "line" in edit:                                   # 컷 대사를 이은 것이 섹션 전체 대사
+        lines = [c["line"] for c in fm["cuts"] if c["section"] == cut["section"] and c["line"]]
+        fm["script"][cut["section"]]["text"] = " ".join(lines)
+    fm["schema_version"] = SCHEMA_VERSION
+    nl = "\r\n" if raw.lstrip(b"\xef\xbb\xbf").startswith(b"---\r\n") else "\n"
+    memo = _existing_memo(path).replace("\r\n", "\n")
+    body = render_md(fm, memo).replace("\n", nl)
+    path.write_bytes(refstore.join_frontmatter(fm, body, nl).encode("utf-8"))
+    html_path = _write_html(path, fm)
+    return {"status": "updated", "path": _rel(path), "html": _rel(html_path), "abs_html": str(html_path),
+            "hash": content_hash(path), "cut": _find_cut(fm["cuts"], n),
+            "warnings": warnings(fm["script"], fm["cuts"], fm["speech_cps"])}
+
+
+def scenes(conti: str | Path, n: int, limit: int = 6) -> list[dict]:
+    """컷에 쓸 참고 장면 후보. 같은 크기+섹션 → 같은 크기 순, 각 단계 안에서 exact 먼저, 프레임 경로 순."""
+    fm = _load_conti(_resolve(conti))
+    cut = _find_cut(fm["cuts"], n)
+    label = fm["script"][cut["section"]]["label"]
+    pool = frame_pool(fm.get("category"))
+    tiers = [[p for p in pool if p["size"] == cut["size"] and p["section"] == label],
+             [p for p in pool if p["size"] == cut["size"]]]
+    out, seen = [], set()
+    for tier in tiers:
+        for p in sorted(tier, key=lambda p: (p["match"] != "exact", p["frame"])):
+            if p["frame"] in seen:
+                continue
+            seen.add(p["frame"])
+            out.append({k: p.get(k) for k in ("frame", "size", "section", "video", "title", "match")})
+    return out[:limit]
+
+
+def cut_context(conti: str | Path, n: int) -> dict:
+    """컷 하나를 다듬을 때 필요한 맥락: 앞뒤 컷 대사, 섹션 전체 대사, 글자 수 한도, draft의 훅·서사 유형."""
+    fm = _load_conti(_resolve(conti))
+    cut = _find_cut(fm["cuts"], n)
+    section = fm["script"][cut["section"]]
+    draft_fm: dict = {}
+    draft_path = _resolve(fm["draft"]) if fm.get("draft") else None
+    if draft_path and draft_path.exists():
+        draft_fm, _ = refstore.read_md(draft_path)
+    prev = next((c for c in fm["cuts"] if c["n"] == n - 1), None)
+    nxt = next((c for c in fm["cuts"] if c["n"] == n + 1), None)
+    return {"cut": cut, "prev_line": prev["line"] if prev else None, "next_line": nxt["line"] if nxt else None,
+            "section_label": section["label"], "section_text": section["text"], "speech_cps": fm["speech_cps"],
+            "max_chars": int(fm["speech_cps"] * cut["sec"]), "hook_type": draft_fm.get("hook_type"),
+            "narrative_type": draft_fm.get("narrative_type"), "title": fm.get("title"), "profile": motif._profile()}
+
+
 def main(argv: list[str]) -> Any:
     parser = ArgParser(prog="python -m scripts.conti")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -517,11 +642,31 @@ def main(argv: list[str]) -> Any:
     s.add_argument("--conti", required=True)
     s.add_argument("--force", action="store_true")
     sub.add_parser("render").add_argument("conti")
+    u = sub.add_parser("update")
+    u.add_argument("conti")
+    u.add_argument("--cut", type=int, required=True)
+    for field in EDITABLE_FIELDS:
+        u.add_argument(f"--{field.replace('_', '-')}", dest=field, default=None)
+    u.add_argument("--expect-hash", dest="expect_hash", default=None)
+    sc = sub.add_parser("scenes")
+    sc.add_argument("conti")
+    sc.add_argument("--cut", type=int, required=True)
+    sc.add_argument("--limit", type=int, default=6)
+    cc = sub.add_parser("cut-context")
+    cc.add_argument("conti")
+    cc.add_argument("--cut", type=int, required=True)
     args = parser.parse_args(argv)
     if args.cmd == "context":
         return context(args.draft)
     if args.cmd == "render":
         return render(args.conti)
+    if args.cmd == "update":
+        fields = {f: getattr(args, f) for f in EDITABLE_FIELDS if getattr(args, f) is not None}
+        return update_cut(args.conti, args.cut, fields, args.expect_hash)
+    if args.cmd == "scenes":
+        return scenes(args.conti, args.cut, args.limit)
+    if args.cmd == "cut-context":
+        return cut_context(args.conti, args.cut)
     return save(args.draft, _resolve(args.conti), args.force)
 
 
