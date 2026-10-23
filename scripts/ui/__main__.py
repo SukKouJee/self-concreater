@@ -4,7 +4,8 @@
   새로 띄우지 않고 `{"status": "running", "url"}`를 돌려준다(`--no-open`이 아니면 브라우저도 연다).
 - 기본(전경): lock을 쓰고 `{"status": "started", "url"}`를 먼저 출력한 뒤 서버가 끝날 때까지 돈다. 끝나면 lock을 지운다.
 - `--detach`: 같은 명령을 분리 프로세스로 띄운다(출력은 `workspace/ui.log`). 자식은 항상 `--no-open`으로 띄우고
-  브라우저는 부모가 연다. lock이 생길 때까지 최대 15초 기다린 뒤 `{"status": "started", "url", "pid"}`.
+  브라우저는 부모가 연다. lock이 생길 때까지 최대 15초 기다린 뒤 `{"status": "started", "url", "pid"}`(pid는 lock의 서버 pid).
+  Windows에서는 Claude Code를 닫아도 서버가 살도록 Job 이탈(CREATE_BREAKAWAY_FROM_JOB)을 먼저 시도한다.
 - `--stop`: lock의 서버에 `POST /api/shutdown` → `{"status": "stopped"}`, 없으면 `{"status": "not_running"}`.
 """
 from __future__ import annotations
@@ -28,6 +29,11 @@ JOB_STOP_TIMEOUT_SEC = 120.0
 STOP_TIMEOUT_SEC = 5.0
 POLL_SEC = 0.2
 LOG = "ui.log"
+# Windows CreateProcess 플래그(다른 OS에서도 테스트할 수 있게 숫자로 둔다)
+DETACHED_PROCESS = 0x00000008
+CREATE_NEW_PROCESS_GROUP = 0x00000200
+CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+_PLATFORM = sys.platform
 
 
 def _open(url: str, enabled: bool) -> None:
@@ -35,11 +41,26 @@ def _open(url: str, enabled: bool) -> None:
         webbrowser.open(url)
 
 
-def _spawn_kwargs() -> dict[str, Any]:
-    if sys.platform == "win32":
-        flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-        return {"creationflags": flags}
-    return {"start_new_session": True}
+def _spawn_attempts() -> list[dict[str, Any]]:
+    """분리 실행 옵션을 시도할 순서대로 돌려준다.
+
+    Windows: Claude Code가 자식들을 Job 객체로 묶어 두면 Claude Code를 닫을 때 서버도 같이 죽는다.
+    그래서 먼저 CREATE_BREAKAWAY_FROM_JOB로 Job 밖에 띄우고, Job이 이탈을 막아 OSError가 나면 없이 다시 띄운다.
+    """
+    if _PLATFORM == "win32":
+        base = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        return [{"creationflags": base | CREATE_BREAKAWAY_FROM_JOB}, {"creationflags": base}]
+    return [{"start_new_session": True}]
+
+
+def _popen_detached(cmd: list[str], **kwargs: Any) -> subprocess.Popen[bytes]:
+    *fallible, last = _spawn_attempts()
+    for extra in fallible:
+        try:
+            return subprocess.Popen(cmd, **kwargs, **extra)
+        except OSError:
+            continue                      # Job이 이탈을 막음 → 다음 옵션으로
+    return subprocess.Popen(cmd, **kwargs, **last)
 
 
 def _log_tail(path: Path, limit: int = 2000) -> str:
@@ -56,17 +77,17 @@ def _detach(root: Path, port: int, open_browser: bool) -> dict:
     log_path = workspace_dir(LOG)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with open(log_path, "wb") as log:
-        proc = subprocess.Popen(
+        proc = _popen_detached(
             cmd, cwd=str(server.PLUGIN_ROOT), env=env,
             stdin=subprocess.DEVNULL, stdout=log, stderr=log, close_fds=True,
-            **_spawn_kwargs(),
         )
     deadline = time.monotonic() + START_TIMEOUT_SEC
     while time.monotonic() < deadline:
         info = read_live_lock(root)
         if info:
             _open(info["url"], open_browser)
-            return {"status": "started", "url": info["url"], "pid": proc.pid}
+            # 런처(proc)가 아니라 lock을 쓴 서버 프로세스의 pid를 돌려준다
+            return {"status": "started", "url": info["url"], "pid": info["pid"]}
         if proc.poll() is not None:
             raise ScriptError("ui_start_failed", f"UI 서버가 바로 종료되었습니다. {LOG}: {_log_tail(log_path)}")
         time.sleep(POLL_SEC)

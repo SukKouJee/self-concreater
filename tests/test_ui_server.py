@@ -363,14 +363,14 @@ def test_detach_spawns_child_and_waits_for_lock(monkeypatch, tmp_path, no_browse
         def poll(self):
             return None
 
-    live = iter([None, None, {"pid": 4321, "port": 5555, "token": "t", "url": "http://127.0.0.1:5555/?key=t"}])
+    live = iter([None, None, {"pid": 9876, "port": 5555, "token": "t", "url": "http://127.0.0.1:5555/?key=t"}])
     monkeypatch.setattr(ui_main, "read_live_lock", lambda root: next(live))
     monkeypatch.setattr(ui_main.subprocess, "Popen", FakeProc)
     monkeypatch.setattr(ui_main, "POLL_SEC", 0.01)
 
     out = ui_main.main(["--detach", "--no-open", "--port", "5555"])
 
-    assert out == {"status": "started", "url": "http://127.0.0.1:5555/?key=t", "pid": 4321}
+    assert out == {"status": "started", "url": "http://127.0.0.1:5555/?key=t", "pid": 9876}   # 서버(lock)의 pid
     cmd, kwargs = calls[0]
     assert cmd[1:] == ["-m", "scripts.ui", "--no-open", "--port", "5555"]
     assert "--detach" not in cmd
@@ -381,9 +381,51 @@ def test_detach_spawns_child_and_waits_for_lock(monkeypatch, tmp_path, no_browse
         import subprocess
         assert kwargs["creationflags"] & subprocess.DETACHED_PROCESS
         assert kwargs["creationflags"] & subprocess.CREATE_NEW_PROCESS_GROUP
+        assert kwargs["creationflags"] & ui_main.CREATE_BREAKAWAY_FROM_JOB
     else:
         assert kwargs["start_new_session"] is True
     assert (tmp_path / "workspace" / "ui.log").exists()
+
+
+def test_detach_retries_without_breakaway_when_job_forbids_it(monkeypatch, tmp_path, no_browser):
+    monkeypatch.setenv("YT_COACH_HOME", str(tmp_path))
+    monkeypatch.setattr(ui_main, "_PLATFORM", "win32")
+    flags = []
+
+    class FakeProc:
+        pid = 4321
+
+        def __init__(self, cmd, **kwargs):
+            flags.append(kwargs["creationflags"])
+            if kwargs["creationflags"] & ui_main.CREATE_BREAKAWAY_FROM_JOB:
+                raise PermissionError(5, "Access is denied")
+
+        def poll(self):
+            return None
+
+    lock = {"pid": 9876, "port": 5555, "token": "t", "url": "http://127.0.0.1:5555/?key=t"}
+    monkeypatch.setattr(ui_main, "read_live_lock", lambda root: lock)
+    monkeypatch.setattr(ui_main.subprocess, "Popen", FakeProc)
+
+    out = ui_main._detach(tmp_path, 5555, open_browser=False)
+
+    assert out["pid"] == 9876
+    assert len(flags) == 2
+    assert flags[0] & ui_main.CREATE_BREAKAWAY_FROM_JOB
+    assert not flags[1] & ui_main.CREATE_BREAKAWAY_FROM_JOB
+    assert flags[1] & ui_main.DETACHED_PROCESS and flags[1] & ui_main.CREATE_NEW_PROCESS_GROUP
+
+
+def test_detach_raises_when_spawn_fails_without_breakaway(monkeypatch, tmp_path, no_browser):
+    monkeypatch.setenv("YT_COACH_HOME", str(tmp_path))
+    monkeypatch.setattr(ui_main, "_PLATFORM", "win32")
+
+    def broken(cmd, **kwargs):
+        raise OSError("no exec")
+
+    monkeypatch.setattr(ui_main.subprocess, "Popen", broken)
+    with pytest.raises(OSError):
+        ui_main._detach(tmp_path, 0, open_browser=False)
 
 
 def test_detach_reports_child_exit(monkeypatch, tmp_path, no_browser):
