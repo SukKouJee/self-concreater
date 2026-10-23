@@ -108,3 +108,20 @@ def test_conti_svg_sanitizer_strips_dangerous_parts():
     text = (STATIC_DIR / "pages" / "conti.js").read_text(encoding="utf-8")
     for token in ["foreignObject", "script", 'startsWith("on")', "importNode"]:
         assert token in text, token
+
+
+def test_section_colors_match_storyboard_mapping():
+    # conti.render_html colors a section var(--s{LABELS.index(label)+1}); the UI must use the same slots.
+    from scripts.conti import LABELS
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    for i, label in enumerate(LABELS, start=1):
+        rules = re.findall(rf"\.lb-{label}\s*\{{\s*background:\s*var\((--[\w-]+)\)", css)
+        assert rules == [f"--s{i}"], (label, rules)
+
+
+def test_conti_auto_alternatives_debounced_single_flight():
+    text = (STATIC_DIR / "pages" / "conti.js").read_text(encoding="utf-8")
+    for token in ["AUTO_ALT_DELAY_MS = 600", "scheduleAutoAlts", "clearAutoAlts", "r.loading", "mine.sel !== n"]:
+        assert token in text, token
+    unmount = text[text.index("export function unmount"):]
+    assert "clearAutoAlts()" in unmount
