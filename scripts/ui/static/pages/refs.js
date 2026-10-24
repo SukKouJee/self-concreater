@@ -4,7 +4,7 @@
 // 고치기는 POST /api/refs/<id>/labels 한 곳만 쓴다(프런트매터 라벨만 저장). 고치는 중 다른 화면으로 가면 고친 값은 경고 없이 버린다.
 // api 호출은 ctx.api를 쓴다: 페이지별 ctx.api가 이미 ctx.signal(이동하면 abort)을 실어 보낸다. 중단된 요청(error "aborted")은 조용히 무시한다.
 // 모든 비동기 뒤에는 ctx.isCurrent()로 화면이 아직 이 페이지인지 확인한다.
-import { h, filesUrl } from "/static/dom.js";
+import { h, fill, filesUrl } from "/static/dom.js";
 
 const COUNT_DEBOUNCE_MS = 300;
 const ROLE_TEXT = { ref: "레퍼런스", mine: "내 영상" };
@@ -249,19 +249,27 @@ function videoCard(v) {
 
 // ---- detail --------------------------------------------------------------------
 
-async function loadDetail() {
+// quiet: keep the current DOM until the new detail arrives and restore the scroll position (used after saving).
+// focus: move focus to the section heading once rendered (the element that had focus was replaced).
+async function loadDetail(opts = {}) {
   const mine = S;
   const seq = ++mine.seq;
   if (!mine.ctx.category) { noCategory("영상"); return; }
-  loading("영상");
+  const scrollY = window.scrollY;
+  if (!opts.quiet) loading("영상");
   try {
     const data = await mine.ctx.api("GET",
       `/api/refs/${encodeURIComponent(mine.params.id)}?category=${encodeURIComponent(mine.ctx.category)}`);
     if (!alive(mine) || seq !== mine.seq) return;
     renderDetail(data);
+    if (opts.quiet) window.scrollTo(0, scrollY);
+    if (opts.focus) {
+      const title = document.getElementById("ref-sec-title");
+      if (title) title.focus({ preventScroll: true });
+    }
   } catch (e) {
     if (!alive(mine) || seq !== mine.seq || ignorable(e)) return;
-    loadError("영상", e, loadDetail);
+    loadError("영상", e, () => loadDetail());
   }
 }
 
@@ -276,7 +284,7 @@ function renderDetail(data) {
     v.format ? `형식 ${v.format}` : null,
   ].filter(Boolean).join(" · ");
 
-  S.el.replaceChildren(
+  fill(S.el,
     h("p", { class: "crumb" }, h("a", { href: "#/refs" }, "← 목록")),
     h("h1", {}, displayTitle(v)),
     meta ? h("p", { class: "meta-line muted" }, meta) : null,
@@ -313,10 +321,14 @@ function sectionBlock(data, sections) {
   const block = h("section", { class: "ref-block", "aria-labelledby": "ref-sec-title" });
   const edit = h("button", { type: "button", class: "btn" }, "라벨 고치기");
   edit.addEventListener("click", () => {
-    if (S && S.ctx.isCurrent()) block.replaceWith(editBlock(data, block));
+    if (!S || !S.ctx.isCurrent()) return;
+    const form = editBlock(data, block);
+    block.replaceWith(form);
+    const first = form.querySelector("select");
+    if (first) first.focus();
   });
   block.append(
-    h("div", { class: "ref-block-head" }, h("h2", { id: "ref-sec-title" }, "섹션 흐름"), edit),
+    h("div", { class: "ref-block-head" }, h("h2", { id: "ref-sec-title", tabindex: "-1" }, "섹션 흐름"), edit),
     sectionBand(sections, v.duration_sec),
     h("ul", { class: "ref-sec-list" }, ...sections.map((s) =>
       h("li", {}, h("span", { class: `lb-dot lb-${s.label}`, "aria-hidden": "true" }),
@@ -342,7 +354,9 @@ function editBlock(data, viewBlock) {
   const v = data.video;
   const vocab = data.vocab || {};
   const orig = Array.isArray(v.sections) ? v.sections : [];   // md order: the API needs the full array in this order
-  const draft = orig.map((s) => ({ label: String(s.label || ""), sub: s.sub ? String(s.sub) : "" }));
+  // keep: last body sub of the row, restored when the label returns to body
+  const draft = orig.map((s) => ({ label: String(s.label || ""), sub: s.sub ? String(s.sub) : "", keep: s.sub ? String(s.sub) : "" }));
+  const controls = [];
   const origOf = (i) => ({ label: String(orig[i].label || ""), sub: orig[i].sub ? String(orig[i].sub) : "" });
   const hook = { orig: v.hook_type || "", cur: v.hook_type || "" };
   const narr = { orig: v.narrative_type || "", cur: v.narrative_type || "" };
@@ -351,7 +365,7 @@ function editBlock(data, viewBlock) {
   const block = h("section", { class: "ref-block ref-edit", "aria-labelledby": "ref-sec-title" });
   const band = h("div", { class: "ref-edit-band" });
   const rows = h("ul", { class: "ref-edit-list" });
-  const notice = h("div", { class: "ref-edit-notice" });
+  const notice = h("div", { class: "ref-edit-notice", tabindex: "-1" });
   const save = h("button", { type: "submit", class: "btn btn-primary" }, "저장");
   const cancel = h("button", { type: "button", class: "btn" }, "취소");
 
@@ -368,6 +382,7 @@ function editBlock(data, viewBlock) {
     if (shown) band.append(shown);
     save.disabled = busy || !dirty();
     cancel.disabled = busy;
+    for (const c of controls) c.disabled = busy;
     save.textContent = busy ? "저장 중…" : "저장";
   }
 
@@ -376,20 +391,28 @@ function editBlock(data, viewBlock) {
     const d = draft[item.i];
     const dot = h("span", { class: `lb-dot lb-${d.label}`, "aria-hidden": "true" });
     const labelSel = selectOf(
-      { class: "label-select", "aria-label": `${fmtTime(item.start)} 섹션 라벨` },
+      { class: "label-select", "aria-label": `${fmtRange(item)} 섹션 라벨` },
       optionList(vocab.label, d.label), d.label);
     const subSel = selectOf(
-      { class: "label-select", "aria-label": `${fmtTime(item.start)} 본문 세부 유형` },
+      { class: "label-select", "aria-label": `${fmtRange(item)} 본문 세부 유형` },
       [h("option", { value: "" }, "(없음)"), ...optionList(vocab.body_sub, d.sub)], d.sub);
     subSel.hidden = d.label !== "body";
     labelSel.addEventListener("change", () => {
       d.label = labelSel.value;
-      if (d.label !== "body") { d.sub = ""; subSel.value = ""; }
+      if (d.label !== "body") {
+        if (d.sub) d.keep = d.sub;
+        d.sub = "";
+        subSel.value = "";
+      } else {
+        d.sub = d.keep;
+        subSel.value = d.sub;
+      }
       subSel.hidden = d.label !== "body";
       dot.className = `lb-dot lb-${d.label}`;
       refresh();
     });
-    subSel.addEventListener("change", () => { d.sub = subSel.value; refresh(); });
+    subSel.addEventListener("change", () => { d.sub = subSel.value; d.keep = d.sub; refresh(); });
+    controls.push(labelSel, subSel);
     rows.append(h("li", { class: "ref-edit-row" },
       h("span", { class: "sec-time" }, fmtRange(item)),
       h("span", { class: "sec-pick" }, dot, labelSel, subSel)));
@@ -398,6 +421,7 @@ function editBlock(data, viewBlock) {
   function typeField(id, text, state, values) {
     const sel = selectOf({ id, class: "label-select" }, optionList(values, state.cur), state.cur);
     sel.addEventListener("change", () => { state.cur = sel.value; refresh(); });
+    controls.push(sel);
     return h("div", { class: "field" }, h("label", { for: id }, text), sel);
   }
 
@@ -405,7 +429,7 @@ function editBlock(data, viewBlock) {
     notice.replaceChildren();
     if (e.error === "ref_changed") {
       const again = h("button", { type: "button", class: "btn" }, "다시 불러오기");
-      again.addEventListener("click", () => { if (alive(mine)) loadDetail(); });
+      again.addEventListener("click", () => { if (alive(mine)) loadDetail({ quiet: true, focus: true }); });
       notice.append(
         h("p", { class: "warn-text", role: "alert" }, e.message || "화면을 연 뒤 md가 바뀌었습니다"),
         h("div", { class: "btn-row" }, again,
@@ -436,13 +460,19 @@ function editBlock(data, viewBlock) {
       busy = false;
       refresh();
       showError(e);
+      notice.focus();   // the disabled save button lost focus; announce and focus the message
       return;
     }
     if (!alive(mine)) return;
     mine.ctx.toast("저장했습니다 — 다음 분석 때 교정 예시로 쓰입니다");
-    loadDetail();
+    loadDetail({ quiet: true, focus: true });
   });
-  cancel.addEventListener("click", () => { if (alive(mine) && !busy) block.replaceWith(viewBlock); });
+  cancel.addEventListener("click", () => {
+    if (!alive(mine) || busy) return;
+    block.replaceWith(viewBlock);
+    const btn = viewBlock.querySelector("button");
+    if (btn) btn.focus();
+  });
 
   form.append(rows,
     h("div", { class: "ref-edit-types" },
@@ -450,7 +480,7 @@ function editBlock(data, viewBlock) {
       typeField("ref-edit-narr", "서사 유형", narr, vocab.narrative_type)),
     notice,
     h("div", { class: "btn-row" }, save, cancel));
-  block.append(h("div", { class: "ref-block-head" }, h("h2", { id: "ref-sec-title" }, "섹션 흐름 — 라벨 고치기")),
+  block.append(h("div", { class: "ref-block-head" }, h("h2", { id: "ref-sec-title", tabindex: "-1" }, "섹션 흐름 — 라벨 고치기")),
     band, form);
   refresh();
   return block;
