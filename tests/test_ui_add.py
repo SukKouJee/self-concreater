@@ -82,7 +82,8 @@ class Fakes:
         return {"id": vid, "title": f"제목 {vid}", "sparse": False, "duration_sec": 60}
 
     def write(self, vid, category, role, analysis_path, force=False):
-        content = json.loads(open(analysis_path, encoding="utf-8").read())
+        with open(analysis_path, encoding="utf-8") as f:
+            content = json.load(f)
         self.writes.append({"vid": vid, "category": category, "role": role, "path": str(analysis_path),
                             "force": force, "analysis": content})
         return {"id": vid, "status": "written", "stage_text": f"단계 {len(self.writes)}"}
@@ -108,7 +109,8 @@ class Fakes:
         return {"id": vid, "frames": [{"frame": f"workspace/frames/{vid}/scene001_0.5s.jpg"}]}
 
     def shots_apply(self, vid, category, labels_path):
-        labels = json.loads(open(labels_path, encoding="utf-8").read())
+        with open(labels_path, encoding="utf-8") as f:
+            labels = json.load(f)
         self.applied.append((vid, labels))
         return {"status": "applied", "id": vid, "frames": len(labels)}
 
