@@ -207,3 +207,107 @@ def test_main_routes(home):
     cards_file(home, [TECH_CARD])
     assert motif.main(["add", CAT, "--cards", "workspace/tmp/cards.json"])["ids"] == ["M-mukbang-001"]
     assert motif.main(["star", CAT, "M-mukbang-001"])["starred"] is True
+
+
+# --- validate_cards / card_details (UI가 쓰는 읽기·검증) ---------------------------------
+
+def test_add_writes_exact_block_format(home):
+    """add 출력 형식을 고정한다(검증 분리 리팩터링 전후 동일해야 한다)."""
+    from datetime import date
+    standard_set(home, n_a=3, n_b=0)
+    card = {**TECH_CARD, "basis": "a00의 첫 장면"}
+    motif.add(CAT, cards_file(home, [card]))
+    expected = "\n".join([
+        "### M-mukbang-001 · 기법 · 첫 1초 완성품 클로즈업",
+        "- 아이디어: 완성된 음식을 첫 1초에 화면 가득 보여 주고 시작한다.",
+        "- 이렇게: 완성 직후 탑뷰로 2초 촬영 → 영상 맨 앞에 붙이기",
+        "- 바탕: a00의 첫 장면",
+        "- 근거: [a00](videos/a00.md) 라면 5봉지 먹방!, [a01](videos/a01.md) 라면 5봉지 먹방!",
+        f"- 만든 날: {date.today().isoformat()}",
+    ])
+    assert expected in index_body(home)
+
+
+def test_validate_cards_matches_add_rules(home):
+    standard_set(home, n_a=3, n_b=0)
+    write_video(home, "m1", role="mine")
+    motif.add(CAT, cards_file(home, [TECH_CARD]))
+    bad = [
+        ({**TECH_CARD, "type": "flow", "title": "새 제목"}, "1단계에서는 flow 카드를 만들 수 없습니다"),
+        ({**TECH_CARD, "title": "새 제목", "evidence": ["nope123"]}, "이 카테고리의 ref 영상이 아닙니다: nope123"),
+        ({**TECH_CARD, "title": "새 제목", "evidence": ["m1"]}, "이 카테고리의 ref 영상이 아닙니다: m1"),
+        (TECH_CARD, "같은 제목의 카드가 이미 있습니다: M-mukbang-001"),
+        ({**TECH_CARD, "title": "  "}, "title가 비어 있습니다"),
+    ]
+    for card, message in bad:
+        with pytest.raises(ScriptError) as exc:
+            motif.validate_cards(CAT, [card])
+        assert exc.value.code == "invalid_cards"
+        assert message in exc.value.message
+    with pytest.raises(ScriptError) as exc:
+        motif.validate_cards(CAT, [{**TECH_CARD, "title": "새"}, {**TECH_CARD, "title": "새  "}])
+    assert "같은 제목의 카드가 이미 있습니다: (이번 묶음)" in exc.value.message
+    for empty in ([], None, "x"):
+        with pytest.raises(ScriptError) as exc:
+            motif.validate_cards(CAT, empty)
+        assert "카드 목록이 비어 있습니다" in exc.value.message
+
+
+def test_validate_cards_returns_normalized(home):
+    standard_set(home, n_a=3, n_b=0)
+    [card] = motif.validate_cards(CAT, [{**TECH_CARD, "title": " 첫  제목 ", "idea": " 아이디어 "}])
+    assert card["title"] == "첫 제목" and card["idea"] == "아이디어"
+    assert card["how"] == TECH_CARD["how"] and card["basis"] is None and card["evidence"] == ["a00", "a01"]
+
+
+def test_card_details_full_fields(home):
+    from datetime import date
+    standard_set(home, n_a=3, n_b=0)
+    motif.add(CAT, cards_file(home, [{**TECH_CARD, "basis": "a00 장면"}]))
+    [card] = motif.card_details(CAT)
+    assert card == {
+        "id": "M-mukbang-001", "starred": False, "type": "technique", "type_ko": "기법",
+        "title": "첫 1초 완성품 클로즈업", "idea": TECH_CARD["idea"], "how": TECH_CARD["how"], "basis": "a00 장면",
+        "evidence": [{"id": "a00", "title": "라면 5봉지 먹방!"}, {"id": "a01", "title": "라면 5봉지 먹방!"}],
+        "made": date.today().isoformat(),
+    }
+    motif.star(CAT, "M-mukbang-001")
+    assert motif.card_details(CAT)[0]["starred"] is True
+
+
+def test_card_details_keeps_commas_in_titles(home):
+    standard_set(home, n_a=3, n_b=0)
+    write_video(home, "c01", title="라면, 김밥, 그리고 [특집]")
+    motif.add(CAT, cards_file(home, [{**TECH_CARD, "evidence": ["c01", "a00"]}]))
+    [card] = motif.card_details(CAT)
+    assert card["evidence"] == [{"id": "c01", "title": "라면, 김밥, 그리고 [특집]"},
+                                {"id": "a00", "title": "라면 5봉지 먹방!"}]
+
+
+def test_card_details_tolerates_hand_edits(home):
+    standard_set(home, n_a=3, n_b=0)
+    motif.add(CAT, cards_file(home, [TECH_CARD]))
+    path = home / "refs" / f"ref_{CAT}" / "index.md"
+    fm, body = refstore.read_md(path)
+    block = body.split("### M-mukbang-001")[1].split("\n\n## ")[0]
+    edited = "\n".join([
+        " · 기법 · 첫 1초 완성품 클로즈업",
+        "- 근거: [a00](videos/a00.md), [a01](videos/a01.md) 제목 있음",
+        "- 메모: 모르는 줄",
+        "- 아이디어: 순서를 바꿈",
+    ])
+    path.write_bytes(refstore.join_frontmatter(fm, body.replace(block, edited)).encode("utf-8"))
+    [card] = motif.card_details(CAT)
+    assert card["idea"] == "순서를 바꿈" and card["how"] == [] and card["basis"] is None and card["made"] is None
+    assert card["evidence"] == [{"id": "a00", "title": None}, {"id": "a01", "title": "제목 있음"}]
+
+
+def test_card_details_no_section(home):
+    standard_set(home, n_a=3, n_b=0)
+    path = home / "refs" / f"ref_{CAT}" / "index.md"
+    fm, body = refstore.read_md(path)
+    head, rest = body.split("## 모티브 카드")
+    tail = rest.split("\n## ", 1)[1]
+    path.write_bytes(refstore.join_frontmatter(fm, head + "## " + tail).encode("utf-8"))
+    assert "## 모티브 카드" not in refstore.read_md(path)[1]
+    assert motif.card_details(CAT) == []
