@@ -51,7 +51,7 @@ MAX_BODY = 10 * 1024 * 1024
 PING_TIMEOUT = 1.0
 
 # 라우트 모듈: Task 5/6이 여기에 이름을 더한다(예: "scripts.ui.api_add").
-ROUTE_MODULES: list[str] = ["scripts.ui.api_add", "scripts.ui.api_conti", "scripts.ui.api_refs"]
+ROUTE_MODULES: list[str] = ["scripts.ui.api_add", "scripts.ui.api_conti", "scripts.ui.api_refs", "scripts.ui.api_typify"]
 
 BAD_TOKEN = {"error": "bad_token", "message": "주소의 key가 맞지 않습니다. 터미널에 나온 새 주소로 여세요"}
 

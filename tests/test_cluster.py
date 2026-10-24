@@ -233,3 +233,54 @@ def test_main_routes(home):
     notes(home, NOTES)
     out = cluster.main(["apply", CAT, "--notes", "workspace/tmp/typify_notes.json"])
     assert out["status"] == "applied"
+
+
+# --- apply 스냅숏 · 검증 -------------------------------------------------------------
+
+def test_apply_writes_applied_snapshot(home):
+    standard_set(home, odd=True)
+    result = cluster.run(CAT)
+
+    cluster.apply(CAT, notes(home, NOTES))
+
+    snap = json.loads(cluster.applied_path(CAT).read_text("utf-8"))
+    assert snap["run_at"] == result["run_at"] and snap["status"] == "formal" and snap["ref"] == result["ref"]
+    assert snap["applied_at"]
+    assert snap["axes"]["structure"]["note"] == NOTES["axes"]["structure"]
+    assert set(snap["axes"]["structure"]) == {"verdict", "n", "k", "silhouette", "max_share", "note"}
+    assert snap["archetypes"][0]["name"] == "결과 먼저 몰아먹기" and snap["archetypes"][0]["id"] == "A1"
+    assert any(o["id"] == "zodd" for o in snap["outliers"])
+
+
+def test_apply_rejects_stale_run_at(home):
+    standard_set(home)
+    cluster.run(CAT)
+    index = home / "refs" / f"ref_{CAT}" / "index.md"
+    before = index.read_bytes()
+
+    with pytest.raises(ScriptError) as exc:
+        cluster.apply(CAT, notes(home, NOTES), expected_run_at="2000-01-01T00:00:00+00:00")
+
+    assert exc.value.code == "typify_changed"
+    assert index.read_bytes() == before
+    assert not cluster.applied_path(CAT).exists()
+
+
+@pytest.mark.parametrize("broken", [
+    {**NOTES, "axes": {k: v for k, v in NOTES["axes"].items() if k != "hook"}},
+    {**NOTES, "archetypes": [{"id": "A1", "name": "x"}, {"id": "A2", "name": " "}]},
+])
+def test_validate_notes_missing(home, broken):
+    standard_set(home)
+    result = cluster.run(CAT)
+    with pytest.raises(ScriptError) as exc:
+        cluster.validate_notes(result, broken)
+    assert exc.value.code == "invalid_notes"
+    assert "빠졌습니다" in exc.value.message
+
+
+def test_validate_notes_returns_axis_notes_and_names(home):
+    standard_set(home)
+    result = cluster.run(CAT)
+    axis_notes, names = cluster.validate_notes(result, NOTES)
+    assert axis_notes["hook"] == NOTES["axes"]["hook"] and names == {"A1": "결과 먼저 몰아먹기", "A2": "사이즈별 리스트 비교"}

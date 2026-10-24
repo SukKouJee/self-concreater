@@ -242,6 +242,10 @@ def result_path(category: str) -> Path:
     return workspace_dir("typify", f"{category}.json")
 
 
+def applied_path(category: str) -> Path:
+    return workspace_dir("typify", f"{category}.applied.json")
+
+
 def run(category: str) -> dict:
     t = _thresholds()
     records = features.load_videos(category)       # ref만
@@ -344,16 +348,8 @@ def render_outliers(result: dict) -> str:
     )
 
 
-def apply(category: str, notes_path: Path) -> dict:
-    path = result_path(category)
-    if not path.exists():
-        raise ScriptError("no_typify_result", f"유형화 결과가 없습니다. 먼저 run을 실행하세요: {category}")
-    result = json.loads(path.read_text("utf-8"))
-    try:
-        notes = json.loads(Path(notes_path).read_text("utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
-        raise ScriptError("invalid_notes", f"notes JSON을 읽을 수 없습니다: {e}") from e
-
+def validate_notes(result: dict, notes: dict) -> tuple[dict, dict]:
+    """notes가 결과의 모든 축·아키타입을 채웠는지 확인하고 (축별 근거, id별 이름)을 돌려준다."""
     axis_notes = notes.get("axes") or {}
     names = {a["id"]: str(a.get("name") or "").strip() for a in notes.get("archetypes") or []}
     missing = [a for a, res in result["axes"].items()
@@ -361,6 +357,36 @@ def apply(category: str, notes_path: Path) -> dict:
     missing += [a["id"] for a in result["archetypes"] if not names.get(a["id"])]
     if missing:
         raise ScriptError("invalid_notes", f"근거 문장 또는 아키타입 이름이 빠졌습니다: {', '.join(missing)}")
+    return axis_notes, names
+
+
+def _applied_snapshot(result: dict, axis_notes: dict, names: dict) -> dict:
+    keys = ("verdict", "n", "k", "silhouette", "max_share")
+    return {
+        "run_at": result["run_at"],
+        "applied_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "status": result["status"],
+        "ref": result["ref"],
+        "axes": {axis: {**{k: res[k] for k in keys}, "note": str(axis_notes.get(axis) or "").strip()}
+                 for axis, res in result["axes"].items()},
+        "archetypes": [{**a, "name": names[a["id"]]} for a in result["archetypes"]],
+        "outliers": result["outliers"],
+    }
+
+
+def apply(category: str, notes_path: Path, expected_run_at: str | None = None) -> dict:
+    path = result_path(category)
+    if not path.exists():
+        raise ScriptError("no_typify_result", f"유형화 결과가 없습니다. 먼저 run을 실행하세요: {category}")
+    result = json.loads(path.read_text("utf-8"))
+    if expected_run_at is not None and result.get("run_at") != expected_run_at:
+        raise ScriptError("typify_changed", "미리보기 뒤에 유형화가 다시 실행되었습니다. 다시 실행해 주세요")
+    try:
+        notes = json.loads(Path(notes_path).read_text("utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        raise ScriptError("invalid_notes", f"notes JSON을 읽을 수 없습니다: {e}") from e
+
+    axis_notes, names = validate_notes(result, notes)
 
     index = refstore.existing_category_dir(category) / "index.md"
     text = index.read_bytes().decode("utf-8-sig")
@@ -374,6 +400,8 @@ def apply(category: str, notes_path: Path) -> dict:
     fm["archetypes"] = [{"id": a["id"], "name": names[a["id"]], "members": a["members"]}
                         for a in result["archetypes"]]
     index.write_bytes(refstore.join_frontmatter(fm, body.replace("\r\n", "\n").replace("\n", nl), nl).encode("utf-8"))
+    snapshot = _applied_snapshot(result, axis_notes, names)
+    applied_path(category).write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
     Path(notes_path).unlink(missing_ok=True)
     return {"status": "applied", "index": index.relative_to(work_root()).as_posix(),
             "archetypes": [{"id": a["id"], "name": names[a["id"]]} for a in result["archetypes"]]}

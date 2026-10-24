@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from scripts import mission, refstore
-from scripts.common import ArgParser, ScriptError, run, work_root, workspace_dir
+from scripts.common import ArgParser, ScriptError, run, work_root
 
 RECENT_LIMIT = 5
 
@@ -58,6 +58,14 @@ def _next(key: str, ref: int, preliminary: int) -> dict:
     return {"text": texts[key], "menu": menu}
 
 
+def _typified_at(category: str) -> Any:
+    """저장(apply)된 유형화만 완료로 본다: index.md 프런트매터의 typified_at."""
+    try:
+        return refstore.read_md(refstore.existing_category_dir(category) / "index.md")[0].get("typified_at")
+    except ScriptError:
+        return None
+
+
 def _category_status(entry: dict) -> dict:
     category, ref, mine = entry["category"], entry["ref"], entry["mine"]
     preliminary, _ = refstore._stage_limits()
@@ -65,7 +73,7 @@ def _category_status(entry: dict) -> dict:
     conti_count = sum(1 for p in drafts if p.with_name(f"{p.stem}-conti.md").exists())
     mine_dir = work_root() / "mine"
     diagnosed = sum(1 for p in sorted(mine_dir.glob("*.md")) if _category_of(p) == category)
-    typified = workspace_dir("typify", f"{category}.json").exists()
+    typified = _typified_at(category) is not None
 
     done_detail = {
         "collect": (ref >= preliminary, f"ref {ref}개 / mine {mine}개"),
