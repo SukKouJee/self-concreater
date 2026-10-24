@@ -1,5 +1,7 @@
 """미션 API: 조회, 뽑기(작업) → 미리보기, 저장, 피드백(작업, 파일 임시 복사), 제출, 건너뛰기. claude 호출은 가짜로 바꾼다."""
 import json
+import os
+import time
 import threading
 from datetime import date as Date
 
@@ -422,7 +424,7 @@ def test_feedback_requires_mission_and_valid_input(client, home):
     _put(home)
     assert _err(client, "POST", "/api/mission/feedback", body | {"difficulty": "medium"}) == "bad_request"
     assert _err(client, "POST", "/api/mission/feedback", body | {"note": "  "}) == "bad_request"
-    assert _err(client, "POST", "/api/mission/feedback", body | {"note": "x" * 1001}) == "bad_request"
+    assert _err(client, "POST", "/api/mission/feedback", body | {"note": "x" * 301}) == "bad_request"
     assert _err(client, "POST", "/api/mission/feedback", body | {"date": "bad"}) == "bad_request"
 
 
@@ -604,3 +606,52 @@ def test_date_only_server_today_plus_minus_one(client):
     for day in ("2026-10-20", "2026-10-24"):
         assert _err(client, "GET", f"/api/mission?date={day}") == "bad_request"
     assert _err(client, "POST", "/api/mission/skip", {"date": "2026-10-24", "reason": "a"}) == "bad_request"
+
+
+# ---- final review fixes ---------------------------------------------------------------
+
+def test_feedback_task_says_not_to_ask_difficulty(client, home, fake_ask):
+    _put(home)
+    _feedback(client)
+    assert fake_ask.calls[0]["task"].endswith(" 난이도는 입력 difficulty로 이미 받았으니 묻거나 다시 적지 마세요.")
+
+
+def test_note_limit_is_300(client, home):
+    _put(home)
+    ok = {"date": DAY, "note": "x" * 300, "difficulty": "right", "feedback": "f"}
+    assert client.json("POST", "/api/mission/submit", ok)[0] == 200
+    assert _err(client, "POST", "/api/mission/submit", ok | {"note": "x" * 301}) == "bad_request"
+    assert _err(client, "POST", "/api/mission/feedback", {"date": DAY, "note": "x" * 301, "difficulty": "right"}) == "bad_request"
+
+
+def test_feedback_request_removes_stale_temp_copies(client, home):
+    _put(home)
+    tmp = home / "workspace" / "tmp"
+    tmp.mkdir(parents=True, exist_ok=True)
+    old, fresh = tmp / "mission_submit_old.png", tmp / "mission_submit_fresh.png"
+    other = tmp / "other_old.json"
+    for p in (old, fresh, other):
+        p.write_bytes(b"x")
+    stale = time.time() - 2 * 3600
+    os.utime(old, (stale, stale))
+    os.utime(other, (stale, stale))
+    _feedback(client)
+    assert not old.exists() and fresh.exists() and other.exists()
+
+
+def test_cancelled_feedback_job_leaves_no_temp_copy(client, home, fake_ask):
+    _put(home)
+    fake_ask.gate = threading.Event()
+    src = _user_file(home)
+    status, resp = client.json("POST", "/api/mission/feedback",
+                               {"date": DAY, "note": "n", "difficulty": "right", "file": str(src)})
+    assert status == 200
+    deadline = time.monotonic() + 5
+    while not fake_ask.calls and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert _tmp(home, "mission_submit_*")                      # 복사 뒤 Claude를 기다리는 중
+    job = client.app.jobs.get(resp["job"]["id"])
+    job.cancel()
+    fake_ask.gate.set()
+    job.join(5)
+    assert _tmp(home, "mission_submit_*") == [] and src.exists()

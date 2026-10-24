@@ -27,7 +27,7 @@ argument-hint: '[today | submit <file> | skip [사유] | swap]'
 ## submit <file>
 
 - 제출물을 확인하고(이미지·텍스트면 Read, 영상이면 사용자 설명을 듣는다) 규칙 5절대로 피드백을 쓴 뒤 난이도를 묻는다.
-- `ytc mission submit "<file>" --difficulty <easy|right|hard> --feedback "<피드백>" [--note "<한 일 한두 줄>"]`
+- `ytc mission submit "<file>" --difficulty <easy|right|hard> --feedback "<피드백>" [--note "<한 일 한두 줄>"]` (제출 기록의 파일 줄에는 파일 이름만 남는다)
 - `no_mission` → "오늘 미션이 없습니다. /yt-coach:yt-mission today"
 
 ## skip [사유]

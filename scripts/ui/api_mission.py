@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 import threading
 from datetime import date as Date
 from datetime import timedelta
@@ -33,7 +34,7 @@ FEEDBACK_KIND = "mission_feedback"
 MISSION_TASK = "yt-mission 규칙 1~4절대로 입력에 맞는 오늘의 미션 JSON 하나를 만드세요."
 SWAP_TASK_SUFFIX = " 오늘 미션과 다른 재료·종류로 만드세요."
 FEEDBACK_TASK = ("yt-mission 규칙 5절대로 제출물에 2~4문장 피드백(잘된 점 1개 → 다음에 바꿀 점 1개)을 쓰세요. "
-                 "파일이 있으면 Read로 보세요.")
+                 "파일이 있으면 Read로 보세요. 난이도는 입력 difficulty로 이미 받았으니 묻거나 다시 적지 마세요.")
 MISSION_SCHEMA: dict = {
     "type": "object",
     "properties": {
@@ -50,7 +51,8 @@ MISSION_SCHEMA: dict = {
 FEEDBACK_SCHEMA: dict = {"type": "object", "properties": {"feedback": {"type": "string"}}, "required": ["feedback"]}
 DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 HISTORY_DAYS = 14
-MAX_NOTE = 1000
+MAX_NOTE = 300
+STALE_COPY_SECONDS = 3600
 MAX_FEEDBACK = 4000
 MAX_REASON = 100
 MAX_FILE_NAME = 255
@@ -277,6 +279,20 @@ def _save(req: Request) -> dict:
 
 # ---- 제출 피드백(작업) ------------------------------------------------------------------
 
+def _remove_stale_copies() -> None:
+    """서버가 도중에 죽어 남은 임시 복사본(1시간 넘은 mission_submit_*)을 지운다."""
+    tmp_dir = workspace_dir("tmp")
+    if not tmp_dir.is_dir():
+        return
+    cutoff = time.time() - STALE_COPY_SECONDS
+    for path in tmp_dir.glob("mission_submit_*"):
+        try:
+            if path.is_file() and path.stat().st_mtime < cutoff:
+                path.unlink(missing_ok=True)
+        except OSError:
+            continue                                 # 다른 프로그램이 잡고 있으면 다음 기회에
+
+
 def _copy_temp(src: Path) -> Path:
     """사용자 파일을 작업 폴더 임시 위치로 복사한다(원본은 읽기만). 실패하면 복사본을 지우고 bad_file."""
     tmp_dir = workspace_dir("tmp")
@@ -342,6 +358,7 @@ def _feedback(req: Request) -> dict:
     _require(day)
     picked = _user_file(body.get("file"))                # 작업을 만들기 전에 거른다(임시 복사도 아직 없다)
     claude_cli.find_claude()                          # claude가 없으면 작업을 만들지 않는다
+    _remove_stale_copies()
     items = [new_item(day, title=day, step="copy" if picked else "claude")]
     job = req.app.jobs.start(FEEDBACK_KIND, run_feedback(day, note, difficulty, picked), items=items)
     return {"job": job.snapshot()}
