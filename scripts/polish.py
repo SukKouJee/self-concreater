@@ -44,6 +44,7 @@ BOM = b"\xef\xbb\xbf"
 _GREETING_RE = re.compile(r"^(안녕|오늘은|여러분 안녕|구독)")
 _SPOKEN_RE = re.compile(r"^\s*말\s*[:：]\s*")
 _LABELED_RE = re.compile(r"^\s*(말|자막)\s*[:：]")
+_CAPTION_RE = re.compile(r"^\s*자막\s*[:：]\s*")
 _PUNCT_RE = re.compile(r"[!?！？]")
 
 
@@ -159,13 +160,23 @@ def _spoken(script: str) -> list[str]:
     return [_SPOKEN_RE.sub("", line).strip() for line in script.splitlines() if _SPOKEN_RE.match(line)]
 
 
+def _captions(script: str) -> list[str]:
+    return [_CAPTION_RE.sub("", line).strip() for line in script.splitlines() if _CAPTION_RE.match(line)]
+
+
 def score_hook(script: str, hook_sec: float | None, cps: float) -> dict:
-    """훅 대본 점검. 글자 수는 `말:` 줄만(공백 제외). 점수 = 100에서 감점: 훅 길이 초과 -30,
+    """훅 대본 점검. `chars`는 `말:` 줄 글자 수, `caption_chars`는 `자막:` 줄 글자 수(둘 다 공백 제외).
+    말하는 시간 speak_sec = chars/cps, 자막 읽는 시간 read_sec = caption_chars/caption_read_cps,
+    필요 시간 need_sec = max(speak_sec, read_sec). 접두어 없는 줄은 세지 않는다.
+    점수 = 100에서 감점: need_sec이 훅 길이 초과 -30,
     인사·구독으로 시작 -30, 숫자 없음 -10, `말:`/`자막:` 줄 아님 -10. 0 미만은 0."""
     spoken = _spoken(script)
     chars = sum(len("".join(line.split())) for line in spoken)
     speak_sec = chars / cps
-    fits = hook_sec is None or speak_sec <= hook_sec + HOOK_SEC_SLACK
+    caption_chars = sum(len("".join(line.split())) for line in _captions(script))
+    read_sec = caption_chars / _cfg()["caption_read_cps"]
+    need_sec = max(speak_sec, read_sec)
+    fits = hook_sec is None or need_sec <= hook_sec + HOOK_SEC_SLACK
     has_number = bool(re.search(r"\d", script))
     first = spoken[0] if spoken else _LABELED_RE.sub("", next(iter(script.strip().splitlines()), "")).strip()
     greeting = bool(_GREETING_RE.match(first))
@@ -173,7 +184,10 @@ def score_hook(script: str, hook_sec: float | None, cps: float) -> dict:
     issues: list[str] = []
     score = 100
     if not fits and hook_sec is not None:
-        issues.append(f"말하는 데 약 {speak_sec:.1f}초 — 훅은 {hook_sec:g}초")
+        if speak_sec >= read_sec:
+            issues.append(f"말하는 데 약 {speak_sec:.1f}초 — 훅은 {hook_sec:g}초")
+        else:
+            issues.append(f"자막을 읽는 데 약 {read_sec:.1f}초 — 훅 구간 {hook_sec:g}초보다 김")
         score -= 30
     if greeting:
         issues.append("인사·구독 부탁으로 시작함 — 첫 문장에서 제목의 약속부터 확인")
@@ -184,7 +198,8 @@ def score_hook(script: str, hook_sec: float | None, cps: float) -> dict:
     if not labeled:
         issues.append("`말:`/`자막:` 줄로 쓰지 않음")
         score -= 10
-    return {"chars": chars, "speak_sec": round(speak_sec, 2), "fits": fits, "has_number": has_number,
+    return {"chars": chars, "speak_sec": round(speak_sec, 2), "caption_chars": caption_chars,
+            "read_sec": round(read_sec, 2), "need_sec": round(need_sec, 2), "fits": fits, "has_number": has_number,
             "opens_with_greeting": greeting, "issues": issues, "score": max(score, 0)}
 
 

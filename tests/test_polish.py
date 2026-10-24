@@ -323,7 +323,8 @@ def test_hooks_json_has_21_and_source():
 
 def test_thresholds_polish_keys():
     t = json.loads((ROOT / "templates/thresholds.json").read_text("utf-8"))["polish"]
-    assert t == {"title_width_mobile": 56, "title_width_desktop": 100, "thumb_max_words": 3}
+    assert t == {"title_width_mobile": 56, "title_width_desktop": 100, "thumb_max_words": 3,
+                 "caption_read_cps": 12.0}
 
 
 def test_cli_routes(draft_md, home):
@@ -508,3 +509,24 @@ def test_skill_example_matches_evaluate():
     shown_hooks = len(re.findall(r"^\s*\d+\) \[", hook_part, flags=re.M))
     for item in result["hooks"][:shown_hooks]:
         assert all(line in hook_part for line in item["script"].splitlines())
+
+
+def test_score_hook_caption_only_judged_by_reading_time():
+    long = polish.score_hook("자막: " + "가" * 40, 2.0, 7.0)          # 40자 / 12cps = 3.33초
+    assert long["chars"] == 0 and long["caption_chars"] == 40
+    assert long["read_sec"] == pytest.approx(3.33, abs=0.01)
+    assert long["need_sec"] == pytest.approx(3.33, abs=0.01) and long["fits"] is False
+    assert any("자막을 읽는 데 약 3.3초" in i and "훅 구간 2초" in i for i in long["issues"])
+    short = polish.score_hook("자막: 라면 5개 " + "가" * 10, 2.0, 7.0)  # 공백 제외 14자
+    assert short["caption_chars"] == 14 and short["fits"] is True
+    assert not any("자막을 읽는" in i for i in short["issues"])
+    assert long["score"] < short["score"]
+
+
+def test_score_hook_mixed_uses_larger_of_speak_and_read():
+    spoken_heavy = polish.score_hook("말: " + "가" * 14 + "\n자막: 라면", 2.0, 7.0)
+    assert spoken_heavy["need_sec"] == spoken_heavy["speak_sec"] == pytest.approx(2.0)
+    caption_heavy = polish.score_hook("말: 가나\n자막: " + "가" * 36, 2.0, 7.0)
+    assert caption_heavy["need_sec"] == caption_heavy["read_sec"] == pytest.approx(3.0)
+    assert caption_heavy["fits"] is False
+    assert polish.score_hook("말: 가나\n자막: " + "가" * 36, None, 7.0)["fits"] is True

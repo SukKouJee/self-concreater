@@ -1128,9 +1128,11 @@ function hookCards(pl) {
     const field = h("textarea", { rows: "4", maxlength: String(MAX_HOOK_SCRIPT), "aria-label": `${rank}위 훅 대본` });
     field.value = e.hooks[i];
     field.addEventListener("input", () => { e.hooks[i] = field.value; pl.dirty = true; updatePolishActions(S); });
-    const timing = hookSec === null
-      ? `말하면 약 ${round1(num(lint.speak_sec))}초 (기획안에 훅 구간이 없습니다)`
-      : `훅 구간 ${hookSec}초 · 말하면 약 ${round1(num(lint.speak_sec))}초`;
+    const timingParts = [];
+    if (hookSec !== null) timingParts.push(`훅 구간 ${hookSec}초`);
+    if (num(lint.speak_sec) > 0) timingParts.push(`말하면 약 ${round1(num(lint.speak_sec))}초`);
+    if (num(lint.read_sec) > 0) timingParts.push(`자막 읽기 약 ${round1(num(lint.read_sec))}초`);
+    const timing = timingParts.join(" · ") + (hookSec === null ? " (기획안에 훅 구간이 없습니다)" : "");
     const root = h("div", { class: "pol-cand" },
       h("label", { class: "pol-pick" }, radio, h("span", {}, `${rank}위 · ${cand.formula_name || cand.formula}`),
         h("span", { class: "badge pol-score" }, `점수 ${num(lint.score)}`)),

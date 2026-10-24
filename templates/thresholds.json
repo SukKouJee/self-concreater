@@ -31,7 +31,8 @@
   "polish": {
     "title_width_mobile": 56,
     "title_width_desktop": 100,
-    "thumb_max_words": 3
+    "thumb_max_words": 3,
+    "caption_read_cps": 12.0
   },
   "speech_default_cps": 4.5
 }
