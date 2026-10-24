@@ -230,6 +230,18 @@ def test_frame_pool_exact_section_follows_relabel(home):  # noqa: F811
     assert conti.frame_pool(CAT)[0]["section"] == "outro"
 
 
+@pytest.mark.parametrize("cuts_text", ["{broken", json.dumps({"scenes": [{"frame": "x", "start": "a", "end": 3}]})])
+def test_frame_pool_exact_falls_back_to_stored_section_on_bad_cuts(home, cuts_text):  # noqa: F811
+    from scripts import conti
+    from tests.test_conti import make_frames
+    frames = make_frames(home, "a00")
+    shots = home / "workspace" / "shots" / "a00.json"
+    shots.parent.mkdir(parents=True, exist_ok=True)
+    shots.write_text(json.dumps({"labels": [{"frame": frames[3], "size": "탑뷰", "section": "cta"}]}), encoding="utf-8")
+    (home / "workspace" / "cuts" / "a00.json").write_text(cuts_text, encoding="utf-8")
+    assert conti.frame_pool(CAT)[0]["section"] == "cta"
+
+
 def test_relabel_reports_pacing_stale_without_cuts(home):  # noqa: F811
     r = videomd.relabel("a00", CAT, OUTRO, sha(vpath(home)))
     assert r["pacing_stale"] is True

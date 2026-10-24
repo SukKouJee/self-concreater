@@ -244,9 +244,13 @@ def frame_pool(category: str | None) -> list[dict]:
         labels_path = workspace_dir("shots", f"{vid}.json")
         if labels_path.exists():
             # 저장된 section은 분류 시점 값이라 라벨 교정 뒤에는 낡는다 → 현재 sections로 장면 중간점에서 다시 구한다
-            mid = {sc["frame"]: (sc["start"] + sc["end"]) / 2
-                   for sc in ((load_cuts(vid) or {}).get("scenes") or [])
-                   if sc.get("frame") and "start" in sc and "end" in sc}
+            # 컷 json이 깨졌거나 시간이 숫자가 아니면 저장된 section을 그대로 쓴다
+            try:
+                mid = {sc["frame"]: (float(sc["start"]) + float(sc["end"])) / 2
+                       for sc in ((load_cuts(vid) or {}).get("scenes") or [])
+                       if sc.get("frame") and "start" in sc and "end" in sc}
+            except (ValueError, TypeError, AttributeError, OSError):
+                mid = {}
             for lab in json.loads(labels_path.read_text("utf-8")).get("labels") or []:
                 t = mid.get(lab["frame"])
                 current = _section_at(fm.get("sections") or [], t) if t is not None else None
