@@ -4,7 +4,7 @@ from scripts.ui.server import STATIC_DIR
 from tests.test_ui_server import client, no_browser  # noqa: F401  (fixture 재사용)
 
 MENU_NAMES = ["홈", "레퍼런스 추가", "레퍼런스 목록", "유형화", "리포트", "모티브", "기획안", "콘티", "진단", "미션"]
-COMMANDS = ["/yt-coach:yt-review", "/yt-coach:yt-inspire",
+COMMANDS = ["/yt-coach:yt-review",
             "/yt-coach:yt-draft", "/yt-coach:yt-diagnose", "/yt-coach:yt-mission"]
 
 
@@ -274,3 +274,30 @@ def test_typify_verdict_labels_match_server_and_edits_survive_rerun():
     for token in ["carry", "editedNotes", "renderAlerts", "data-discard-yes", "data-rerun-yes", "S.preview.titles", "applied.titles"]:
         assert token in js, token
     assert "confirm(" not in js.replace("inline-confirm", "").replace("renderConfirm", "")
+
+
+def test_motif_menu_is_live_route():
+    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert 'route: "#/motif"' in app
+    assert 'soon: "motive"' not in app
+    assert 'case "motif"' in app
+
+
+def test_motif_page_contract_and_safety():
+    js = (STATIC_DIR / "pages" / "motif.js").read_text(encoding="utf-8")
+    for token in ["export async function mount", "export function unmount", "export function onCategory",
+                  "isCurrent()", "ctx.api(", "/api/motif", "/api/motif/run", "/api/motif/save", "/api/motif/star",
+                  "kind=motif", "새 카드 뽑기", "선택한 카드 저장", "저장하면서 ★", "기획안 명령 복사",
+                  "/yt-coach:yt-draft", "yt-inspire", "#/typify", "#/refs/"]:
+        assert token in js, token
+    for bad in ["innerHTML", "insertAdjacentHTML", "outerHTML"]:
+        assert bad not in js, bad
+    for bad in ["confirm(", "alert(", "prompt("]:
+        assert bad not in js.replace("inline-confirm", ""), bad
+
+
+def test_motif_page_served(client):
+    status, headers, raw = client.call("GET", "/static/pages/motif.js")
+    assert status == 200
+    assert "javascript" in headers["Content-Type"]
+    assert "/api/motif" in raw.decode("utf-8")
