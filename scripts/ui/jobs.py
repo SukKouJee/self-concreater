@@ -11,7 +11,7 @@
 - 상태는 모두 `Job._lock` 아래에서 바뀐다. 바깥에는 `snapshot()`(깊은 복사)만 내준다.
 - 결정 대기: 작업 스레드가 `update(i, state="awaiting")` 뒤 `wait_decision(item_id)`로 Event를 기다리고,
   HTTP 스레드가 `decide(item_id, decision)`로 결정을 넣고 깨운다. Event는 먼저 오는 쪽이 만든다(경합 없음).
-- 같은 kind 중 `SINGLE_KINDS`(collect)는 진행 중(running/awaiting)인 작업이 하나뿐이다.
+- 같은 kind 중 `SINGLE_KINDS`(collect, typify)는 진행 중(running/awaiting)인 작업이 하나뿐이다.
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ from scripts.common import ScriptError
 
 ACTIVE = frozenset({"running", "awaiting"})
 ITEM_DONE = frozenset({"saved", "skipped", "failed"})
-SINGLE_KINDS = frozenset({"collect"})
+SINGLE_KINDS = {"collect": "이미 수집 중인 작업이 있습니다", "typify": "이미 유형화가 진행 중입니다"}
 STOP_MESSAGE = "중단됨"
 
 
@@ -222,7 +222,7 @@ class JobManager:
         with self._lock:
             current = self._latest.get(kind)
             if kind in SINGLE_KINDS and current is not None and current.is_active():
-                raise ScriptError("job_running", "이미 수집 중인 작업이 있습니다")
+                raise ScriptError("job_running", SINGLE_KINDS[kind])
             job = Job(kind, items, category)
             self._jobs[job.id] = job
             self._latest[kind] = job

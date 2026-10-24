@@ -179,7 +179,7 @@ def test_save_applies_and_returns_snapshot(client, home):
     assert [a["name"] for a in fm["archetypes"]] == ["고친 이름", "둘째 이름"]
     got = client.json("GET", f"/api/typify?category={CAT}")[1]
     assert got["applied"] is not None and got["typified_at"] == fm["typified_at"]
-    assert not (home / "workspace" / "tmp" / "typify_notes_ui.json").exists()
+    assert not list((home / "workspace" / "tmp").glob("typify_notes_*"))
 
 
 @pytest.mark.parametrize("bad_notes", [
@@ -209,14 +209,14 @@ def test_save_empty_name_is_invalid_notes(client, home):
     bad = {**NOTES, "archetypes": [{"id": "A1", "name": ""}, {"id": "A2", "name": "b"}]}
     status, body = client.json("POST", "/api/typify/save", _save_body(job, notes=bad))
     assert status == 400 and body["error"] == "invalid_notes"
-    assert not (home / "workspace" / "tmp" / "typify_notes_ui.json").exists()
+    assert not list((home / "workspace" / "tmp").glob("typify_notes_*"))
 
 
 def test_save_stale_run_at(client, home):
     standard_set(home)
     job = _run_preview(client)
     first = _save_body(job)
-    cluster.run(CAT)
+    cluster.run(CAT, out=cluster.preview_path(CAT))       # 다른 실행이 미리보기를 대체
     status, body = client.json("POST", "/api/typify/save", first)
     assert status == 400 and body["error"] == "typify_changed"
 
@@ -236,3 +236,62 @@ def test_mine_never_in_result(client, home):
     write_video(home, "mine01", role="mine")
     job = _run_preview(client)
     assert "mine01" not in json.dumps(job["items"][0]["preview"]["result"], ensure_ascii=False)
+
+
+def test_ui_run_leaves_saved_result_untouched_until_save(client, home):
+    standard_set(home)
+    job = _run_preview(client)
+    assert job["status"] == "done"
+    assert not cluster.result_path(CAT).exists()          # 저장 전에는 확정 결과가 없다
+    assert cluster.preview_path(CAT).exists()
+    assert not cluster.applied_path(CAT).exists()
+
+
+def test_ui_run_does_not_overwrite_existing_saved_result(client, home):
+    standard_set(home)
+    cluster.run(CAT)
+    saved = cluster.result_path(CAT).read_bytes()
+    _run_preview(client)
+    assert cluster.result_path(CAT).read_bytes() == saved
+
+
+def test_save_promotes_preview_to_result(client, home):
+    standard_set(home)
+    job = _run_preview(client)
+    preview = cluster.preview_path(CAT).read_bytes()
+    status, body = client.json("POST", "/api/typify/save", _save_body(job))
+    assert status == 200, body
+    assert cluster.result_path(CAT).read_bytes() == preview
+    assert not cluster.preview_path(CAT).exists()
+
+
+def test_save_without_preview_file_is_typify_changed(client, home):
+    standard_set(home)
+    job = _run_preview(client)
+    cluster.preview_path(CAT).unlink()
+    status, body = client.json("POST", "/api/typify/save", _save_body(job))
+    assert status == 400 and body["error"] == "typify_changed"
+
+
+def test_status_overlays_index_names_onto_applied(client, home):
+    standard_set(home)
+    job = _run_preview(client)
+    client.json("POST", "/api/typify/save", _save_body(job))
+    index = _index(home)
+    index.write_text(index.read_text("utf-8").replace("결과 먼저 몰아먹기", "손으로 고친 이름", 1), encoding="utf-8")
+    got = client.json("GET", f"/api/typify?category={CAT}")[1]
+    fm, _ = refstore.read_md(index)
+    names = {a["id"]: a["name"] for a in got["applied"]["archetypes"]}
+    assert names["A1"] == "손으로 고친 이름" == fm["archetypes"][0]["name"]
+
+
+def test_typify_duplicate_start_is_rejected_by_job_manager(client):
+    gate = threading.Event()
+    jobs = client.app.jobs
+    jobs.start("typify", lambda job: gate.wait(5), items=[])
+    try:
+        with pytest.raises(ScriptError) as err:
+            jobs.start("typify", lambda job: None, items=[])
+    finally:
+        gate.set()
+    assert err.value.code == "job_running" and err.value.message == "이미 유형화가 진행 중입니다"

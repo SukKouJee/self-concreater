@@ -315,3 +315,52 @@ def test_validate_notes_returns_axis_notes_and_names(home):
     result = cluster.run(CAT)
     axis_notes, names = cluster.validate_notes(result, NOTES)
     assert axis_notes["hook"] == NOTES["axes"]["hook"] and names == {"A1": "결과 먼저 몰아먹기", "A2": "사이즈별 리스트 비교"}
+
+
+# --- 미리보기 분리 · notes 타입 ----------------------------------------------------------
+
+def test_run_with_out_leaves_result_path_untouched(home):
+    standard_set(home)
+    out = cluster.preview_path(CAT)
+    result = cluster.run(CAT, out=out)
+    assert out.name == f"{CAT}.preview.json"
+    assert json.loads(out.read_text("utf-8"))["run_at"] == result["run_at"]
+    assert not cluster.result_path(CAT).exists()
+
+
+def test_apply_with_source_promotes_preview(home):
+    standard_set(home)
+    cluster.run(CAT, out=cluster.preview_path(CAT))
+    preview = cluster.preview_path(CAT).read_bytes()
+    cluster.apply(CAT, notes(home, NOTES), source=cluster.preview_path(CAT))
+    assert cluster.result_path(CAT).read_bytes() == preview
+    assert not cluster.preview_path(CAT).exists()
+
+
+def test_apply_with_source_failure_keeps_preview(home):
+    standard_set(home)
+    cluster.run(CAT, out=cluster.preview_path(CAT))
+    with pytest.raises(ScriptError):
+        cluster.apply(CAT, notes(home, {**NOTES, "archetypes": []}), source=cluster.preview_path(CAT))
+    assert cluster.preview_path(CAT).exists() and not cluster.result_path(CAT).exists()
+
+
+def test_cli_run_and_apply_without_preview(home):
+    standard_set(home)
+    cluster.run(CAT)
+    cluster.apply(CAT, notes(home, NOTES))
+    assert cluster.result_path(CAT).exists() and not cluster.preview_path(CAT).exists()
+
+
+@pytest.mark.parametrize("axes_over,archetypes", [
+    ({"structure": 5}, NOTES["archetypes"]),
+    ({"structure": ["x"]}, NOTES["archetypes"]),
+    ({}, [{"id": "A1", "name": 7}, {"id": "A2", "name": "b"}]),
+])
+def test_validate_notes_non_string_values_are_invalid(home, axes_over, archetypes):
+    standard_set(home)
+    result = cluster.run(CAT)
+    bad = {"axes": {**NOTES["axes"], **axes_over}, "archetypes": archetypes}
+    with pytest.raises(ScriptError) as exc:
+        cluster.validate_notes(result, bad)
+    assert exc.value.code == "invalid_notes"

@@ -66,6 +66,15 @@ def _read_json(path: Path) -> dict | None:
         return None                                   # 깨진 스냅숏이 화면 전체를 막지 않게 한다(다시 저장하면 새로 쓴다)
 
 
+def _overlay_names(applied: dict | None, fm: dict) -> dict | None:
+    """index.md 프런트매터의 아키타입 이름이 기준이다(손으로 고친 이름이 스냅숏을 이긴다)."""
+    if applied is None:
+        return None
+    names = {str(a.get("id")): a.get("name") for a in fm.get("archetypes") or [] if isinstance(a, dict)}
+    archetypes = [{**a, "name": names.get(str(a.get("id")), a.get("name"))} for a in applied.get("archetypes") or []]
+    return {**applied, "archetypes": archetypes}
+
+
 # ---- 상태 -------------------------------------------------------------------------------
 
 @route("GET", "/api/typify")
@@ -76,7 +85,7 @@ def _status(req: Request) -> dict:
     fm, _ = refstore.read_md(refstore.existing_category_dir(category) / "index.md")
     return {
         "category": category, "ref": counts["ref"], "mine": counts["mine"], "stage": stage, "need": need,
-        "typified_at": fm.get("typified_at"), "applied": _read_json(cluster.applied_path(category)),
+        "typified_at": fm.get("typified_at"), "applied": _overlay_names(_read_json(cluster.applied_path(category)), fm),
     }
 
 
@@ -86,7 +95,7 @@ def run_target(category: str) -> Any:
     def target(job: Job) -> None:
         job.update(0, state="running", step="cluster")
         job.check_cancelled()
-        result = cluster.run(category)                # ref만 쓴다(mine은 cluster가 뺀다)
+        result = cluster.run(category, out=cluster.preview_path(category))   # ref만 쓴다(mine은 cluster가 뺀다)
         job.update(0, step="claude")
         job.check_cancelled()
         notes, _ = claude_cli.ask_validated(
@@ -107,9 +116,6 @@ def _run(req: Request) -> dict:
     stage, need = _stage(ref)
     if stage == "too_few":
         raise ScriptError("too_few", f"ref가 {ref}개라 아직 유형을 볼 수 없습니다. {need}개 더 넣어 주세요")
-    current = req.app.jobs.current(KIND)
-    if current is not None and current.is_active():
-        raise ScriptError("job_running", "이미 유형화가 진행 중입니다")
     claude_cli.find_claude()                          # claude가 없으면 작업을 만들지 않는다
     items = [new_item(category, title=category, step="cluster")]
     job = req.app.jobs.start(KIND, run_target(category), items=items, category=category)
@@ -135,7 +141,7 @@ def _save(req: Request) -> dict:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(notes, f, ensure_ascii=False)
-        result = cluster.apply(category, tmp, expected_run_at=run_at)
+        result = cluster.apply(category, tmp, expected_run_at=run_at, source=cluster.preview_path(category))
     finally:
         tmp.unlink(missing_ok=True)
     return {**result, "applied": _read_json(cluster.applied_path(category))}
