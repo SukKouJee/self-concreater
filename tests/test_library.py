@@ -161,31 +161,77 @@ def test_connect_rejects_credentials_in_url_and_option_like_remote(tmp_path, mon
     assert e.value.code == "invalid_remote"
 
 
-def test_git_runs_without_prompt_and_masks_credentials_in_errors(monkeypatch, tmp_path):
-    seen = {}
+@pytest.fixture(autouse=True)
+def _reset_ssh_cache():
+    library._SSH_CONFIGURED = None
+    yield
+    library._SSH_CONFIGURED = None
 
-    def fake_run(cmd, **kw):
-        seen.update(kw)
-        return subprocess.CompletedProcess(
-            cmd, 128, "", "fatal: unable to access 'https://u:tok@h.com/x.git/': Could not resolve host")
-    monkeypatch.setattr(library.subprocess, "run", fake_run)
+
+def fake_execute(monkeypatch, handler):
+    calls = []
+
+    def fake(cmd, cwd, env, timeout):
+        calls.append({"cmd": cmd, "cwd": cwd, "env": env, "timeout": timeout})
+        return handler(cmd)
+    monkeypatch.setattr(library, "_execute", fake)
+    return calls
+
+
+def test_git_runs_without_prompt_and_masks_credentials_in_errors(monkeypatch, tmp_path):
+    def handler(cmd):
+        if "config" in cmd:
+            return 1, "", ""
+        return 128, "", "fatal: unable to access 'https://u:tok@h.com/x.git/': Could not resolve host"
+    calls = fake_execute(monkeypatch, handler)
     with pytest.raises(ScriptError) as e:
         library._git(["fetch"], tmp_path)
-    assert seen["env"]["GIT_TERMINAL_PROMPT"] == "0" and seen["timeout"] == 60 and seen["cwd"] == tmp_path
+    call = next(c for c in calls if "fetch" in c["cmd"])
+    env = call["env"]
+    assert env["GIT_TERMINAL_PROMPT"] == "0" and env["GCM_INTERACTIVE"] == "never"
+    assert env["LC_ALL"] == "C" and env["LANGUAGE"] == "C"
+    assert call["timeout"] == 60 and call["cwd"] == tmp_path
     assert "tok" not in e.value.message and e.value.code == "library_network"
 
 
-def test_git_timeout_and_missing_map_to_errors(monkeypatch, tmp_path):
-    def timeout(cmd, **kw):
-        raise subprocess.TimeoutExpired(cmd, 60)
-    monkeypatch.setattr(library.subprocess, "run", timeout)
-    with pytest.raises(ScriptError) as e:
-        library._git(["fetch"], tmp_path)
-    assert e.value.code == "git_timeout"
+def test_ssh_batch_mode_only_when_user_has_no_ssh_setup(monkeypatch, tmp_path):
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+    monkeypatch.delenv("GIT_SSH", raising=False)
+    calls = fake_execute(monkeypatch, lambda cmd: (1, "", "") if "config" in cmd else (0, "", ""))
+    library._git(["fetch"], tmp_path)
+    assert next(c for c in calls if "fetch" in c["cmd"])["env"]["GIT_SSH_COMMAND"] == "ssh -o BatchMode=yes"
 
-    def missing(cmd, **kw):
+    library._SSH_CONFIGURED = None
+    calls = fake_execute(monkeypatch, lambda cmd: (0, "ssh -i mykey\n", "") if "config" in cmd else (0, "", ""))
+    library._git(["fetch"], tmp_path)
+    assert "GIT_SSH_COMMAND" not in next(c for c in calls if "fetch" in c["cmd"])["env"]
+
+    library._SSH_CONFIGURED = None
+    monkeypatch.setenv("GIT_SSH_COMMAND", "ssh -F mine")
+    calls = fake_execute(monkeypatch, lambda cmd: (0, "", ""))
+    library._git(["fetch"], tmp_path)
+    assert next(c for c in calls if "fetch" in c["cmd"])["env"]["GIT_SSH_COMMAND"] == "ssh -F mine"
+
+    monkeypatch.delenv("GIT_SSH_COMMAND")
+    monkeypatch.setenv("GIT_SSH", "plink")
+    calls = fake_execute(monkeypatch, lambda cmd: (0, "", ""))
+    library._git(["fetch"], tmp_path)
+    assert "GIT_SSH_COMMAND" not in next(c for c in calls if "fetch" in c["cmd"])["env"]
+
+
+def test_hanging_git_times_out_quickly_with_child_processes(monkeypatch, tmp_path):
+    monkeypatch.setattr(library, "GIT_TIMEOUT", 2)
+    started = time.time()
+    with pytest.raises(ScriptError) as e:
+        library._git(["-c", "alias.hang=!sleep 30", "hang"], tmp_path)   # git이 자식 sh/sleep을 띄운 채 멈춘 상황
+    assert e.value.code == "git_timeout"
+    assert time.time() - started < 15
+
+
+def test_git_missing_maps_to_error(monkeypatch, tmp_path):
+    def missing(*a, **kw):
         raise FileNotFoundError("git")
-    monkeypatch.setattr(library.subprocess, "run", missing)
+    monkeypatch.setattr(library.subprocess, "Popen", missing)
     with pytest.raises(ScriptError) as e:
         library._git(["fetch"], tmp_path)
     assert e.value.code == "git_missing"
@@ -531,3 +577,321 @@ def test_cli_main_dispatch(pair):
     assert out["connected"] is True and out["author"] == "Alice"
     assert library.main(["search", "--worked"]) == {"items": [], "skipped": 0}
     assert library.main(["techniques", CAT])["techniques"][0]["name"] == "결과 선공개"
+
+
+# --- 수정 라운드 1 ------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("url", [
+    "https://ghp_x@github.com/team/lib.git", "https://user:tok@github.com/x.git", "HTTP://tok@host/x.git",
+    "http://u:p@host/x.git", "ssh://user:pw@host/x.git",
+])
+def test_url_userinfo_is_rejected_and_nothing_is_written(tmp_path, monkeypatch, url):
+    home = make_home(tmp_path, monkeypatch, "h")
+    with pytest.raises(ScriptError) as e:
+        library.connect(url, "Alice")
+    assert e.value.code == "credentials_in_url"
+    assert "ghp_x" not in e.value.message and "tok" not in e.value.message
+    assert not (home / "library.json").exists() and not (home / "workspace" / "library").exists()
+
+
+@pytest.mark.parametrize("url", ["git@github.com:team/lib.git", "ssh://git@github.com/team/lib.git",
+                                 "https://github.com/team/lib.git", "/tmp/x.git", "file:///tmp/x.git"])
+def test_scp_style_ssh_and_plain_urls_pass_remote_check(url):
+    library._check_remote(url)
+
+
+def real_remote_with_gitignore(tmp_path, remote):
+    seed = tmp_path / "seed"
+    subprocess.run(["git", "clone", "-q", str(remote), str(seed)], check=True)
+    (seed / ".gitignore").write_text("*.tmp\n", encoding="utf-8")
+    git(seed, "add", ".gitignore")
+    git(seed, "-c", "user.name=s", "-c", "user.email=s@x", "commit", "-q", "-m", "init")
+    git(seed, "push", "-q", "origin", "HEAD:refs/heads/main")
+
+
+def test_pull_works_after_friend_commits_readme_when_remote_started_without_one(tmp_path, monkeypatch, remote):
+    real_remote_with_gitignore(tmp_path, remote)
+    a = make_home(tmp_path, monkeypatch, "home_a")
+    library.connect(str(remote), "Alice")
+    b = make_home(tmp_path, monkeypatch, "home_b")
+    library.connect(str(remote), "Bob")
+    assert (b / "workspace/library/README.md").exists()          # 추적되지 않는 로컬 README
+    as_user(monkeypatch, a)
+    shared = share_technique()
+    as_user(monkeypatch, b)
+    assert library.pull()["status"] == "updated"
+    assert library.search()["items"][0]["id"] == shared["id"]
+    assert (b / "workspace/library/README.md").exists()
+
+
+def commit_rebase_state(root):
+    return (root / ".git" / "rebase-merge").exists() or (root / ".git" / "rebase-apply").exists()
+
+
+def test_real_rebase_conflict_leaves_clone_clean_and_pull_works_afterwards(pair, monkeypatch):
+    a, b = pair
+    share_technique()                                           # A: README + 기법을 먼저 올림
+    as_user(monkeypatch, b)
+    root_b = b / "workspace" / "library"
+    root_b.joinpath("README.md").write_text("Bob의 다른 README\n", encoding="utf-8")   # 같은 경로, 다른 내용
+    pb = library.preview_technique(CAT, "훅", "질문 던지기")
+    monkeypatch.setattr(library, "_sync_before_share", lambda root, branch: None)
+    with pytest.raises(ScriptError) as e:
+        library.confirm(pb["preview_id"])
+    assert e.value.code == "rebase_conflict"
+    assert not commit_rebase_state(root_b)
+    assert git(root_b, "status", "--porcelain").strip() == ""
+    monkeypatch.undo()
+    as_user(monkeypatch, b)
+    assert library.pull()["status"] in {"updated", "up_to_date"}
+    assert len(library.search()["items"]) == 1
+
+
+def test_first_share_repush_failure_recovers_so_next_pull_works(pair, monkeypatch):
+    a, b = pair
+    share_technique()
+    as_user(monkeypatch, b)
+    pb = library.preview_technique(CAT, "훅", "질문 던지기")
+    monkeypatch.setattr(library, "_sync_before_share", lambda root, branch: None)
+    real = library._git
+    pushes = []
+
+    def flaky(args, cwd, **kw):
+        if args[:1] == ["push"]:
+            pushes.append(1)
+            if len(pushes) == 2:
+                return subprocess.CompletedProcess(args, 1, "", "remote: Permission denied")
+        return real(args, cwd, **kw)
+    monkeypatch.setattr(library, "_git", flaky)
+    with pytest.raises(ScriptError) as e:
+        library.confirm(pb["preview_id"])
+    assert e.value.code == "library_auth" and len(pushes) == 2
+    root_b = b / "workspace" / "library"
+    assert git(root_b, "status", "--porcelain").strip() == ""
+    monkeypatch.setattr(library, "_git", real)
+    assert library.pull()["status"] in {"updated", "up_to_date"}
+    assert library.confirm(pb["preview_id"])["status"] == "shared"
+
+
+def test_recover_aborts_leftover_rebase(pair, monkeypatch):
+    a, _ = pair
+    root = a / "workspace" / "library"
+    (root / ".git" / "rebase-merge").mkdir()
+    seen = []
+    monkeypatch.setattr(library, "_git", lambda args, cwd, **kw: seen.append(args) or subprocess.CompletedProcess(args, 0, "", ""))
+    library._recover(root)
+    assert ["rebase", "--abort"] in seen
+
+
+def test_timeout_during_rebase_triggers_recover(pair, monkeypatch):
+    a, _ = pair
+    root = a / "workspace" / "library"
+    recovered = []
+
+    def boom(args, cwd, **kw):
+        raise ScriptError("git_timeout", "시간 초과")
+    monkeypatch.setattr(library, "_git", boom)
+    monkeypatch.setattr(library, "_recover", lambda r: recovered.append(r))
+    with pytest.raises(ScriptError) as e:
+        library._rebase_pull(root, "main")
+    assert e.value.code == "git_timeout" and recovered == [root]
+
+
+TEMPLATE_FM = """---
+kind: template
+id: eve-20261024-aaaaaa
+author: Eve
+category: mukbang
+title: 틀
+target_sec: 60
+hook_type: result_first
+narrative_type: journey
+sections: [{{label: hook, ratio: 0.1}}, {{label: body, ratio: 0.9}}]
+pacing: {pacing}
+shot_mix: null
+shared_at: '2026-10-24'
+schema_version: 1
+---
+본문
+"""
+
+
+def test_alias_bomb_and_extra_pacing_keys_are_skipped(pair):
+    a, _ = pair
+    d = f"templates/{CAT}"
+    bomb = ("---\nkind: technique\nid: eve-20261024-bbbbbb\nauthor: Eve\ncategory: mukbang\ntechnique_kind: 훅\n"
+            "name: x\nshared_at: '2026-10-24'\nschema_version: 1\nl0: &a [x, x, x, x, x, x, x, x, x]\n"
+            "l1: &b [*a, *a, *a, *a, *a, *a, *a, *a, *a]\nl2: &c [*b, *b, *b, *b, *b, *b, *b, *b, *b]\n"
+            "l3: [*c, *c, *c, *c, *c, *c, *c, *c, *c]\n---\n본문\n")
+    put_raw(a, {
+        f"{d}/eve-20261024-aaaaaa.md": TEMPLATE_FM.format(pacing="{avg_cut_sec: 1.5, evil: '<script>'}"),
+        f"techniques/{CAT}/eve-20261024-bbbbbb.md": bomb,
+        f"{d}/eve-20261024-cccccc.md": TEMPLATE_FM.format(pacing="{avg_cut_sec: 1.5}").replace("aaaaaa", "cccccc"),
+    })
+    out = library.search()
+    assert [i["id"] for i in out["items"]] == ["eve-20261024-cccccc"] and out["skipped"] == 2
+    got = library.get("eve-20261024-cccccc")
+    assert got["frontmatter"]["pacing"] == {"avg_cut_sec": 1.5}
+
+
+def test_crlf_friend_file_is_read(pair):
+    a, _ = pair
+    text = GOOD.format(id="eve-20261024-aaaaaa", name="윈도우", body="줄바꿈\n\n둘째 문단").replace("\n", "\r\n")
+    put_raw(a, {f"techniques/{CAT}/eve-20261024-aaaaaa.md": text})
+    got = library.get("eve-20261024-aaaaaa")
+    assert got["frontmatter"]["name"] == "윈도우" and "\r" not in got["body"]
+    assert library.search()["skipped"] == 0
+
+
+def test_symlinked_category_folder_is_not_followed_by_get_or_search(pair, monkeypatch):
+    a, _ = pair
+    put_raw(a, {f"techniques/{CAT}/eve-20261024-aaaaaa.md": GOOD.format(id="eve-20261024-aaaaaa", name="n", body="b")})
+    real = Path.is_symlink
+    monkeypatch.setattr(Path, "is_symlink", lambda self: self.name == CAT or real(self))
+    with pytest.raises(ScriptError) as e:
+        library.get("eve-20261024-aaaaaa")
+    assert e.value.code == "invalid_item"
+    assert library.search() == {"items": [], "skipped": 1}
+
+
+def test_push_timeout_but_remote_received_counts_as_shared(pair, monkeypatch, remote):
+    a, _ = pair
+    real = library._git
+    state = {"timed_out": False}
+
+    def push_then_hang(args, cwd, **kw):
+        if args[:1] == ["push"] and not state["timed_out"]:
+            real(args, cwd, **kw)
+            state["timed_out"] = True
+            raise ScriptError("git_timeout", "시간 초과")
+        return real(args, cwd, **kw)
+    monkeypatch.setattr(library, "_git", push_then_hang)
+    result = share_technique()
+    assert result["status"] == "shared"
+    assert result["path"] in git(remote, "ls-tree", "-r", "--name-only", "main").split()
+    assert json.loads((a / "library.json").read_text("utf-8"))["shared"][0]["id"] == result["id"]
+
+
+def test_push_timeout_and_remote_did_not_receive_still_fails(pair, monkeypatch):
+    a, _ = pair
+    real = library._git
+
+    def hang(args, cwd, **kw):
+        if args[:1] == ["push"]:
+            raise ScriptError("git_timeout", "시간 초과")
+        return real(args, cwd, **kw)
+    monkeypatch.setattr(library, "_git", hang)
+    with pytest.raises(ScriptError) as e:
+        share_technique()
+    assert e.value.code == "git_timeout"
+    assert json.loads((a / "library.json").read_text("utf-8"))["shared"] == []
+
+
+def test_second_push_rejection_reports_library_busy(pair, monkeypatch):
+    a, _ = pair
+    real = library._git
+
+    def always_rejected(args, cwd, **kw):
+        if args[:1] == ["push"]:
+            return subprocess.CompletedProcess(args, 1, "", "! [rejected] main -> main (fetch first)")
+        return real(args, cwd, **kw)
+    monkeypatch.setattr(library, "_git", always_rejected)
+    monkeypatch.setattr(library, "_rebase_pull", lambda root, branch: None)
+    with pytest.raises(ScriptError) as e:
+        share_technique()
+    assert e.value.code == "library_busy" and e.value.message == "다른 사람이 동시에 올렸습니다. 잠시 뒤 다시 올리세요"
+    root = a / "workspace" / "library"
+    assert not has_head(root) and not list(root.glob("techniques/**/*.md"))
+
+
+def test_unshareable_content_is_refused_before_commit(pair, remote):
+    a, _ = pair
+    path = make_draft(a)
+    path.write_text(path.read_text("utf-8").replace("| 탑뷰 |", "| " + "아주긴샷크기" * 8 + " |"), encoding="utf-8")
+    pv = library.preview_template(path)
+    with pytest.raises(ScriptError) as e:
+        library.confirm(pv["preview_id"])
+    assert e.value.code == "invalid_share" and "형식" in e.value.message
+    root = a / "workspace" / "library"
+    assert not has_head(root) and not list(root.glob("templates/**/*.md"))
+    assert library.load_preview(pv["preview_id"])                 # 미리보기는 남는다
+
+
+def test_lock_file_blocks_concurrent_confirm_and_pull_but_stale_lock_is_ignored(pair):
+    a, _ = pair
+    lock = a / "workspace" / "library.lock"
+    lock.write_text("123", encoding="ascii")
+    pv = library.preview_technique(CAT, "훅", "결과 선공개")
+    for call in (lambda: library.confirm(pv["preview_id"]), library.pull):
+        with pytest.raises(ScriptError) as e:
+            call()
+        assert e.value.code == "library_busy"
+    assert lock.exists()                                        # 남의 잠금은 지우지 않는다
+    old = time.time() - 11 * 60
+    os.utime(lock, (old, old))
+    assert library.confirm(pv["preview_id"])["status"] == "shared"
+    assert not lock.exists()
+
+
+def test_thread_lock_blocks_reentry(pair):
+    with library._exclusive():
+        with pytest.raises(ScriptError) as e:
+            with library._exclusive():
+                pass
+    assert e.value.code == "library_busy"
+
+
+def test_mine_comes_only_from_ledger_not_author_name(pair):
+    a, _ = pair
+    put_raw(a, {f"techniques/{CAT}/alice-20261024-aaaaaa.md": GOOD.format(
+        id="alice-20261024-aaaaaa", name="동명이인", body="b").replace("author: Eve", "author: Alice")})
+    mine = share_technique()
+    items = {i["id"]: i for i in library.search()["items"]}
+    assert items[mine["id"]]["mine"] is True and items["alice-20261024-aaaaaa"]["mine"] is False
+
+
+def test_body_without_summaries_has_no_summary_heading(pair):
+    a, _ = pair
+    pv = library.preview_template(make_draft(a))
+    assert "## 섹션 요약" not in pv["markdown"] and pv["markdown"].startswith("## 샷 리듬")
+    out = library.confirm(pv["preview_id"])
+    assert out["unsummarized"] == 3
+    assert "## 섹션 요약" not in (a / "workspace/library" / out["path"]).read_text("utf-8")
+
+
+def test_summary_copying_script_text_is_rejected_then_retried(pair, monkeypatch):
+    a, _ = pair
+    data = {**DRAFT, "sections": [dict(s) for s in DRAFT["sections"]]}
+    data["sections"][0]["script"] = "말: 이 라면은 정말 매워서 눈물이 날 정도로 맛있습니다"
+    p = a / "workspace" / "tmp" / "c.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    pv = library.preview_template(a / draft.save(CAT, p)["path"])
+    answers = iter([
+        [{"label": "hook", "summary": "이 라면은 정말 매워서 눈물이 날 정도로 맛있습니다"},
+         {"label": "body", "summary": "반복"}, {"label": "cta", "summary": "마무리"}],
+        [{"label": "hook", "summary": "결과물로 시선을 끈다"},
+         {"label": "body", "summary": "반복"}, {"label": "cta", "summary": "마무리"}],
+    ])
+    calls = []
+
+    def fake_ask(rules, payload, task, **kw):
+        calls.append(task)
+        return {"sections": next(answers)}
+    monkeypatch.setattr(library.llm, "ask", fake_ask)
+    out = library.summarize_template(pv["preview_id"])
+    assert len(calls) == 2 and "그대로 옮겼습니다" in calls[1]
+    assert "결과물로 시선을 끈다" in out["markdown"]
+
+
+def test_edits_can_be_read_from_file_or_inline_json(pair):
+    a, _ = pair
+    f = a / "workspace" / "tmp" / "edits.json"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps({"note": "파일 메모", "worked": True}, ensure_ascii=False), encoding="utf-8")
+    pv = library.preview_technique(CAT, "훅", "결과 선공개")
+    out = library.main(["confirm", pv["preview_id"], "--edits", "@workspace/tmp/edits.json"])
+    assert library.get(out["id"])["frontmatter"]["note"] == "파일 메모"
+    pv2 = library.preview_technique(CAT, "훅", "질문 던지기")
+    out2 = library.main(["confirm", pv2["preview_id"], "--edits", '{"note": "인라인"}'])
+    assert library.get(out2["id"])["frontmatter"]["note"] == "인라인"

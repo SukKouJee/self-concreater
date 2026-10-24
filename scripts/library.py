@@ -23,13 +23,18 @@ import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
+import tempfile
+import threading
 import time
-import unicodedata
 import uuid
+from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
+
+import yaml
 
 from scripts import claude_cli, conti, llm, motif, refstore
 from scripts.common import ArgParser, ScriptError, run, work_root, workspace_dir
@@ -50,6 +55,11 @@ _ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*-\d{8}-[0-9a-f]{6}$")
 _PREVIEW_RE = re.compile(r"^[0-9a-f]{12}$")
 _CRED_RE = re.compile(r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)[^/@\s]+@")
 _CRED_PASSWORD_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://[^/@\s]*:[^/@\s]*@")
+_HTTP_USERINFO_RE = re.compile(r"^https?://[^/?#]*@", re.IGNORECASE)
+_FM_BLOCK_RE = re.compile(r"\A\ufeff?---\r?\n(.*?)\r?\n---(?:\r?\n|\Z)", re.DOTALL)
+LOCK_STALE_SEC = 10 * 60
+SUMMARY_COPY_RUN = 15
+_THREAD_LOCK = threading.Lock()
 
 README_TEXT = (
     "# 공용 라이브러리\n\n"
@@ -148,24 +158,110 @@ def _tail(text: str, limit: int = 300) -> str:
     return mask_credentials(" ".join(text.split()))[-limit:]
 
 
-def _git(args: list[str], cwd: Path, *, check: bool = True, what: str = "git") -> subprocess.CompletedProcess[str]:
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
-    env.setdefault("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
+_SSH_CONFIGURED: bool | None = None
+
+
+def _kill_tree(proc: subprocess.Popen[bytes]) -> None:
+    """우리가 띄운 git과 그 자식만 PID로 끈다(이미지 이름으로 끄지 않는다)."""
+    if os.name == "nt":
+        try:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, timeout=15, check=False)
+        except subprocess.TimeoutExpired:
+            pass
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    proc.kill()
     try:
-        proc = subprocess.run(
-            ["git", "-c", "protocol.ext.allow=never", *args], cwd=cwd, env=env, timeout=GIT_TIMEOUT,
-            capture_output=True, text=True, encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL,
-        )
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def _execute(cmd: list[str], cwd: Path, env: dict[str, str], timeout: float) -> tuple[int, str, str]:
+    """출력은 파이프가 아니라 임시 파일로 받는다: 자식(git-remote-https, ssh 등)이 파이프를 쥐고 있어도 멈추지 않는다."""
+    with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
+        extra: dict[str, Any] = {} if os.name == "nt" else {"start_new_session": True}
+        proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=err, **extra)
+        try:
+            code = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_tree(proc)
+            raise
+        out.seek(0)
+        err.seek(0)
+        return code, out.read().decode("utf-8", "replace"), err.read().decode("utf-8", "replace")
+
+
+def _git_env(cwd: Path) -> dict[str, str]:
+    global _SSH_CONFIGURED
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never", "LC_ALL": "C", "LANGUAGE": "C"}
+    if "GIT_SSH_COMMAND" not in os.environ and "GIT_SSH" not in os.environ:
+        if _SSH_CONFIGURED is None:
+            code, out, _ = _execute(["git", "config", "--get", "core.sshCommand"], cwd, env, 15)
+            _SSH_CONFIGURED = code == 0 and bool(out.strip())
+        if not _SSH_CONFIGURED:
+            env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes"      # 사용자 ssh 설정이 없을 때만: 암호 프롬프트로 멈추지 않게
+    return env
+
+
+def _git(args: list[str], cwd: Path, *, check: bool = True, what: str = "git") -> subprocess.CompletedProcess[str]:
+    try:
+        env = _git_env(cwd)
+        code, out, err = _execute(["git", "-c", "protocol.ext.allow=never", *args], cwd, env, GIT_TIMEOUT)
     except FileNotFoundError as e:
         raise _fail("git_missing", "git을 찾을 수 없습니다. git을 설치하고 PATH에 추가하세요.") from e
     except subprocess.TimeoutExpired as e:
         raise _fail("git_timeout", f"{what}이(가) {GIT_TIMEOUT}초 안에 끝나지 않았습니다. 네트워크와 인증 상태를 확인하세요.") from e
     except OSError as e:
         raise _fail("git_failed", f"git을 실행하지 못했습니다: {mask_credentials(str(e))}") from e
-    if check and proc.returncode != 0:
-        code, message = _classify(proc.stderr + "\n" + proc.stdout)
-        raise _fail(code, f"{what} 실패: {message} (git: {_tail(proc.stderr or proc.stdout)})")
+    proc = subprocess.CompletedProcess(args, code, out, err)
+    if check and code != 0:
+        kind, message = _classify(err + "\n" + out)
+        raise _fail(kind, f"{what} 실패: {message} (git: {_tail(err or out)})")
     return proc
+
+
+def _recover(root: Path) -> None:
+    """이전 실패로 남은 rebase가 있으면 중단한다(자동 해결하지 않는다)."""
+    git_dir = root / ".git"
+    if (git_dir / "rebase-merge").exists() or (git_dir / "rebase-apply").exists():
+        _git(["rebase", "--abort"], root, check=False)
+
+
+@contextmanager
+def _exclusive() -> Iterator[None]:
+    """confirm·pull을 한 번에 하나씩(프로세스 안 스레드 잠금 + 프로세스 사이 잠금 파일)."""
+    busy = _fail("library_busy", "다른 라이브러리 작업이 진행 중입니다. 잠시 뒤 다시 시도하세요.")
+    if not _THREAD_LOCK.acquire(blocking=False):
+        raise busy
+    path = workspace_dir("library.lock")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        for attempt in range(2):
+            try:
+                fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                break
+            except FileExistsError:
+                try:
+                    stale = time.time() - path.stat().st_mtime > LOCK_STALE_SEC
+                except FileNotFoundError:
+                    stale = True
+                if attempt == 1 or not stale:
+                    raise busy from None
+                path.unlink(missing_ok=True)
+        try:
+            os.write(fd, str(os.getpid()).encode("ascii"))
+        finally:
+            os.close(fd)
+        try:
+            yield
+        finally:
+            path.unlink(missing_ok=True)
+    finally:
+        _THREAD_LOCK.release()
 
 
 def _branch(root: Path) -> str:
@@ -195,19 +291,25 @@ def _norm_remote(remote: str) -> str:
 
 # --- connect · status · pull ----------------------------------------------------------
 
+def _check_remote(remote: str) -> None:
+    """주소 모양 검사. http(s)의 userinfo(사용자·토큰)는 모두 거절하고, scp 형식 `git@host:`·`ssh://git@`는 허용한다."""
+    if not remote or remote.startswith("-") or "\n" in remote or "\r" in remote:
+        raise _fail("invalid_remote", "저장소 주소가 올바르지 않습니다 (예: git@github.com:team/yt-library.git)")
+    if _HTTP_USERINFO_RE.match(remote) or _CRED_PASSWORD_RE.match(remote):
+        raise _fail("credentials_in_url", "주소에 사용자 이름·비밀번호·토큰을 넣지 마세요. yt-coach는 자격 증명을 저장하지 않습니다. "
+                    "git 자격 증명 관리자·SSH·`gh auth login`을 쓰세요.")
+
+
 def connect(remote: str, author: str) -> dict[str, Any]:
     remote = (remote or "").strip()
     name = _one_line(author or "", LIMITS["author"])
-    if not remote or remote.startswith("-") or "\n" in remote:
-        raise _fail("invalid_remote", "저장소 주소가 올바르지 않습니다 (예: git@github.com:team/yt-library.git)")
-    if _CRED_PASSWORD_RE.match(remote):
-        raise _fail("credentials_in_url", "주소에 비밀번호·토큰을 넣지 마세요. yt-coach는 자격 증명을 저장하지 않습니다. "
-                    "git 자격 증명 관리자·SSH·`gh auth login`을 쓰세요.")
+    _check_remote(remote)
     if not name:
         raise _fail("invalid_author", "표시 이름(author)이 필요합니다")
     root = clone_dir()
     existing = _read_config()
     if (root / ".git").exists():
+        _recover(root)
         current = _git(["remote", "get-url", "origin"], root, what="원격 주소 확인").stdout.strip()
         if _norm_remote(current) != _norm_remote(remote):
             raise _fail("remote_mismatch", f"이미 다른 저장소({mask_credentials(current)})가 연결돼 있습니다. 바꾸려면 "
@@ -239,26 +341,36 @@ def status() -> dict[str, Any]:
             "shared_count": len(cfg["shared"]), "empty": _head(root) is None}
 
 
+def _with_readme_cleared(root: Path, action: Any) -> Any:
+    """추적되지 않는 로컬 README는 원격 README와 덮어쓰기 충돌이 나므로 지웠다가, 끝나면 없을 때만 다시 만든다."""
+    readme = root / "README.md"
+    if readme.exists() and not _is_tracked(root, "README.md"):
+        readme.unlink()
+    try:
+        return action()
+    finally:
+        if not readme.exists():
+            refstore.write_atomic(readme, README_TEXT.encode("utf-8"))
+
+
 def pull() -> dict[str, Any]:
     cfg, root = _require_connected()
-    branch = _branch(root)
-    warning = None
-    dirty = [line for line in _git(["status", "--porcelain"], root, what="상태 확인").stdout.splitlines()
-             if line.strip() and not line.endswith("README.md")]
-    if dirty:
-        warning = "라이브러리 폴더에 로컬 변경이 있습니다(yt-coach가 만든 것이 아닙니다). 받기에 영향을 줄 수 있습니다."
-    if not _remote_has_branch(root, branch):
-        result = "empty"
-    else:
-        before = _head(root)
-        if before is None and (root / "README.md").exists() and not _is_tracked(root, "README.md"):
-            (root / "README.md").unlink()        # 원격에 README가 있으면 덮어쓰기 충돌이 난다. 아래에서 다시 만든다
-        _git(["pull", "--ff-only", "origin", branch], root, what="받기(pull)")
-        result = "updated" if _head(root) != before else "up_to_date"
-        if not (root / "README.md").exists():
-            refstore.write_atomic(root / "README.md", README_TEXT.encode("utf-8"))
-    cfg["last_pull"] = datetime.now().astimezone().isoformat(timespec="seconds")
-    _write_config(cfg)
+    with _exclusive():
+        _recover(root)
+        branch = _branch(root)
+        warning = None
+        dirty = [line for line in _git(["status", "--porcelain"], root, what="상태 확인").stdout.splitlines()
+                 if line.strip() and not line.endswith("README.md")]
+        if dirty:
+            warning = "라이브러리 폴더에 로컬 변경이 있습니다(yt-coach가 만든 것이 아닙니다). 받기에 영향을 줄 수 있습니다."
+        if not _remote_has_branch(root, branch):
+            result = "empty"
+        else:
+            before = _head(root)
+            _with_readme_cleared(root, lambda: _git(["pull", "--ff-only", "origin", branch], root, what="받기(pull)"))
+            result = "updated" if _head(root) != before else "up_to_date"
+        cfg["last_pull"] = datetime.now().astimezone().isoformat(timespec="seconds")
+        _write_config(cfg)
     out: dict[str, Any] = {"status": result, "last_pull": cfg["last_pull"]}
     if warning:
         out["warning"] = warning
@@ -320,7 +432,8 @@ def _validate_template(fm: dict) -> None:
         if s.get("sub") is not None and not _text(s["sub"], 30):
             raise ValueError("section sub")
     pacing = fm.get("pacing")
-    if not isinstance(pacing, dict) or (pacing.get("avg_cut_sec") is not None and not _is_num(pacing["avg_cut_sec"])):
+    if (not isinstance(pacing, dict) or set(pacing) - {"avg_cut_sec"}
+            or (pacing.get("avg_cut_sec") is not None and not _is_num(pacing["avg_cut_sec"]))):
         raise ValueError("pacing")
     mix = fm.get("shot_mix")
     if mix is not None and (not isinstance(mix, dict) or len(mix) > 20
@@ -328,21 +441,42 @@ def _validate_template(fm: dict) -> None:
         raise ValueError("shot_mix")
 
 
+def _reject_yaml_aliases(text: str) -> None:
+    """앵커(&)·별칭(*)이 있는 프런트매터는 받지 않는다(별칭 폭탄 방지). 토큰만 훑으므로 펼치지 않는다."""
+    m = _FM_BLOCK_RE.match(text)
+    if not m:
+        raise ValueError("no frontmatter")
+    try:
+        for token in yaml.scan(m.group(1), Loader=yaml.SafeLoader):
+            if isinstance(token, (yaml.tokens.AnchorToken, yaml.tokens.AliasToken)):
+                raise ValueError("yaml anchor/alias")
+    except yaml.YAMLError as e:
+        raise ValueError("yaml") from e
+
+
+def _parse_item(text: str, kind: str, category: str, stem: str) -> tuple[dict, str]:
+    """프런트매터·본문 검증. 모양이 틀리면 ValueError."""
+    _reject_yaml_aliases(text)
+    try:
+        fm, body = refstore.split_frontmatter(text.lstrip("\ufeff"))
+    except ScriptError as e:
+        raise ValueError(e.code) from e
+    _validate_common(fm, kind, category, stem)
+    (_validate_technique if kind == "technique" else _validate_template)(fm)
+    return fm, body.replace("\r\n", "\n")
+
+
 def _read_item(path: Path, kind: str, category: str) -> tuple[dict, str]:
-    """검증된 (프런트매터, 본문). 모양이 틀리면 ValueError/ScriptError/OSError."""
-    if path.is_symlink() or not path.is_file():
+    """검증된 (프런트매터, 본문). 모양이 틀리면 ValueError/OSError."""
+    if path.is_symlink() or path.parent.is_symlink() or not path.is_file():
         raise ValueError("not a regular file")
     if path.stat().st_size > MAX_FILE_BYTES:
         raise ValueError("too large")
     try:
-        fm, body = refstore.read_md(path)
+        text = path.read_bytes().decode("utf-8-sig")
     except UnicodeDecodeError as e:
         raise ValueError("encoding") from e
-    except ScriptError as e:
-        raise ValueError(e.code) from e
-    _validate_common(fm, kind, category, path.stem)
-    (_validate_technique if kind == "technique" else _validate_template)(fm)
-    return fm, body.replace("\r\n", "\n")
+    return _parse_item(text, kind, category, path.stem)
 
 
 def _scan(root: Path) -> tuple[list[tuple[dict, str, Path]], int]:
@@ -354,7 +488,7 @@ def _scan(root: Path) -> tuple[list[tuple[dict, str, Path]], int]:
             continue
         for cat_dir in sorted(p for p in base.iterdir()):
             if cat_dir.is_symlink() or not cat_dir.is_dir():
-                skipped += 1 if cat_dir.suffix == ".md" else 0
+                skipped += 1 if (cat_dir.is_symlink() or cat_dir.suffix == ".md") else 0
                 continue
             for path in sorted(cat_dir.glob("*.md")):
                 try:
@@ -371,12 +505,12 @@ def _first_paragraph(body: str, limit: int = 200) -> str:
     return " ".join(para.split())[:limit]
 
 
-def _summary(fm: dict, body: str, mine_ids: set[str], my_author: str | None) -> dict[str, Any]:
+def _summary(fm: dict, body: str, mine_ids: set[str]) -> dict[str, Any]:
     kind = fm["kind"]
     out: dict[str, Any] = {
         "id": fm["id"], "kind": kind, "author": fm["author"], "category": fm["category"],
         "worked": bool(fm.get("worked")), "note": fm.get("note"), "shared_at": fm["shared_at"],
-        "mine": fm["id"] in mine_ids or (my_author is not None and fm["author"] == my_author),
+        "mine": fm["id"] in mine_ids,       # 내 원장에 있는 id만(이름이 같은 지인을 내 것으로 보지 않는다)
         "data_notice": DATA_NOTICE,
     }
     if kind == "technique":
@@ -409,7 +543,7 @@ def search(query: str | None = None, category: str | None = None, kind: str | No
             hay = " ".join(str(x) for x in (fm.get("name"), fm.get("title"), fm.get("note"), fm["author"], body)).lower()
             if needle not in hay:
                 continue
-        found.append(_summary(fm, body, mine_ids, cfg["author"]))
+        found.append(_summary(fm, body, mine_ids))
     found.sort(key=lambda it: (it["shared_at"], it["id"]), reverse=True)
     return {"items": found, "skipped": skipped}
 
@@ -437,6 +571,8 @@ _FM_KEYS = ("kind", "id", "author", "category", "technique_kind", "name", "title
 def _plain_fm(fm: dict) -> dict[str, Any]:
     """검증을 통과한 알려진 키만 JSON으로 내보낸다(지인 파일의 엉뚱한 키·YAML 타입이 새지 않게)."""
     out = {k: fm[k] for k in _FM_KEYS if k in fm}
+    if "pacing" in fm:
+        out["pacing"] = {"avg_cut_sec": fm["pacing"].get("avg_cut_sec")}
     if "sections" in fm:
         out["sections"] = [{k: s[k] for k in ("label", "sub", "ratio") if k in s} for s in fm["sections"]]
     return out
@@ -450,15 +586,21 @@ def get(item_id: str) -> dict[str, Any]:
     unreadable = False
     for kind in KINDS:
         base = root / KIND_DIR[kind]
-        if not base.is_dir():
+        if not base.is_dir() or base.is_symlink():
             continue
-        for path in sorted(base.glob(f"*/{item_id}.md")):
+        for cat_dir in sorted(base.iterdir()):
+            path = cat_dir / f"{item_id}.md"
+            if cat_dir.is_symlink() and (path.exists() or path.is_symlink()):
+                unreadable = True            # 심볼릭 링크 폴더는 따라가지 않는다
+                continue
+            if cat_dir.is_symlink() or not cat_dir.is_dir() or not (path.exists() or path.is_symlink()):
+                continue
             try:
-                fm, body = _read_item(path, kind, path.parent.name)
+                fm, body = _read_item(path, kind, cat_dir.name)
             except (ValueError, OSError):
                 unreadable = True
                 continue
-            return {**_summary(fm, body, mine_ids, cfg["author"]), "frontmatter": _plain_fm(fm), "body": body,
+            return {**_summary(fm, body, mine_ids), "frontmatter": _plain_fm(fm), "body": body,
                     "parts": _split_parts(body)}
     if unreadable:
         raise _fail("invalid_item", f"읽을 수 없는 파일입니다(형식이 올바르지 않음): {item_id}")
@@ -638,14 +780,22 @@ SUMMARY_SCHEMA: dict[str, Any] = {
 }
 
 
-def _validate_summaries(data: Any, labels: list[str]) -> list[str]:
+def _shares_run(summary: str, script: str, n: int = SUMMARY_COPY_RUN) -> bool:
+    a, b = "".join(summary.split()), "".join(script.split())
+    if len(a) < n or len(b) < n:
+        return False
+    grams = {b[i:i + n] for i in range(len(b) - n + 1)}
+    return any(a[i:i + n] in grams for i in range(len(a) - n + 1))
+
+
+def _validate_summaries(data: Any, labels: list[str], scripts: list[str]) -> list[str]:
     def bad(msg: str) -> ScriptError:
         return ScriptError("invalid_summary", f"섹션 요약이 형식에 맞지 않습니다: {msg}")
     secs = data.get("sections") if isinstance(data, dict) else None
     if not isinstance(secs, list) or len(secs) != len(labels):
         raise bad(f"sections는 {len(labels)}개여야 합니다")
     out: list[str] = []
-    for want, got in zip(labels, secs):
+    for want, got, script in zip(labels, secs, scripts):
         if not isinstance(got, dict) or got.get("label") != want:
             raise bad(f"순서와 label이 기획안과 같아야 합니다(기대: {want})")
         summary = _one_line(got.get("summary") or "", 10_000)
@@ -653,6 +803,8 @@ def _validate_summaries(data: Any, labels: list[str]) -> list[str]:
             raise bad(f"{want}의 summary가 비었습니다")
         if len(summary) > LIMITS["summary"]:
             raise bad(f"{want}의 summary는 한 줄({LIMITS['summary']}자 이내)이어야 합니다")
+        if _shares_run(summary, script):
+            raise bad(f"{want}의 summary가 대본 원문을 {SUMMARY_COPY_RUN}자 이상 그대로 옮겼습니다. 구간의 역할만 쓰세요")
         out.append(refstore.escape_headings(summary))
     return out
 
@@ -673,7 +825,7 @@ def summarize_template(preview_id: str) -> dict[str, Any]:
             "구간의 역할만 120자 이내로 쓰세요. 섹션 순서와 label은 입력 그대로.")
     _, summaries = llm.ask_validated(
         [claude_cli.SKILLS_DIR / "yt-library" / "SKILL.md"], payload, task,
-        lambda d: _validate_summaries(d, labels), schema=SUMMARY_SCHEMA)
+        lambda d: _validate_summaries(d, labels, [str(x["script"]) for x in secs]), schema=SUMMARY_SCHEMA)
     data["body"]["summaries"] = summaries
     _save_preview(data)
     return _present(data)
@@ -727,14 +879,17 @@ def _render_body(data: dict[str, Any]) -> str:
         if body.get("source_count"):
             text += f"\n\n출처: 레퍼런스 {body['source_count']}개"
         return text + "\n"
-    lines = ["## 섹션 요약", ""]
+    lines: list[str] = []
+    rows = []
     for sec, summary in zip(data["fm"]["sections"], body["summaries"]):
         if summary:
             name = f"{sec['label']}/{sec['sub']}" if sec.get("sub") else sec["label"]
-            lines.append(f"- **{name}** ({round(sec['ratio'] * 100)}%): {summary}")
+            rows.append(f"- **{name}** ({round(sec['ratio'] * 100)}%): {summary}")
+    if rows:                                   # 요약이 하나도 없으면 제목도 만들지 않는다
+        lines += ["## 섹션 요약", "", *rows]
     rhythm = [(s, r) for s, r in zip(data["fm"]["sections"], body["rhythms"]) if r]
     if rhythm:
-        lines += ["", "## 샷 리듬", ""]
+        lines += ["", "## 샷 리듬", ""] if lines else ["## 샷 리듬", ""]
         lines += [f"- {s['label']}: {r}" for s, r in rhythm]
     return "\n".join(lines) + "\n"
 
@@ -762,9 +917,16 @@ def _push_rejected(stderr: str) -> bool:
     return any(h in low for h in ("rejected", "non-fast-forward", "fetch first", "failed to push some refs"))
 
 
-def _rollback(root: Path, before: str | None, rels: list[str]) -> None:
-    """올리기에 실패하면 이번에 만든 커밋·파일을 되돌려 저장소를 깨끗하게 둔다(원격은 건드리지 않음)."""
-    if before is not None:
+def _rollback(root: Path, before: str | None, rels: list[str], branch: str) -> None:
+    """올리기에 실패하면 이번에 만든 커밋·파일을 되돌려 저장소를 깨끗하게 둔다(원격은 건드리지 않음).
+
+    원격 브랜치를 이미 받아 왔으면(rebase가 성공한 뒤 재push가 실패한 경우 등) 그 상태로 맞춘다.
+    """
+    _recover(root)
+    remote_ref = f"refs/remotes/origin/{branch}"
+    if _git(["rev-parse", "--verify", "-q", remote_ref], root, check=False).returncode == 0:
+        _git(["reset", "--hard", remote_ref], root, check=False)
+    elif before is not None:
         _git(["reset", "--hard", before], root, check=False)
     else:
         _git(["update-ref", "-d", "HEAD"], root, check=False)
@@ -775,12 +937,17 @@ def _rollback(root: Path, before: str | None, rels: list[str]) -> None:
 
 
 def _rebase_pull(root: Path, branch: str) -> None:
-    proc = _git(["pull", "--rebase", "origin", branch], root, check=False)
+    try:
+        proc = _git(["pull", "--rebase", "origin", branch], root, check=False)
+    except ScriptError:
+        _recover(root)                    # 시간 초과 등으로 rebase가 반쯤 남았을 수 있다
+        raise
     if proc.returncode == 0:
         return
     text = proc.stderr + "\n" + proc.stdout
-    if (root / ".git" / "rebase-merge").exists() or (root / ".git" / "rebase-apply").exists() or "conflict" in text.lower():
-        _git(["rebase", "--abort"], root, check=False)
+    leftover = (root / ".git" / "rebase-merge").exists() or (root / ".git" / "rebase-apply").exists()
+    _recover(root)
+    if leftover or "conflict" in text.lower():
         raise _fail("rebase_conflict", "다른 사람의 변경과 겹쳐 합치지 못했습니다. 자동으로 해결하지 않고 중단했습니다. "
                     "받기(pull) 후 다시 시도하거나 저장소 관리자에게 알리세요.")
     code, message = _classify(text)
@@ -791,18 +958,29 @@ def _sync_before_share(root: Path, branch: str) -> None:
     """올리기 전에 최신화한다. 원격이 비었거나 아직 없는 브랜치면 할 일이 없다."""
     if not _remote_has_branch(root, branch):
         return
-    readme = root / "README.md"
-    removed = readme.exists() and not _is_tracked(root, "README.md")
-    if removed:
-        readme.unlink()
+    if _head(root) is None:
+        _with_readme_cleared(root, lambda: _git(["pull", "--ff-only", "origin", branch], root, what="받기(pull)"))
+    else:
+        _with_readme_cleared(root, lambda: _rebase_pull(root, branch))
+
+
+def _remote_has_file(root: Path, branch: str, rel: str) -> bool:
+    """push가 시간 초과된 뒤, 원격이 실제로 커밋을 받았는지 확인한다."""
     try:
-        if _head(root) is None:
-            _git(["pull", "--ff-only", "origin", branch], root, what="받기(pull)")
-        else:
-            _rebase_pull(root, branch)
-    finally:
-        if not readme.exists():
-            refstore.write_atomic(readme, README_TEXT.encode("utf-8"))
+        _git(["fetch", "origin", branch], root)
+    except ScriptError:
+        return False          # 확인할 수 없으면 호출한 쪽이 원래의 시간 초과 오류를 그대로 낸다
+    return _git(["cat-file", "-e", f"refs/remotes/origin/{branch}:{rel}"], root, check=False).returncode == 0
+
+
+def _push(root: Path, branch: str, rel: str) -> subprocess.CompletedProcess[str]:
+    args = ["push", "origin", f"HEAD:refs/heads/{branch}"]
+    try:
+        return _git(args, root, check=False)
+    except ScriptError as e:
+        if e.code == "git_timeout" and _remote_has_file(root, branch, rel):
+            return subprocess.CompletedProcess(args, 0, "", "")     # 시간은 초과했지만 원격에 올라가 있다
+        raise
 
 
 def _new_id(root: Path, data: dict[str, Any], author: str, today: str) -> str:
@@ -826,6 +1004,12 @@ def confirm(preview_id: str, note: str | None = None, worked: bool | None = None
     _apply_edits(data, note, worked, edits)
     if not _CATEGORY_RE.match(data["category"]):
         raise _fail("invalid_category", f"카테고리 이름이 올바르지 않습니다: {data['category']!r}")
+    with _exclusive():
+        _recover(root)
+        return _share(preview_id, data, cfg, root)
+
+
+def _share(preview_id: str, data: dict[str, Any], cfg: dict[str, Any], root: Path) -> dict[str, Any]:
     author = cfg["author"]
     branch = _branch(root)
     _sync_before_share(root, branch)
@@ -833,11 +1017,19 @@ def confirm(preview_id: str, note: str | None = None, worked: bool | None = None
     today = date.today().isoformat()
     item_id = _new_id(root, data, author, today)
     rel = f"{KIND_DIR[data['kind']]}/{data['category']}/{item_id}.md"
+    content = _render_file(data, item_id, author, today)
+    try:                                       # 지인이 읽지 못할 파일은 올리지 않는다(지인 파일과 같은 검증)
+        if len(content) > MAX_FILE_BYTES:
+            raise ValueError("too large")
+        _parse_item(content.decode("utf-8"), data["kind"], data["category"], item_id)
+    except ValueError as e:
+        raise _fail("invalid_share", f"이 내용은 공용 라이브러리 형식에 맞지 않아 올리지 않았습니다({e}). "
+                    "제목·섹션·샷 크기 이름의 길이와 모양을 확인하세요.") from e
     target = (root / rel).resolve()
     if root.resolve() not in target.parents:
         raise _fail("invalid_path", "라이브러리 폴더 밖에는 쓸 수 없습니다")
     target.parent.mkdir(parents=True, exist_ok=True)
-    refstore.write_atomic(target, _render_file(data, item_id, author, today))
+    refstore.write_atomic(target, content)
     rels = [rel]
     readme = root / "README.md"
     if not readme.exists():
@@ -852,21 +1044,23 @@ def confirm(preview_id: str, note: str | None = None, worked: bool | None = None
         slug = author_slug(author)
         _git(["-c", f"user.name={author}", "-c", f"user.email={slug}@yt-coach.local", "-c", "commit.gpgsign=false",
               "commit", "-q", "-m", message, "--", *rels], root, what="커밋(commit)")
-        push = _git(["push", "origin", f"HEAD:refs/heads/{branch}"], root, check=False)
+        push = _push(root, branch, rel)
         if push.returncode != 0 and _push_rejected(push.stderr):
             _rebase_pull(root, branch)
-            push = _git(["push", "origin", f"HEAD:refs/heads/{branch}"], root, check=False)
+            push = _push(root, branch, rel)
+            if push.returncode != 0 and _push_rejected(push.stderr):
+                raise _fail("library_busy", "다른 사람이 동시에 올렸습니다. 잠시 뒤 다시 올리세요")
         if push.returncode != 0:
             code, why = _classify(push.stderr + "\n" + push.stdout)
             raise _fail(code, f"올리기(push) 실패: {why} (git: {_tail(push.stderr or push.stdout)})")
     except ScriptError:
-        _rollback(root, before, rels)
+        _rollback(root, before, rels, branch)
         raise
     commit = _head(root)
     cfg["shared"].append({"key": data["key"], "hash": data["hash"], "id": item_id, "shared_at": today})
     _write_config(cfg)
     preview_path(preview_id).unlink(missing_ok=True)
-    unsummarized = sum(1 for s in data["body"].get("summaries", []) if not s)
+    unsummarized = sum(1 for x in data["body"].get("summaries", []) if not x)
     out: dict[str, Any] = {"status": "shared", "id": item_id, "path": rel, "commit": commit, "pushed": True}
     if unsummarized:
         out["unsummarized"] = unsummarized
@@ -879,7 +1073,11 @@ def _load_edits(value: str | None) -> dict[str, Any] | None:
     if value is None:
         return None
     try:
-        text = Path(value[1:]).read_text(encoding="utf-8") if value.startswith("@") else value
+        if value.startswith("@"):
+            edits_path = Path(value[1:])
+            text = (edits_path if edits_path.is_absolute() else work_root() / edits_path).read_text(encoding="utf-8")
+        else:
+            text = value
         data = json.loads(text)
     except (OSError, ValueError) as e:
         raise _fail("invalid_edits", f"--edits를 읽지 못했습니다(JSON 문자열 또는 @파일): {e}") from e

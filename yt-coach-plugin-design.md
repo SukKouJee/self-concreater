@@ -263,13 +263,13 @@ schema_version: 2       # 2: 컷의 선택 필드 ref_frame(고정한 참고 프
 ### 6.2 `index.md` 섹션
 `## 개요` / `## 단계` / `## 판정` (축별 표) / `## 아키타입` / `## 모티브 카드` / `## 이상치`
 
+### 6.3 `profile.md`
+`## 관심 주제` / `## 포맷` / `## 롤모델` / `## 하루 시간` / `## 피하고 싶은 스타일` / `## 강점` / `## 약점` / `## 성장 단계`
+
 ### 6.4 공용 라이브러리 파일 (`workspace/library/`, 지인 공유 저장소)
 - `techniques/<category>/<id>.md` (kind: technique — author, category, technique_kind, name, worked?, note?, shared_at, schema_version 1; 본문 = 기법 설명 + `출처: 레퍼런스 N개`)
 - `templates/<category>/<id>.md` (kind: template — title, target_sec, hook_type, narrative_type, sections[label,sub?,ratio], pacing.avg_cut_sec, shot_mix, worked?, note?; 본문 = `## 섹션 요약`(섹션별 한 줄) + `## 샷 리듬`)
 - id = `<author-slug>-<YYYYMMDD>-<6자 해시>`. 대본 원문·내 메모·준비물·영상 id·개인 경로는 들어가지 않는다. 지인 파일은 신뢰하지 않는 데이터로 읽는다(모양이 틀리면 목록에서 뺌)
-
-### 6.3 `profile.md`
-`## 관심 주제` / `## 포맷` / `## 롤모델` / `## 하루 시간` / `## 피하고 싶은 스타일` / `## 강점` / `## 약점` / `## 성장 단계`
 
 ## 7. 손발 맞추기
 

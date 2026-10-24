@@ -31,9 +31,12 @@ argument-hint: 'connect <주소> | pull | search <검색어> | share technique <
 
 1. 기법: `ytc library techniques <category>`로 목록을 보여 주고 고르게 한다 → `ytc library preview technique <category> <종류> "<이름>"`
    기획안: `ytc library preview draft drafts/<파일>.md`
-2. 기획안이면 `ytc library summarize <preview_id>`로 섹션 요약을 제안받아 보여 주고, 사용자가 고친다(고친 것은 `--edits`의 `sections`).
+2. 기획안이면 `ytc library summarize <preview_id>`로 섹션 요약을 제안받아 보여 주고, 사용자가 고친다(고친 것은 `--edits`의 `sections`: `[{"label", "summary"}]`, 미리보기와 같은 순서).
 3. 미리보기의 `markdown`을 보여 주고, 한 줄 메모와 "잘 먹혔다" 여부를 묻는다.
-4. 사용자가 **올려도 좋다고 확인**하면 `ytc library confirm <preview_id> [--note "<메모>"] [--worked] [--edits '<json>']`
+4. 사용자가 **올려도 좋다고 확인**하면 `ytc library confirm <preview_id> [--note "<메모>"] [--worked] [--edits @workspace/tmp/library_edits.json]`
+   - 고칠 것이 있으면 JSON(`{"title", "note", "worked", "sections"}` 중 필요한 것)을 `workspace/tmp/library_edits.json`에 Write로 쓰고 `@파일`로 넘긴다(따옴표 문제 방지).
+   - `library_busy` → 다른 작업이 진행 중이거나 다른 사람이 동시에 올렸다는 뜻이다. 잠시 뒤 다시 시도한다.
+   - `invalid_share` → 형식에 맞지 않는 값이 있다. message대로 고쳐 미리보기부터 다시 한다.
    - `duplicate` → "이미 올렸습니다. 새로 올릴까요?"를 묻고, 원하면 `--force-new`로 다시.
    - `preview_expired`(30분) → 미리보기부터 다시.
    - `rebase_conflict`, `library_auth` 등 → message대로 안내하고 멈춘다. 자동으로 해결하지 않는다.
