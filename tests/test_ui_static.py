@@ -4,7 +4,7 @@ from scripts.ui.server import STATIC_DIR
 from tests.test_ui_server import client, no_browser  # noqa: F401  (fixture 재사용)
 
 MENU_NAMES = ["홈", "레퍼런스 추가", "레퍼런스 목록", "유형화", "리포트", "모티브", "기획안", "콘티", "진단", "미션"]
-COMMANDS = ["/yt-coach:yt-typify", "/yt-coach:yt-review", "/yt-coach:yt-inspire",
+COMMANDS = ["/yt-coach:yt-review", "/yt-coach:yt-inspire",
             "/yt-coach:yt-draft", "/yt-coach:yt-diagnose", "/yt-coach:yt-mission"]
 
 
@@ -237,3 +237,30 @@ def test_refs_edit_mode_focus_and_quiet_reload():
         assert token in js, token
     css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
     assert re.search(r"max-width: 520px\) \{[^@]*\.ref-edit-row", css)
+
+
+def test_typify_menu_is_live_route():
+    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    home = (STATIC_DIR / "pages" / "home.js").read_text(encoding="utf-8")
+    assert 'route: "#/typify"' in app
+    assert 'soon: "typify"' not in app
+    assert 'case "typify"' in app
+    assert '"#/typify"' in home
+
+
+def test_typify_page_contract_and_safety():
+    js = (STATIC_DIR / "pages" / "typify.js").read_text(encoding="utf-8")
+    for token in ["export async function mount", "export function unmount", "export function onCategory",
+                  "isCurrent()", "ctx.api(", "/api/typify", "/api/typify/run", "/api/typify/save", "kind=typify",
+                  "유형화 실행", "저장", "typify_changed", "invalid_notes", "레퍼런스 추가로 가기",
+                  "이전 이름 그대로", "lb-", "#/refs/"]:
+        assert token in js, token
+    for bad in ["innerHTML", "insertAdjacentHTML", "outerHTML"]:
+        assert bad not in js, bad
+
+
+def test_typify_page_served(client):
+    status, headers, raw = client.call("GET", "/static/pages/typify.js")
+    assert status == 200
+    assert "javascript" in headers["Content-Type"]
+    assert "/api/typify" in raw.decode("utf-8")
