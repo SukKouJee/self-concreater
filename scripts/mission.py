@@ -3,7 +3,7 @@
 사용법 (작업 폴더에서):
   python -m scripts.mission context [--date YYYY-MM-DD]
   python -m scripts.mission save --mission <json> [--date] [--replace]        → missions/<date>.md
-  python -m scripts.mission submit <file> --difficulty easy|right|hard --feedback <text> [--date]
+  python -m scripts.mission submit <file> --difficulty easy|right|hard --feedback <text> [--note <text>] [--date]
   python -m scripts.mission skip --reason <text> [--date]
   python -m scripts.mission week [YYYY-Www]
   python -m scripts.mission review-save <YYYY-Www> --review <json>              → reviews/<week>.md
@@ -87,7 +87,17 @@ def _missions_between(start: str, end: str) -> list[dict]:
     folder = _missions_dir()
     if not folder.is_dir():
         return []
-    return [_mission_record(p) for p in sorted(folder.glob("*.md")) if start <= p.stem <= end]
+    records = []
+    for p in sorted(folder.glob("*.md")):
+        if not start <= p.stem <= end:
+            continue
+        try:
+            records.append(_mission_record(p))
+        except ScriptError as e:
+            if e.code != "bad_frontmatter":
+                raise
+            # 사용자가 고치는 중인 기록 하나가 전체 조회를 막지 않도록 건너뛴다
+    return records
 
 
 def _starred() -> list[dict]:
@@ -154,19 +164,40 @@ def _invalid(message: str) -> ScriptError:
     return ScriptError("invalid_mission", f"미션이 형식에 맞지 않습니다: {message}")
 
 
-def save(mission_path: Path, date: str | None = None, replace: bool = False) -> dict:
-    day = _today(date)
-    data = _load_json(mission_path, "invalid_mission")
-    if not str(data.get("title") or "").strip():
+def _line(value: Any) -> str:
+    """한 줄 필드: 앞뒤 공백을 지우고 안의 줄바꿈·연속 공백을 한 칸으로 줄인다."""
+    return " ".join(str(value or "").split())
+
+
+def validate_mission(data: Any) -> dict:
+    """미션 JSON을 검증하고 정리한 사본을 돌려준다. 문제가 있으면 invalid_mission."""
+    if not isinstance(data, dict):
+        raise _invalid("JSON 객체가 아닙니다")
+    title = _line(data.get("title"))
+    if not title:
         raise _invalid("title이 비어 있습니다")
     if data.get("kind") not in KINDS:
         raise _invalid(f"kind={data.get('kind')!r} (허용: {', '.join(KINDS)})")
     minutes = data.get("minutes")
-    if not isinstance(minutes, (int, float)) or not 10 <= minutes <= MAX_MINUTES:
+    if isinstance(minutes, bool) or not isinstance(minutes, (int, float)) or not 10 <= minutes <= MAX_MINUTES:
         raise _invalid(f"minutes={minutes!r} (10~{MAX_MINUTES}분)")
-    steps = [str(s).strip() for s in data.get("steps") or [] if str(s).strip()]
+    raw_steps = data.get("steps")
+    if raw_steps is None:
+        raw_steps = []
+    if not isinstance(raw_steps, list):
+        raise _invalid("steps가 목록이 아닙니다")
+    steps = [line for line in (_line(s) for s in raw_steps) if line]
     if not steps:
         raise _invalid("steps가 비어 있습니다")
+    return {"title": title, "kind": data["kind"], "minutes": int(minutes), "source": _line(data.get("source")) or None,
+            "why": _line(data.get("why")) or None, "steps": steps,
+            "deliverable": _line(data.get("deliverable")) or None}
+
+
+def save(mission_path: Path, date: str | None = None, replace: bool = False) -> dict:
+    day = _today(date)
+    data = validate_mission(_load_json(mission_path, "invalid_mission"))
+    minutes = data["minutes"]
 
     path = _mission_path(day)
     swapped_from = None
@@ -177,21 +208,21 @@ def save(mission_path: Path, date: str | None = None, replace: bool = False) -> 
 
     profile = motif._profile()
     fm = {"date": day, "stage": (profile or {}).get("성장 단계") or "관찰", "kind": data["kind"],
-          "status": "open", "source": data.get("source"), "minutes": int(minutes),
+          "status": "open", "source": data["source"], "minutes": minutes,
           "difficulty": None, "skip_reason": None}
     if swapped_from:
         fm["swapped_from"] = swapped_from
     fm["schema_version"] = 1
     body = "\n".join([
-        f"# {day} 미션", "", "## 미션", f"### {data['title'].strip()} ({int(minutes)}분 · {data['kind']})",
-        *([f"- 왜: {data['why'].strip()}"] if data.get("why") else []),
-        *([f"- 재료: {data['source']}"] if data.get("source") else []), "",
-        *[f"{i}. {s}" for i, s in enumerate(steps, 1)], "",
-        *([f"- 결과물: {data['deliverable'].strip()}"] if data.get("deliverable") else []), "",
+        f"# {day} 미션", "", "## 미션", f"### {data['title']} ({minutes}분 · {data['kind']})",
+        *([f"- 왜: {data['why']}"] if data["why"] else []),
+        *([f"- 재료: {data['source']}"] if data["source"] else []), "",
+        *[f"{i}. {s}" for i, s in enumerate(data["steps"], 1)], "",
+        *([f"- 결과물: {data['deliverable']}"] if data["deliverable"] else []), "",
         "## 제출", "", "## 피드백", "",
     ])
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(refstore.join_frontmatter(fm, body).encode("utf-8"))
+    refstore.write_atomic(path, refstore.join_frontmatter(fm, body).encode("utf-8"))
     Path(mission_path).unlink(missing_ok=True)
     return {"status": "saved", "path": path.relative_to(work_root()).as_posix(), "swapped_from": swapped_from}
 
@@ -203,16 +234,19 @@ def _require_mission(day: str) -> Path:
     return path
 
 
-def submit(file: str, difficulty: str, feedback: str, date: str | None = None) -> dict:
+def submit(file: str, difficulty: str, feedback: str, date: str | None = None, note: str | None = None) -> dict:
     day = _today(date)
     if difficulty not in DIFFICULTIES:
         raise ScriptError("usage", f"difficulty는 {', '.join(DIFFICULTIES)} 중 하나입니다")
     path = _require_mission(day)
     fm, body = refstore.read_md(path)
-    body = refstore.replace_section(body, "## 제출", f"- 파일: {file}\n- 난이도: {difficulty}")
+    name = (Path(file.replace(chr(92), "/")).name or file) if file else ""
+    lines = [*([f"- 한 일: {_line(note)}"] if _line(note) else []),
+             *([f"- 파일: {name}"] if name else []), f"- 난이도: {difficulty}"]
+    body = refstore.replace_section(body, "## 제출", "\n".join(lines))
     body = refstore.replace_section(body, "## 피드백", feedback.strip())
     fm.update({"status": "submitted", "difficulty": difficulty})
-    path.write_bytes(refstore.join_frontmatter(fm, body).encode("utf-8"))
+    refstore.write_atomic(path, refstore.join_frontmatter(fm, body).encode("utf-8"))
     return {"status": "submitted", "date": day, "difficulty": difficulty}
 
 
@@ -331,6 +365,7 @@ def main(argv: list[str]) -> Any:
     sb.add_argument("file")
     sb.add_argument("--difficulty", required=True, choices=DIFFICULTIES)
     sb.add_argument("--feedback", required=True)
+    sb.add_argument("--note")
     sb.add_argument("--date")
     sk = sub.add_parser("skip")
     sk.add_argument("--reason", default="")
@@ -350,7 +385,7 @@ def main(argv: list[str]) -> Any:
     if args.cmd == "save":
         return save(_work_path(args.mission), args.date, args.replace)
     if args.cmd == "submit":
-        return submit(args.file, args.difficulty, args.feedback, args.date)
+        return submit(args.file, args.difficulty, args.feedback, args.date, args.note)
     if args.cmd == "skip":
         return skip(args.reason, args.date)
     if args.cmd == "week":
