@@ -66,16 +66,19 @@ TOOLS: list[dict[str, Any]] = [
          "desc": _STR, "draft": _STR}, "required": ["kind"], "additionalProperties": False}},
     {"name": "library_summarize",
      "description": "기획안 틀 미리보기의 섹션별 한 줄 요약을 만듭니다(Claude 사용). 결과를 사용자에게 보여 주고 "
-                    "고치게 한 뒤 library_share_confirm의 edits.sections로 넘기세요. "
+                    "고치게 한 뒤 library_share_confirm의 edits.sections로 넘기세요. 오래 걸릴 수 있음 / may take minutes. "
                     "/ Writes per-section one-line summaries for a template preview.",
      "inputSchema": {"type": "object", "properties": {"preview_id": _STR}, "required": ["preview_id"],
                      "additionalProperties": False}},
     {"name": "library_share_confirm",
      "description": CONFIRM_DESCRIPTION,
+     "annotations": {"title": "라이브러리에 올리기 (Share to library)", "destructiveHint": True,
+                     "openWorldHint": True},
      "inputSchema": {"type": "object", "properties": {
          "preview_id": _STR, "note": _STR, "worked": _BOOL,
          "edits": {"type": "object", "description": "title, note, worked, sections([{label, summary}])"},
-         "force_new": {**_BOOL, "description": "이미 올린 항목을 새 파일로 또 올릴 때만 / only to re-share a duplicate"}},
+         "force_new": {**_BOOL, "description": "사용자가 '이미 올림' 안내를 보고 채팅에서 다시 올리기를 확인한 경우에만 true "
+                                             "/ only after the user re-confirms"}},
          "required": ["preview_id"], "additionalProperties": False}},
 ]
 _TOOL_PROPS = {t["name"]: t["inputSchema"] for t in TOOLS}
@@ -165,6 +168,10 @@ def call_tool(name: str, raw_args: Any) -> dict[str, Any]:
         result, is_error = {"error": "invalid_arguments", "message": str(e)}, True
     except ScriptError as e:
         result, is_error = {"error": e.code, "message": e.message, **e.details}, True
+        if e.code == "duplicate":
+            # 재시도를 부추기지 않도록 MCP 쪽 문구를 따로 둔다(CLI 문구는 그대로)
+            result["message"] = (f"이미 올린 항목입니다 ({e.details.get('shared_at')}, {e.details.get('shared_id')}). "
+                                 "사용자에게 알리고 다시 올릴지 물어보세요.")
     except Exception as e:  # noqa: BLE001 - 서버는 어떤 도구 실패에도 살아 있어야 한다
         log(f"{name} 실패: {type(e).__name__}")
         result = {"error": "internal", "message": library.mask_credentials(f"{type(e).__name__}: {e}")}
@@ -185,6 +192,8 @@ def handle(msg: Any) -> dict[str, Any] | None:
     method = msg["method"]
     is_notification = "id" not in msg
     req_id = msg.get("id")
+    if not is_notification and (isinstance(req_id, bool) or not isinstance(req_id, (str, int, float))):
+        return _error(None, INVALID_REQUEST, "Invalid Request: id must be a string or number")
     params = msg.get("params")
     if params is not None and not isinstance(params, dict):
         return None if is_notification else _error(req_id, INVALID_PARAMS, "params must be an object")
@@ -225,13 +234,34 @@ def serve(stdin: Any, out: Any) -> None:
                 reply = handle(msg)
             except Exception as e:  # noqa: BLE001 - 프로토콜 계층이 죽으면 안 된다
                 log(f"처리 실패: {type(e).__name__}: {e}")
-                reply = _error(msg.get("id") if isinstance(msg, dict) else None, -32603, "Internal error")
-        if reply is not None:
-            out.write(json.dumps(reply, ensure_ascii=False) + "\n")
-            out.flush()
+                is_notification = isinstance(msg, dict) and "id" not in msg
+                reply = None if is_notification else _error(msg.get("id") if isinstance(msg, dict) else None,
+                                                            -32603, "Internal error")
+        if reply is not None and not _write(out, reply):
+            return
+
+
+def _write(out: Any, reply: dict[str, Any]) -> bool:
+    """응답 한 줄을 쓴다. ASCII 이스케이프라 외톨이 서로게이트도 안전하다. 출력 파이프가 닫혔으면 False."""
+    try:
+        out.write(json.dumps(reply) + "\n")
+        out.flush()
+    except (BrokenPipeError, ValueError):
+        return False
+    except (OSError, UnicodeError) as e:
+        log(f"응답을 쓰지 못했습니다: {type(e).__name__}")
+    return True
 
 
 # --- 진입점 --------------------------------------------------------------------------------
+
+REEXEC_GUARD = "YTC_MCP_REEXEC"
+
+
+def _same_file(a: str | Path, b: str | Path) -> bool:
+    # resolve()는 POSIX에서 venv의 python 심볼릭 링크를 따라가 시스템 python과 같아 보이게 하므로 abspath로 비교한다
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
 
 def _reexec_in_venv() -> int | None:
     """시스템 Python에 의존성(pyyaml)이 없으면 플러그인 .venv의 Python으로 다시 실행한다(bin/ytc와 같은 우선순위)."""
@@ -240,15 +270,23 @@ def _reexec_in_venv() -> int | None:
         return None
     except ImportError:
         pass
+    if os.environ.get(REEXEC_GUARD) == "1":
+        log("재실행한 Python에도 pyyaml이 없습니다. 플러그인 폴더에서 `pip install -r requirements.txt`를 실행하세요.")
+        return 1
+    script = str(Path(__file__).resolve())
     for rel in (".venv/Scripts/python.exe", ".venv/bin/python"):
         py = ROOT / rel
-        if py.is_file() and Path(sys.executable).resolve() != py.resolve():
-            return subprocess.call([str(py), str(Path(__file__).resolve())])
+        if py.is_file() and not _same_file(sys.executable, py):
+            env = {**os.environ, REEXEC_GUARD: "1"}
+            if os.name != "nt":
+                os.execve(str(py), [str(py), script], env)        # 같은 PID로 대체: stdio 그대로 이어진다
+            return subprocess.call([str(py), script], env=env)    # Windows: execve는 새 프로세스를 띄우고 부모가 먼저 끝난다
     log("pyyaml을 찾을 수 없습니다. 플러그인 폴더에서 `pip install -r requirements.txt`를 실행하세요.")
     return 1
 
 
 def main() -> int:
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")      # 로그보다 먼저
     code = _reexec_in_venv()
     if code is not None:
         return code
@@ -258,7 +296,6 @@ def main() -> int:
     os.dup2(2, 1)
     sys.stdout = sys.stderr
     stdin = open(0, "rb", closefd=False)
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     log(f"시작: 작업 폴더 {os.environ.get('YT_COACH_HOME') or Path.cwd()}")
     serve(stdin, out)
     return 0

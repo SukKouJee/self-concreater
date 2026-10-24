@@ -128,7 +128,10 @@ Claude가 라이브러리를 직접 부를 수 있는 도구 8개를 제공합�
 
 - 작업 폴더는 CLI와 같습니다: `YT_COACH_HOME`이 있으면 그 경로, 없으면 현재 폴더. Claude Code는 플러그인 MCP 서버를 열어 둔 프로젝트 폴더에서 띄우므로, 보통 따로 설정할 필요가 없습니다.
 - `connect`(저장소 주소 연결)는 도구가 아니라 `/yt-library connect <주소>`로 합니다.
-- 명령은 `python`입니다. macOS에서 `python`이 없고 `python3`만 있다면 `python`이 `python3`를 가리키게 하거나, 프로젝트 `.mcp.json`에서 `command`를 바꿔 덮어쓰세요. 시스템 Python에 `pyyaml`이 없으면 서버가 플러그인 `.venv`의 Python으로 스스로 다시 실행합니다.
+- 명령은 `python`입니다(`.mcp.json`). macOS에 python3만 있으면 `claude mcp add --scope user yt-coach-library -- python3 <플러그인 경로>/scripts/library_mcp.py`로 등록하세요(플러그인 쪽 서버는 실패로 표시되지만 도구는 이쪽에서 제공됩니다).
+- Windows에서 `python`이 Microsoft Store 안내만 띄운다면 Store 별칭 스텁일 뿐 Python이 설치되지 않은 것입니다. python.org에서 설치하세요.
+- 시스템 Python에 `pyyaml`이 없으면 서버가 플러그인 `.venv`의 Python으로 스스로 다시 실행합니다.
+- `library_share_confirm`은 권한 프롬프트에서 '항상 허용'하지 마세요. 올릴 때마다 미리보기를 보고 확인해야 합니다.
 - 오류는 `isError: true`와 `{"error": "<code>", "message": "..."}` 텍스트로 돌려줍니다.
 
 ## 스킬

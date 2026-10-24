@@ -166,7 +166,8 @@ def _kill_tree(proc: subprocess.Popen[bytes]) -> None:
     """우리가 띄운 git과 그 자식만 PID로 끈다(이미지 이름으로 끄지 않는다)."""
     if os.name == "nt":
         try:
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, timeout=15, check=False)
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, stdin=subprocess.DEVNULL, timeout=15,
+                           check=False)
         except subprocess.TimeoutExpired:
             pass
     else:

@@ -15,13 +15,19 @@ from tests.test_library import CAT, make_draft, make_home, remote  # noqa: F401 
 
 SERVER = Path(__file__).resolve().parent.parent / "scripts" / "library_mcp.py"
 TIMEOUT = 60
+PLUGIN_VERSION = json.loads((SERVER.parent.parent / ".claude-plugin" / "plugin.json").read_text("utf-8"))["version"]
+VENV = SERVER.parent.parent / ".venv"
 
 
 class McpClient:
-    def __init__(self, home: Path) -> None:
-        env = {**os.environ, "YT_COACH_HOME": str(home), "PYTHONIOENCODING": "utf-8"}
+    def __init__(self, home: Path, *, set_home_env: bool = True, argv: list[str] | None = None,
+                 extra_env: dict[str, str] | None = None) -> None:
+        env = {**os.environ, "PYTHONIOENCODING": "utf-8", **(extra_env or {})}
+        env.pop("YT_COACH_HOME", None)
+        if set_home_env:
+            env["YT_COACH_HOME"] = str(home)
         self.home = home
-        self.proc = subprocess.Popen([sys.executable, str(SERVER)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        self.proc = subprocess.Popen(argv or [sys.executable, str(SERVER)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=subprocess.PIPE, cwd=str(home), env=env)
         self.raw_stdout: list[bytes] = []
         self._lines: queue.Queue[bytes] = queue.Queue()
@@ -89,7 +95,7 @@ def test_initialize_echoes_client_protocol_and_reports_server_info(client):
     result = reply["result"]
     assert result["protocolVersion"] == "2024-11-05"
     assert result["capabilities"] == {"tools": {}}
-    assert result["serverInfo"] == {"name": "yt-coach-library", "version": "0.1.0"}
+    assert result["serverInfo"] == {"name": "yt-coach-library", "version": PLUGIN_VERSION}
 
 
 def test_initialize_defaults_protocol_when_client_gives_none(client):
@@ -196,3 +202,108 @@ def test_stdout_carries_only_json_rpc_lines_and_clean_exit(client):
     for line in client.raw_stdout:
         assert line.endswith(b"\n") and not line.endswith(b"\r\n")
         assert json.loads(line.decode("utf-8"))["jsonrpc"] == "2.0"
+
+
+def test_confirm_tool_has_destructive_annotations_and_force_new_wording(client):
+    tools = {t["name"]: t for t in client.request("tools/list")["result"]["tools"]}
+    confirm = tools["library_share_confirm"]
+    assert confirm["annotations"]["destructiveHint"] is True and confirm["annotations"]["openWorldHint"] is True
+    assert confirm["annotations"]["title"]
+    assert "re-confirms" in confirm["inputSchema"]["properties"]["force_new"]["description"]
+    assert "may take minutes" in tools["library_summarize"]["description"]
+
+
+def test_duplicate_error_tells_claude_to_ask_the_user_not_to_retry(client):
+    args = {"kind": "technique", "category": CAT, "technique_kind": "훅", "name": "결과 선공개"}
+    for _ in range(2):
+        _, preview = client.call("library_share_preview", args)
+        err, payload = client.call("library_share_confirm", {"preview_id": preview["preview_id"]})
+    assert err is True and payload["error"] == "duplicate" and payload["shared_id"]
+    assert "사용자에게 알리고 다시 올릴지 물어보세요" in payload["message"]
+    assert "force_new" not in payload["message"] and "새 파일로 또" not in payload["message"]
+
+
+@pytest.mark.parametrize("bad_id", [None, True, {"a": 1}, [1]])
+def test_invalid_request_id_gets_invalid_request(client, bad_id):
+    client.send_raw(json.dumps({"jsonrpc": "2.0", "id": bad_id, "method": "ping"}).encode() + b"\n")
+    reply = client.recv()
+    assert reply["error"]["code"] == -32600 and reply["id"] is None
+    assert client.request("ping")["result"] == {}
+
+
+def test_lone_surrogate_method_is_method_not_found_and_server_survives(client):
+    client.send_raw(b'{"jsonrpc":"2.0","id":7,"method":"\\ud800"}\n')
+    reply = client.recv()
+    assert reply["id"] == 7 and reply["error"]["code"] == -32601
+    assert client.request("ping")["result"] == {}
+
+
+def test_work_root_falls_back_to_cwd_without_env(tmp_path, monkeypatch, remote):  # noqa: F811
+    home = make_home(tmp_path, monkeypatch, "home_cwd")
+    library.connect(str(remote), "Alice")
+    c = McpClient(home, set_home_env=False)
+    try:
+        err, status = c.call("library_status")
+        assert not err and status["connected"] is True
+    finally:
+        c.proc.kill()
+        c.proc.wait()
+
+
+STRAY_RUNNER = """
+import os, sys
+sys.path.insert(0, {root!r})
+from scripts import library, library_mcp
+def noisy():
+    print("STRAY PRINT")
+    os.write(1, b"STRAY FD WRITE\\n")
+    return {{"connected": True}}
+library.status = noisy
+sys.exit(library_mcp.main())
+"""
+
+
+def test_stray_prints_in_a_handler_never_reach_stdout(tmp_path, monkeypatch, remote):  # noqa: F811
+    home = make_home(tmp_path, monkeypatch, "home_stray")
+    library.connect(str(remote), "Alice")
+    runner = STRAY_RUNNER.format(root=str(SERVER.parent.parent))
+    c = McpClient(home, argv=[sys.executable, "-c", runner])
+    try:
+        err, status = c.call("library_status")
+        assert not err and status == {"connected": True}
+        assert c.close() == 0
+    finally:
+        if c.proc.poll() is None:
+            c.proc.kill()
+    assert all(json.loads(line)["jsonrpc"] == "2.0" for line in c.raw_stdout)
+    assert b"STRAY" not in b"".join(c.raw_stdout)
+
+
+def _base_python() -> str | None:
+    base = Path(sys.base_prefix) / ("python.exe" if os.name == "nt" else "bin/python3")
+    return str(base) if base.is_file() else None
+
+
+@pytest.mark.skipif(not (VENV.is_dir() and _base_python()), reason="플러그인 .venv와 venv 밖 Python이 필요합니다")
+def test_server_reexecs_into_plugin_venv_when_interpreter_lacks_pyyaml(tmp_path):
+    # -I -S: site-packages 없이 시작해 pyyaml이 없는 시스템 Python을 흉내 낸다
+    probe = subprocess.run([_base_python(), "-I", "-S", "-c", "import yaml"], capture_output=True)
+    if probe.returncode == 0:
+        pytest.skip("-S로도 pyyaml이 보입니다")
+    c = McpClient(tmp_path, argv=[_base_python(), "-I", "-S", str(SERVER)])
+    try:
+        assert c.request("ping")["result"] == {}
+    finally:
+        c.proc.kill()
+        c.proc.wait()
+
+
+@pytest.mark.skipif(not _base_python(), reason="venv 밖 Python이 필요합니다")
+def test_reexec_guard_stops_the_loop_with_a_clear_exit(tmp_path):
+    probe = subprocess.run([_base_python(), "-I", "-S", "-c", "import yaml"], capture_output=True)
+    if probe.returncode == 0:
+        pytest.skip("-S로도 pyyaml이 보입니다")
+    env = {**os.environ, "YTC_MCP_REEXEC": "1"}
+    done = subprocess.run([_base_python(), "-I", "-S", str(SERVER)], input=b"", capture_output=True, env=env,
+                          timeout=30)
+    assert done.returncode == 1 and done.stdout == b""
