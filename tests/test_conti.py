@@ -499,3 +499,12 @@ def test_export_srt_leaves_conti_files_untouched(saved):
 def test_main_srt(saved, home):
     out = conti.main(["srt", saved.relative_to(home).as_posix(), "--track", "line"])
     assert out["track"] == "line"
+
+
+def test_export_srt_rejects_conti_outside_drafts(home, draft_md):
+    out = home / "elsewhere" / "x-conti.md"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("---\ncuts: []\n---\n", encoding="utf-8")
+    with pytest.raises(ScriptError) as e:
+        conti.export_srt(out)
+    assert e.value.code == "bad_path" and not list(out.parent.glob("*.srt"))

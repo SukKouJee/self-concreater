@@ -684,9 +684,7 @@ def export_srt(conti: str | Path, track: str = "caption") -> dict:
     """컷별 caption(또는 line)을 CapCut용 .srt로 내보낸다. 시간은 컷 sec의 ms 정수 누적이라 오차가 쌓이지 않는다."""
     if track not in SRT_TRACKS:
         raise ScriptError("bad_request", f"track은 caption 또는 line이어야 합니다: {track}")
-    path = _resolve(conti)
-    if path.suffix.lower() != ".md" or not path.stem.endswith(CONTI_SUFFIX):
-        raise ScriptError("bad_path", f"콘티 파일이 아닙니다: {_rel(path)}")
+    path = safe_draft_path(_rel(_resolve(conti)), conti_file=True)   # drafts/ 안의 *-conti.md만(CLI도 API와 같은 규칙)
     field, suffix = SRT_TRACKS[track]
     fm = _load_conti(path)
     blocks: list[list[Any]] = []          # [start_ms, end_ms, text]

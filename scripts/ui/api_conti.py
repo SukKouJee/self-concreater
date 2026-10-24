@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+from urllib.parse import quote
 from pathlib import Path
 from typing import Any
 
@@ -220,4 +221,6 @@ def _srt(req: Request) -> dict:
     if not isinstance(track, str):
         raise ScriptError("bad_request", "track은 문자열이어야 합니다")
     result = conti.export_srt(path, track)
-    return {**result, "url": f"/files/{result['path']}"} if result["path"] else result
+    if not result["path"]:
+        return result
+    return {**result, "url": "/files/" + "/".join(quote(part) for part in result["path"].split("/"))}

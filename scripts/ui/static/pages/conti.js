@@ -541,7 +541,7 @@ async function exportSrt(track, buttons, note) {
     if (!res.path) {
       mine.srtMsg = "내보낼 자막이 없습니다";
     } else {
-      // Still inside the user's click task, so the browser allows this programmatic download.
+      // Relies on the browser's transient user activation from the click (it survives the short fetch above).
       const a = h("a", { href: filesUrl(res.path), download: res.path.split("/").pop() });
       a.hidden = true;
       document.body.append(a);

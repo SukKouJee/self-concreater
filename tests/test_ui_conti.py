@@ -220,8 +220,8 @@ def test_srt_export_returns_url_and_downloads(client, home, draft_md):
     saved = saved_conti(home, draft_md)
     status, body = client.json("POST", "/api/conti/srt", {"path": rel(home, saved)})
     assert status == 200 and body["count"] == 3 and body["track"] == "caption"
-    assert body["url"] == "/files/" + body["path"]
-    status, headers, raw = client.call("GET", quote(body["url"]))
+    assert body["url"] == "/files/" + quote(body["path"])        # 한글 파일 이름도 그대로 쓸 수 있게 인코딩
+    status, headers, raw = client.call("GET", body["url"])
     assert status == 200
     assert raw == (home / body["path"]).read_bytes() and raw.decode("utf-8").startswith("1\r\n00:00:00,000")
     assert "charset=utf-8" in headers["Content-Type"].lower()
