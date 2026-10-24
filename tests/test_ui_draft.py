@@ -6,7 +6,7 @@ from urllib.parse import quote
 
 import pytest
 
-from scripts import claude_cli, motif, refstore
+from scripts import claude_cli, conti, motif, refstore
 from scripts.common import ScriptError
 from tests.test_draft import DRAFT, home  # noqa: F401 - fixture
 from tests.test_ui_add import wait_for
@@ -147,6 +147,8 @@ def test_detail_body_and_bad_paths(client, home):
     assert body["target_sec"] == 60.0 and body["pacing"]["avg_cut_sec"] == 2.61
     assert [p["heading"] for p in body["body"]] == ["", "개요", "대본", "아키타입 비교", "준비물", "내 메모"]
     assert body["conti"] is None and body["html"] is None
+    assert body["hash"] == conti.content_hash(saved)
+    assert body["hook"]["script"] and body["hook"]["end"] > body["hook"]["start"]
     for bad in ["../x.md", "drafts/x-conti.md", "refs/a.md", "drafts/x.txt",
                 r"drafts\..\x.md", str(home / "refs" / "a.md")]:
         assert client.json("GET", f"/api/draft?path={bad}")[1]["error"] == "bad_path", bad

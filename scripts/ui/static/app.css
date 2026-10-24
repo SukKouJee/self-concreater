@@ -510,7 +510,8 @@ code { background: var(--grid); padding: 1px 6px; border-radius: 4px; }
 .pol-cand textarea, .pol-cand input[type="text"], .pol-thumb textarea, .pol-words input {
   font: inherit; color: var(--ink); background: var(--page); border: 1px solid var(--axis); border-radius: var(--radius-sm);
   padding: var(--sp-2); width: 100%; box-sizing: border-box; }
-.pol-cand textarea:disabled, .pol-cand input[type="text"]:disabled { opacity: 0.7; }
+.pol-cand textarea:disabled, .pol-cand input[type="text"]:disabled { background: var(--grid); color: var(--ink2); }
+.pol-words-note:empty { display: none; }
 .pol-issues { margin: 0; padding-left: var(--sp-4); font-size: 13px; color: var(--ink2); }
 .pol-cut { color: var(--danger); border-color: var(--danger); }
 .pol-words { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-2); }

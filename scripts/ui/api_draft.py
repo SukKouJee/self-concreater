@@ -151,6 +151,15 @@ def _list(req: Request) -> dict:
     return {"drafts": out}
 
 
+def _hook_of(path: Path) -> dict | None:
+    """Hook section (same shape as polish.context) so the polish screen can refresh its comparison box."""
+    try:
+        hook = next((x for x in conti.parse_draft(path)["sections"] if x["label"] == "hook"), None)
+    except ScriptError:
+        return None
+    return {"start": hook["start"], "end": hook["end"], "script": hook["script"]} if hook else None
+
+
 @route("GET", "/api/draft")
 def _detail(req: Request) -> dict:
     path = _safe_path(req.query.get("path"), conti_file=False)
@@ -159,6 +168,7 @@ def _detail(req: Request) -> dict:
     fm, body = refstore.read_md(path)
     made, html_path = _conti_links(path)
     return {
+        "hash": conti.content_hash(path), "hook": _hook_of(path),
         "path": _rel(path), "title": fm.get("title") or path.stem, "category": fm.get("category"),
         "date": str(fm.get("date") or path.stem[:10]), "source": fm.get("source"), "archetype": fm.get("archetype"),
         "target_sec": fm.get("target_sec"), "sections": fm.get("sections") or [], "pacing": fm.get("pacing"),

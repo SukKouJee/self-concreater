@@ -862,7 +862,7 @@ const round1 = (x) => Math.round(x * 10) / 10;
 function freshPolish() {
   return {
     job: null, jobId: null, result: null, context: null, edit: null, dirty: false,
-    running: false, saving: false, runError: null, saveError: null, conflict: false, reloaded: false,
+    running: false, saving: false, runError: null, saveError: null, conflict: false, refreshed: false,
     confirmRerun: false, confirmClose: false, timer: null, pollErrors: 0, barSig: null, alertSig: null,
     nodes: {}, pv: {},
   };
@@ -898,7 +898,7 @@ function initPolishEdit(pl, preview) {
   };
   pl.dirty = false;
   pl.conflict = false;
-  pl.reloaded = false;
+  pl.refreshed = false;
   pl.confirmRerun = false;
   pl.confirmClose = false;
   pl.saveError = null;
@@ -944,7 +944,8 @@ function renderPolishBar(mine) {
   const active = isActive(job);
   const failed = !!job && (job.status === "failed" || job.status === "stopped");
   const item0 = job && job.items && job.items[0];
-  const sig = JSON.stringify([active, failed, pl.running, pl.runError, pl.saving, pl.confirmRerun === "bar",
+  const unreadable = !!job && job.status === "done" && !pl.result;
+  const sig = JSON.stringify([active, failed, unreadable, pl.running, pl.runError, pl.saving, pl.confirmRerun === "bar",
     item0 && item0.step, item0 && item0.message, job && job.message, mine.plWarnings]);
   if (sig === pl.barSig && box.childNodes.length) return;
   pl.barSig = sig;
@@ -965,6 +966,7 @@ function renderPolishBar(mine) {
     kids.push(h("p", { class: "error", role: "alert" },
       `${(item0 && item0.message) || job.message || "다듬지 못했습니다"} 기획안은 그대로입니다.`));
   }
+  if (unreadable) kids.push(h("p", { class: "error", role: "alert" }, "결과를 읽지 못했습니다. 다시 다듬어 주세요"));
   if (pl.runError) kids.push(h("p", { class: "error", role: "alert" }, pl.runError));
   if (mine.plWarnings.length) {
     const ok = h("button", { type: "button", class: "btn" }, "확인");
@@ -1036,7 +1038,7 @@ async function startPolish() {
     pl.jobId = null;
     pl.dirty = false;
     pl.conflict = false;
-    pl.reloaded = false;
+    pl.refreshed = false;
     pl.saveError = null;
     pl.pollErrors = 0;
     if (isActive(pl.job)) schedulePolishPoll();
@@ -1173,12 +1175,22 @@ function titleCards(pl) {
 function thumbnailView(pl) {
   const e = pl.edit;
   const touch = () => { pl.dirty = true; updatePolishActions(S); };
+  const lintOver = !!(pl.result.thumbnail.lint && pl.result.thumbnail.lint.over_limit);
+  const note = h("p", { class: "warn-text small pol-words-note", id: "polish-words-note" });
+  let edited = false;
+  const syncNote = () => {
+    const multi = e.words.some((w) => w.trim().split(/\s+/).filter(Boolean).length > 1);
+    const text = multi || (lintOver && !edited)
+      ? "한 칸에 낱말이 여러 개이거나 문구가 3단어를 넘습니다. 썸네일 문구는 3단어 이하가 좋습니다" : "";
+    if (note.textContent !== text) note.textContent = text;
+  };
   const words = e.words.map((w, i) => {
-    const input = h("input", { type: "text", maxlength: "40", "aria-label": `썸네일 문구 ${i + 1}` });
+    const input = h("input", { type: "text", maxlength: "40", "aria-label": `썸네일 문구 ${i + 1}`, "aria-describedby": "polish-words-note" });
     input.value = w;
-    input.addEventListener("input", () => { e.words[i] = input.value; touch(); });
+    input.addEventListener("input", () => { e.words[i] = input.value; edited = true; syncNote(); touch(); });
     return input;
   });
+  syncNote();
   const area = (key, label, id) => {
     const t = h("textarea", { rows: "2", id, maxlength: String(MAX_THUMB_TEXT) });
     t.value = e[key];
@@ -1188,7 +1200,7 @@ function thumbnailView(pl) {
   return h("section", { class: "pol-thumb", "aria-labelledby": "polish-thumb-title" },
     h("h3", { id: "polish-thumb-title" }, "썸네일 지시서"),
     h("fieldset", { class: "pol-group" }, h("legend", {}, `문구 (낱말 최대 ${THUMB_SLOTS}칸)`),
-      h("div", { class: "pol-words" }, ...words)),
+      h("div", { class: "pol-words" }, ...words), note),
     area("expression", "표정", "polish-expression"),
     area("framing", "구도", "polish-framing"),
     area("background", "배경", "polish-background"),
@@ -1262,7 +1274,7 @@ function updatePolishActions(mine) {
   const pl = mine && mine.pl;
   if (!pl || !pl.result || !pl.pv.saveBtn) return;
   const reason = polishBlocker(pl);
-  pl.pv.saveBtn.disabled = pl.saving || !!reason;
+  pl.pv.saveBtn.disabled = pl.saving || pl.running || isActive(pl.job) || !!reason;
   pl.pv.rerunBtn.disabled = pl.saving || pl.running || isActive(pl.job);
   pl.pv.closeBtn.disabled = pl.saving;
   pl.pv.hint.textContent = reason;
@@ -1288,7 +1300,7 @@ function renderPolishAlerts(mine) {
   const pl = mine.pl;
   const box = pl.pv && pl.pv.alerts;
   if (!box || !pl.result) return;
-  const sig = JSON.stringify([pl.saveError, pl.confirmClose, pl.saving, pl.confirmRerun === "preview", pl.conflict, pl.reloaded]);
+  const sig = JSON.stringify([pl.saveError, pl.confirmClose, pl.saving, pl.confirmRerun === "preview", pl.conflict, pl.refreshed]);
   if (sig === pl.alertSig) return;
   pl.alertSig = sig;
   const kids = [];
@@ -1304,21 +1316,45 @@ function renderPolishAlerts(mine) {
   if (pl.confirmRerun === "preview") kids.push(polishRerunConfirm("preview"));
   if (pl.conflict) {
     const reload = h("button", { type: "button", class: "btn", "data-polish-reload": "" }, "다시 불러오기");
-    reload.addEventListener("click", () => { pl.reloaded = true; pl.alertSig = null; loadView(mine); });
+    reload.addEventListener("click", () => refreshAfterConflict(mine));
     kids.push(h("div", { class: "inline-confirm", role: "alert" },
-      h("p", { class: "warn-text" }, pl.reloaded
-        ? "새 기획안을 불러왔습니다. 고친 입력은 이 화면에 그대로 있지만 이 후보로는 저장할 수 없습니다. 입력을 따로 복사해 둔 뒤 다시 다듬어 주세요."
-        : "후보를 만든 뒤 기획안 파일이 바뀌어 저장하지 않았습니다. 고친 입력은 이 화면에 그대로 남아 있습니다. 새 기획안을 불러와 확인하세요."),
-      pl.reloaded ? null : h("div", { class: "btn-row" }, reload)));
+      h("p", { class: "warn-text" },
+        "후보를 만든 뒤 기획안 파일이 바뀌어 저장하지 않았습니다. 고친 입력은 이 화면에 그대로 남아 있습니다. 새 기획안을 불러오면 최신 기획안에 이 선택을 저장할 수 있습니다."),
+      h("div", { class: "btn-row" }, reload)));
+  }
+  if (pl.refreshed) {
+    kids.push(h("p", { class: "hint", role: "note" },
+      "최신 기획안 기준으로 저장합니다. 그 사이 바뀐 제목·훅은 이번 선택으로 덮어써집니다."));
   }
   if (pl.saveError) kids.push(h("p", { class: "error", role: "alert" }, pl.saveError));
   fill(box, ...kids);
 }
 
+// After draft_changed: take the new hash, title and hook from the file, keep the typed edits, and let the user save again.
+async function refreshAfterConflict(mine) {
+  const pl = mine.pl;
+  try {
+    const d = await mine.ctx.api("GET", `/api/draft?path=${encodeURIComponent(mine.detail.path)}`);
+    if (!alive(mine) || mine.pl !== pl) return;
+    pl.context = { ...pl.context, hash: d.hash, title: d.title, hook: d.hook ? { ...pl.context.hook, ...d.hook } : null };
+    pl.conflict = false;
+    pl.refreshed = true;
+    pl.saveError = null;
+    pl.alertSig = null;
+    renderView(mine, d);
+    if (pl.pv.heading) pl.pv.heading.focus();
+  } catch (e) {
+    if (!alive(mine) || mine.pl !== pl || ignorable(e)) return;
+    pl.saveError = e.message || "기획안을 불러오지 못했습니다";
+    pl.alertSig = null;
+    renderPolishAlerts(mine);
+  }
+}
+
 async function savePolish() {
   const mine = S;
   const pl = mine.pl;
-  if (pl.saving || !pl.result || !pl.edit || polishBlocker(pl)) return;
+  if (pl.saving || pl.running || isActive(pl.job) || !pl.result || !pl.edit || polishBlocker(pl)) return;
   pl.saving = true;
   pl.saveError = null;
   pl.alertSig = null;
@@ -1342,7 +1378,7 @@ async function savePolish() {
     // An aborted request (page left mid-save) may still have been saved by the server: never restore that preview.
     if (e && e.error === "aborted") markHandled(jobId);
     if (!alive(mine) || ignorable(e)) return;
-    if (e.error === "draft_changed") { pl.conflict = true; pl.reloaded = false; }
+    if (e.error === "draft_changed") { pl.conflict = true; pl.refreshed = false; }
     else pl.saveError = e.message || "저장하지 못했습니다";
     pl.saving = false;
     pl.alertSig = null;
@@ -1351,7 +1387,10 @@ async function savePolish() {
     renderPolishAlerts(mine);
     renderPolishBar(mine);
   }
-  if (saved) await loadView(mine);              // title and body come from the saved file
+  if (saved) {
+    await loadView(mine);                       // title and body come from the saved file
+    if (alive(mine)) focusStatus();
+  }
 }
 
 function askClosePolish() {
