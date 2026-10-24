@@ -236,7 +236,7 @@
 - [x] `skills/yt-polish/`: 훅 공식 21가지(`hooks.json`, MIT 출처) + SKILL.md, `THIRD_PARTY_NOTICES.md`
 - [x] `polish.py`: 한국어 기준 점수·지적(제목 폭·숫자·기호·겹침, 훅 길이·인사), ref 근거, `context`·`evaluate`·`apply`
 - [x] `commands/yt-polish.md`, README 표
-- [ ] 로컬 UI: 기획안 상세의 다듬기 영역 (`api_polish`, `draft.js`)
+- [x] 로컬 UI: 기획안 상세의 다듬기 영역 (`api_polish`, `draft.js`)
 
 완료 조건
 - 실제 draft로 `/yt-coach:yt-polish`를 돌려 후보·점수·근거가 보이고, 고른 것만 기획안에 반영되며 샷 표·내 메모가 그대로이고 이전 값이 이력에 남는다

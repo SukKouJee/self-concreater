@@ -329,6 +329,19 @@ def test_draft_page_contract_and_safety():
     assert "http://" not in js and "https://" not in js
 
 
+def test_draft_page_has_polish_flow_and_stays_safe():
+    js = (STATIC_DIR / "pages" / "draft.js").read_text(encoding="utf-8")
+    for token in ["훅·제목·썸네일 다듬기", "/api/polish/run", "/api/polish/save", "kind=polish", "draft_changed",
+                  "기획안에 반영", "지금 기획안", "콘티는 이전 훅 그대로", "fieldset", "legend",
+                  "고친 제목은 저장 때 다시 검사합니다", "job_id", "markHandled"]:
+        assert token in js, token
+    for bad in ["innerHTML", "insertAdjacentHTML", "outerHTML"]:
+        assert bad not in js, bad
+    for bad in ["confirm(", "alert(", "prompt("]:
+        assert bad not in js.replace("inline-confirm", ""), bad
+    assert "http://" not in js and "https://" not in js
+
+
 def test_motif_links_to_draft():
     js = (STATIC_DIR / "pages" / "motif.js").read_text(encoding="utf-8")
     assert "#/draft/new/" in js and "기획안 명령 복사" not in js
