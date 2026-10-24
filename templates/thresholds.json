@@ -31,7 +31,7 @@
   "polish": {
     "title_width_mobile": 56,
     "title_width_desktop": 100,
-    "thumb_max_words": 3,
-    "hook_default_cps": 7.0
-  }
+    "thumb_max_words": 3
+  },
+  "speech_default_cps": 4.5
 }

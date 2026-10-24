@@ -65,12 +65,27 @@ def _invalid(message: str) -> ScriptError:
 
 def display_width(text: str) -> int:
     """화면 폭 근사치. 한글·한자·전각·이모지 2, 결합 문자·제로폭 0, 그 밖 1."""
-    width = 0
-    for ch in text:
-        if unicodedata.category(ch) in ("Mn", "Me", "Cf"):
-            continue
-        wide = unicodedata.east_asian_width(ch) in ("W", "F") or ord(ch) >= 0x1F000
-        width += 2 if wide else 1
+    width = prev = 0              # prev: 방금 센 글자의 폭 (VS16이 1 → 2로 올린다)
+    joined = flag_open = False    # joined: ZWJ 바로 뒤 글자는 앞 글자에 붙는다 / flag_open: 국기 앞 글자를 센 직후
+    for ch in unicodedata.normalize("NFC", text):
+        cp = ord(ch)
+        if joined:
+            joined = False
+        elif ch == "‍":
+            joined = True
+        elif cp == 0xFE0F:
+            if prev == 1:
+                width, prev = width + 1, 2
+        elif 0x1F3FB <= cp <= 0x1F3FF or unicodedata.category(ch) in ("Mn", "Me", "Cf"):
+            continue                                          # 피부색 수정자·결합 문자·제로폭
+        elif 0x1F1E6 <= cp <= 0x1F1FF:                        # 지역 표시 문자: 한 쌍이 국기 하나
+            flag_open = not flag_open
+            if flag_open:
+                width, prev = width + 2, 2
+        else:
+            flag_open = False
+            prev = 2 if unicodedata.east_asian_width(ch) in ("W", "F") or cp >= 0x1F000 else 1
+            width += prev
     return width
 
 
@@ -224,8 +239,7 @@ def evidence_title(title: str, stats: dict) -> str:
 
 def _draft_path(value: Any) -> Path:
     """기존 콘티 화면의 경로 규칙을 그대로 쓴다: drafts/ 안의 .md, 콘티 파일 아님."""
-    from scripts.ui.api_conti import _safe_path        # 늦게 불러온다: 화면 모듈은 서버 등록을 함께 한다
-    return _safe_path(value, conti_file=False)
+    return conti.safe_draft_path(value, conti_file=False)
 
 
 def context(draft: str | Path) -> dict:
@@ -243,7 +257,7 @@ def context(draft: str | Path) -> dict:
         "sections": [s["label"] for s in d["sections"]],
         "profile": motif._profile(),
         "refs": ref_stats(category),
-        "cps": rate["cps"] if rate["basis"] else _cfg()["hook_default_cps"],
+        "cps": rate["cps"],
         "formulas": [{k: h[k] for k in ("id", "name", "shape", "example", "fails_when", "hook_type")}
                      for h in _hooks_file()["hooks"]],
         "hash": conti.content_hash(path),
@@ -335,9 +349,14 @@ def _validate_choice(choice: Any) -> dict:
     if formula is not None and formula not in _formula_ids():
         raise _invalid(f"hook_formula={formula!r}는 hooks.json에 없는 공식입니다")
     script = choice.get("hook_script")
+    hook_type = choice.get("hook_type")
+    if hook_type is None and formula is not None:
+        hook_type = _formula_ids()[formula]["hook_type"]          # 후보의 hook_type이 없으면 공식의 것
+    if hook_type is not None and hook_type not in HOOK_TYPES:
+        raise _invalid(f"hook_type={hook_type!r} (허용: {', '.join(HOOK_TYPES)})")
     return {"title": _text(choice.get("title"), "title"),
             "hook_script": None if script is None else _script(script, "hook_script"),
-            "hook_formula": formula, "thumbnail": _thumbnail(choice.get("thumbnail"))}
+            "hook_formula": formula, "hook_type": hook_type, "thumbnail": _thumbnail(choice.get("thumbnail"))}
 
 
 def _hook_heading(lines: list[str]) -> int | None:
@@ -348,18 +367,48 @@ def _hook_heading(lines: list[str]) -> int | None:
     return None
 
 
+def _escape_script(script: str) -> str:
+    """제목처럼 보이는 줄(`#`)과 표처럼 보이는 줄(`|`) 앞에 백슬래시를 붙인다. 읽을 때(conti.parse_draft)는 되돌린다."""
+    return re.sub(r"^\|", lambda m: "\\|",_escape_headings(script), flags=re.MULTILINE)
+
+
+def _hook_end(lines: list[str], heading: int) -> int:
+    return next((i for i in range(heading + 1, len(lines)) if lines[i].startswith(("|", "### ", "## "))), len(lines))
+
+
+def _text_after_table(lines: list[str], heading: int) -> bool:
+    """훅 샷 표 뒤에 표가 아닌 글이 다음 제목 전까지 있는가(대본 교체로는 바뀌지 않는 글)."""
+    i = _hook_end(lines, heading)
+    while i < len(lines) and lines[i].startswith("|"):
+        i += 1
+    while i < len(lines) and not lines[i].startswith(("### ", "## ")):
+        if lines[i].strip():
+            return True
+        i += 1
+    return False
+
+
 def _swap_hook(lines: list[str], heading: int, script: str) -> tuple[list[str], str]:
     """훅 제목 다음의 대본 문단(샷 표 `|` 줄 또는 다음 `###`/`##` 전까지)만 바꾼다. (새 줄들, 이전 대본)."""
-    end = next((i for i in range(heading + 1, len(lines)) if lines[i].startswith(("|", "### ", "## "))), len(lines))
+    end = _hook_end(lines, heading)
     region = lines[heading + 1:end]
+    new = [line.rstrip() for line in _escape_script(script).strip("\n").split("\n")]
     lead = next((i for i, line in enumerate(region) if line.strip()), len(region))
-    trail = 0 if lead == len(region) else next(i for i, line in enumerate(reversed(region)) if line.strip())
+    if lead == len(region):         # 비어 있던 문단: 제목 바로 뒤에 넣고 한 줄 띄운다
+        return lines[:heading + 1] + new + [""] + lines[end:], ""
+    trail = next(i for i, line in enumerate(reversed(region)) if line.strip())
     old = "\n".join(region[lead:len(region) - trail])
-    new = [line.rstrip() for line in _escape_headings(script).strip("\n").split("\n")]
-    keep_tail = region[len(region) - trail:] if trail else []
-    if not region:
-        keep_tail = [""]            # 훅 제목 바로 뒤가 표였다면 읽기 좋게 한 줄 띄운다
-    return lines[:heading + 1] + region[:lead] + new + keep_tail + lines[end:], old
+    return lines[:heading + 1] + region[:lead] + new + region[len(region) - trail:] + lines[end:], old
+
+
+def _set_overview_hook(lines: list[str], hook_type: str) -> list[str]:
+    """`## 개요`의 첫 `- 훅: X` 줄의 X만 바꾼다(` · 서사: …`는 그대로)."""
+    out, done = [], False
+    for line in lines:
+        if not done and line.startswith("- 훅: "):
+            line, done = re.sub(r"^(- 훅: )\S+", lambda m: m.group(1) + hook_type, line), True
+        out.append(line)
+    return out
 
 
 def _find_section(lines: list[str], heading: str) -> tuple[int, int] | None:
@@ -426,9 +475,16 @@ def apply(draft: str | Path, choice: dict, expected_hash: str) -> dict:
         if heading is None:
             warnings.append("기획안에 훅 섹션이 없어 훅 대본은 바꾸지 않았습니다")
         else:
+            if _text_after_table(lines, heading):
+                warnings.append("훅 샷 표 아래에 대본이 아닌 글이 있습니다. 대본 교체로는 바뀌지 않으니 직접 확인해 주세요")
             lines, old_hook = _swap_hook(lines, heading, pick["hook_script"])
-            if old_hook != _escape_headings(pick["hook_script"]).strip("\n"):
+            if old_hook != _escape_script(pick["hook_script"]).strip("\n"):
                 changed.append("hook")
+                old_type = fm.get("hook_type")
+                if pick["hook_type"] and pick["hook_type"] != old_type:
+                    fm["hook_type"] = pick["hook_type"]
+                    lines = _set_overview_hook(lines, pick["hook_type"])
+                    entry.append(f"  - 이전 훅 유형: {old_type}")
                 if old_hook:
                     entry += ["  - 이전 훅 대본:", *(f"    > {line}" for line in old_hook.split("\n"))]
 
@@ -451,7 +507,12 @@ def apply(draft: str | Path, choice: dict, expected_hash: str) -> dict:
         lines[found[0]:found[1]] = block
     else:
         memo = _find_section(lines, MEMO)
-        at = memo[0] if memo else (len(lines) - 1 if lines and lines[-1] == "" else len(lines))
+        if memo:
+            at = memo[0]
+        else:                       # 내 메모가 없으면 맨 끝에 넣고, 파일 끝 줄바꿈은 하나만 남긴다
+            if lines[-1] != "":
+                lines.append("")
+            at, block = len(lines) - 1, block[:-1]
         if at > 0 and lines[at - 1].strip():
             block = ["", *block]
         lines[at:at] = block

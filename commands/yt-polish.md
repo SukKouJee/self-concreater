@@ -26,8 +26,9 @@ argument-hint: '<draft 파일 | latest>'
 
 고른 것을 한 줄씩 요약하고 "이대로 기획안에 반영할까요?(이전 제목·훅 대본은 `## 패키징` 이력에 남습니다)"를 묻는다. 동의한 뒤에만 실행한다.
 
-선택 JSON `{"title", "hook_script"?, "hook_formula"?, "thumbnail": {"words", "expression", "framing", "background"}}`을 `workspace/tmp/choice.json`에 Write로 쓰고:
+선택 JSON `{"title", "hook_script"?, "hook_formula"?, "hook_type"?(고른 훅 후보의 hook_type), "thumbnail": {"words", "expression", "framing", "background"}}`을 `workspace/tmp/choice.json`에 Write로 쓰고:
 `ytc polish apply <draft> --choice workspace/tmp/choice.json --hash <context의 hash>`
+- `invalid_polish` → message대로 고쳐 다시 실행한다.
 - `draft_changed` → "기획안이 그새 바뀌었습니다"라고 알리고 2절부터 다시 한다(파일은 그대로다).
 - `warnings`는 그대로 보여 준다. 콘티 경고가 있으면 "콘티의 대사는 자동으로 바뀌지 않았습니다. `/yt-coach:yt-conti <draft> `로 다시 만드세요"라고 안내한다.
 

@@ -130,7 +130,7 @@ def test_context_shape(draft_md, home):
     assert ctx["sections"] == ["hook", "body", "outro"]
     assert len(ctx["formulas"]) == 21 and "match" not in ctx["formulas"][0]
     assert ctx["hash"] == sha(draft_md) and ctx["conti_exists"] is False
-    assert ctx["refs"]["ref"] == 10 and ctx["cps"] == 7.0
+    assert ctx["refs"]["ref"] == 10 and ctx["cps"] == conti.DEFAULT_CPS
 
 
 def test_context_rejects_paths_outside_drafts(draft_md, home):
@@ -323,7 +323,7 @@ def test_hooks_json_has_21_and_source():
 
 def test_thresholds_polish_keys():
     t = json.loads((ROOT / "templates/thresholds.json").read_text("utf-8"))["polish"]
-    assert t == {"title_width_mobile": 56, "title_width_desktop": 100, "thumb_max_words": 3, "hook_default_cps": 7.0}
+    assert t == {"title_width_mobile": 56, "title_width_desktop": 100, "thumb_max_words": 3}
 
 
 def test_cli_routes(draft_md, home):
@@ -340,3 +340,159 @@ def test_cli_routes(draft_md, home):
     with pytest.raises(ScriptError) as e:
         polish.main(["evaluate", rel, "--data", "workspace/tmp/missing.json"])
     assert e.value.code == "invalid_polish"
+
+
+# --- fix round 1 -----------------------------------------------------------------------
+
+def test_display_width_emoji_sequences():
+    assert polish.display_width("👍🏽") == 2                 # 피부색 수정자는 폭 0
+    assert polish.display_width("🇰🇷") == 2                 # 국기(지역 표시 문자 한 쌍)
+    assert polish.display_width("🇰") == 2
+    assert polish.display_width("❤") == 1 and polish.display_width("❤️") == 2     # VS16은 앞 글자를 2로
+    assert polish.display_width("👨‍👩‍👧") == 2   # ZWJ 시퀀스는 한 글자
+    assert polish.display_width("한") == 2  # 분해된 한글은 NFC로 합쳐 센다
+
+
+def test_speech_rate_default_is_shared(draft_md, home):
+    t = json.loads((ROOT / "templates/thresholds.json").read_text("utf-8"))
+    assert t["speech_default_cps"] == 4.5 == conti.DEFAULT_CPS and "hook_default_cps" not in t["polish"]
+    assert polish.context(draft_md.relative_to(home).as_posix())["cps"] == conti.DEFAULT_CPS
+
+
+def test_draft_path_rule_lives_in_conti(home):
+    from scripts.ui import api_conti
+    assert api_conti._safe_path is conti.safe_draft_path and api_conti.CONTI_SUFFIX == conti.CONTI_SUFFIX == "-conti"
+    for bad, flag in (("profile.md", None), ("drafts/a-conti.md", False), ("drafts/a.md", True)):
+        with pytest.raises(ScriptError) as e:
+            conti.safe_draft_path(bad, conti_file=flag)
+        assert e.value.code == "bad_path"
+    assert "scripts.ui" not in (ROOT / "scripts/polish.py").read_text("utf-8")
+
+
+def overview(path: Path) -> str:
+    return next(line for line in body_of(path).replace("\r\n", "\n").split("\n") if line.startswith("- 훅:"))
+
+
+def test_apply_syncs_hook_type(draft_md, home):
+    rel = draft_md.relative_to(home).as_posix()
+    assert overview(draft_md) == "- 훅: question · 서사: list"
+    result = polish.apply(rel, choice(hook_type="shock_line"), sha(draft_md))
+    fm = conti.refstore.read_md(draft_md)[0]
+    assert fm["hook_type"] == "shock_line" and overview(draft_md) == "- 훅: shock_line · 서사: list"
+    assert "hook" in result["changed"]
+    assert "이전 훅 유형: question" in body_of(draft_md)
+    assert body_of(draft_md).count("- 훅:") == 1
+
+
+def test_apply_hook_type_defaults_to_formula(draft_md, home):
+    rel = draft_md.relative_to(home).as_posix()
+    polish.apply(rel, choice(hook_formula="the-teardown"), sha(draft_md))          # situation
+    assert conti.refstore.read_md(draft_md)[0]["hook_type"] == "situation"
+    assert overview(draft_md).startswith("- 훅: situation")
+
+
+def test_apply_keeps_hook_type_without_formula_or_hook_change(draft_md, home):
+    rel = draft_md.relative_to(home).as_posix()
+    polish.apply(rel, choice(hook_formula=None), sha(draft_md))
+    assert conti.refstore.read_md(draft_md)[0]["hook_type"] == "question"
+    same = conti.parse_draft(draft_md)["sections"][0]["script"]
+    polish.apply(rel, choice(hook_script=same, hook_type="shock_line"), sha(draft_md))     # 훅이 그대로면 유형도 그대로
+    assert conti.refstore.read_md(draft_md)[0]["hook_type"] == "question"
+    with pytest.raises(ScriptError) as e:
+        polish.apply(rel, choice(hook_type="nope"), sha(draft_md))
+    assert e.value.code == "invalid_polish"
+
+
+def test_apply_hook_type_crlf(draft_md, home):
+    draft_md.write_bytes(draft_md.read_bytes().decode("utf-8").replace("\n", "\r\n").encode("utf-8"))
+    polish.apply(draft_md.relative_to(home).as_posix(), choice(hook_type="result_first"), sha(draft_md))
+    raw = draft_md.read_bytes()
+    assert raw.count(b"\r\n") == raw.count(b"\n") and overview(draft_md) == "- 훅: result_first · 서사: list"
+
+
+def test_apply_blank_only_hook_region(draft_md, home):
+    text = draft_md.read_bytes().decode("utf-8").replace("자막: 4단계 다 먹을 수 있을까?\n\n| #", "\n\n\n| #")
+    draft_md.write_bytes(text.encode("utf-8"))
+    polish.apply(draft_md.relative_to(home).as_posix(), choice(hook_script="말: 새 훅"), sha(draft_md))
+    lines = body_of(draft_md).split("\n")
+    i = lines.index("말: 새 훅")
+    assert lines[i - 1].startswith("### 0:00") and lines[i + 1] == "" and lines[i + 2].startswith("| #")
+
+
+def test_apply_escapes_pipe_lines(draft_md, home):
+    polish.apply(draft_md.relative_to(home).as_posix(), choice(hook_script="말: 가\n| 표처럼 보이는 줄"), sha(draft_md))
+    assert "\n\\| 표처럼 보이는 줄\n" in body_of(draft_md)
+    d = conti.parse_draft(draft_md)
+    assert d["sections"][0]["script"] == "말: 가\n| 표처럼 보이는 줄" and len(d["sections"][0]["shots"]) == 1
+
+
+def test_apply_warns_about_text_after_hook_table(draft_md, home):
+    old = "| 1 | 탑뷰 | 탑뷰 | 2초 | 컵라면 4개 나란히 |\n"
+    text = draft_md.read_bytes().decode("utf-8")
+    assert old in text
+    draft_md.write_bytes(text.replace(old, old + "표 아래 글\n").encode("utf-8"))
+    result = polish.apply(draft_md.relative_to(home).as_posix(), choice(), sha(draft_md))
+    assert any("표 아래" in w for w in result["warnings"])
+    assert "표 아래 글" in body_of(draft_md)
+
+
+def test_apply_inserts_packaging_when_memo_missing(draft_md, home):
+    text = draft_md.read_bytes().decode("utf-8")
+    text = text[:text.index("## 내 메모")].rstrip("\n") + "\n"
+    draft_md.write_bytes(text.encode("utf-8"))
+    polish.apply(draft_md.relative_to(home).as_posix(), choice(), sha(draft_md))
+    out = draft_md.read_bytes().decode("utf-8")
+    assert out.endswith("\n") and not out.endswith("\n\n") and out.count("## 패키징") == 1
+    assert "\n\n## 패키징\n" in out
+    again = polish.apply(draft_md.relative_to(home).as_posix(), choice(title="바뀐 제목 3"), sha(draft_md))
+    out = draft_md.read_bytes().decode("utf-8")
+    assert out.endswith("\n") and not out.endswith("\n\n") and out.count("## 패키징") == 1 and again["warnings"] == []
+
+
+def test_hooks_json_wording():
+    data = json.loads((ROOT / "skills/yt-polish/hooks.json").read_text("utf-8"))
+    assert "0:08에 시청자가 떠난다" in data["rules"][0]
+    example = next(h for h in data["hooks"] if h["id"] == "someone-elses-result")["example"]
+    assert "가상의 예시 채널" in example
+
+
+# SKILL.md의 고정 예시는 evaluate가 실제로 내는 값과 같아야 한다
+EXAMPLE_REFS = {"ref": 10, "hook_type": {"result_first": 6, "question": 3, "situation": 1},
+                "title_pattern": {"number+exclaim": 5, "number": 3, "question": 2}, "examples": []}
+
+
+def skill_example() -> tuple[dict, str]:
+    text = (ROOT / "skills/yt-polish/SKILL.md").read_text("utf-8")
+    example = json.loads(text.split("```json\n", 1)[1].split("\n```", 1)[0])
+    shown = text.split("## 6.", 1)[1].split("```\n", 1)[1].split("\n```", 1)[0]
+    return example, shown
+
+
+def test_skill_example_matches_evaluate():
+    import re
+    example, shown = skill_example()
+    ctx = {"hook": {"start": 0.0, "end": 2.0}, "cps": 4.5, "refs": EXAMPLE_REFS}
+    result = polish.evaluate(ctx, example)
+    assert len(example["hooks"]) == 5 and len(example["titles"]) == 10
+    assert result["thumbnail"]["lint"]["overlap"] == [] and result["thumbnail"]["lint"]["over_limit"] is False
+    assert result["hooks"][0]["lint"]["fits"] is True and result["hooks"][0]["lint"]["score"] == 100
+    assert "0:00–0:02" in shown and "초당 4.5자" in shown
+    hook_part, rest = shown.split("🏷", 1)
+    title_part, thumb_part = rest.split("🖼", 1)
+    for part, key in ((hook_part, "hooks"), (title_part, "titles")):
+        heads = re.findall(r"^\s*(\d+)\) \[(\d+)점\] (.+)$", part, flags=re.M)
+        assert len(heads) >= 2
+        for (n, score, label), item in zip(heads, result[key]):
+            assert int(score) == item["lint"]["score"], (key, n)
+            assert (item["formula"] if key == "hooks" else item["title"]) in label
+            if key == "titles":
+                assert f"(폭 {item['lint']['width']})" in label
+        evidence = re.findall(r"근거: ([^·\n]+?)(?: · 지적: (.+))?$", part, flags=re.M)
+        assert len(evidence) == len(heads)
+        for (ev, issues), item in zip(evidence, result[key]):
+            assert ev.strip() == item["evidence"] and (issues or "") == "; ".join(item["lint"]["issues"])
+    thumb = result["thumbnail"]
+    assert f"[{thumb['lint']['score']}점]" in thumb_part and " / ".join(thumb["words"]) in thumb_part
+    shown_hooks = len(re.findall(r"^\s*\d+\) \[", hook_part, flags=re.M))
+    for item in result["hooks"][:shown_hooks]:
+        assert all(line in hook_part for line in item["script"].splitlines())

@@ -19,7 +19,7 @@ from scripts.ui.jobs import Job, new_item
 from scripts.ui.server import Request, route
 
 KIND = "conti"
-CONTI_SUFFIX = "-conti"
+CONTI_SUFFIX = conti.CONTI_SUFFIX
 MAX_ALTERNATIVES = 10
 CREATE_TASK = "yt-conti 규칙대로 입력 draft의 콘티 JSON을 만드세요."
 ALT_SCHEMA: dict = {
@@ -42,20 +42,7 @@ def _rules() -> list[Path]:
     return [claude_cli.SKILLS_DIR / "yt-conti" / "SKILL.md"]
 
 
-def _safe_path(value: Any, *, conti_file: bool | None = None) -> Path:
-    """작업 폴더의 drafts/ 안 .md 파일만 허용한다(상대 경로 → 절대 경로)."""
-    if not isinstance(value, str) or not value:
-        raise ScriptError("bad_request", "path가 필요합니다")
-    drafts = (work_root() / "drafts").resolve()
-    try:
-        target = (work_root() / value).resolve()
-    except (OSError, ValueError) as e:
-        raise ScriptError("bad_path", f"잘못된 경로입니다: {value}") from e
-    if not target.is_relative_to(drafts) or target.suffix.lower() != ".md" or "\x00" in value:
-        raise ScriptError("bad_path", f"drafts 폴더 안의 .md 파일만 쓸 수 있습니다: {value}")
-    if conti_file is not None and target.stem.endswith(CONTI_SUFFIX) != conti_file:
-        raise ScriptError("bad_path", f"{'콘티' if conti_file else '기획안'} 파일이 아닙니다: {value}")
-    return target
+_safe_path = conti.safe_draft_path          # 경로 규칙은 conti에 있다(기존 이름 유지)
 
 
 def _rel(path: Path) -> str:
