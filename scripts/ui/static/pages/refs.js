@@ -1,8 +1,9 @@
-// 레퍼런스 목록 화면 (보기 전용)
+// 레퍼런스 목록 화면 (보기 + 라벨 고치기)
 //   #/refs        카테고리의 영상 카드 목록 (필터 · 검색 · 정렬은 받은 목록에 클라이언트에서 적용)
-//   #/refs/<id>   영상 하나의 상세 (섹션 흐름 · 장면 프레임 · 본문 · md 경로)
+//   #/refs/<id>   영상 하나의 상세 (섹션 흐름 · 장면 프레임 · 본문 · md 경로) + 섹션 라벨·유형 고치기
+// 고치기는 POST /api/refs/<id>/labels 한 곳만 쓴다(프런트매터 라벨만 저장). 고치는 중 다른 화면으로 가면 고친 값은 경고 없이 버린다.
 // api 호출은 ctx.api를 쓴다: 페이지별 ctx.api가 이미 ctx.signal(이동하면 abort)을 실어 보낸다. 중단된 요청(error "aborted")은 조용히 무시한다.
-// 파일을 쓰지 않는다. 모든 비동기 뒤에는 ctx.isCurrent()로 화면이 아직 이 페이지인지 확인한다.
+// 모든 비동기 뒤에는 ctx.isCurrent()로 화면이 아직 이 페이지인지 확인한다.
 import { h, filesUrl } from "/static/dom.js";
 
 const COUNT_DEBOUNCE_MS = 300;
@@ -37,6 +38,10 @@ function fmtRange(s) {
 function roleBadge(role) {
   const text = ROLE_TEXT[role] || (role ? String(role) : "");
   return text ? h("span", { class: `badge role-${String(role).replace(/[^\w-]/g, "_")}` }, text) : null;
+}
+
+function reviewedBadge() {
+  return h("span", { class: "badge reviewed", title: "사용자가 라벨을 직접 고친 영상입니다" }, "직접 고침");
 }
 
 function alive(mine) {
@@ -237,7 +242,7 @@ function videoCard(v) {
       h("div", { class: "ref-body" },
         h("h2", { class: "ref-title" }, displayTitle(v)),
         meta ? h("p", { class: "ref-meta small muted" }, meta) : null,
-        h("div", { class: "ref-badges" }, roleBadge(v.role)),
+        h("div", { class: "ref-badges" }, roleBadge(v.role), v.reviewed ? reviewedBadge() : null),
         codes(v),
         sectionBand(v.sections, v.duration_sec))));
 }
@@ -275,24 +280,23 @@ function renderDetail(data) {
     h("p", { class: "crumb" }, h("a", { href: "#/refs" }, "← 목록")),
     h("h1", {}, displayTitle(v)),
     meta ? h("p", { class: "meta-line muted" }, meta) : null,
+    v.reviewed ? h("p", { class: "ref-badges" }, reviewedBadge()) : null,
     v.url ? h("p", {}, h("a", { href: v.url, target: "_blank", rel: "noopener noreferrer" }, "유튜브에서 보기")) : null,
   );
 
   const sections = sortByStart((v.sections || []).filter((s) => s && s.label));
-  if (sections.length) {
-    S.el.append(h("section", { class: "ref-block", "aria-labelledby": "ref-sec-title" },
-      h("h2", { id: "ref-sec-title" }, "섹션 흐름"),
-      sectionBand(sections, v.duration_sec),
-      h("ul", { class: "ref-sec-list" }, ...sections.map((s) =>
-        h("li", {}, h("span", { class: `lb-dot lb-${s.label}`, "aria-hidden": "true" }),
-          `${s.label}${s.sub ? `(${s.sub})` : ""} ${fmtRange(s)}`)))));
-  }
+  if (sections.length) S.el.append(sectionBlock(data, sections));
 
   S.el.append(framesBlock(data.frames || []));
 
   for (const part of data.body || []) {
     const block = h("section", { class: "ref-block" });
-    if (part.heading) block.append(h("h2", {}, part.heading));
+    if (part.heading === "섹션") {
+      const note = "라벨을 고치면 위 섹션 목록이 기준이 됩니다. 이 표는 바뀌지 않습니다";
+      block.append(h("div", { class: "ref-block-head" }, h("h2", {}, part.heading),
+        h("span", { class: "badge", title: note }, "분석 당시 기록")));
+      block.append(h("p", { class: "muted small" }, note));
+    } else if (part.heading) block.append(h("h2", {}, part.heading));
     const text = h("div", { class: "md-text" });
     text.textContent = part.text || "";
     block.append(text);
@@ -300,6 +304,156 @@ function renderDetail(data) {
   }
 
   S.el.append(pathRow(data.md));
+}
+
+// ---- section block (view / edit) -----------------------------------------------------
+
+function sectionBlock(data, sections) {
+  const v = data.video;
+  const block = h("section", { class: "ref-block", "aria-labelledby": "ref-sec-title" });
+  const edit = h("button", { type: "button", class: "btn" }, "라벨 고치기");
+  edit.addEventListener("click", () => {
+    if (S && S.ctx.isCurrent()) block.replaceWith(editBlock(data, block));
+  });
+  block.append(
+    h("div", { class: "ref-block-head" }, h("h2", { id: "ref-sec-title" }, "섹션 흐름"), edit),
+    sectionBand(sections, v.duration_sec),
+    h("ul", { class: "ref-sec-list" }, ...sections.map((s) =>
+      h("li", {}, h("span", { class: `lb-dot lb-${s.label}`, "aria-hidden": "true" }),
+        `${s.label}${s.sub ? `(${s.sub})` : ""} ${fmtRange(s)}`))));
+  return block;
+}
+
+// Options list that keeps the current value even when the vocabulary does not contain it.
+function optionList(values, current) {
+  const list = Array.isArray(values) ? values : [];
+  const all = current && !list.includes(current) ? [current, ...list] : list;
+  return all.map((val) => h("option", { value: val }, val));
+}
+
+function selectOf(attrs, options, value) {
+  const sel = h("select", attrs, ...options);
+  sel.value = value;
+  return sel;
+}
+
+function editBlock(data, viewBlock) {
+  const mine = S;
+  const v = data.video;
+  const vocab = data.vocab || {};
+  const orig = Array.isArray(v.sections) ? v.sections : [];   // md order: the API needs the full array in this order
+  const draft = orig.map((s) => ({ label: String(s.label || ""), sub: s.sub ? String(s.sub) : "" }));
+  const origOf = (i) => ({ label: String(orig[i].label || ""), sub: orig[i].sub ? String(orig[i].sub) : "" });
+  const hook = { orig: v.hook_type || "", cur: v.hook_type || "" };
+  const narr = { orig: v.narrative_type || "", cur: v.narrative_type || "" };
+  let busy = false;
+
+  const block = h("section", { class: "ref-block ref-edit", "aria-labelledby": "ref-sec-title" });
+  const band = h("div", { class: "ref-edit-band" });
+  const rows = h("ul", { class: "ref-edit-list" });
+  const notice = h("div", { class: "ref-edit-notice" });
+  const save = h("button", { type: "submit", class: "btn btn-primary" }, "저장");
+  const cancel = h("button", { type: "button", class: "btn" }, "취소");
+
+  const effSub = (d) => (d.label === "body" ? d.sub : "");
+  const sectionsChanged = () => draft.some((d, i) => {
+    const o = origOf(i);
+    return d.label !== o.label || effSub(d) !== effSub(o);
+  });
+  const dirty = () => sectionsChanged() || hook.cur !== hook.orig || narr.cur !== narr.orig;
+
+  function refresh() {
+    band.replaceChildren();
+    const shown = sectionBand(draft.map((d, i) => ({ ...orig[i], label: d.label })), v.duration_sec);
+    if (shown) band.append(shown);
+    save.disabled = busy || !dirty();
+    cancel.disabled = busy;
+    save.textContent = busy ? "저장 중…" : "저장";
+  }
+
+  const items = orig.map((s, i) => ({ ...s, i }));
+  for (const item of sortByStart(items)) {
+    const d = draft[item.i];
+    const dot = h("span", { class: `lb-dot lb-${d.label}`, "aria-hidden": "true" });
+    const labelSel = selectOf(
+      { class: "label-select", "aria-label": `${fmtTime(item.start)} 섹션 라벨` },
+      optionList(vocab.label, d.label), d.label);
+    const subSel = selectOf(
+      { class: "label-select", "aria-label": `${fmtTime(item.start)} 본문 세부 유형` },
+      [h("option", { value: "" }, "(없음)"), ...optionList(vocab.body_sub, d.sub)], d.sub);
+    subSel.hidden = d.label !== "body";
+    labelSel.addEventListener("change", () => {
+      d.label = labelSel.value;
+      if (d.label !== "body") { d.sub = ""; subSel.value = ""; }
+      subSel.hidden = d.label !== "body";
+      dot.className = `lb-dot lb-${d.label}`;
+      refresh();
+    });
+    subSel.addEventListener("change", () => { d.sub = subSel.value; refresh(); });
+    rows.append(h("li", { class: "ref-edit-row" },
+      h("span", { class: "sec-time" }, fmtRange(item)),
+      h("span", { class: "sec-pick" }, dot, labelSel, subSel)));
+  }
+
+  function typeField(id, text, state, values) {
+    const sel = selectOf({ id, class: "label-select" }, optionList(values, state.cur), state.cur);
+    sel.addEventListener("change", () => { state.cur = sel.value; refresh(); });
+    return h("div", { class: "field" }, h("label", { for: id }, text), sel);
+  }
+
+  function showError(e) {
+    notice.replaceChildren();
+    if (e.error === "ref_changed") {
+      const again = h("button", { type: "button", class: "btn" }, "다시 불러오기");
+      again.addEventListener("click", () => { if (alive(mine)) loadDetail(); });
+      notice.append(
+        h("p", { class: "warn-text", role: "alert" }, e.message || "화면을 연 뒤 md가 바뀌었습니다"),
+        h("div", { class: "btn-row" }, again,
+          h("span", { class: "muted small" }, "다시 불러오면 지금 고친 값은 버려집니다")));
+    } else {
+      notice.append(h("p", { class: "error", role: "alert" }, e.message || "저장하지 못했습니다"));
+    }
+  }
+
+  const form = h("form", { class: "ref-edit-form", novalidate: "true" });
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    if (busy || !dirty()) return;
+    const payload = { hash: data.hash };
+    if (sectionsChanged()) {
+      payload.sections = draft.map((d) => (d.label === "body" && d.sub ? { label: d.label, sub: d.sub } : { label: d.label }));
+    }
+    if (hook.cur !== hook.orig) payload.hook_type = hook.cur;
+    if (narr.cur !== narr.orig) payload.narrative_type = narr.cur;
+    busy = true;
+    notice.replaceChildren();
+    refresh();
+    try {
+      await mine.ctx.api("POST",
+        `/api/refs/${encodeURIComponent(mine.params.id)}/labels?category=${encodeURIComponent(mine.ctx.category)}`, payload);
+    } catch (e) {
+      if (!alive(mine) || ignorable(e)) return;
+      busy = false;
+      refresh();
+      showError(e);
+      return;
+    }
+    if (!alive(mine)) return;
+    mine.ctx.toast("저장했습니다 — 다음 분석 때 교정 예시로 쓰입니다");
+    loadDetail();
+  });
+  cancel.addEventListener("click", () => { if (alive(mine) && !busy) block.replaceWith(viewBlock); });
+
+  form.append(rows,
+    h("div", { class: "ref-edit-types" },
+      typeField("ref-edit-hook", "훅 유형", hook, vocab.hook_type),
+      typeField("ref-edit-narr", "서사 유형", narr, vocab.narrative_type)),
+    notice,
+    h("div", { class: "btn-row" }, save, cancel));
+  block.append(h("div", { class: "ref-block-head" }, h("h2", { id: "ref-sec-title" }, "섹션 흐름 — 라벨 고치기")),
+    band, form);
+  refresh();
+  return block;
 }
 
 function framesBlock(frames) {

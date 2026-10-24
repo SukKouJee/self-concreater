@@ -196,3 +196,13 @@ def test_refs_page_review_fixes():
     assert "String(role)" in js                                 # unknown role shown as-is
     assert js.count("sortByStart((") == 2                      # band + detail section list
     assert "params.id" in js.split("function loadError")[1].split("// ---- list")[0]   # back link only in detail
+
+
+def test_refs_edit_mode_tokens():
+    js = (STATIC_DIR / "pages" / "refs.js").read_text(encoding="utf-8")
+    for token in ["라벨 고치기", "저장", "취소", "/labels", "ref_changed", "다시 불러오기",
+                  "분석 당시 기록", "직접 고침", "(없음)", "hash"]:
+        assert token in js, token
+    for bad in ["innerHTML", "insertAdjacentHTML", "outerHTML"]:
+        assert bad not in js
+    assert "http://" not in js and "https://" not in js
