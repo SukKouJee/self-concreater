@@ -51,7 +51,7 @@ def _read(path: Path) -> tuple[dict, str, str]:
 
 
 def _write(path: Path, fm: dict, body: str, nl: str) -> None:
-    path.write_bytes(refstore.join_frontmatter(fm, body.replace("\n", nl), nl).encode("utf-8"))
+    refstore.write_atomic(path, refstore.join_frontmatter(fm, body.replace("\n", nl), nl).encode("utf-8"))
 
 
 def _norm(title: str) -> str:
@@ -67,6 +67,46 @@ def parse_cards(body: str) -> list[dict]:
         m = _CARD_RE.match(line.strip())
         if m:
             cards.append({"id": m.group(2), "starred": bool(m.group(1)), "type": m.group(4), "title": m.group(5)})
+    return cards
+
+
+_KO_TO_TYPE = {ko: t for t, ko in TYPE_KO.items()}
+_EVIDENCE_RE = re.compile(r"\[([^\]]+)\]\(videos/[^)]*\)\s*(.*?)(?=,\s*\[[^\]]+\]\(videos/|$)")
+
+
+def _field(line: str, prefix: str) -> str | None:
+    return line[len(prefix):].strip() if line.startswith(prefix) else None
+
+
+def card_details(category: str) -> list[dict]:
+    """`## 모티브 카드`의 카드 블록을 필드별로 읽는다. 손으로 고친 md에도 죽지 않는다(모르는 줄 무시, 없는 필드는 None/[])."""
+    body = _read(refstore.existing_category_dir(category) / "index.md")[1]
+    try:
+        lines, start, end = _section_lines(body, SECTION)
+    except ScriptError:
+        return []
+    cards: list[dict] = []
+    for raw in lines[start + 1:end]:
+        line = raw.strip()
+        m = _CARD_RE.match(line)
+        if m:
+            cards.append({"id": m.group(2), "starred": bool(m.group(1)), "type": _KO_TO_TYPE.get(m.group(4), m.group(4)),
+                          "type_ko": m.group(4), "title": m.group(5), "idea": None, "how": [], "basis": None,
+                          "evidence": [], "made": None})
+            continue
+        if not cards:
+            continue
+        card = cards[-1]
+        if (v := _field(line, "- 아이디어:")) is not None:
+            card["idea"] = v or None
+        elif (v := _field(line, "- 이렇게:")) is not None:
+            card["how"] = [h.strip() for h in v.split(" → ") if h.strip()]
+        elif (v := _field(line, "- 바탕:")) is not None:
+            card["basis"] = v or None
+        elif (v := _field(line, "- 근거:")) is not None:
+            card["evidence"] = [{"id": e.group(1), "title": e.group(2).strip() or None} for e in _EVIDENCE_RE.finditer(v)]
+        elif (v := _field(line, "- 만든 날:")) is not None:
+            card["made"] = v or None
     return cards
 
 
@@ -107,8 +147,17 @@ def _summary_line(path: Path) -> str:
     return next((line.strip() for line in lines[idx + 1:] if line.strip()), "")
 
 
+def typify_path(category: str) -> Path:
+    return workspace_dir("typify", f"{category}.json")
+
+
+def ref_titles(category: str) -> dict[str, Any]:
+    """ref 영상 id → 제목. mine은 근거가 될 수 없으므로 들어가지 않는다."""
+    return {r["id"]: r["fm"].get("title") for r in features.load_videos(category)}
+
+
 def _typify(category: str, index_fm: dict) -> dict | None:
-    path = workspace_dir("typify", f"{category}.json")
+    path = typify_path(category)
     if not path.exists():
         return None
     result = json.loads(path.read_text("utf-8"))
@@ -182,20 +231,23 @@ def render_card(card_id: str, card: dict, titles: dict) -> str:
     return "\n".join(lines)
 
 
-def add(category: str, cards_path: Path) -> dict:
-    cards = _load_json(cards_path, "invalid_cards")
+def validate_cards(category: str, cards: Any, allowed: list[str] | None = None) -> list[dict]:
+    """카드 묶음을 검증하고 정규화한 목록을 돌려준다. 어긋나면 invalid_cards.
+
+    allowed: 허용 type 목록. None이면 단계 기본값."""
     if not isinstance(cards, list) or not cards:
         raise _invalid("카드 목록이 비어 있습니다")
     cat = refstore.existing_category_dir(category)
-    index_path = cat / "index.md"
-    fm, body, nl = _read(index_path)
+    _, body, _ = _read(cat / "index.md")
     stage = refstore.count(category)["stage"]
-    allowed = ALLOWED_BY_STAGE[stage]
-    titles = {r["id"]: r["fm"].get("title") for r in features.load_videos(category)}   # ref만 근거가 된다
-    existing = parse_cards(body)
-    taken = {_norm(c["title"]): c["id"] for c in existing}
+    allowed = ALLOWED_BY_STAGE[stage] if allowed is None else allowed
+    titles = ref_titles(category)
+    taken = {_norm(c["title"]): c["id"] for c in parse_cards(body)}
 
+    normalized = []
     for card in cards:
+        if not isinstance(card, dict):
+            raise _invalid("카드는 JSON 객체여야 합니다")
         if card.get("type") not in TYPES:
             raise _invalid(f"type={card.get('type')!r} (허용: {', '.join(TYPES)})")
         if card["type"] not in allowed:
@@ -205,25 +257,46 @@ def add(category: str, cards_path: Path) -> dict:
                 raise _invalid(f"{field}가 비어 있습니다")
         if not card.get("evidence"):
             raise _invalid("evidence(근거 영상)가 비어 있습니다")
-        unknown = [v for v in card["evidence"] if v not in titles]
+        if not isinstance(card["evidence"], list) or not all(isinstance(v, str) for v in card["evidence"]):
+            raise _invalid("evidence는 영상 id 문자열의 목록이어야 합니다")
+        evidence = list(dict.fromkeys(card["evidence"]))          # 중복 제거, 순서 유지
+        unknown = [v for v in evidence if v not in titles]
         if unknown:
             raise _invalid(f"이 카테고리의 ref 영상이 아닙니다: {', '.join(unknown)}")
+        if card.get("how") is not None and not isinstance(card["how"], list):
+            raise _invalid("how는 목록이어야 합니다")
         title = _norm(card["title"])
         if title in taken:
             raise _invalid(f"같은 제목의 카드가 이미 있습니다: {taken[title]}")
         taken[title] = "(이번 묶음)"
+        how = [line for h in card.get("how") or [] if (line := _norm(str(h)))]
+        basis = _norm(str(card["basis"])) if card.get("basis") else None
+        normalized.append({"type": card["type"], "title": title, "idea": _norm(str(card["idea"])), "how": how,
+                           "basis": basis or None, "evidence": evidence})
+    return normalized
 
-    ids, blocks = [], []
-    next_number = int(_next_id(category, existing).rsplit("-", 1)[1])
-    for i, card in enumerate(cards):
-        card_id = f"M-{category}-{next_number + i:03d}"
-        ids.append(card_id)
-        blocks.append(render_card(card_id, card, titles))
 
-    lines, start, end = _section_lines(body, SECTION)
-    content = "\n".join(lines[start + 1:end]).strip("\n")
-    content = "\n\n".join(([content] if content else []) + blocks)
-    _write(index_path, fm, refstore.replace_section(body, SECTION, content), nl)
+def add(category: str, cards_path: Path, allowed: list[str] | None = None) -> dict:
+    index_path = refstore.existing_category_dir(category) / "index.md"
+    raw = _load_json(cards_path, "invalid_cards")
+    stage = refstore.count(category)["stage"]            # 영상 폴더만 읽는다: index.md 락 밖에서 먼저 계산
+    titles = ref_titles(category)
+    with refstore.INDEX_LOCK:
+        cards = validate_cards(category, raw, allowed)
+        fm, body, nl = _read(index_path)
+        existing = parse_cards(body)
+
+        ids, blocks = [], []
+        next_number = int(_next_id(category, existing).rsplit("-", 1)[1])
+        for i, card in enumerate(cards):
+            card_id = f"M-{category}-{next_number + i:03d}"
+            ids.append(card_id)
+            blocks.append(render_card(card_id, card, titles))
+
+        lines, start, end = _section_lines(body, SECTION)
+        content = "\n".join(lines[start + 1:end]).strip("\n")
+        content = "\n\n".join(([content] if content else []) + blocks)
+        _write(index_path, fm, refstore.replace_section(body, SECTION, content), nl)
     Path(cards_path).unlink(missing_ok=True)
     return {"status": "added", "ids": ids, "stage": stage}
 
@@ -232,15 +305,16 @@ def add(category: str, cards_path: Path) -> dict:
 
 def star(category: str, card_id: str, off: bool = False) -> dict:
     index_path = refstore.existing_category_dir(category) / "index.md"
-    fm, body, nl = _read(index_path)
-    lines = body.split("\n")
-    for i, line in enumerate(lines):
-        m = _CARD_RE.match(line.strip())
-        if m and m.group(2) == card_id:
-            rest = line.strip()[len("### "):].removeprefix("★ ")
-            lines[i] = f"### {rest}" if off else f"### ★ {rest}"
-            _write(index_path, fm, "\n".join(lines), nl)
-            return {"id": card_id, "starred": not off}
+    with refstore.INDEX_LOCK:
+        fm, body, nl = _read(index_path)
+        lines = body.split("\n")
+        for i, line in enumerate(lines):
+            m = _CARD_RE.match(line.strip())
+            if m and m.group(2) == card_id:
+                rest = line.strip()[len("### "):].removeprefix("★ ")
+                lines[i] = f"### {rest}" if off else f"### ★ {rest}"
+                _write(index_path, fm, "\n".join(lines), nl)
+                return {"id": card_id, "starred": not off}
     raise ScriptError("card_not_found", f"카드를 찾을 수 없습니다: {card_id}")
 
 

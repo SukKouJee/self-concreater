@@ -31,7 +31,7 @@ const MENU = [
   {
     group: "만들기",
     items: [
-      { name: "모티브", soon: "motive", command: "/yt-coach:yt-inspire" },
+      { name: "모티브", route: "#/motif" },
       { name: "기획안", soon: "draft", command: "/yt-coach:yt-draft" },
       { name: "콘티", route: "#/conti" },
     ],
@@ -250,6 +250,7 @@ function parseHash() {
   switch (head) {
     case "add": return { page: "add", params: {} };
     case "typify": return { page: "typify", params: {} };
+    case "motif": return { page: "motif", params: {} };
     case "conti": {
       let path = null;
       if (tail) { try { path = decodeURIComponent(tail); } catch { path = null; } }

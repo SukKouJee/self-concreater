@@ -421,17 +421,19 @@ def apply(category: str, notes_path: Path, expected_run_at: str | None = None, s
     axis_notes, names = validate_notes(result, notes)
 
     index = refstore.existing_category_dir(category) / "index.md"
-    text = index.read_bytes().decode("utf-8-sig")
-    nl = "\r\n" if text.startswith("---\r\n") else "\n"
-    fm, body = refstore.split_frontmatter(text)
-    body = refstore.replace_section(body, "## 판정", render_judgement(result, axis_notes))
-    body = refstore.replace_section(body, "## 아키타입", render_archetypes(result, names))
-    body = refstore.replace_section(body, "## 이상치", render_outliers(result))
-    fm["typified_at"] = date.today().isoformat()
-    fm["typify_status"] = result["status"]
-    fm["archetypes"] = [{"id": a["id"], "name": names[a["id"]], "members": a["members"]}
-                        for a in result["archetypes"]]
-    index.write_bytes(refstore.join_frontmatter(fm, body.replace("\r\n", "\n").replace("\n", nl), nl).encode("utf-8"))
+    with refstore.INDEX_LOCK:
+        text = index.read_bytes().decode("utf-8-sig")
+        nl = "\r\n" if text.startswith("---\r\n") else "\n"
+        fm, body = refstore.split_frontmatter(text)
+        body = refstore.replace_section(body, "## 판정", render_judgement(result, axis_notes))
+        body = refstore.replace_section(body, "## 아키타입", render_archetypes(result, names))
+        body = refstore.replace_section(body, "## 이상치", render_outliers(result))
+        fm["typified_at"] = date.today().isoformat()
+        fm["typify_status"] = result["status"]
+        fm["archetypes"] = [{"id": a["id"], "name": names[a["id"]], "members": a["members"]}
+                            for a in result["archetypes"]]
+        refstore.write_atomic(
+            index, refstore.join_frontmatter(fm, body.replace("\r\n", "\n").replace("\n", nl), nl).encode("utf-8"))
     snapshot = _applied_snapshot(result, axis_notes, names, video_titles(category, result))
     target = applied_path(category)
     tmp = target.with_name(target.name + ".tmp")
