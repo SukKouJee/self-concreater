@@ -169,6 +169,13 @@ def _mutated(fn):
     return data
 
 
+_MALFORMED_IDS = [
+    "list-root", "string-root", "sections-string", "section-not-object", "shots-item-not-object", "shots-string",
+    "start-string", "end-none", "start-missing", "sec-zero", "sec-negative", "sec-string", "sec-nan", "sec-inf",
+    "sec-bool", "end-nan", "sec-null", "sec-missing",
+]
+
+
 @pytest.mark.parametrize("data", [
     [],
     "x",
@@ -186,7 +193,9 @@ def _mutated(fn):
     _mutated(lambda d: d["sections"][0]["shots"][0].update(sec=float("inf"))),
     _mutated(lambda d: d["sections"][0]["shots"][0].update(sec=True)),
     _mutated(lambda d: d["sections"][0].update(end=float("nan"))),
-], ids=lambda d: "case")
+    _mutated(lambda d: d["sections"][0]["shots"][0].update(sec=None)),
+    _mutated(lambda d: d["sections"][0]["shots"][0].pop("sec")),
+], ids=_MALFORMED_IDS)
 def test_validate_rejects_malformed(data):
     with pytest.raises(ScriptError) as exc:
         draft.validate(data)
@@ -242,3 +251,29 @@ def test_validate_normalizes_carriage_returns_in_script():
     data = json.loads(json.dumps(DRAFT))
     data["sections"][0]["script"] = "a\r## b\r\n## c"
     assert draft.validate(data)["sections"][0]["script"] == "a\n\## b\n\## c"
+
+
+def test_validate_is_idempotent_for_escaped_headings():
+    data = json.loads(json.dumps(DRAFT))
+    data["sections"][0]["script"] = "a\n## b\n#태그\n\\## c"
+    once = draft.validate(data)
+    assert draft.validate(once) == once
+
+
+def test_save_picks_next_free_name_without_touching_existing(home):
+    first = home / draft.save(CAT, draft_file(home))["path"]
+    second = home / draft.save(CAT, draft_file(home))["path"]
+    before = {p: p.read_bytes() for p in (first, second)}
+    third = draft.save(CAT, draft_file(home))["path"]
+    assert third.endswith("-3.md")
+    assert all(p.read_bytes() == b for p, b in before.items())
+
+
+def test_parse_draft_keeps_backslash_before_non_heading_hash(home):
+    from scripts import conti
+    data = json.loads(json.dumps(DRAFT))
+    data["archetype"] = None
+    data["sections"][0]["script"] = "\#tag\n## 제목"
+    out = draft.save(CAT, draft_file(home, data))
+    script = conti.parse_draft(home / out["path"])["sections"][0]["script"]
+    assert script == "\#tag\n## 제목"

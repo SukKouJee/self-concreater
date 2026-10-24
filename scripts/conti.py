@@ -83,7 +83,7 @@ def parse_draft(path: Path) -> dict:
             blocks[-1]["shots"].append({"size": row.group(2).strip(), "angle": row.group(3).strip().strip("-") or None,
                                         "sec": float(row.group(4)), "action": row.group(5).replace("\\|", "|").strip()})
         elif line.strip() and not line.startswith("|"):
-            blocks[-1]["script"].append(re.sub(r"^\\(#)", r"\1", line.strip()))   # draft.validate의 제목 이스케이프 제거
+            blocks[-1]["script"].append(re.sub(r"^\\(#{1,6})(?=\s|$)", r"\1", line.strip()))   # draft.validate의 제목 이스케이프 제거
     sections = []
     for i, s in enumerate(fm["sections"]):
         block = blocks[i] if i < len(blocks) and blocks[i]["label"] == s["label"] else {"script": [], "shots": []}

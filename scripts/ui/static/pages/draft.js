@@ -38,6 +38,9 @@ const sortByStart = (list) => [...list].sort((a, b) => num(a.start) - num(b.star
 const lastEnd = (sections) => Math.max(0, ...(sections || []).map((s) => num(s && s.end)));
 const sectionTitle = (s) => `${s.label}${s.sub ? `(${s.sub})` : ""}`;
 
+// The server escapes real md headings in scripts ("\## x"); show them as typed. Saving escapes them again.
+const unescapeHeadings = (text) => text.replace(/^\\(#{1,6})(?=\s|$)/gm, "$1");
+
 // "" and non-numbers become NaN so callers can tell "not a number" from 0.
 function parseNum(text) {
   const t = String(text).trim();
@@ -222,7 +225,7 @@ function initEdit(mine, preview) {
     title: String(d.title || ""),
     sections: d.sections.map((s) => ({
       src: s,
-      script: String(s.script || ""),
+      script: unescapeHeadings(String(s.script || "")),
       shots: (s.shots || []).map((sh) => ({
         src: sh, size: String(sh.size || ""), angle: String(sh.angle || ""),
         sec: sh.sec === null || sh.sec === undefined ? "" : String(sh.sec), action: String(sh.action || ""),
@@ -575,8 +578,9 @@ function saveBlocker() {
 
 function draftPayload() {
   const e = S.edit;
+  const { script_only: _scriptOnly, ...base } = S.preview.draft;   // the screen never saves script-only drafts
   return {
-    ...S.preview.draft,
+    ...base,
     title: e.title.trim(),
     sections: e.sections.map((sec) => ({
       ...sec.src,
@@ -737,7 +741,8 @@ function updateSummary() {
   const parts = [`길이 ${fmtTime(dur)}`, `컷 ${cuts}개`, cuts ? `평균 컷 ${round2(dur / cuts)}초` : "평균 컷 -"];
   const arch = S.preview.compare && S.preview.compare.archetype_avg_cut;
   if (arch) parts.push(`아키타입 평균 컷 ${round2(num(arch))}초`);
-  node.textContent = parts.join(" · ");
+  const text = parts.join(" · ");
+  if (node.textContent !== text) node.textContent = text;
 }
 
 function updateActions() {

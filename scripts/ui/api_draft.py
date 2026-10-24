@@ -169,6 +169,11 @@ def _detail(req: Request) -> dict:
 
 # ---- 만들기(작업) -----------------------------------------------------------------------
 
+def _validate_with_shots(data: Any) -> dict:
+    """Every section needs shots in the UI flow, whatever script_only says."""
+    return draft.validate({**data, "script_only": False} if isinstance(data, dict) else data)
+
+
 def run_target(category: str, source: str, topic: str | None, target_sec: float | None) -> Any:
     def target(job: Job) -> None:
         job.update(0, state="running", step="context")
@@ -179,8 +184,9 @@ def run_target(category: str, source: str, topic: str | None, target_sec: float 
         job.update(0, step="claude")
         job.check_cancelled()
         _, valid = claude_cli.ask_validated(
-            _rules(), payload=payload, task=DRAFT_TASK, validate=draft.validate, schema=DRAFT_SCHEMA,
+            _rules(), payload=payload, task=DRAFT_TASK, schema=DRAFT_SCHEMA, validate=_validate_with_shots,
         )
+        valid = {k: v for k, v in valid.items() if k != "script_only"}   # the UI never saves script-only drafts
         pacing = draft.planned_pacing(valid["sections"])
         comp = draft.compare(valid["sections"], draft.find_archetype(category, valid.get("archetype")))
         job.update(0, state="awaiting", step="preview", ask="save", preview={

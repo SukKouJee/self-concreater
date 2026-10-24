@@ -201,6 +201,23 @@ def test_run_reaches_preview(client, home, fakes):
     assert _drafts(home) == []
 
 
+def test_run_ignores_script_only_flag(client, fakes):
+    data = copy.deepcopy(DRAFT)
+    data["script_only"] = True
+    fakes.data = data
+    job = _run(client)
+    assert job["status"] == "done"
+    assert "script_only" not in job["items"][0]["preview"]["draft"]
+
+
+def test_run_rejects_script_only_draft_without_shots(client, fakes):
+    data = copy.deepcopy(DRAFT)
+    data["script_only"] = True
+    data["sections"][0].pop("shots")
+    fakes.data = data
+    assert _run(client)["status"] == "failed"
+
+
 def test_run_without_target_sec_omits_it(client, fakes):
     data = copy.deepcopy(DRAFT)
     data["archetype"] = None

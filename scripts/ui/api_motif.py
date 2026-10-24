@@ -22,7 +22,6 @@ from scripts.ui.server import Request, route
 
 KIND = "motif"
 MAX_TOPIC = 100
-DRAFT_HINT = "/yt-coach:yt-draft"
 CARD_ID_RE = re.compile(r"^M-[a-z0-9_-]+-\d{3}$")
 MOTIF_TASK = "yt-inspire 규칙대로 입력의 모티브 카드를 만들어 {\"cards\": [...]} 형태로 답하세요. 기법 카탈로그 병합은 하지 마세요."
 CARDS_SCHEMA: dict = {
@@ -90,7 +89,7 @@ def _status(req: Request) -> dict:
         "allowed_types": allowed, "allowed_ko": [motif.TYPE_KO[t] for t in allowed],
         "has_profile": (work_root() / "profile.md").exists(),
         "has_typify": motif.typify_path(category).exists(),      # context()의 typify가 None이 아닌 조건과 같다
-        "cards": motif.card_details(category), "draft_hint": DRAFT_HINT,
+        "cards": motif.card_details(category),
     }
 
 

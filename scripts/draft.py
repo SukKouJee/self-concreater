@@ -145,7 +145,9 @@ def validate(data: dict) -> dict:
             shot = dict(raw_shot)
             if shot.get("size") not in SHOT_SIZES:
                 raise _invalid(f"샷 크기 {shot.get('size')!r} (허용: {', '.join(SHOT_SIZES)})")
-            if shot.get("sec") is not None and _finite(shot["sec"], "샷 sec") <= 0:
+            if shot.get("sec") is None:
+                raise _invalid(f"섹션 {s['label']}의 샷 sec가 필요합니다")
+            if _finite(shot["sec"], "샷 sec") <= 0:
                 raise _invalid(f"샷 sec는 0보다 커야 합니다: {shot['sec']!r}")
             for key in ("angle", "action"):
                 if shot.get(key) is not None:
@@ -260,10 +262,6 @@ def save(category: str, draft_path: Path) -> dict:
     drafts = work_root() / "drafts"
     drafts.mkdir(parents=True, exist_ok=True)
     base = f"{today}-{slugify(data['title'])}"
-    path, i = drafts / f"{base}.md", 2
-    while path.exists():
-        path, i = drafts / f"{base}-{i}.md", i + 1
-
     fm = {
         "date": today, "category": category, "title": data["title"], "topic": data.get("topic"),
         "source": data.get("source"), "archetype": data.get("archetype"),
@@ -274,7 +272,15 @@ def save(category: str, draft_path: Path) -> dict:
         "title_pattern": title_patterns(data["title"]), "pacing": pacing,
         "status": "script" if data.get("script_only") else "draft", "schema_version": 1,
     }
-    path.write_bytes(refstore.join_frontmatter(fm, render(data, pacing, comp)).encode("utf-8"))
+    content = refstore.join_frontmatter(fm, render(data, pacing, comp)).encode("utf-8")
+    path, i = drafts / f"{base}.md", 2
+    while True:
+        try:
+            with open(path, "xb") as f:          # exclusive create: never overwrite a file that appeared meanwhile
+                f.write(content)
+            break
+        except FileExistsError:
+            path, i = drafts / f"{base}-{i}.md", i + 1
     Path(draft_path).unlink(missing_ok=True)
     return {"status": "saved", "path": path.relative_to(work_root()).as_posix(), "pacing": pacing, "compare": comp}
 
