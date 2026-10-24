@@ -5,6 +5,7 @@
 // api 호출은 ctx.api를 쓴다: 페이지별 ctx.api가 이미 ctx.signal(이동하면 abort)을 실어 보낸다. 중단된 요청(error "aborted")은 조용히 무시한다.
 // 모든 비동기 뒤에는 ctx.isCurrent()로 화면이 아직 이 페이지인지 확인한다.
 import { h, fill, filesUrl } from "/static/dom.js";
+import { renderMarkdown } from "/static/md.js";
 
 const COUNT_DEBOUNCE_MS = 300;
 const ROLE_TEXT = { ref: "레퍼런스", mine: "내 영상" };
@@ -305,9 +306,7 @@ function renderDetail(data) {
         h("span", { class: "badge", title: note }, "분석 당시 기록")));
       block.append(h("p", { class: "muted small" }, note));
     } else if (part.heading) block.append(h("h2", {}, part.heading));
-    const text = h("div", { class: "md-text" });
-    text.textContent = part.text || "";
-    block.append(text);
+    block.append(h("div", { class: "md" }, renderMarkdown(part.text || "")));
     S.el.append(block);
   }
 

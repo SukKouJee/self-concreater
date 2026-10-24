@@ -365,3 +365,35 @@ def test_draft_shot_sizes_match_server_and_invalid_input_is_blocked():
     css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
     assert ".dr-sec .table-wrap { max-height: none; }" in css
 
+
+
+def test_md_renderer_is_safe_and_wired_into_detail_screens():
+    md = (STATIC_DIR / "md.js").read_text(encoding="utf-8")
+    assert "export function renderMarkdown" in md and "export function parseMarkdown" in md
+    for bad in ["innerHTML", "insertAdjacentHTML", "outerHTML", "document.write", "eval(", "new Function",
+                "http://", "https://", "confirm(", "alert(", "prompt("]:
+        assert bad not in md, bad
+    for token in ['protocol === "https:"', "new URL(", "noopener", "youtu.be"]:
+        assert token in md, token
+    for page in ("refs.js", "draft.js"):
+        js = (STATIC_DIR / "pages" / page).read_text(encoding="utf-8")
+        assert re.search(r'import \{[^}]*\brenderMarkdown\b[^}]*\} from "/static/md\.js"', js), page
+        assert "renderMarkdown(part.text" in js, page
+
+
+def test_md_css_covers_rendered_elements():
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    for selector in [".md h3", ".md blockquote", ".md pre", ".md hr", ".md ul", ".md table", ".md-table-wrap"]:
+        assert selector in css, selector
+
+
+def test_md_served(client):
+    status, headers, raw = client.call("GET", "/static/md.js")
+    assert status == 200 and "javascript" in headers["Content-Type"]
+
+
+def test_md_table_cells_scroll_instead_of_breaking_and_draft_drops_repeated_title():
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    assert re.search(r"\.md th, \.md td \{[^}]*word-break: keep-all[^}]*min-width: 4em", css)
+    draft = (STATIC_DIR / "pages" / "draft.js").read_text(encoding="utf-8")
+    assert "dropTitle: String(d.title)" in draft

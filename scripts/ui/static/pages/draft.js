@@ -5,6 +5,7 @@
 // 미리보기 단계에서는 drafts/가 바뀌지 않는다. 저장은 사용자가 누른 뒤에만, 고친 draft 그대로 보낸다.
 // 작업 폴링·재진입·handled·job_id·aborted 처리는 pages/motif.js와 같은 방식이다.
 import { h, fill } from "/static/dom.js";
+import { renderMarkdown } from "/static/md.js";
 
 const POLL_MS = 1000;
 const POLL_MAX_MS = 15000;
@@ -311,8 +312,7 @@ function renderView(mine, d) {
       h("li", {}, h("span", { class: `lb-dot lb-${s.label}`, "aria-hidden": "true" }), `${sectionTitle(s)} ${fmtRange(s)}`))));
   }
   for (const part of d.body || []) {
-    const text = h("div", { class: "md-text" });
-    text.textContent = part.text || "";
+    const text = h("div", { class: "md" }, renderMarkdown(part.text || "", { dropTitle: String(d.title) }));
     kids.push(h("section", { class: "ref-block" }, part.heading ? h("h2", {}, part.heading) : null, text));
   }
   const copy = h("button", { type: "button", class: "btn" }, "경로 복사");
