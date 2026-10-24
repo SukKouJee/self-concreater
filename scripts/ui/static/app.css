@@ -400,6 +400,27 @@ code { background: var(--grid); padding: 1px 6px; border-radius: 4px; }
 .frame-strip img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: var(--radius-sm); background: var(--grid); display: block; }
 .frame-strip figcaption { font-size: 12px; color: var(--muted); margin-top: var(--sp-1); }
 .md-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* rendered markdown bodies (md.js) */
+.md { overflow-wrap: anywhere; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p { margin: 0 0 var(--sp-3); }
+.md h3, .md h4, .md h5, .md h6 { margin: var(--sp-4) 0 var(--sp-2); line-height: 1.35; }
+.md h3 { font-size: 15px; }
+.md h4 { font-size: 14px; }
+.md h5, .md h6 { font-size: 13px; color: var(--ink2); }
+.md ul, .md ol { margin: 0 0 var(--sp-3); padding-left: 1.5em; }
+.md li > ul, .md li > ol, .md li > blockquote { margin: var(--sp-1) 0; }
+.md blockquote { margin: 0 0 var(--sp-3); padding: var(--sp-1) var(--sp-3); border-left: 3px solid var(--axis); color: var(--ink2); }
+.md blockquote > :last-child { margin-bottom: 0; }
+.md pre { margin: 0 0 var(--sp-3); padding: var(--sp-3); overflow: auto; background: var(--grid); border-radius: var(--radius-sm); }
+.md pre code { padding: 0; background: none; white-space: pre; }
+.md hr { margin: var(--sp-4) 0; border: 0; border-top: 1px solid var(--grid); }
+.md-table-wrap { margin: 0 0 var(--sp-3); overflow-x: auto; border: 1px solid var(--grid); border-radius: var(--radius-sm); }
+.md table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.md th, .md td { padding: 6px var(--sp-2); border-bottom: 1px solid var(--grid); text-align: left; vertical-align: top; }
+.md th { font-weight: 600; color: var(--ink2); background: var(--surface); }
+.md tbody tr:last-child td { border-bottom: 0; }
 .ref-path { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin: var(--sp-5) 0 0; }
 .ref-path code { overflow-wrap: anywhere; }
 /* 라벨 고치기 */
