@@ -110,7 +110,7 @@ def update_frontmatter(path: Path, updates: dict[str, Any]) -> dict:
     nl = "\r\n" if text.startswith("---\r\n") else "\n"
     fm, body = split_frontmatter(text)
     fm.update(updates)
-    _write_text(path, join_frontmatter(fm, body, nl))
+    write_atomic(path, join_frontmatter(fm, body, nl).encode("utf-8"))
     return fm
 
 

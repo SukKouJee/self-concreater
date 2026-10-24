@@ -39,7 +39,7 @@ const MENU = [
   {
     group: "성장",
     items: [
-      { name: "진단", soon: "diagnose", command: "/yt-coach:yt-diagnose" },
+      { name: "진단", route: "#/diagnose" },
       { name: "미션", soon: "mission", command: "/yt-coach:yt-mission" },
     ],
   },
@@ -142,6 +142,7 @@ function markActive() {
     const active = hash === href
       || (href === "#/conti" && hash.startsWith("#/conti/"))
       || (href === "#/draft" && hash.startsWith("#/draft/"))
+      || (href === "#/diagnose" && hash.startsWith("#/diagnose/"))
       || (href === "#/refs" && hash.startsWith("#/refs/"));
     if (active) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
@@ -266,6 +267,12 @@ function parseHash() {
       let path = null;
       if (tail) { try { path = decodeURIComponent(tail); } catch { path = null; } }
       return { page: "conti", params: { path } };
+    }
+    case "diagnose": {
+      // #/diagnose = target list; #/diagnose/<encoded target path> = one target. Undecodable: the list.
+      let path = null;
+      if (tail) { try { path = decodeURIComponent(tail); } catch { path = null; } }
+      return { page: "diagnose", params: { path } };
     }
     case "refs": {
       if (!tail) return { page: "refs", params: {} };

@@ -41,8 +41,11 @@ def _load_typify(category: str) -> dict:
     path = workspace_dir("typify", f"{category}.json")
     if not path.exists():
         raise ScriptError("no_typify_result", f"유형화 결과가 없습니다. 먼저 /yt-typify {category}")
-    result = json.loads(path.read_text("utf-8"))
-    if not result.get("archetypes"):
+    try:
+        result = json.loads(path.read_text("utf-8"))
+    except (OSError, ValueError) as e:                # 깨진 JSON은 유형화 결과가 없는 것으로 본다
+        raise ScriptError("no_typify_result", f"유형화 결과를 읽을 수 없습니다. 다시 /yt-typify {category}") from e
+    if not isinstance(result, dict) or not result.get("archetypes"):
         raise ScriptError("no_archetype", "비교할 아키타입이 없습니다(구조가 비슷한 ref 묶음이 아직 없음).")
     return result
 
@@ -198,18 +201,39 @@ def _memo(path: Path) -> str:
     return body[idx + len("## 내 메모"):].lstrip("\n") if idx >= 0 else ""
 
 
+def validate_notes(result: dict, notes: Any) -> dict:
+    """notes를 검증하고 정리해 돌려준다(CLI save·UI 공통). 요약은 한 줄로, 행동은 공백을 뺀다.
+
+    result["gaps"]의 모든 key에 설명이 있어야 하며, 사라진 갭의 설명은 버린다."""
+    bad_shape = ScriptError("invalid_notes", "notes 형식이 맞지 않습니다: summary는 문자열, gaps는 객체, actions는 문자열 목록이어야 합니다")
+    if not isinstance(notes, dict):
+        raise bad_shape
+    summary, gap_notes, raw_actions = notes.get("summary"), notes.get("gaps"), notes.get("actions")
+    gap_notes = {} if gap_notes is None else gap_notes
+    raw_actions = [] if raw_actions is None else raw_actions
+    summary_ok = summary is None or isinstance(summary, str)
+    gaps_ok = isinstance(gap_notes, dict) and all(isinstance(v, str) for v in gap_notes.values())
+    actions_ok = isinstance(raw_actions, list) and all(isinstance(a, str) for a in raw_actions)
+    if not (summary_ok and gaps_ok and actions_ok):
+        raise bad_shape
+    clean_summary = " ".join((summary or "").split())
+    missing = [g["key"] for g in result["gaps"] if not gap_notes.get(g["key"], "").strip()]
+    actions = [a.strip() for a in raw_actions if a.strip()]
+    if missing or not clean_summary or not 1 <= len(actions) <= 3:
+        raise ScriptError("invalid_notes", "요약, 모든 갭의 설명, 다음 행동 1~3개가 필요합니다"
+                          + (f" (빠진 갭: {', '.join(missing)})" if missing else ""))
+    return {"summary": clean_summary, "gaps": {g["key"]: gap_notes[g["key"]].strip() for g in result["gaps"]},
+            "actions": actions}
+
+
 def save(category: str, target_path: Path, notes_path: Path) -> dict:
     result = compare(category, target_path)
     try:
         notes = json.loads(Path(notes_path).read_text("utf-8"))
     except (OSError, json.JSONDecodeError) as e:
         raise ScriptError("invalid_notes", f"notes JSON을 읽을 수 없습니다: {e}") from e
-    gap_notes = notes.get("gaps") or {}
-    missing = [g["key"] for g in result["gaps"] if not str(gap_notes.get(g["key"]) or "").strip()]
-    actions = [a for a in notes.get("actions") or [] if str(a).strip()]
-    if missing or not str(notes.get("summary") or "").strip() or not 1 <= len(actions) <= 3:
-        raise ScriptError("invalid_notes", "요약, 모든 갭의 설명, 다음 행동 1~3개가 필요합니다"
-                          + (f" (빠진 갭: {', '.join(missing)})" if missing else ""))
+    notes = validate_notes(result, notes)
+    gap_notes, actions = notes["gaps"], notes["actions"]
 
     path = _diag_path(result["target"]["name"])
     old = refstore.read_md(path)[0] if path.exists() else {}
@@ -227,7 +251,7 @@ def save(category: str, target_path: Path, notes_path: Path) -> dict:
     lines = [f"# 진단: {result['target']['title'] or result['target']['name']}", "",
              f"_{date.today().isoformat()} · 가장 가까운 아키타입 {near['id']} {near['name']}"
              + (" · 예비 진단(ref 10개 미만)" if result["preliminary"] else "") + "_", "",
-             "## 요약", str(notes["summary"]).strip(), "",
+             "## 요약", notes["summary"], "",
              "## 축별 근접도", f"내 골격: {result['target_sequence']} / 아키타입 골격: {near['skeleton']}", "",
              "| 축 | 근접도 |", "|---|---|",
              *[f"| {axis} | {_pct(v['proximity'])}{' (' + v['note'] + ')' if v.get('note') else ''} |"
@@ -240,7 +264,7 @@ def save(category: str, target_path: Path, notes_path: Path) -> dict:
         lines += ["## 의도한 차이", *[f"- {k}" for k in result["intentional"]], ""]
     lines += ["## 내 메모", ""]
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(refstore.join_frontmatter(fm, "\n".join(lines) + _memo(path)).encode("utf-8"))
+    refstore.write_atomic(path, refstore.join_frontmatter(fm, "\n".join(lines) + _memo(path)).encode("utf-8"))
     Path(notes_path).unlink(missing_ok=True)
     return {"status": "saved", "path": path.relative_to(work_root()).as_posix(),
             "nearest": fm["nearest"], "proximity": prox, "gaps": fm["gaps"]}

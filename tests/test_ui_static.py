@@ -5,7 +5,8 @@ from tests.test_ui_server import client, no_browser  # noqa: F401  (fixture 재�
 
 MENU_NAMES = ["홈", "레퍼런스 추가", "레퍼런스 목록", "유형화", "리포트", "모티브", "기획안", "콘티", "진단", "미션"]
 # yt-draft is no longer a terminal-only item: the draft screen is a live route.
-COMMANDS = ["/yt-coach:yt-review", "/yt-coach:yt-diagnose", "/yt-coach:yt-mission"]
+# diagnose is live too: its terminal command no longer appears in the menu definition.
+COMMANDS = ["/yt-coach:yt-review", "/yt-coach:yt-mission"]
 
 
 def test_index_loads_modules(client):
@@ -410,3 +411,43 @@ def test_md_table_cells_scroll_instead_of_breaking_and_draft_drops_repeated_titl
     assert re.search(r"\.md th, \.md td \{[^}]*word-break: keep-all[^}]*min-width: 4em", css)
     draft = (STATIC_DIR / "pages" / "draft.js").read_text(encoding="utf-8")
     assert "dropTitle: String(d.title)" in draft
+
+
+def test_diagnose_menu_is_live_route():
+    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    home = (STATIC_DIR / "pages" / "home.js").read_text(encoding="utf-8")
+    assert 'route: "#/diagnose"' in app
+    assert 'soon: "diagnose"' not in app
+    assert 'case "diagnose"' in app
+    assert '"#/diagnose"' in home
+    assert "#/soon/diagnose" not in home
+
+
+def test_diagnose_page_contract_and_safety():
+    js = (STATIC_DIR / "pages" / "diagnose.js").read_text(encoding="utf-8")
+    for token in ["export async function mount", "export function unmount", "export function onCategory",
+                  "isCurrent()", "ctx.api(", "/api/diagnose/targets", "/api/diagnose/compare",
+                  "/api/diagnose/explain", "/api/diagnose/save", "/api/diagnose/intentional",
+                  "/api/diagnose/record", "kind=diagnose", "job_id", "비교하기", "설명 받기",
+                  "일부러 다르게 한 거예요", "renderMarkdown", "/yt-coach:yt-mission today",
+                  "aria-pressed", "data-discard-yes", "aborted", "axis_ko", "정보 없음", "예비 진단",
+                  "설명 다시 받기", "refreshCategories", "진단을 기록했습니다", "#/typify", "#/add", "#/draft"]:
+        assert token in js, token
+    for bad in ["innerHTML", "insertAdjacentHTML", "outerHTML", "confirm(", "alert(", "prompt("]:
+        assert bad not in js.replace("inline-confirm", ""), bad
+    assert not re.search(r"https?://", js)
+
+
+def test_diagnose_page_served(client):
+    status, headers, raw = client.call("GET", "/static/pages/diagnose.js")
+    assert status == 200
+    assert "javascript" in headers["Content-Type"]
+    assert "/api/diagnose/targets" in raw.decode("utf-8")
+
+
+def test_diagnose_fix_round_contract():
+    js = (STATIC_DIR / "pages" / "diagnose.js").read_text(encoding="utf-8")
+    for token in ["일부러 다르게 한 거예요: ${name}", "갭이 바뀌었습니다 — 설명 다시 받기 후 저장하세요",
+                  "저장된 설명이 지금 갭과 다릅니다 — 설명 다시 받기", "다시 비교", "일부러 다르게 한 갭",
+                  "dropTitle", "aria-disabled", "cmpSeq", "watchOtherJob", "compareNow(true)"]:
+        assert token in js, token
