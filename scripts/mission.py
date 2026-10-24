@@ -337,10 +337,11 @@ def validate_review(data: Any) -> dict:
             raise _bad_review(f"프로필에 없는 섹션입니다: {key}")
         if not isinstance(value, str):
             raise _bad_review(f"profile_proposal의 {key} 값이 문자열이 아닙니다")
+        if not value.strip():
+            continue                                   # 빈 제안은 없는 것으로 본다(성장 단계 포함)
         if key == "성장 단계" and value.strip() not in STAGES:
             raise _bad_review(f"성장 단계는 {', '.join(STAGES)} 중 하나입니다")
-        if value.strip():
-            cleaned[key] = value.strip()
+        cleaned[key] = value.strip()
     return {"summary": (summary or "").strip(), "repeated_weakness": _line_list(data.get("repeated_weakness"), "repeated_weakness"),
             "next_week": _line_list(data.get("next_week"), "next_week"), "profile_proposal": cleaned}
 
@@ -360,7 +361,11 @@ def review_save(week_id: str, review_path: Path) -> dict:
     nl, memo = "\n", f"{MEMO_HEADING}\n"
     if path.exists():
         text = path.read_bytes().decode("utf-8-sig")
-        old_fm, old_body = refstore.split_frontmatter(text)
+        try:
+            old_fm, old_body = refstore.split_frontmatter(text)
+        except ScriptError as e:
+            raise ScriptError(e.code, f"기존 회고 파일을 읽을 수 없습니다(reviews/{stats['week']}.md): {e.message}. "
+                                      "파일을 고치거나 삭제한 뒤 다시 저장해 주세요") from e
         nl = "\r\n" if "\r\n" in text else "\n"
         memo = _memo_tail(old_body) or memo                  # 사용자의 메모(와 그 뒤 내용)는 그대로 옮긴다
     proposal = data["profile_proposal"]

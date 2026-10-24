@@ -216,6 +216,21 @@ class Job:
                     self._status = "done"
 
 
+def mark_saved(app: Any, job_id: Any, kind: str, item_id: str) -> None:
+    """미리보기 항목(id == item_id)이 아직 저장 대기면 저장됨으로 바꾼다. 없는 작업·다른 종류·다른 항목은 무시."""
+    if not isinstance(job_id, str):
+        return
+    try:
+        job = app.jobs.get(job_id)
+    except ScriptError:
+        return
+    if job.kind != kind:
+        return
+    item = job.item(0)
+    if item["id"] == item_id and item["state"] == "awaiting":
+        job.update(0, state="saved", ask=None)
+
+
 class JobManager:
     def __init__(self) -> None:
         self._lock = threading.Lock()

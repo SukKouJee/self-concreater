@@ -26,7 +26,7 @@ from typing import Any
 from scripts import claude_cli, mission, refstore
 from scripts.common import ScriptError, work_root, workspace_dir
 from scripts.ui.api_refs import _body_parts
-from scripts.ui.jobs import Job, new_item
+from scripts.ui.jobs import Job, mark_saved, new_item
 from scripts.ui.server import Request, route
 
 KIND = "mission"
@@ -239,21 +239,6 @@ def _draft(req: Request) -> dict:
 
 # ---- 저장 -------------------------------------------------------------------------------
 
-def _mark_saved(req: Request, job_id: Any, kind: str, day: str) -> None:
-    """미리보기 항목이 아직 저장 대기면 저장됨으로 바꾼다. 없는 작업·다른 종류·다른 날짜는 무시."""
-    if not isinstance(job_id, str):
-        return
-    try:
-        job = req.app.jobs.get(job_id)
-    except ScriptError:
-        return
-    if job.kind != kind:
-        return
-    item = job.item(0)
-    if item["id"] == day and item["state"] == "awaiting":
-        job.update(0, state="saved", ask=None)
-
-
 @route("POST", "/api/mission/save")
 def _save(req: Request) -> dict:
     body = req.json
@@ -273,7 +258,7 @@ def _save(req: Request) -> dict:
             saved = mission.save(tmp, day, replace)
         finally:
             tmp.unlink(missing_ok=True)
-        _mark_saved(req, body.get("job_id"), KIND, day)
+        mark_saved(req.app, body.get("job_id"), KIND, day)
         return {**saved, "today": _today_view(day)}
 
 
@@ -379,7 +364,7 @@ def _submit(req: Request) -> dict:
     with WRITE_LOCK:
         _require(day)
         result = mission.submit(file_name or "", difficulty, feedback, day, note)   # 완료·건너뜀 뒤에도 다시 제출할 수 있다
-        _mark_saved(req, body.get("job_id"), FEEDBACK_KIND, day)
+        mark_saved(req.app, body.get("job_id"), FEEDBACK_KIND, day)
         return {**result, "today": _today_view(day)}
 
 

@@ -496,3 +496,19 @@ def test_profile_update_cannot_target_memo_section(home):
     with pytest.raises(ScriptError) as exc:
         mission.profile_update(_json(home, "p.json", {"내 메모": "x"}), date="2026-10-26")
     assert exc.value.code == "invalid_profile_update"
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\n"])
+def test_validate_review_skips_blank_proposal_values(blank):
+    out = mission.validate_review({**REVIEW, "profile_proposal": {"성장 단계": blank, "약점": blank, "강점": "- 편집"}})
+    assert out["profile_proposal"] == {"강점": "- 편집"}
+
+
+def test_review_save_broken_existing_frontmatter_tells_user_what_to_do(home):
+    (home / "reviews").mkdir()
+    (home / "reviews" / "2026-W43.md").write_text("프런트매터 없음\n", encoding="utf-8")
+    with pytest.raises(ScriptError) as exc:
+        mission.review_save("2026-W43", _json(home, "r.json", REVIEW))
+    assert exc.value.code == "no_frontmatter"
+    assert "reviews/2026-W43.md" in exc.value.message and "삭제" in exc.value.message
+    assert (home / "reviews" / "2026-W43.md").read_text("utf-8") == "프런트매터 없음\n"

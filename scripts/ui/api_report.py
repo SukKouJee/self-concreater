@@ -20,9 +20,8 @@ from urllib.parse import quote
 
 from scripts import claude_cli, mission, motif, refstore, report
 from scripts.common import ScriptError, work_root, workspace_dir
-from scripts.ui.api_mission import _mark_saved
 from scripts.ui.api_refs import _body_parts
-from scripts.ui.jobs import Job, new_item
+from scripts.ui.jobs import Job, mark_saved, new_item
 from scripts.ui.server import Request, route
 
 KIND = "review"
@@ -197,7 +196,7 @@ def _save(req: Request) -> dict:
             saved = mission.review_save(week, tmp)
         finally:
             tmp.unlink(missing_ok=True)
-        _mark_saved(req, body.get("job_id"), KIND, week)
+        mark_saved(req.app, body.get("job_id"), KIND, week)
         return {**saved, "saved": _saved_view(week)}
 
 

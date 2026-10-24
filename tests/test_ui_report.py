@@ -372,3 +372,16 @@ def test_apply_recorded_false_when_review_frontmatter_is_broken(client, home):
     assert out["recorded"] is False and out["sections"] == ["강점"]
     assert out["profile"]["sections"]["강점"] == "- 편집"
     assert _review_file(home).read_text("utf-8") == "no frontmatter here\n"
+
+
+def test_shared_mark_saved_checks_kind_item_and_state(client):
+    from scripts.ui import jobs
+    job = _write(client)
+    app = client.app
+    jobs.mark_saved(app, 5, "review", WEEK)
+    jobs.mark_saved(app, "nope", "review", WEEK)
+    jobs.mark_saved(app, job["id"], "mission", WEEK)
+    jobs.mark_saved(app, job["id"], "review", "2026-W01")
+    assert app.jobs.get(job["id"]).item(0)["state"] == "awaiting"
+    jobs.mark_saved(app, job["id"], "review", WEEK)
+    assert app.jobs.get(job["id"]).item(0)["state"] == "saved"
