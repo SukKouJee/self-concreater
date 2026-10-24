@@ -50,7 +50,7 @@ let S = null;
 function freshState(el, ctx, category) {
   return {
     el, ctx, category, data: null, cards: [], job: null, jobId: null, preview: null, edits: [],
-    topic: "", filter: "all", starBusy: new Set(),
+    topic: "", filter: "all", starBusy: new Set(), pinned: new Set(), saveWarning: null,
     timer: null, pollErrors: 0, running: false, saving: false,
     runError: null, saveError: null, listError: null, confirmRerun: false, confirmDiscard: false,
     runSig: null, alertSig: null, nodes: {},
@@ -147,15 +147,36 @@ const hasEdits = () => !!S.preview && S.edits.some(isDirty);
 
 // ---- run + polling ------------------------------------------------------------
 
-function requestRerun() {
+// `from` is where the confirm appears: next to the button that was pressed ("run" box or "preview" actions).
+function requestRerun(from) {
   if (S.preview && hasEdits() && !S.confirmRerun) {
-    S.confirmRerun = true;
+    S.confirmRerun = from;
+    S.alertSig = null;
     renderRunBox();
-    const yes = S.nodes.run.querySelector("[data-rerun-yes]");
+    renderAlerts();
+    const box = from === "preview" ? S.nodes.alerts : S.nodes.run;
+    const yes = box && box.querySelector("[data-rerun-yes]");
     if (yes) yes.focus();
     return;
   }
   startRun();
+}
+
+function rerunConfirm(from) {
+  const yes = h("button", { type: "button", class: "btn btn-danger", "data-rerun-yes": "" }, "다시 뽑기");
+  const no = h("button", { type: "button", class: "btn" }, "취소");
+  yes.addEventListener("click", startRun);
+  no.addEventListener("click", () => {
+    S.confirmRerun = false;
+    S.alertSig = null;
+    renderRunBox();
+    renderAlerts();
+    const back = from === "preview" ? S.nodes.rerunBtn : S.nodes.run.querySelector("button");
+    if (back) back.focus();
+  });
+  return h("div", { class: "inline-confirm", role: "alert" },
+    h("p", { class: "warn-text" }, "지금 미리보기에서 고친 내용은 사라집니다. 저장한 카드는 그대로입니다."),
+    h("div", { class: "btn-row" }, yes, no));
 }
 
 async function startRun() {
@@ -167,7 +188,10 @@ async function startRun() {
   mine.alertSig = null;
   renderRunBox();
   try {
-    const res = await mine.ctx.api("POST", "/api/motif/run", { category: mine.category, topic: mine.topic.trim() || null });
+    const body = { category: mine.category };
+    const topic = mine.topic.trim();
+    if (topic) body.topic = topic;
+    const res = await mine.ctx.api("POST", "/api/motif/run", body);
     if (!alive(mine)) return;
     if (mine.jobId) markHandled(mine.jobId);
     mine.job = res.job;
@@ -264,9 +288,10 @@ async function save() {
   renderAlerts();
   try {
     const res = await mine.ctx.api("POST", "/api/motif/save", { category: mine.category, cards, star });
+    markHandled(mine.jobId);                    // before the alive check: a finished save is never restored as a preview
     if (!alive(mine)) return;
-    markHandled(mine.jobId);
     mine.ctx.toast(`카드 ${cards.length}장을 저장했습니다`, "info");
+    mine.saveWarning = res.warning ? String(res.warning) : null;
     mine.cards = res.cards || mine.cards;
     mine.preview = null;
     mine.edits = [];
@@ -312,6 +337,7 @@ async function toggleStar(card) {
   mine.starBusy.add(card.id);
   mine.listError = null;
   card.starred = target;
+  mine.pinned.add(card.id);                    // stays visible under the ★ filter until the request settles
   renderList(card.id);
   try {
     const res = await mine.ctx.api("POST", "/api/motif/star", { category: mine.category, id: card.id, on: target });
@@ -323,6 +349,7 @@ async function toggleStar(card) {
     mine.listError = `★ 표시를 바꾸지 못했습니다. ${e.message || ""}`.trim();
   } finally {
     mine.starBusy.delete(card.id);
+    mine.pinned.delete(card.id);
     if (alive(mine)) renderList(card.id);
   }
 }
@@ -330,7 +357,9 @@ async function toggleStar(card) {
 async function copyCommand(card) {
   const mine = S;
   const hint = (mine.data && mine.data.draft_hint) || "/yt-coach:yt-draft";
-  const text = `${hint} ${mine.category} ${card.id} "${String(card.title).replace(/"/g, "'")}"`;
+  const cat = /\s/.test(mine.category) ? `"${mine.category}"` : mine.category;
+  // Double quotes inside the title would break the quoted argument, so they become single quotes.
+  const text = `${hint} ${cat} ${card.id} "${String(card.title).replace(/"/g, "'")}"`;
   try {
     await navigator.clipboard.writeText(text);
     if (alive(mine)) mine.ctx.toast("기획안 명령을 복사했습니다", "info");
@@ -353,13 +382,12 @@ function render() {
     h("p", { class: "lead" }, `${d.stage}단계 · 만들 수 있는 카드: ${allowed}`),
   ];
   const notes = [];
-  if (!d.has_profile) notes.push("profile.md가 없어 내 취향을 반영하지 못합니다. 터미널에서 /yt-coach:yt-init 으로 만들 수 있어요");
-  if (!d.has_typify) {
-    notes.push(h("span", {}, "유형화 결과가 없어 흐름·조합 카드는 근거가 약할 수 있어요. ",
-      h("a", { href: "#/typify" }, "유형화 하러 가기")));
+  if (d.ref === 0) {
+    notes.push(h("span", {}, "먼저 레퍼런스를 넣어 주세요 ", h("a", { href: "#/add" }, "레퍼런스 추가로 가기")));
   }
-  if ((d.allowed_types || []).length < FILTER_ORDER.length) {
-    notes.push(`레퍼런스가 더 모이면 만들 수 있는 카드 종류가 늘어납니다 (지금 ref ${d.ref}개)`);
+  if (!d.has_profile) notes.push("프로필이 없어 카드가 일반적으로 나옵니다 — /yt-coach:yt-init 으로 만들 수 있어요");
+  if (d.stage === 3 && !d.has_typify) {
+    notes.push(h("span", {}, "유형화를 먼저 하면 흐름·조합 카드가 나옵니다 ", h("a", { href: "#/typify" }, "유형화 하러 가기")));
   }
   for (const n of notes) kids.push(h("p", { class: "muted hint" }, n));
   kids.push(h("p", { class: "muted small" }, CATALOG_HINT));
@@ -387,11 +415,7 @@ function renderRunBox() {
     item0 && item0.step, item0 && item0.message, job && job.message, !!S.preview]);
   if (sig === S.runSig && box.childNodes.length) return;
   S.runSig = sig;
-  if (d.ref === 0) {
-    fill(box, h("p", { class: "muted" }, "ref 영상이 없어 카드를 뽑을 수 없습니다. 레퍼런스를 먼저 넣어 주세요."),
-      h("a", { class: "btn btn-primary", href: "#/add" }, "레퍼런스 추가로 가기"));
-    return;
-  }
+  if (d.ref === 0) { fill(box); return; }
   const busy = S.running || active || S.saving;
   const topic = h("input", {
     id: "motif-topic", type: "text", maxlength: String(MAX_TOPIC), placeholder: "예: 편의점 라면", disabled: busy,
@@ -399,20 +423,12 @@ function renderRunBox() {
   topic.value = S.topic;
   topic.addEventListener("input", () => { S.topic = topic.value; });
   const btn = h("button", { type: "button", class: "btn btn-primary", disabled: busy }, "새 카드 뽑기");
-  btn.addEventListener("click", requestRerun);
+  btn.addEventListener("click", () => requestRerun("run"));
   const kids = [
     h("div", { class: "field" }, h("label", { for: "motif-topic" }, "주제(선택)"), topic),
     h("div", { class: "btn-row" }, btn, h("span", { class: "muted small" }, "Claude를 한 번 부릅니다(수십 초)")),
   ];
-  if (S.confirmRerun) {
-    const yes = h("button", { type: "button", class: "btn btn-danger", "data-rerun-yes": "" }, "다시 뽑기");
-    const no = h("button", { type: "button", class: "btn" }, "취소");
-    yes.addEventListener("click", startRun);
-    no.addEventListener("click", () => { S.confirmRerun = false; renderRunBox(); S.nodes.run.querySelector("button").focus(); });
-    kids.push(h("div", { class: "inline-confirm", role: "alert" },
-      h("p", { class: "warn-text" }, "지금 미리보기에서 고친 내용은 사라집니다. 저장한 카드는 그대로입니다."),
-      h("div", { class: "btn-row" }, yes, no)));
-  }
+  if (S.confirmRerun === "run") kids.push(rerunConfirm("run"));
   if (active) {
     const step = (item0 && STEP_TEXT[item0.step]) || "준비 중";
     kids.push(h("div", { class: "job-status", role: "status" },
@@ -460,7 +476,7 @@ function previewCard(card, i, titles) {
   const how = h("textarea", { rows: "4", "aria-label": `${n}번 카드 찍는 법 (한 줄에 한 단계)` });
   how.value = e.how;
   how.addEventListener("input", () => { e.how = how.value; });
-  const star = h("input", { type: "checkbox", checked: e.star });
+  const star = h("input", { type: "checkbox", checked: e.star, "aria-label": `${n}번 카드 저장하면서 ★` });
   star.addEventListener("change", () => { e.star = star.checked; });
   return h("article", { class: "card motif-card" },
     h("div", { class: "card-head" },
@@ -481,7 +497,7 @@ function previewView() {
   const rerunBtn = h("button", { type: "button", class: "btn" }, "다시 뽑기");
   const discardBtn = h("button", { type: "button", class: "btn" }, "버리기");
   saveBtn.addEventListener("click", save);
-  rerunBtn.addEventListener("click", requestRerun);
+  rerunBtn.addEventListener("click", () => requestRerun("preview"));
   discardBtn.addEventListener("click", askDiscard);
   S.nodes.saveBtn = saveBtn;
   S.nodes.rerunBtn = rerunBtn;
@@ -512,7 +528,7 @@ function updateActions() {
 function renderAlerts() {
   const box = S.nodes.alerts;
   if (!box || !S.preview) return;
-  const sig = JSON.stringify([S.saveError, S.confirmDiscard, S.saving]);
+  const sig = JSON.stringify([S.saveError, S.confirmDiscard, S.saving, S.confirmRerun === "preview"]);
   if (sig === S.alertSig) return;
   S.alertSig = sig;
   const kids = [];
@@ -525,6 +541,7 @@ function renderAlerts() {
       h("p", { class: "warn-text" }, "미리보기를 버립니다. 고친 내용은 사라집니다. 저장한 카드는 그대로입니다."),
       h("div", { class: "btn-row" }, yes, no)));
   }
+  if (S.confirmRerun === "preview") kids.push(rerunConfirm("preview"));
   if (S.saveError) kids.push(h("p", { class: "error", role: "alert" }, S.saveError));
   fill(box, ...kids);
 }
@@ -563,12 +580,13 @@ function savedCard(card) {
 
 function filterButtons(types) {
   const defs = [["all", "전체"]];
-  if (S.cards.some((c) => c.starred)) defs.push(["star", "★"]);
+  if (S.cards.some((c) => c.starred || S.pinned.has(c.id))) defs.push(["star", "★"]);
   for (const t of FILTER_ORDER) if (types.has(t)) defs.push([t, typeName(t)]);
   if (!defs.some(([k]) => k === S.filter)) S.filter = "all";
   const row = h("div", { class: "filter-row", role: "group", "aria-label": "카드 종류 거르기" });
   for (const [key, label] of defs) {
     const b = h("button", { type: "button", class: "btn filter-btn", "aria-pressed": String(S.filter === key) }, label);
+    if (key === "star") b.setAttribute("aria-label", "즐겨찾기만");
     b.addEventListener("click", () => { S.filter = key; renderList(); });
     row.append(b);
   }
@@ -581,17 +599,21 @@ function renderList(focusId) {
   if (!box) return;
   const types = new Set(S.cards.map((c) => c.type));
   const kids = [h("h2", { id: "motif-list-title" }, `저장한 카드 (${S.cards.length}장)`)];
+  S.nodes.listAlert = h("div", { class: "list-alert" });
+  kids.push(S.nodes.listAlert);
   if (!S.cards.length) {
     kids.push(h("p", { class: "muted" }, "아직 저장한 카드가 없습니다. 새 카드를 뽑아 보세요"));
   } else {
     kids.push(filterButtons(types));
-    const shown = S.cards.filter((c) => S.filter === "all" || (S.filter === "star" ? c.starred : c.type === S.filter));
-    S.nodes.listAlert = h("div", { class: "list-alert" });
-    kids.push(S.nodes.listAlert);
+    const shown = S.cards.filter((c) => S.filter === "all" || S.pinned.has(c.id)
+      || (S.filter === "star" ? c.starred : c.type === S.filter));
     kids.push(h("div", { class: "motif-grid" }, ...shown.map(savedCard)));
   }
   fill(box, ...kids);
-  if (S.listError && S.nodes.listAlert) fill(S.nodes.listAlert, h("p", { class: "error", role: "alert" }, S.listError));
+  const notes = [];
+  if (S.saveWarning) notes.push(h("p", { class: "warn-text", role: "alert" }, S.saveWarning));
+  if (S.listError) notes.push(h("p", { class: "error", role: "alert" }, S.listError));
+  if (notes.length) fill(S.nodes.listAlert, ...notes);
   if (focusId) {
     const btn = box.querySelector(`[data-star-id="${CSS.escape(focusId)}"]`);
     if (btn) btn.focus({ preventScroll: true });

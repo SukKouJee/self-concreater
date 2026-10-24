@@ -288,7 +288,9 @@ def test_motif_page_contract_and_safety():
     for token in ["export async function mount", "export function unmount", "export function onCategory",
                   "isCurrent()", "ctx.api(", "/api/motif", "/api/motif/run", "/api/motif/save", "/api/motif/star",
                   "kind=motif", "새 카드 뽑기", "선택한 카드 저장", "저장하면서 ★", "기획안 명령 복사",
-                  "/yt-coach:yt-draft", "yt-inspire", "#/typify", "#/refs/"]:
+                  "/yt-coach:yt-draft", "yt-inspire", "#/typify", "#/add", "#/refs/",
+                  "프로필이 없어 카드가 일반적으로 나옵니다", "유형화를 먼저 하면 흐름·조합 카드가 나옵니다",
+                  "먼저 레퍼런스를 넣어 주세요", "즐겨찾기만", "res.warning"]:
         assert token in js, token
     for bad in ["innerHTML", "insertAdjacentHTML", "outerHTML"]:
         assert bad not in js, bad

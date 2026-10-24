@@ -450,7 +450,7 @@ code { background: var(--grid); padding: 1px 6px; border-radius: 4px; }
 .motif-body { margin-top: var(--sp-4); }
 .motif-run { margin-top: var(--sp-4); display: flex; flex-direction: column; gap: var(--sp-2); }
 .motif-run .field { max-width: 420px; }
-.motif-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: var(--sp-4); }
+.motif-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); gap: var(--sp-4); }
 .motif-grid > .card { margin: 0; display: flex; flex-direction: column; gap: var(--sp-2); min-width: 0; }
 .motif-card .card-head { margin-bottom: 0; align-items: center; }
 .motif-card h3 { margin: 0; font-size: 16px; overflow-wrap: anywhere; }
