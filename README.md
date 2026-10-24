@@ -25,6 +25,7 @@
 | `/yt-mission [today\|submit <file>\|skip\|swap]` | 하루 15~30분 미션, 제출 피드백·난이도 기록, 난이도에 따라 크기 조정 | ✅ |
 | `/yt-review [YYYY-Www]` | 주간 회고 → `reviews/`, 카테고리 HTML 리포트 링크, 승인 시 profile 갱신 | ✅ |
 | `/yt-ui [stop]` | 작업 폴더를 브라우저 화면(로컬 전용)으로 연다. Claude Code를 닫아도 화면은 남고, `stop`으로 끈다 | ✅ |
+| `/yt-library [connect <주소>\|pull\|search <검색어>\|share technique <cat> <종류> <이름>\|share draft <파일>]` | 지인과 쓰는 비공개 git 저장소(`workspace/library/`)에서 훅 기법·기획안 틀을 받고 찾고, 확인 뒤에만 올린다(대본 원문·내 메모·준비물 제외, force push 없음) | ✅ |
 
 ## 로컬 UI
 
@@ -167,6 +168,7 @@ ytc captions setup      # remotion/에서 npm ci
 | `report` | `<cat> [--date]` → `reports/<cat>-<date>.html` (축별 판정·아키타입 비교·컷 길이 분포·진단 추이, 외부 자원 없는 한 파일) |
 | `stt` | `<video_id> [--force]` — 자막 없는 영상 음성 인식 (선택: `pip install faster-whisper`, 모델 `YT_STT_MODEL`, 기본 small). CPU에서 1분 쇼츠 약 30초(첫 실행은 모델 다운로드 ~460MB). 말이 없으면 `speech: false`, 빈 자막으로 기록돼 `sparse` 처리 |
 | `status` | `[category]` — 카테고리별 진행 단계(레퍼런스 수·유형화·기획안·콘티·진단), 다음 할 일, 최근 결과물, 오늘 미션. 화면 홈과 같은 JSON |
+| `library` | `connect <주소> --author <이름>`, `status`, `pull`, `search [검색어] [--category --kind --author --worked]`, `get <id>`, `techniques <cat>`, `preview technique <cat> <종류> <이름>`, `preview draft <파일>`, `summarize <preview_id>`, `confirm <preview_id> [--note --worked --edits <json> --force-new]` (공용 라이브러리 git 저장소 받기·찾기·올리기. git 프롬프트 없음·60초 제한·URL 자격 증명 가림, 미리보기는 `workspace/tmp/library_preview_<id>.json` 30분. 오류: `library_auth`, `library_remote`, `library_network`, `duplicate`, `rebase_conflict`, `preview_expired` 등) |
 | `claude_cli` | (라이브러리) 화면이 `claude -p`를 부르는 실행기. 구조화 JSON 출력, 도구 최소 허용(기본 없음, 프레임을 볼 때만 `Read`), 세션 미저장 |
 | `ui` | `[--port N] [--no-open] [--detach] [--stop]` — 로컬 전용 화면 서버(127.0.0.1, 주소의 key로만 접근). 작업 폴더당 하나(`workspace/ui.lock`), 이미 떠 있으면 그 주소를 돌려줌. `--detach`는 분리 프로세스(로그 `workspace/ui.log`) |
 

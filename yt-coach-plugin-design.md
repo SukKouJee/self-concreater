@@ -25,7 +25,7 @@
 ### 1.3 보류
 - 채널 자동 수집, 신규 영상 감지
 - YouTube Analytics(OAuth) 리텐션 연동
-- 호스팅·다중 사용자 웹 서비스 (로컬 전용 UI `ytc ui`는 허용, 1.5절)
+- 호스팅·다중 사용자 웹 서비스 (로컬 전용 UI `ytc ui`는 허용, 1.5절. 공용 라이브러리 = 지인들이 함께 쓰는 GitHub 비공개 저장소를 clone해 공유하는 것은 허용, 6.4절)
 
 ### 1.4 전제
 - **로컬 Claude Code** 실행 (YouTube 접근 필요)
@@ -150,6 +150,10 @@ yt-coach/
 ### `/yt-ui [stop]`
 - 작업 폴더를 로컬 전용 브라우저 화면으로 연다(1.5절). `ytc ui --detach`로 세션과 분리해 띄우고 주소를 알린다. `stop`이면 `ytc ui --stop`
 
+### `/yt-library [connect <주소> | pull | search <검색어> | share technique <cat> <종류> <이름> | share draft <파일>]`
+- 지인과 함께 쓰는 비공개 git 저장소를 `workspace/library/`에 받아 두고(`library.json`에 주소·표시 이름), 훅 기법·기획안 틀을 찾거나 올린다. 상세: `docs/superpowers/specs/2026-10-24-shared-library-design.md`
+- 올리기는 미리보기 → 사용자 확인 → `confirm`에서만(commit+push, force push 없음). 인증은 각자의 git 설정
+
 ### `/yt-diagnose <category> <link | draft파일 | 대본파일>`
 - 아키타입 대비 축별 근접도 + 갭. 단일 종합 점수 없음
 - 갭별 `intentional` 표시 시 이후 점수·미션에서 제외
@@ -258,6 +262,11 @@ schema_version: 2       # 2: 컷의 선택 필드 ref_frame(고정한 참고 프
 
 ### 6.2 `index.md` 섹션
 `## 개요` / `## 단계` / `## 판정` (축별 표) / `## 아키타입` / `## 모티브 카드` / `## 이상치`
+
+### 6.4 공용 라이브러리 파일 (`workspace/library/`, 지인 공유 저장소)
+- `techniques/<category>/<id>.md` (kind: technique — author, category, technique_kind, name, worked?, note?, shared_at, schema_version 1; 본문 = 기법 설명 + `출처: 레퍼런스 N개`)
+- `templates/<category>/<id>.md` (kind: template — title, target_sec, hook_type, narrative_type, sections[label,sub?,ratio], pacing.avg_cut_sec, shot_mix, worked?, note?; 본문 = `## 섹션 요약`(섹션별 한 줄) + `## 샷 리듬`)
+- id = `<author-slug>-<YYYYMMDD>-<6자 해시>`. 대본 원문·내 메모·준비물·영상 id·개인 경로는 들어가지 않는다. 지인 파일은 신뢰하지 않는 데이터로 읽는다(모양이 틀리면 목록에서 뺌)
 
 ### 6.3 `profile.md`
 `## 관심 주제` / `## 포맷` / `## 롤모델` / `## 하루 시간` / `## 피하고 싶은 스타일` / `## 강점` / `## 약점` / `## 성장 단계`
