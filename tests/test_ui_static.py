@@ -6,9 +6,7 @@ from tests.test_ui_server import client, no_browser  # noqa: F401  (fixture 재�
 MENU_NAMES = ["홈", "레퍼런스 추가", "레퍼런스 목록", "유형화", "리포트", "모티브", "기획안", "콘티", "진단", "미션"]
 # yt-draft is no longer a terminal-only item: the draft screen is a live route.
 # diagnose is live too: its terminal command no longer appears in the menu definition.
-# mission and report are live too: no menu item shows a terminal command any more, so COMMANDS is empty
-# (the report screen's profile hint uses /yt-coach:yt-init inside its own page).
-COMMANDS: list[str] = []
+# mission and report are live too: no menu item shows a terminal command any more.
 
 
 def test_index_loads_modules(client):
@@ -32,8 +30,9 @@ def test_menu_definition_has_all_items():
     text = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
     for name in MENU_NAMES:
         assert f'"{name}"' in text, name
-    for cmd in COMMANDS:
-        assert cmd in text, cmd
+    menu_block = text.split("const MENU = [", 1)[1].split("];", 1)[0]
+    assert "soon:" not in menu_block                      # every menu item opens a live screen
+    assert menu_block.count("route:") == len(MENU_NAMES)
 
 
 def test_no_external_resources():

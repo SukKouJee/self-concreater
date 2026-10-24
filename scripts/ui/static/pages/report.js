@@ -120,6 +120,11 @@ function applyTab() {
   mine.nodes.reviewPanel.hidden = mine.tab !== "review";
 }
 
+function syncHash() {
+  if (S.tab !== "review" || !S.V.week) return;
+  try { history.replaceState(null, "", tabHash("review", S.V.week)); } catch { /* ignore */ }
+}
+
 function selectTab(key, focus) {
   if (S.tab === key) { if (focus) focusNode(S.nodes.tabs.find((t) => t.dataset.tab === key)); return; }
   S.tab = key;
@@ -240,10 +245,14 @@ function reportList(R) {
 function reportViewer(category, r) {
   const url = typeof r.url === "string" && r.url.startsWith("/files/") ? r.url : null;
   if (!url) return h("p", { class: "error", role: "alert" }, "리포트 주소가 올바르지 않습니다");
+  const cached = S.R.viewer;
+  if (cached && cached.key === `${category}|${url}`) return cached.node;   // keep the frame: no reload or scroll loss
   const frame = h("iframe", { class: "rp-frame", sandbox: "", src: url, title: `${category} ${r.date} 리포트`, loading: "lazy" });
-  return h("section", { class: "rp-viewer", "aria-label": `${r.date} 리포트` },
+  const node = h("section", { class: "rp-viewer", "aria-label": `${r.date} 리포트` },
     h("div", { class: "btn-row" }, h("a", { class: "btn", href: url, target: "_blank", rel: "noopener noreferrer" }, "새 탭에서 열기")),
     frame);
+  S.R.viewer = { key: `${category}|${url}`, node };
+  return node;
 }
 
 export function onCategory() {
@@ -268,6 +277,7 @@ async function loadReviewTab() {
     V.weeks = weeks.weeks || [];
     V.current = weeks.current;
     if (!V.week) V.week = weeks.current;
+    syncHash();
   } catch (e) {
     if (!alive(mine) || ignorable(e)) return;
     V.loading = false;
@@ -312,6 +322,7 @@ async function loadWeek() {
     V.loading = false;
     if (e.error === "bad_request" && V.current && week !== V.current) {
       V.week = V.current;
+      syncHash();
       loadWeek();
       return;
     }
@@ -595,6 +606,7 @@ function weekPicker() {
   sel.addEventListener("change", () => {
     if (locked()) return;
     V.week = sel.value;
+    V.recorded = true;
     V.runError = null;
     V.saveError = null;
     V.applyError = null;
@@ -799,7 +811,7 @@ function profileArea(saved, data) {
     h("p", { class: "muted small" }, "체크한 항목만 profile.md에 반영합니다. 눌러야 바뀝니다"),
     h("ul", { class: "rv-apply-list" }, ...rows),
     h("div", { class: "btn-row" }, go),
-    h("p", { class: "muted small", role: "status", "data-rv-apply-status": "", tabindex: "-1" }, V.recorded ? "" : "회고를 저장하면 반영 기록이 남습니다"),
+    h("p", { class: "muted small", role: "status", "data-rv-apply-status": "", tabindex: "-1" }, V.recorded ? "" : "프로필은 바꿨지만 회고 파일 프런트매터를 읽지 못해 반영 기록을 남기지 못했습니다"),
     errorNode(V.applyError, { "data-rv-apply-error": "" }));
 }
 

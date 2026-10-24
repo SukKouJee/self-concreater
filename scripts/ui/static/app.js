@@ -11,7 +11,7 @@ import { h } from "/static/dom.js";
 
 const CATEGORY_KEY = "ytc.category";
 
-// Menu definition. `soon` items are 2차: a placeholder page that shows the terminal command.
+// Menu definition. No item uses `soon` now; the `soon` mechanism and #/soon/<key> placeholder page are kept but unused.
 const MENU = [
   { group: null, items: [{ name: "홈", route: "#/home" }] },
   {
