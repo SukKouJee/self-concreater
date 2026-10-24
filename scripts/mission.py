@@ -296,29 +296,89 @@ def week(week_id: str | None = None) -> dict:
     }
 
 
+MEMO_HEADING = "## 내 메모"
+
+
+def _bad_review(message: str) -> ScriptError:
+    return ScriptError("invalid_review", message)
+
+
+def _line_list(value: Any, name: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise _bad_review(f"{name}가 목록이 아닙니다")
+    items = []
+    for item in value:
+        if isinstance(item, (list, dict)):
+            raise _bad_review(f"{name}의 항목은 문자열이어야 합니다")
+        if _line(item):
+            items.append(_line(item))
+    return items
+
+
+def validate_review(data: Any) -> dict:
+    """회고 JSON을 검증하고 정리한 사본을 돌려준다. 문제가 있으면 invalid_review."""
+    if not isinstance(data, dict):
+        raise _bad_review("JSON 객체가 아닙니다")
+    summary = data.get("summary")
+    if summary is not None and not isinstance(summary, str):
+        raise _bad_review("summary가 문자열이 아닙니다")
+    if not (summary or "").strip():
+        raise _bad_review("summary가 비어 있습니다")
+    proposal = data.get("profile_proposal")
+    if proposal is None:
+        proposal = {}
+    if not isinstance(proposal, dict):
+        raise _bad_review("profile_proposal이 객체가 아닙니다")
+    cleaned: dict[str, str] = {}
+    for key, value in proposal.items():
+        if key not in PROFILE_SECTIONS:
+            raise _bad_review(f"프로필에 없는 섹션입니다: {key}")
+        if not isinstance(value, str):
+            raise _bad_review(f"profile_proposal의 {key} 값이 문자열이 아닙니다")
+        if key == "성장 단계" and value.strip() not in STAGES:
+            raise _bad_review(f"성장 단계는 {', '.join(STAGES)} 중 하나입니다")
+        if value.strip():
+            cleaned[key] = value.strip()
+    return {"summary": (summary or "").strip(), "repeated_weakness": _line_list(data.get("repeated_weakness"), "repeated_weakness"),
+            "next_week": _line_list(data.get("next_week"), "next_week"), "profile_proposal": cleaned}
+
+
+def _memo_tail(body: str) -> str | None:
+    """기존 회고 본문에서 `## 내 메모` 줄부터 끝까지(LF 기준). 없으면 None."""
+    lines = body.replace("\r\n", "\n").split("\n")
+    start = next((i for i, line in enumerate(lines) if line.rstrip() == MEMO_HEADING), None)
+    return None if start is None else "\n".join(lines[start:])
+
+
 def review_save(week_id: str, review_path: Path) -> dict:
-    data = _load_json(review_path, "invalid_review")
-    if not str(data.get("summary") or "").strip():
-        raise ScriptError("invalid_review", "summary가 비어 있습니다")
+    data = validate_review(_load_json(review_path, "invalid_review"))
     stats = week(week_id)
     path = work_root() / "reviews" / f"{stats['week']}.md"
-    fm = {"week": stats["week"], "range": stats["range"], "missions": stats["missions"],
-          "difficulty": stats["difficulty"], "proposal": data.get("profile_proposal") or {},
-          "approved": False, "schema_version": 1}
-    proposal = data.get("profile_proposal") or {}
-    weakness = [f"- {w}" for w in data.get("repeated_weakness") or []] or ["- 없음"]
-    proposal_lines = [f"- {k}: {v}" for k, v in proposal.items()] or ["- 없음"]
+    old_fm: dict = {}
+    nl, memo = "\n", f"{MEMO_HEADING}\n"
+    if path.exists():
+        text = path.read_bytes().decode("utf-8-sig")
+        old_fm, old_body = refstore.split_frontmatter(text)
+        nl = "\r\n" if "\r\n" in text else "\n"
+        memo = _memo_tail(old_body) or memo                  # 사용자의 메모(와 그 뒤 내용)는 그대로 옮긴다
+    proposal = data["profile_proposal"]
+    fm = {**old_fm, "week": stats["week"], "range": stats["range"], "missions": stats["missions"],
+          "difficulty": stats["difficulty"], "proposal": proposal, "approved": False, "schema_version": 1}
+    weakness = [f"- {w}" for w in data["repeated_weakness"]] or ["- 없음"]
+    proposal_lines = [f"- {k}: {refstore.escape_headings(v)}" for k, v in proposal.items()] or ["- 없음"]
     lines = [f"# {stats['week']} 주간 회고 ({stats['range'][0]} ~ {stats['range'][1]})", "",
-             "## 요약", data["summary"].strip(), "",
+             "## 요약", refstore.escape_headings(data["summary"]), "",
              "## 숫자", f"- 미션 {stats['missions']['total']}개 중 제출 {stats['missions']['submitted']} · "
              f"건너뜀 {stats['missions']['skipped']} (완료율 {round(stats['missions']['completion'] * 100)}%)",
              f"- 새 모티브 카드 {stats['cards_created']}장", "",
              "## 반복된 약점", *weakness, "",
-             "## 다음 주 방향", *[f"- {n}" for n in data.get("next_week") or []], "",
-             "## 프로필 변경 제안", *proposal_lines, "",
-             "## 내 메모", ""]
+             "## 다음 주 방향", *[f"- {n}" for n in data["next_week"]], "",
+             "## 프로필 변경 제안", *proposal_lines, ""]
+    body = ("\n".join(lines) + "\n" + memo).replace("\n", nl)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(refstore.join_frontmatter(fm, "\n".join(lines)).encode("utf-8"))
+    refstore.write_atomic(path, refstore.join_frontmatter(fm, body, nl).encode("utf-8"))
     Path(review_path).unlink(missing_ok=True)
     return {"status": "saved", "path": path.relative_to(work_root()).as_posix()}
 
@@ -333,12 +393,15 @@ def profile_update(updates_path: Path, date: str | None = None) -> dict:
     path = work_root() / "profile.md"
     if not path.exists():
         raise ScriptError("no_profile", "profile.md가 없습니다. 먼저 /yt-init")
-    fm, body = refstore.read_md(path)
+    text = path.read_bytes().decode("utf-8-sig")
+    nl = "\r\n" if "\r\n" in text else "\n"
+    fm, body = refstore.split_frontmatter(text)
     body = body.replace("\r\n", "\n")
-    for section, text in updates.items():
-        body = refstore.replace_section(body, f"## {section}", str(text).strip())
+    for section, value in updates.items():
+        # 값 안의 '## ' 줄이 섹션 구조를 깨지 않도록 막는다
+        body = refstore.replace_section(body, f"## {section}", refstore.escape_headings(str(value).strip()))
     fm["updated"] = _today(date)
-    path.write_bytes(refstore.join_frontmatter(fm, body).encode("utf-8"))
+    refstore.write_atomic(path, refstore.join_frontmatter(fm, body.replace("\n", nl), nl).encode("utf-8"))
     Path(updates_path).unlink(missing_ok=True)
     review_dir = work_root() / "reviews"
     return {"status": "updated", "sections": list(updates), "updated": fm["updated"],

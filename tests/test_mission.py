@@ -359,3 +359,140 @@ def test_submit_folds_file_name_and_clears_skip_reason(home):
     fm, _ = refstore.read_md(home / "missions" / "2026-10-20.md")
     assert fm["skip_reason"] is None and fm["status"] == "submitted"
     assert "- 파일: a b.png" in _submission(home, "2026-10-20")
+
+
+# --- 회고 검증·메모 보존 (report-ui) -----------------------------------------------------
+
+REVIEW = {"summary": "촬영 미션은 꾸준했다.", "repeated_weakness": ["손이 화면 밖으로 나감"],
+          "next_week": ["탑뷰 고정 촬영 3번"], "profile_proposal": {"약점": "- 프레이밍", "성장 단계": "모방"}}
+
+
+def test_validate_review_keeps_empty_summary_message():
+    for bad in ({}, {"summary": "   "}, {"summary": None}):
+        with pytest.raises(ScriptError) as exc:
+            mission.validate_review(bad)
+        assert (exc.value.code, exc.value.message) == ("invalid_review", "summary가 비어 있습니다")
+
+
+def test_review_save_empty_summary_message_is_stable(home):
+    with pytest.raises(ScriptError) as exc:
+        mission.review_save("2026-W43", _json(home, "r.json", {"summary": " "}))
+    assert (exc.value.code, exc.value.message) == ("invalid_review", "summary가 비어 있습니다")
+    assert not (home / "reviews").exists()
+
+
+def test_validate_review_cleans_and_defaults():
+    out = mission.validate_review({"summary": "  요약  ", "repeated_weakness": [" 손 \n 위치 ", "", None],
+                                   "next_week": None, "profile_proposal": None})
+    assert out == {"summary": "요약", "repeated_weakness": ["손 위치"], "next_week": [], "profile_proposal": {}}
+
+
+@pytest.mark.parametrize("patch", [
+    {"repeated_weakness": "약점 하나"}, {"next_week": {"a": 1}}, {"repeated_weakness": [["x"]]},
+    {"profile_proposal": ["약점"]}, {"profile_proposal": {"취미": "x"}}, {"profile_proposal": {"약점": 3}},
+    {"profile_proposal": {"성장 단계": "고수"}}, {"summary": ["a"]},
+])
+def test_validate_review_rejects_bad_shapes(patch):
+    with pytest.raises(ScriptError) as exc:
+        mission.validate_review({**REVIEW, **patch})
+    assert exc.value.code == "invalid_review"
+
+
+def test_validate_review_rejects_non_dict():
+    with pytest.raises(ScriptError) as exc:
+        mission.validate_review(["summary"])
+    assert exc.value.code == "invalid_review"
+
+
+def test_review_save_rejects_bad_shape(home):
+    with pytest.raises(ScriptError) as exc:
+        mission.review_save("2026-W43", _json(home, "r.json", {**REVIEW, "profile_proposal": {"취미": "x"}}))
+    assert exc.value.code == "invalid_review"
+    assert not (home / "reviews" / "2026-W43.md").exists()
+
+
+def test_review_save_keeps_memo_on_resave(home):
+    mission.review_save("2026-W43", _json(home, "r.json", REVIEW))
+    path = home / "reviews" / "2026-W43.md"
+    path.write_bytes(path.read_bytes() + "이번 주는 너무 바빴다.\n\n## 직접 추가한 절\n내용\n".encode("utf-8"))
+    mission.review_save("2026-W43", _json(home, "r2.json", {**REVIEW, "summary": "새 요약"}))
+    fm, body = refstore.read_md(path)
+    assert "새 요약" in body and "촬영 미션은 꾸준했다" not in body
+    assert body.count("## 내 메모") == 1
+    assert "이번 주는 너무 바빴다." in body and "## 직접 추가한 절\n내용" in body.replace("\r\n", "\n")
+    assert fm["approved"] is False and fm["week"] == "2026-W43"
+
+
+def test_review_save_resets_approved_and_keeps_user_keys(home):
+    mission.review_save("2026-W43", _json(home, "r.json", REVIEW))
+    path = home / "reviews" / "2026-W43.md"
+    refstore.update_frontmatter(path, {"approved": ["약점"], "tag": "mine"})
+    mission.review_save("2026-W43", _json(home, "r2.json", REVIEW))
+    fm, _ = refstore.read_md(path)
+    assert fm["approved"] is False and fm["tag"] == "mine"
+
+
+def test_review_save_keeps_crlf(home):
+    mission.review_save("2026-W43", _json(home, "r.json", REVIEW))
+    path = home / "reviews" / "2026-W43.md"
+    text = path.read_bytes().decode("utf-8").replace("\r\n", "\n").replace("\n", "\r\n")
+    path.write_bytes((text + "메모 한 줄\r\n").encode("utf-8"))
+    mission.review_save("2026-W43", _json(home, "r2.json", {**REVIEW, "summary": "다시"}))
+    raw = path.read_bytes()
+    assert raw.count(b"\n") == raw.count(b"\r\n") > 5
+    assert "메모 한 줄" in raw.decode("utf-8")
+
+
+def test_review_save_writes_atomically_and_escapes_headings(home, monkeypatch):
+    calls = []
+    real = refstore.write_atomic
+    monkeypatch.setattr(refstore, "write_atomic", lambda p, d: (calls.append(p.name), real(p, d))[1])
+    mission.review_save("2026-W43", _json(home, "r.json", {**REVIEW, "summary": "요약\n## 내 메모\n가짜"}))
+    assert calls == ["2026-W43.md"]
+    _, body = refstore.read_md(home / "reviews" / "2026-W43.md")
+    assert body.count("\n## 내 메모") == 1
+
+
+def _crlf_profile(home):
+    (home / "profile.md").write_bytes(PROFILE.replace("\r\n", "\n").replace("\n", "\r\n").encode("utf-8"))
+
+
+def test_profile_update_escapes_heading_lines(home):
+    mission.profile_update(_json(home, "p.json", {"약점": "- 손 위치\n## 강점\n가짜"}), date="2026-10-26")
+    _, body = refstore.read_md(home / "profile.md")
+    body = body.replace("\r\n", "\n")
+    escaped = "\\" + "## 강점"
+    assert body.count("\n## 강점") == 1 and escaped in body
+    assert body.index("## 약점") < body.index(escaped) < body.index("## 성장 단계")
+
+
+def test_profile_update_keeps_crlf_and_untouched_sections(home):
+    _crlf_profile(home)
+    mission.profile_update(_json(home, "p.json", {"약점": "- 프레이밍"}), date="2026-10-26")
+    raw = (home / "profile.md").read_bytes()
+    assert raw.count(b"\n") == raw.count(b"\r\n") > 5
+    _, body = refstore.read_md(home / "profile.md")
+    assert "- 얼굴 출연" in body and "- 프레이밍" in body and "## 성장 단계\r\n관찰" in body
+
+
+def test_profile_update_lf_stays_lf_and_writes_atomically(home, monkeypatch):
+    (home / "profile.md").write_bytes(PROFILE.replace("\r\n", "\n").encode("utf-8"))
+    calls = []
+    real = refstore.write_atomic
+    monkeypatch.setattr(refstore, "write_atomic", lambda p, d: (calls.append(p.name), real(p, d))[1])
+    mission.profile_update(_json(home, "p.json", {"강점": "- 편집"}), date="2026-10-26")
+    assert calls == ["profile.md"] and b"\r\n" not in (home / "profile.md").read_bytes()
+
+
+def test_profile_update_partial_sections_only_and_memo_untouched(home):
+    memo = PROFILE.rstrip("\n") + "\n\n## 내 메모\n건드리지 마\n"
+    (home / "profile.md").write_bytes(memo.replace("\r\n", "\n").encode("utf-8"))
+    mission.profile_update(_json(home, "p.json", {"성장 단계": "모방"}), date="2026-10-26")
+    _, body = refstore.read_md(home / "profile.md")
+    assert "## 성장 단계\n모방" in body and "- 자취 요리" in body and body.endswith("## 내 메모\n건드리지 마\n")
+
+
+def test_profile_update_cannot_target_memo_section(home):
+    with pytest.raises(ScriptError) as exc:
+        mission.profile_update(_json(home, "p.json", {"내 메모": "x"}), date="2026-10-26")
+    assert exc.value.code == "invalid_profile_update"
