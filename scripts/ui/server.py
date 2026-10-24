@@ -13,7 +13,7 @@
   대한 `re.fullmatch` 정규식이고, 이름 붙은 그룹은 URL 디코딩되어 키워드 인자로 넘어간다.
 - 핸들러: `handler(req: Request, **groups) -> dict | tuple[int, dict] | Response`.
   `ScriptError` → 400 `{"error", "message", **details}`, 그 밖의 예외 → 500 `{"error": "internal", "message"}`.
-- 라우트 모듈(예: `scripts.ui.api_add`, `scripts.ui.api_conti`)은 `ROUTE_MODULES`에 이름을 더한다.
+- 라우트 모듈(예: `scripts.ui.api_add`, `scripts.ui.api_conti`, `scripts.ui.api_refs`)은 `ROUTE_MODULES`에 이름을 더한다.
   `make_app()`이 `register_routes()`로 그 모듈들을 import하고, import 때 데코레이터가 같은 `ROUTES`에 등록한다.
   (라우트 모듈은 `from scripts.ui.server import route`만 하면 되고, 순환 import가 생기지 않는다.)
 - `App.jobs`는 `make_app()`이 붙이는 `jobs.JobManager`다. `/api/shutdown`은 진행 중인 작업을 먼저 멈춘다.
@@ -51,7 +51,7 @@ MAX_BODY = 10 * 1024 * 1024
 PING_TIMEOUT = 1.0
 
 # 라우트 모듈: Task 5/6이 여기에 이름을 더한다(예: "scripts.ui.api_add").
-ROUTE_MODULES: list[str] = ["scripts.ui.api_add", "scripts.ui.api_conti"]
+ROUTE_MODULES: list[str] = ["scripts.ui.api_add", "scripts.ui.api_conti", "scripts.ui.api_refs"]
 
 BAD_TOKEN = {"error": "bad_token", "message": "주소의 key가 맞지 않습니다. 터미널에 나온 새 주소로 여세요"}
 
@@ -348,7 +348,12 @@ class _Handler(BaseHTTPRequestHandler):
             resp = result
         else:
             code, payload = result if isinstance(result, tuple) else (200, result)
-            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            try:
+                body = json.dumps(payload, ensure_ascii=False, allow_nan=False, default=str).encode("utf-8")
+            except (ValueError, TypeError) as e:
+                code = 500
+                body = json.dumps({"error": "internal", "message": f"응답을 만들지 못했습니다: {type(e).__name__}"},
+                                  ensure_ascii=False).encode("utf-8")
             resp = Response(code, body, "application/json; charset=utf-8")
         self.send_response(resp.status)
         self.send_header("Content-Type", resp.content_type)

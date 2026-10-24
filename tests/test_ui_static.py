@@ -153,3 +153,46 @@ def test_text_on_danger_and_ok_meets_contrast_in_both_schemes():
         rule = re.search(rf"^{re.escape(selector)}\s*\{{([^}}]*)\}}", css, re.M).group(1)
         assert "color: var(--on-danger)" in rule, selector
     assert "color: var(--on-ok)" in re.search(r"\.step-done \.step-dot\s*\{([^}]*)\}", css).group(1)
+
+
+def test_refs_menu_is_live_route():
+    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert 'route: "#/refs"' in app
+    assert 'soon: "list"' not in app
+    assert 'case "refs"' in app
+
+
+def test_refs_page_contract_and_safety():
+    js = (STATIC_DIR / "pages" / "refs.js").read_text(encoding="utf-8")
+    # "signal" is not asserted: ctx.api (bound per page in app.js) already carries ctx.signal, so using it is the contract.
+    for token in ["export async function mount", "export function unmount", "export function onCategory",
+                  "isCurrent()", "ctx.api(", "/api/refs", "레퍼런스 추가로 가기", "경로 복사",
+                  "최근 추가순", "길이순", "제목순", "noopener", "lb-"]:
+        assert token in js, token
+    for bad in ["innerHTML", "insertAdjacentHTML", "outerHTML"]:
+        assert bad not in js, bad
+
+
+def test_refs_page_served(client):
+    status, headers, raw = client.call("GET", "/static/pages/refs.js")
+    assert status == 200
+    assert "javascript" in headers["Content-Type"]
+    assert "/api/refs" in raw.decode("utf-8")
+
+
+def test_refs_card_focus_ring_is_not_clipped():
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    rule = re.search(r"\.ref-card:focus-within\s*\{([^}]*)\}", css)
+    assert rule and "box-shadow" in rule.group(1)
+    link = re.search(r"\.ref-link:focus-visible\s*\{([^}]*)\}", css)
+    assert link and "box-shadow: none" in link.group(1) and "outline-offset" in link.group(1)
+    js = (STATIC_DIR / "pages" / "refs.js").read_text(encoding="utf-8")
+    assert 'role: "list"' in js and "COUNT_DEBOUNCE_MS" in js and "marginLeft" in js
+
+
+def test_refs_page_review_fixes():
+    js = (STATIC_DIR / "pages" / "refs.js").read_text(encoding="utf-8")
+    assert "String(v.title || v.id)" in js                      # numeric titles must not break localeCompare
+    assert "String(role)" in js                                 # unknown role shown as-is
+    assert js.count("sortByStart((") == 2                      # band + detail section list
+    assert "params.id" in js.split("function loadError")[1].split("// ---- list")[0]   # back link only in detail

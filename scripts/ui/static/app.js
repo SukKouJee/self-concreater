@@ -18,10 +18,7 @@ const MENU = [
     group: "모으기",
     items: [
       { name: "레퍼런스 추가", route: "#/add" },
-      {
-        name: "레퍼런스 목록", soon: "list", command: "/yt-coach:yt-add",
-        note: "/yt-coach:yt-add로 추가한 영상은 refs/ref_<카테고리>/videos/에 있습니다.",
-      },
+      { name: "레퍼런스 목록", route: "#/refs" },
     ],
   },
   {
@@ -142,7 +139,9 @@ function markActive() {
   const hash = location.hash || "#/home";
   for (const a of $("menu").querySelectorAll("a.menu-link")) {
     const href = a.dataset.href;
-    const active = hash === href || (href === "#/conti" && hash.startsWith("#/conti/"));
+    const active = hash === href
+      || (href === "#/conti" && hash.startsWith("#/conti/"))
+      || (href === "#/refs" && hash.startsWith("#/refs/"));
     if (active) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
   }
@@ -255,6 +254,10 @@ function parseHash() {
       if (tail) { try { path = decodeURIComponent(tail); } catch { path = null; } }
       return { page: "conti", params: { path } };
     }
+    case "refs": {
+      if (!tail) return { page: "refs", params: {} };
+      try { return { page: "refs", params: { id: decodeURIComponent(tail) } }; } catch { return null; }
+    }
     case "soon": {
       const it = SOON[tail];
       if (it) return { page: "placeholder", params: { title: it.name, command: it.command, note: it.note } };
@@ -277,7 +280,8 @@ async function route() {
   state.currentPage = null;
   setDrawer(false);
   markActive();
-  const { page, params } = parseHash();
+  // A malformed #/refs/<id> (undecodable) parses to null: show the list instead.
+  const { page, params } = parseHash() || { page: "refs", params: {} };
   main.replaceChildren(h("p", { class: "muted", role: "status" }, "불러오는 중…"));
   try {
     const mod = await import(`/static/pages/${page}.js`);
