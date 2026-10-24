@@ -355,7 +355,7 @@ def test_record_not_found(client, home):
     assert body["error"] == "diagnosis_not_found"
 
 
-@pytest.mark.parametrize("name", ["../profile", "a/b", "a\\b", "..", ".", "a..b", "x" * 121, ""])
+@pytest.mark.parametrize("name", ["../profile", "a/b", "a\\b", "..", ".", "..a", "x" * 121, ""])
 def test_record_bad_name(client, home, name):
     (home / "profile.md").write_text("---\nx: 1\n---\n", encoding="utf-8")
     status, body = client.json("GET", f"/api/diagnose/record?category={CAT}&name={name}")
@@ -371,7 +371,7 @@ def test_targets_preliminary_when_typify_not_formal(client, home):
 
 # ---- fix round 1 ---------------------------------------------------------------------
 
-@pytest.mark.parametrize("stem", ["2026-10-24-café-먹방", "2026-10-24-日本語", "내 기획안 (최종) v2", "a.b"])
+@pytest.mark.parametrize("stem", ["2026-10-24-café-먹방", "2026-10-24-日本語", "내 기획안 (최종) v2", "a.b", "a..b"])
 def test_record_round_trips_real_names(client, home, stem):
     draft = make_draft(home, UNLIKE, hook="shock_line")
     renamed = draft.with_name(f"{stem}.md")

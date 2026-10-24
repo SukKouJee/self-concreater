@@ -78,7 +78,7 @@ def _target_path(category: str, value: Any) -> Path:
 def _name(value: Any) -> str:
     """파일 이름으로 안전한지만 본다(save가 만드는 이름 — 유니코드·공백·괄호 — 은 허용)."""
     if (not isinstance(value, str) or not 1 <= len(value) <= MAX_NAME or any(ord(c) < 32 or c in UNSAFE_NAME_CHARS for c in value)
-            or value.startswith(".") or ".." in value or value.endswith((".", " "))):
+            or value.startswith(".") or value.endswith((".", " "))):
         raise ScriptError("bad_request", "진단 이름이 올바르지 않습니다")
     return value
 

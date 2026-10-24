@@ -4,6 +4,7 @@
 //   미리보기 단계에서는 mine/ 이 바뀌지 않는다. 저장은 사용자가 누른 뒤에만. 의도한 차이 표시는 사용자 행동이라 바로 저장한다.
 import { h, fill } from "/static/dom.js";
 import { renderMarkdown } from "/static/md.js";
+import { recordMismatch as gapsMismatch, previewStale as gapsStale } from "/static/diagnose-gaps.js";
 
 const POLL_MS = 1000;
 const POLL_MAX_MS = 15000;
@@ -24,7 +25,6 @@ const AXIS_ORDER = ["structure", "hook", "narrative", "title", "pacing", "shots"
 const isActive = (job) => !!job && ACTIVE.has(job.status);
 const detailHref = (path) => `#/diagnose/${encodeURIComponent(path)}`;
 const pct = (v) => `${Math.round(v * 100)}%`;
-const sameSet = (a, b) => a.length === b.length && a.every((x) => b.includes(x));
 
 function readHandled() {
   try {
@@ -139,7 +139,7 @@ async function loadRecord(mine) {
     setRecord(mine, rec);
   } catch (e) {
     if (!alive(mine) || ignorable(e)) return;
-    if (e.error !== "diagnosis_not_found") throw e;
+    if (e.error !== "diagnosis_not_found" && e.error !== "bad_request") throw e;     // unusable name: treat as no record
     mine.record = null;
   }
 }
@@ -565,10 +565,13 @@ function renderCompare() {
 
 // ---- saved record + intentional toggles ---------------------------------------
 
+const compareKeys = () => (S.compare ? (S.compare.gaps || []).map((g) => g.key) : []);
+
+// Gaps the user marked intentional since the save are expected to be missing from the current compare.
 function recordMismatch() {
   if (!S.record || !S.compare) return false;
   const saved = Array.isArray(S.record.fm.gaps) ? S.record.fm.gaps : [];
-  return !sameSet(saved, (S.compare.gaps || []).map((g) => g.key));
+  return gapsMismatch(saved, S.intentional, compareKeys());
 }
 
 // Once a compare is known it is the source of truth; intentional gaps are not part of compare.gaps, so they are added.
@@ -594,7 +597,7 @@ function toggleRow(key) {
   const name = gapName(key, axisKo);
   const btn = h("button", {
     type: "button", class: "btn diag-toggle", "aria-pressed": String(on), "data-gap-key": key,
-    "aria-label": `일부러 다르게 한 거예요: ${name}`, "aria-disabled": S.toggleBusy.has(key) ? "true" : false,
+    "aria-label": `일부러 다르게 한 거예요: ${name}`, "aria-disabled": S.toggleBusy.has(key) || S.saving ? "true" : false,
   }, "일부러 다르게 한 거예요");
   btn.addEventListener("click", () => toggleIntentional(key));
   // Intentional gaps are not in compare.gaps, so they have no current numbers.
@@ -608,13 +611,14 @@ function toggleRow(key) {
 
 async function toggleIntentional(key) {
   const mine = S;
-  if (!mine.record || mine.toggleBusy.has(key)) return;
+  if (!mine.record || mine.saving || mine.toggleBusy.has(key)) return;
   const on = !mine.intentional.includes(key);
   mine.toggleBusy.add(key);
   mine.recordError = null;
   mine.intentional = on ? [...mine.intentional, key] : mine.intentional.filter((k) => k !== key);
   const seq = ++mine.cmpSeq;                    // a newer compare (button or toggle) wins over this response's compare
   renderRecord(key);
+  let failed = false;
   try {
     const res = await mine.ctx.api("POST", "/api/diagnose/intentional",
       { category: mine.category, name: mine.record.name, key, on });
@@ -626,6 +630,7 @@ async function toggleIntentional(key) {
   } catch (e) {
     if (!alive(mine) || ignorable(e)) return;
     mine.toggleBusy.delete(key);
+    failed = true;
     const has = mine.intentional.includes(key);
     if (on && has) mine.intentional = mine.intentional.filter((k) => k !== key);       // roll back
     else if (!on && !has) mine.intentional = [...mine.intentional, key];
@@ -636,6 +641,7 @@ async function toggleIntentional(key) {
       renderRecord(key);
       renderCompare();
       updateActions();
+      if (failed && !mine.compare && canCompare()) compareNow(true);     // show the real gaps even though the toggle failed
     }
   }
 }
@@ -681,7 +687,14 @@ function renderRecord(focusKey) {
 // The open preview was written for a gap set that no longer matches the current compare (after a toggle).
 function previewStale() {
   if (!S.preview || !S.compare) return false;
-  return !sameSet(S.preview.result.gaps.map((g) => g.key), S.compare.gaps.map((g) => g.key));
+  return gapsStale(S.preview.result.gaps.map((g) => g.key), compareKeys());
+}
+
+// Preview gaps still present in the current compare (the server drops the notes of vanished gaps).
+function activeGaps() {
+  if (!S.compare) return S.preview.result.gaps;
+  const now = compareKeys();
+  return S.preview.result.gaps.filter((g) => now.includes(g.key));
 }
 
 const STALE_TEXT = "갭이 바뀌었습니다 — 설명 다시 받기 후 저장하세요";
@@ -691,7 +704,7 @@ function saveBlocker() {
   const e = S.edits;
   if (!e.summary.trim()) return "요약이 비어 있습니다";
   const axisKo = S.preview.result.axis_ko;
-  for (const g of S.preview.result.gaps) {
+  for (const g of activeGaps()) {
     if (!e.gaps[g.key].trim()) return `'${gapName(g.key, axisKo)}' 설명이 비어 있습니다`;
   }
   if (!e.actions.some((a) => a.trim())) return "다음 행동을 1개 이상 적어 주세요";
@@ -701,7 +714,7 @@ function saveBlocker() {
 function notesPayload() {
   const e = S.edits;
   const gaps = {};
-  for (const g of S.preview.result.gaps) gaps[g.key] = e.gaps[g.key].trim();
+  for (const g of activeGaps()) gaps[g.key] = e.gaps[g.key].trim();
   return { summary: e.summary.trim(), gaps, actions: e.actions.map((a) => a.trim()).filter(Boolean) };
 }
 
@@ -712,7 +725,7 @@ function renderPreview() {
   const p = S.preview;
   const e = S.edits;
   const axisKo = p.result.axis_ko;
-  const summary = h("textarea", { id: "diag-summary", rows: "3" });
+  const summary = h("input", { id: "diag-summary", type: "text" });
   summary.value = e.summary;
   summary.addEventListener("input", () => { e.summary = summary.value; updateActions(); });
   const gapFields = p.result.gaps.map((g, i) => {
@@ -819,6 +832,7 @@ async function save() {
   updateActions();
   renderAlerts();
   renderRunBox();
+  renderRecord();                               // toggles are aria-disabled while saving
   try {
     const res = await mine.ctx.api("POST", "/api/diagnose/save",
       { category: mine.category, target: mine.path, notes: notesPayload(), job_id: jobId });
@@ -844,6 +858,7 @@ async function save() {
     if (!alive(mine) || ignorable(e)) return;
     mine.saveError = e.message || "저장하지 못했습니다";
     mine.saving = false;
+    renderRecord();
     updateActions();
     renderAlerts();
     renderRunBox();
