@@ -36,7 +36,7 @@
 기능을 내 PC에서만 열리는 웹 화면으로도 쓴다. 서버 중앙화·개인화·호스팅은 아니다. 전체 설계: [`docs/superpowers/specs/2026-10-23-local-ui-design.md`](docs/superpowers/specs/2026-10-23-local-ui-design.md)
 - 실행: `ytc ui [--port N] [--no-open] [--detach] [--stop]`, Windows는 `bin/ytc.cmd`, Claude Code 안은 `/yt-ui [stop]`. `127.0.0.1`에만 바인딩하고 실행마다 만든 key를 주소에 넣어 key 없는 요청은 거부. 작업 폴더당 서버 하나(`workspace/ui.lock`).
 - 구조: 서버(Python)가 `scripts.*`를 함수로 직접 호출하고, 해석이 필요한 일은 `claude -p`(사용자 구독, `skills/*/SKILL.md` 규칙 재사용)로 실행. 정적 HTML/CSS/JS, 빌드 단계 없음.
-- 메뉴: 홈 / 모으기(레퍼런스 추가 1차, 목록 2차) / 분석(유형화·리포트 2차) / 만들기(콘티 1차, 모티브·기획안 2차) / 성장(진단·미션 2차).
+- 메뉴: 홈 / 모으기(레퍼런스 추가 1차, 목록 2차: 보기·라벨 고치기) / 분석(유형화·리포트 2차) / 만들기(콘티 1차, 모티브·기획안 2차) / 성장(진단·미션 2차).
 - 원칙: md 프런트매터가 유일한 원본이고 화면은 읽고 쓰는 창. 저장·바꾸기 클릭이 사용자 확인이며, 클릭 없이 AI 출력이 파일에 쓰이지 않는다(`--shots-only`, `script_mismatch` 자동 맞춤 제외). 화면 밖 수정은 내용 해시로 감지해 저장을 거부한다.
 - 오래 걸리는 수집은 job으로 돌리고(동시에 하나), 화면을 닫아도 계속된다. 서버를 끄면 멈춘다.
 - 새 스크립트: `status`(홈 데이터), `claude_cli`(Claude 호출기), `ui`(서버). `conti`에 `update`·`scenes`·`cut-context` 추가.

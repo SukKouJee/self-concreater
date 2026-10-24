@@ -402,6 +402,20 @@ code { background: var(--grid); padding: 1px 6px; border-radius: 4px; }
 .md-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .ref-path { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin: var(--sp-5) 0 0; }
 .ref-path code { overflow-wrap: anywhere; }
+/* 라벨 고치기 */
+.ref-block-head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2) var(--sp-3); margin-bottom: var(--sp-2); }
+.ref-block-head > h2 { margin: 0; }
+.badge.reviewed { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.ref-edit-band .sec-band { height: 12px; margin: 0 0 var(--sp-3); }
+.ref-edit-list { list-style: none; margin: 0 0 var(--sp-3); padding: 0; }
+.ref-edit-row { display: grid; grid-template-columns: 96px 1fr; gap: var(--sp-3); align-items: center; padding: var(--sp-2) 0; }
+.ref-edit-row + .ref-edit-row { border-top: 1px solid var(--grid); }
+.ref-edit-row .sec-pick { flex-wrap: wrap; }
+.ref-edit-types { display: flex; flex-wrap: wrap; gap: var(--sp-4); margin-bottom: var(--sp-3); }
+.ref-edit-notice:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ref-edit-notice:empty { display: none; }
+.ref-edit-notice { margin-bottom: var(--sp-3); }
 @media (max-width: 520px) {
+  .ref-edit-row { grid-template-columns: minmax(0, 1fr); gap: var(--sp-1); }
   .ref-search { max-width: none; flex-basis: 100%; }
 }

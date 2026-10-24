@@ -248,3 +248,54 @@ def test_send_backstop_returns_500_json_for_unserializable_payload(client, home,
     server.route("GET", r"/api/_nan_probe")(lambda req: {"x": float("nan")})
     code, data = client.json("GET", "/api/_nan_probe")
     assert code == 500 and data["error"] == "internal"
+
+
+def _sha(path):
+    import hashlib
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def post(client, path, body, status=200):
+    code, data = client.json("POST", path, body)
+    assert code == status, data
+    return data
+
+
+def test_detail_has_hash_and_vocab(client, home):  # noqa: F811
+    from scripts import videomd
+    d = get(client, "/api/refs/a00?category=mukbang")
+    assert d["hash"] == _sha(video_path(home, "a00"))
+    assert d["vocab"] == {"label": videomd.LABELS, "body_sub": videomd.BODY_SUBS,
+                          "hook_type": videomd.HOOK_TYPES, "narrative_type": videomd.NARRATIVE_TYPES}
+
+
+def test_post_labels_saves_and_returns_summary(client, home):  # noqa: F811
+    d = get(client, "/api/refs/a00?category=mukbang")
+    r = post(client, "/api/refs/a00/labels?category=mukbang", {"hash": d["hash"], "hook_type": "question"})
+    assert r["video"]["hook_type"] == "question" and r["video"]["reviewed"] is True
+    assert r["video"]["id"] == "a00" and r["changed"] == ["hook_type"]
+    assert r["hash"] != d["hash"] and r["hash"] == _sha(video_path(home, "a00"))
+    again = post(client, "/api/refs/a00/labels?category=mukbang", {"hash": d["hash"], "hook_type": "situation"}, 400)
+    assert again["error"] == "ref_changed"
+
+
+def test_post_labels_requires_hash(client, home):  # noqa: F811
+    for body in ({"hook_type": "question"}, {"hash": "", "hook_type": "question"}, {"hash": 5}):
+        assert post(client, "/api/refs/a00/labels?category=mukbang", body, 400)["error"] == "bad_request"
+
+
+def test_post_labels_bad_id_and_category(client, home):  # noqa: F811
+    assert post(client, "/api/refs/a.b/labels?category=mukbang", {"hash": "x"}, 400)["error"] == "bad_request"
+    assert post(client, "/api/refs/a00/labels?category=nope", {"hash": "x"}, 400)["error"] == "category_not_found"
+
+
+def test_post_labels_returns_null_video_when_summary_fails(client, home, monkeypatch):  # noqa: F811
+    from scripts.ui import api_refs
+    d = get(client, "/api/refs/a00?category=mukbang")
+
+    def boom(*a, **k):
+        raise ValueError("boom")
+
+    monkeypatch.setattr(api_refs, "_summary", boom)
+    r = post(client, "/api/refs/a00/labels?category=mukbang", {"hash": d["hash"], "hook_type": "question"})
+    assert r["video"] is None and r["changed"] == ["hook_type"]

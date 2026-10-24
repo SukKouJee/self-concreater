@@ -196,3 +196,44 @@ def test_refs_page_review_fixes():
     assert "String(role)" in js                                 # unknown role shown as-is
     assert js.count("sortByStart((") == 2                      # band + detail section list
     assert "params.id" in js.split("function loadError")[1].split("// ---- list")[0]   # back link only in detail
+
+
+def test_refs_edit_mode_tokens():
+    js = (STATIC_DIR / "pages" / "refs.js").read_text(encoding="utf-8")
+    for token in ["라벨 고치기", "저장", "취소", "/labels", "ref_changed", "다시 불러오기",
+                  "분석 당시 기록", "직접 고침", "(없음)", "hash"]:
+        assert token in js, token
+    for bad in ["innerHTML", "insertAdjacentHTML", "outerHTML"]:
+        assert bad not in js
+    assert "http://" not in js and "https://" not in js
+
+
+def _native_calls_with_null(src: str) -> list[str]:
+    """replaceChildren/.append calls whose own (depth 0) arguments contain `: null` (native DOM renders it as the text "null")."""
+    bad = []
+    for m in re.finditer(r"(?:replaceChildren|\.append|\.prepend)\(", src):
+        i, depth, top = m.end(), 1, []
+        while depth and i < len(src):
+            ch = src[i]
+            depth += (ch in "([{") - (ch in ")]}")
+            if depth == 1:
+                top.append(ch)
+            i += 1
+        if re.search(r":\s*null\b", "".join(top)):
+            bad.append(src[m.start():m.start() + 60])
+    return bad
+
+
+def test_pages_do_not_pass_null_to_native_dom_calls():
+    for path in sorted((STATIC_DIR / "pages").glob("*.js")):
+        assert _native_calls_with_null(path.read_text(encoding="utf-8")) == [], path.name
+    refs = (STATIC_DIR / "pages" / "refs.js").read_text(encoding="utf-8")
+    assert "fill(S.el," in refs and "export function fill" in (STATIC_DIR / "dom.js").read_text(encoding="utf-8")
+
+
+def test_refs_edit_mode_focus_and_quiet_reload():
+    js = (STATIC_DIR / "pages" / "refs.js").read_text(encoding="utf-8")
+    for token in ["quiet: true", "scrollTo(", "opts.focus", ".focus(", "controls", "keep"]:
+        assert token in js, token
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    assert re.search(r"max-width: 520px\) \{[^@]*\.ref-edit-row", css)

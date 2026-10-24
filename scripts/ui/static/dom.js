@@ -17,3 +17,8 @@ export function h(tag, attrs = {}, ...kids) {
 export function filesUrl(relPath) {
   return "/files/" + relPath.split("/").map(encodeURIComponent).join("/");
 }
+
+// replaceChildren that skips null/undefined/false (native replaceChildren would render them as the text "null").
+export function fill(el, ...kids) {
+  el.replaceChildren(...kids.filter((kid) => kid !== null && kid !== undefined && kid !== false));
+}

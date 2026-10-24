@@ -1,12 +1,13 @@
-"""레퍼런스 API(읽기 전용): 카테고리의 영상 목록과 영상 하나의 상세.
+"""레퍼런스 API: 카테고리의 영상 목록, 영상 하나의 상세, 라벨 교정 저장.
 
 - 목록은 `refs/ref_<카테고리>/videos/*.md`의 프런트매터만 읽어 요약을 만든다(role이 ref든 mine이든 전부).
   프런트매터가 깨진 파일은 목록에서 빼고 `skipped`로 센다(사용자가 고치는 중일 수 있다).
 - 상세는 요약 + 본문(`## ` 제목별 조각) + 장면 프레임 + md 경로. 본문은 HTML을 해석하지 않고 문자열로만 내려준다.
-- 어떤 파일도 쓰지 않는다.
+- 쓰기는 `POST /api/refs/<id>/labels` 하나뿐이고, `videomd.relabel`이 프런트매터만 고친다.
 """
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 from datetime import date, datetime, timezone
@@ -207,4 +208,28 @@ def _detail(req: Request, video_id: str) -> dict:
         md = path.relative_to(work_root()).as_posix()
     except ValueError:
         md = path.resolve().relative_to(work_root().resolve()).as_posix()
-    return {"video": video, "frames": frames, "body": _body_parts(body), "md": md}
+    vocab = {"label": videomd.LABELS, "body_sub": videomd.BODY_SUBS,
+             "hook_type": videomd.HOOK_TYPES, "narrative_type": videomd.NARRATIVE_TYPES}
+    return {"video": video, "frames": frames, "body": _body_parts(body), "md": md,
+            "hash": hashlib.sha256(path.read_bytes()).hexdigest(), "vocab": vocab}
+
+
+@route("POST", r"/api/refs/(?P<video_id>[^/?]+)/labels")
+def _labels(req: Request, video_id: str) -> dict:
+    if not ID_RE.fullmatch(video_id):
+        raise ScriptError("bad_request", f"잘못된 영상 id입니다: {video_id!r}")
+    category = _category(req)
+    refstore.existing_category_dir(category)
+    body = req.json
+    expected = body.get("hash")
+    if not isinstance(expected, str) or not expected:
+        raise ScriptError("bad_request", "hash가 필요합니다")
+    changes = {k: body[k] for k in ("sections", "hook_type", "narrative_type") if k in body}
+    result = videomd.relabel(video_id, category, changes, expected)
+    path = videomd.video_md_path(video_id, category)
+    try:
+        fm, _ = refstore.read_md(path)
+        video: dict | None = _summary(path, fm, _scene_frames(video_id))
+    except (ScriptError, ValueError, TypeError, AttributeError, OSError):
+        video = None                      # 저장은 끝났다. 화면은 상세를 다시 불러온다
+    return {**result, "video": video}
