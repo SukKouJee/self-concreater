@@ -51,11 +51,12 @@ function missionCard(m) {
   const card = h("article", { class: "card" });
   card.append(h("h2", {}, "오늘 미션"));
   if (!m || !m.exists) {
-    card.append(h("p", { class: "muted" }, "오늘 미션이 없습니다 — ", h("code", {}, "/yt-coach:yt-mission")));
+    card.append(h("p", { class: "muted" }, "오늘 미션이 없습니다 — 미션 화면에서 받을 수 있어요"));
   } else {
     const parts = [m.date, m.kind, MISSION_STATUS[m.status] || m.status].filter(Boolean);
     card.append(h("p", {}, parts.join(" · ")), h("p", { class: "muted" }, m.path || ""));
   }
+  card.append(h("div", { class: "btn-row" }, h("a", { class: "btn", href: "#/mission" }, "미션 화면 열기")));
   return card;
 }
 

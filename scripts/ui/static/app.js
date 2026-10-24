@@ -40,7 +40,7 @@ const MENU = [
     group: "성장",
     items: [
       { name: "진단", route: "#/diagnose" },
-      { name: "미션", soon: "mission", command: "/yt-coach:yt-mission" },
+      { name: "미션", route: "#/mission" },
     ],
   },
 ];
@@ -253,6 +253,7 @@ function parseHash() {
     case "add": return { page: "add", params: {} };
     case "typify": return { page: "typify", params: {} };
     case "motif": return { page: "motif", params: {} };
+    case "mission": return { page: "mission", params: {} };
     case "draft": {
       // #/draft | #/draft/view/<encoded path> | #/draft/new[/<encoded source id>]; anything else is the list.
       const [sub, ...more] = tail.split("/");
