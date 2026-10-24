@@ -274,10 +274,11 @@ def caption_video_target(path: Path, track: str, video: Path | None) -> Any:
         job.check_cancelled()
 
         def on_progress(done: int, total: int) -> None:
-            job.update(0, message=f"{done}/{total} 프레임")
+            job.update(0, step="render", message=f"{done}/{total} 프레임")
 
         try:
-            result = captions.render(path, video, track, progress=on_progress, cancel=job.is_cancelled)
+            result = captions.render(path, video, track, progress=on_progress, cancel=job.is_cancelled,
+                                     step=lambda name: job.update(0, step=name))
         except captions.RenderCancelled as e:
             raise JobCancelled from e
         job.update(0, state="done", step="render", ask=None, message=None,

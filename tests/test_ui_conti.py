@@ -323,7 +323,7 @@ def _fake_render(monkeypatch, **extra):
     from scripts import captions
     calls = []
 
-    def render(conti_path, video=None, track="caption", progress=None, cancel=None, timeout=900):
+    def render(conti_path, video=None, track="caption", progress=None, cancel=None, timeout=900, step=None):
         calls.append({"conti": str(conti_path), "video": video, "track": track})
         if progress:
             progress(2, 4)
@@ -437,6 +437,45 @@ def test_caption_video_cancel_reaches_render(client, home, draft_md, monkeypatch
     gate.set()
     final = wait_for(client, job.id, lambda j: j["status"] != "running")
     assert final["status"] == "stopped" and final["items"][0]["state"] == "skipped"
+
+
+def test_cancel_endpoint_stops_running_job_and_rejects_finished_or_unknown(client, home, draft_md, monkeypatch):
+    import threading
+    gate = threading.Event()
+    _fake_render(monkeypatch, wait=gate)
+    saved = saved_conti(home, draft_md)
+    status, body = client.json("POST", "/api/conti/caption-video", {"path": rel(home, saved)})
+    job_id = body["job"]["id"]
+    wait_for(client, job_id, lambda j: j["items"][0]["message"] == "2/4 프레임")
+    status, resp = client.json("POST", f"/api/jobs/{job_id}/cancel")
+    assert status == 200 and resp["job"]["id"] == job_id
+    gate.set()
+    final = wait_for(client, job_id, lambda j: j["status"] != "running")
+    assert final["status"] == "stopped" and final["items"][0]["state"] == "skipped"
+    status, resp = client.json("POST", f"/api/jobs/{job_id}/cancel")
+    assert status == 400 and resp["error"] == "not_running"
+    status, resp = client.json("POST", "/api/jobs/nope/cancel")
+    assert resp["error"] == "job_not_found" and status in (400, 404)
+
+
+def test_caption_video_detect_step_is_reported(client, home, draft_md, sample_video, monkeypatch):
+    import threading
+    from scripts import captions
+    gate = threading.Event()
+    monkeypatch.setattr(captions, "check_setup", lambda: {"ready": True})
+
+    def render(conti_path, video=None, track="caption", progress=None, cancel=None, timeout=900, step=None):
+        step("detect")
+        gate.wait(5)
+        return {"path": "drafts/x-captions.mp4", "count": 1, "duration_sec": 1.0, "width": 1, "height": 1}
+
+    monkeypatch.setattr(captions, "render", render)
+    saved = saved_conti(home, draft_md)
+    status, body = client.json("POST", "/api/conti/caption-video",
+                               {"path": rel(home, saved), "video": str(sample_video)})
+    wait_for(client, body["job"]["id"], lambda j: j["items"][0]["step"] == "detect")
+    gate.set()
+    wait_for(client, body["job"]["id"], lambda j: j["status"] == "done")
 
 
 def test_caption_video_render_failure_fails_job_with_message(client, home, draft_md, monkeypatch):

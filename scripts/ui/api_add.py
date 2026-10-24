@@ -374,6 +374,16 @@ def _job(req: Request, job_id: str) -> dict:
     return {"job": req.app.jobs.get(job_id).snapshot()}
 
 
+@route("POST", r"/api/jobs/(?P<job_id>[^/]+)/cancel")
+def _cancel(req: Request, job_id: str) -> dict:
+    """진행 중인 작업을 멈추라고 알린다(작업 스레드가 다음 확인 지점에서 멈춘다). 이미 끝난 작업이면 400."""
+    job = req.app.jobs.get(job_id)
+    if not job.is_active():
+        raise ScriptError("not_running", "이미 끝난 작업입니다")
+    job.cancel()
+    return {"job": job.snapshot()}
+
+
 @route("POST", r"/api/jobs/(?P<job_id>[^/]+)/items/(?P<item_id>.+)/decision")
 def _decision(req: Request, job_id: str, item_id: str) -> dict:
     job = req.app.jobs.get(job_id)

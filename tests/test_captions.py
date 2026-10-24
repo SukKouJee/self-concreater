@@ -146,14 +146,47 @@ def test_check_setup_reports_missing_node(monkeypatch):
     assert e.value.message == ("움직이는 자막을 만들려면 처음 한 번 설치가 필요합니다: ytc captions setup (Node 18 이상)")
 
 
+def _install_fake_cli(monkeypatch, tmp_path, major):
+    monkeypatch.setattr(captions.shutil, "which", lambda name: "/bin/" + name)
+    monkeypatch.setattr(captions, "_node_major", lambda node: major)
+    monkeypatch.setattr(captions, "REMOTION_DIR", tmp_path)
+    cli = tmp_path.joinpath(*captions.REMOTION_CLI_REL)
+    cli.parent.mkdir(parents=True)
+    cli.write_text("", encoding="utf-8")
+
+
 def test_check_setup_reports_missing_node_modules(monkeypatch, tmp_path):
     monkeypatch.setattr(captions.shutil, "which", lambda name: "/bin/" + name)
+    monkeypatch.setattr(captions, "_node_major", lambda node: 24)
     monkeypatch.setattr(captions, "REMOTION_DIR", tmp_path)
     with pytest.raises(ScriptError) as e:
         captions.check_setup()
     assert e.value.code == "remotion_missing"
-    (tmp_path / "node_modules" / "@remotion" / "cli").mkdir(parents=True)
+    _install_fake_cli(monkeypatch, tmp_path, 24)
     assert captions.check_setup()["ready"] is True
+
+
+@pytest.mark.parametrize("major,ok", [(16, False), (17, False), (18, True), (24, True), (None, True)])
+def test_check_setup_requires_node_18(monkeypatch, tmp_path, major, ok):
+    _install_fake_cli(monkeypatch, tmp_path, major)
+    if ok:
+        assert captions.check_setup()["ready"] is True
+    else:
+        with pytest.raises(ScriptError) as e:
+            captions.check_setup()
+        assert e.value.code == "remotion_missing" and "Node 18" in e.value.message
+
+
+def test_node_major_parses_version(monkeypatch):
+    monkeypatch.setattr(captions.subprocess, "run",
+                        lambda cmd, **k: subprocess.CompletedProcess(cmd, 0, "v24.22.0\n", ""))
+    assert captions._node_major("node") == 24
+
+    def boom(cmd, **k):
+        raise OSError("x")
+
+    monkeypatch.setattr(captions.subprocess, "run", boom)
+    assert captions._node_major("node") is None
 
 
 def test_setup_uses_npm_ci_with_lockfile(monkeypatch, tmp_path):
@@ -251,9 +284,11 @@ def test_render_runs_npx_in_remotion_dir_and_replaces_output(saved, home, ready,
     progress = []
     out = captions.render(rel(home, saved), progress=lambda n, m: progress.append((n, m)))
     [(cmd, kwargs)] = popen.calls
-    assert Path(cmd[0]).stem == "npx" and (not WIN or Path(cmd[0]).name == "npx.cmd")
-    assert cmd[1:5] == ["remotion", "render", "src/index.jsx", "Captions"]
+    assert Path(cmd[0]).stem == "node" and Path(cmd[1]).name == "remotion-cli.js"
+    assert cmd[2:5] == ["render", "src/index.jsx", "Captions"]
     assert cmd[6].startswith("--props=") and kwargs["cwd"] == REMOTION_DIR
+    assert kwargs["env"]["NO_COLOR"] == "1" and kwargs["env"]["FORCE_COLOR"] == "0"
+    assert ("start_new_session" in kwargs) == (not WIN)
     assert Path(cmd[5]).resolve().parent == (home / "workspace" / "tmp").resolve()
     assert Path(cmd[5]).name.startswith("captions_")
     assert progress == [(1, 3), (3, 3)]
@@ -342,6 +377,116 @@ def test_render_without_captions_never_starts_process(home, draft_md, ready, pop
     assert popen.calls == []
 
 
+class TerminateRaises(FakeProc):
+    def terminate(self):
+        self.terminated = True
+        raise PermissionError("access denied")
+
+
+def test_cancel_surfaces_even_when_terminate_raises(saved, home, ready, popen, monkeypatch):
+    monkeypatch.setattr(captions, "TERMINATE_GRACE_SEC", 0.05)
+    popen.factory = staticmethod(lambda cmd: TerminateRaises([], hang=True))
+    with pytest.raises(captions.RenderCancelled):
+        captions.render(rel(home, saved), cancel=lambda: True)
+    assert popen.proc.terminated and popen.proc.killed
+    assert not tmp_leftovers(home)
+
+
+def test_timeout_surfaces_even_when_kill_also_raises(saved, home, ready, popen, monkeypatch):
+    monkeypatch.setattr(captions, "TERMINATE_GRACE_SEC", 0.05)
+
+    class Stubborn(TerminateRaises):
+        def kill(self):
+            self.killed = True
+            raise PermissionError("access denied")
+
+    popen.factory = staticmethod(lambda cmd: Stubborn([], hang=True))
+    with pytest.raises(ScriptError) as e:
+        captions.render(rel(home, saved), timeout=0.2)
+    assert e.value.code == "render_timeout"
+
+
+def test_temp_files_removed_after_transient_permission_errors(saved, home, ready, popen, monkeypatch):
+    monkeypatch.setattr(captions, "REMOVE_RETRY_SEC", 0)
+    real_unlink = Path.unlink
+    fails = {"n": 0}
+
+    def flaky(self, missing_ok=False):
+        if self.name.startswith("captions_") and fails["n"] < 4:
+            fails["n"] += 1
+            raise PermissionError("in use")
+        return real_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", flaky)
+    popen.factory = staticmethod(lambda cmd: FakeProc([], hang=True))
+    with pytest.raises(captions.RenderCancelled):
+        captions.render(rel(home, saved), cancel=lambda: True)
+    assert fails["n"] == 4
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    assert not tmp_leftovers(home)
+
+
+def test_remove_gives_up_quietly(tmp_path, monkeypatch):
+    monkeypatch.setattr(captions, "REMOVE_RETRY_SEC", 0)
+
+    def denied(self, missing_ok=False):
+        raise PermissionError("x")
+
+    monkeypatch.setattr(Path, "unlink", denied)
+    captions._remove(tmp_path / "captions_x.mp4")        # 예외 없이 돌아온다
+
+
+def test_wait_timeout_after_output_end_is_render_failed(saved, home, ready, popen, monkeypatch):
+    monkeypatch.setattr(captions, "TERMINATE_GRACE_SEC", 0.01)
+
+    class NeverExits(FakeProc):
+        def wait(self, timeout=None):
+            if self.killed or self.terminated:
+                return self.returncode
+            raise subprocess.TimeoutExpired("fake", timeout)
+
+    popen.factory = staticmethod(lambda cmd: NeverExits(["Rendered 3/3\n"], returncode=0))
+    with pytest.raises(ScriptError) as e:
+        captions.render(rel(home, saved))
+    assert e.value.code == "render_failed" and popen.proc.terminated
+    assert not tmp_leftovers(home)
+
+
+def test_stop_signals_process_group_off_windows(monkeypatch):
+    import signal
+    sent = []
+    monkeypatch.setattr(captions, "_WIN", False)
+    monkeypatch.setattr(captions.os, "killpg", lambda pid, sig: sent.append((pid, sig)), raising=False)
+    proc = FakeProc([], hang=True)
+    captions._stop(proc)
+    assert sent == [(4242, signal.SIGTERM)] and proc.terminated
+
+
+def test_stop_survives_killpg_error(monkeypatch):
+    monkeypatch.setattr(captions, "_WIN", False)
+
+    def boom(pid, sig):
+        raise ProcessLookupError()
+
+    monkeypatch.setattr(captions.os, "killpg", boom, raising=False)
+    proc = FakeProc([], hang=True)
+    captions._stop(proc)
+    assert proc.terminated
+
+
+def test_error_tail_strips_ansi(saved, home, ready, popen):
+    popen.factory = staticmethod(lambda cmd: FakeProc(["\x1b[31mError: boom\x1b[39m\n"], returncode=1))
+    with pytest.raises(ScriptError) as e:
+        captions.render(rel(home, saved))
+    assert "\x1b" not in e.value.message and "Error: boom" in e.value.message
+
+
+def test_render_reports_detect_step_for_edited_video(saved, home, ready, popen, sample_video):
+    steps = []
+    captions.render(rel(home, saved), video=sample_video, step=steps.append)
+    assert steps == ["detect"]
+
+
 def test_render_requires_setup(saved, home, monkeypatch, popen):
     monkeypatch.setattr(captions.shutil, "which", lambda name: None)
     with pytest.raises(ScriptError) as e:
@@ -376,7 +521,9 @@ def test_real_render_produces_mp4_with_expected_size_and_frames(saved, home, mon
         return r
 
     monkeypatch.setattr(conti, "caption_blocks", three_seconds)
-    out = captions.render(rel(home, saved), timeout=300)
+    seen = []
+    out = captions.render(rel(home, saved), timeout=300, progress=lambda n, m: seen.append((n, m)))
+    assert seen and all(0 <= n <= m for n, m in seen)
     mp4 = home / out["path"]
     assert mp4.is_file() and (out["width"], out["height"]) == (1080, 1920)
     cap = cv2.VideoCapture(str(mp4))

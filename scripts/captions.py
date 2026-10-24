@@ -11,6 +11,7 @@ import os
 import queue
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -34,6 +35,11 @@ TERMINATE_GRACE_SEC = 5.0
 POLL_SEC = 0.1
 MISSING_MESSAGE = "움직이는 자막을 만들려면 처음 한 번 설치가 필요합니다: ytc captions setup (Node 18 이상)"
 _PROGRESS_RE = re.compile(r"Rendered\s+(\d+)\s*/\s*(\d+)")
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+MIN_NODE_MAJOR = 18
+REMOVE_RETRIES = 10
+REMOVE_RETRY_SEC = 0.2
+REMOTION_CLI_REL = ("node_modules", "@remotion", "cli", "remotion-cli.js")
 _WIN = sys.platform == "win32"
 
 
@@ -53,14 +59,34 @@ def _missing() -> ScriptError:
     return ScriptError("remotion_missing", MISSING_MESSAGE)
 
 
+def _node_major(node: str) -> int | None:
+    """`node --version`(예: v24.22.0)의 주 버전. 읽지 못하면 None."""
+    try:
+        done = subprocess.run([node, "--version"], capture_output=True, text=True, timeout=15, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.match(r"v?(\d+)", (done.stdout or "").strip())
+    return int(m.group(1)) if m else None
+
+
+def _cli_path() -> Path:
+    return REMOTION_DIR.joinpath(*REMOTION_CLI_REL)
+
+
 def check_setup() -> dict:
-    """node·npx와 `remotion/node_modules/@remotion/cli`가 있는지 확인한다. 없으면 remotion_missing."""
-    node, npx = shutil.which("node"), _tool("npx") or shutil.which("npx")
-    if not node or not npx:
+    """Node 18 이상과 `remotion/node_modules/@remotion/cli`가 있는지 확인한다. 없으면 remotion_missing."""
+    node = shutil.which("node")
+    if not node or not _cli_path().is_file():
         raise _missing()
-    if not (REMOTION_DIR / "node_modules" / "@remotion" / "cli").is_dir():
-        raise _missing()
-    return {"ready": True, "node": node, "npx": npx}
+    major = _node_major(node)
+    if major is not None and major < MIN_NODE_MAJOR:
+        raise ScriptError("remotion_missing", f"Node {MIN_NODE_MAJOR} 이상이 필요합니다(현재 {major}). "
+                          "Node를 올린 뒤 다시 시도하세요: ytc captions setup")
+    return {"ready": True, "node": node}
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
 
 
 def _tail(text: str, n: int = 5) -> str:
@@ -130,17 +156,48 @@ def build_props(conti_path: str | Path, video: str | Path | None = None, track: 
 
 
 def _stop(proc: Any) -> None:
-    """그 프로세스(트리)만 종료한다: terminate → 대기 → kill. Windows는 PID로 자식까지 끈다."""
-    if _WIN and isinstance(getattr(proc, "pid", None), int):
-        # npx.cmd 아래의 node·Chrome까지 정리한다. 부모를 먼저 죽이면 트리를 못 찾으므로 terminate()보다 먼저.
-        # PID 기준(/T)이며 이미지 이름(/IM)은 쓰지 않는다
-        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, check=False)
-    proc.terminate()
+    """그 프로세스(트리)만 종료한다: 트리 종료 → terminate → 대기 → kill. 어느 단계가 실패해도 예외를 내지 않는다.
+
+    Windows는 node 아래의 Chrome까지 PID로 끈다(부모를 먼저 죽이면 트리를 못 찾으므로 terminate()보다 먼저).
+    그 밖의 OS는 새 세션으로 띄운 프로세스 그룹에 SIGTERM을 보낸다. 이미지 이름으로는 끄지 않는다.
+    """
+    pid = getattr(proc, "pid", None)
+    if isinstance(pid, int):
+        try:
+            if _WIN:
+                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, check=False)
+            elif hasattr(os, "killpg"):
+                os.killpg(pid, signal.SIGTERM)
+        except OSError:
+            pass                          # 이미 끝났거나 권한이 없으면 아래 terminate()/kill()에 맡긴다
+    try:
+        proc.terminate()
+    except OSError:
+        pass
+    try:
+        proc.wait(TERMINATE_GRACE_SEC)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
     try:
         proc.wait(TERMINATE_GRACE_SEC)
     except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
+        pass                              # 끝내 안 죽어도 호출한 쪽의 오류(취소·시간 초과)를 가리지 않는다
+
+
+def _remove(path: Path) -> None:
+    """임시 파일을 지운다. Windows에서 Chrome이 아직 잡고 있으면(PermissionError) 잠깐 기다려 다시 시도하고, 예외는 내지 않는다."""
+    for attempt in range(REMOVE_RETRIES):
+        try:
+            path.unlink(missing_ok=True)
+            return
+        except OSError:
+            if attempt < REMOVE_RETRIES - 1:
+                time.sleep(REMOVE_RETRY_SEC)
 
 
 def _pump(stream: Any, lines: queue.Queue) -> None:
@@ -151,11 +208,14 @@ def _pump(stream: Any, lines: queue.Queue) -> None:
 
 def render(conti_path: str | Path, video: str | Path | None = None, track: str = "caption",
            progress: Callable[[int, int], None] | None = None, cancel: Callable[[], bool] | None = None,
-           timeout: float = DEFAULT_TIMEOUT_SEC) -> dict:
-    """콘티 자막을 크로마 그린 MP4로 렌더해 `drafts/<기획안>-captions.mp4`에 둔다(같은 이름이면 교체)."""
+           timeout: float = DEFAULT_TIMEOUT_SEC, step: Callable[[str], None] | None = None) -> dict:
+    """콘티 자막을 크로마 그린 MP4로 렌더해 `drafts/<기획안>-captions.mp4`에 둔다(같은 이름이면 교체).
+
+    step은 편집본 컷을 찾는 동안 "detect"를 알린다(진행률 progress는 렌더가 시작된 뒤 프레임 단위).
+    """
     check_setup()
-    npx = _tool("npx") or shutil.which("npx") or "npx"
-    props, calc = _build(conti_path, video, track)
+    node = shutil.which("node") or "node"
+    props, calc = _build(conti_path, video, track, step)
     path: Path = calc["path"]
     out = path.with_name(f"{path.stem[: -len(conti.CONTI_SUFFIX)]}-captions.mp4")
     tmp_dir = workspace_dir("tmp")
@@ -165,11 +225,13 @@ def render(conti_path: str | Path, video: str | Path | None = None, track: str =
     tail: deque[str] = deque(maxlen=5)
     try:
         props_file.write_text(json.dumps(props, ensure_ascii=False), encoding="utf-8")
-        cmd = [npx, "remotion", "render", "src/index.jsx", "Captions", str(tmp_mp4),
-               f"--props={props_file}"]
+        # npx 래퍼 없이 node로 직접 실행한다: 취소할 때 끌 프로세스가 단순하고 색 코드도 없다
+        cmd = [node, str(_cli_path()), "render", "src/index.jsx", "Captions", str(tmp_mp4), f"--props={props_file}"]
+        env = {**os.environ, "NO_COLOR": "1", "FORCE_COLOR": "0"}
+        spawn: dict[str, Any] = {} if _WIN else {"start_new_session": True}
         try:
             proc = subprocess.Popen(cmd, cwd=REMOTION_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                    text=True, encoding="utf-8", errors="replace", bufsize=1)
+                                    env=env, text=True, encoding="utf-8", errors="replace", bufsize=1, **spawn)
         except OSError as e:
             raise ScriptError("render_failed", f"자막 영상을 만들지 못했습니다: {e}") from e
         lines: queue.Queue = queue.Queue()
@@ -187,6 +249,7 @@ def render(conti_path: str | Path, video: str | Path | None = None, track: str =
                     if line is None:
                         eof = True
                     else:
+                        line = _strip_ansi(line)
                         m = _PROGRESS_RE.search(line)
                         if m:
                             if progress:
@@ -199,7 +262,10 @@ def render(conti_path: str | Path, video: str | Path | None = None, track: str =
                     raise ScriptError("render_timeout", f"자막 영상 만들기가 {int(timeout)}초 안에 끝나지 않아 멈췄습니다")
                 if eof:
                     break
-            proc.wait(TERMINATE_GRACE_SEC + 25)
+            try:
+                proc.wait(TERMINATE_GRACE_SEC + 25)
+            except subprocess.TimeoutExpired as e:
+                raise ScriptError("render_failed", "자막 영상을 만들지 못했습니다: 렌더 프로세스가 끝나지 않습니다") from e
         except BaseException:
             _stop(proc)
             raise
@@ -212,8 +278,8 @@ def render(conti_path: str | Path, video: str | Path | None = None, track: str =
         except OSError as e:
             raise ScriptError("render_failed", f"자막 영상을 저장하지 못했습니다(열려 있는 파일인지 확인하세요): {e}") from e
     finally:
-        props_file.unlink(missing_ok=True)
-        tmp_mp4.unlink(missing_ok=True)
+        _remove(props_file)
+        _remove(tmp_mp4)
     result: dict[str, Any] = {"path": conti._rel(out), "count": len(props["captions"]),
                               "duration_sec": calc["duration_ms"] / 1000,
                               "width": props["width"], "height": props["height"]}
