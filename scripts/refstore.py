@@ -77,6 +77,13 @@ def _write_text(path: Path, text: str) -> None:
 REPLACE_RETRIES = 5
 
 
+def escape_headings(text: str) -> str:
+    """줄바꿈을 LF로 맞추고, 진짜 md 제목(`#`~`######` + 공백/줄끝)이나 표처럼 보이는 줄(`|`) 앞에 백슬래시를 붙인다.
+    `#해시태그`는 그대로. 읽을 때(conti.parse_draft)는 이 백슬래시를 되돌린다."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return re.sub(r"^([ \t]*)(#{1,6}(?=\s|$)|\|)", r"\1\\\2", text, flags=re.MULTILINE)
+
+
 def write_atomic(path: Path, data: bytes) -> None:
     """같은 폴더의 임시 파일에 쓴 뒤 교체한다. 읽는 쪽이 반쯤 쓴 파일을 보지 않는다.
 

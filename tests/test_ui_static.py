@@ -6,7 +6,8 @@ from tests.test_ui_server import client, no_browser  # noqa: F401  (fixture 재�
 MENU_NAMES = ["홈", "레퍼런스 추가", "레퍼런스 목록", "유형화", "리포트", "모티브", "기획안", "콘티", "진단", "미션"]
 # yt-draft is no longer a terminal-only item: the draft screen is a live route.
 # diagnose is live too: its terminal command no longer appears in the menu definition.
-COMMANDS = ["/yt-coach:yt-review", "/yt-coach:yt-mission"]
+# mission is live too: only the report item still shows a terminal command.
+COMMANDS = ["/yt-coach:yt-review"]
 
 
 def test_index_loads_modules(client):
@@ -451,3 +452,36 @@ def test_diagnose_fix_round_contract():
                   "저장된 설명이 지금 갭과 다릅니다 — 설명 다시 받기", "다시 비교", "일부러 다르게 한 갭",
                   "dropTitle", "aria-disabled", "cmpSeq", "watchOtherJob", "compareNow(true)"]:
         assert token in js, token
+
+
+def test_mission_menu_is_live_route():
+    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    home = (STATIC_DIR / "pages" / "home.js").read_text(encoding="utf-8")
+    assert 'route: "#/mission"' in app
+    assert 'soon: "mission"' not in app
+    assert 'case "mission"' in app
+    assert '"#/mission"' in home
+    assert "#/soon/mission" not in home
+
+
+def test_mission_page_contract_and_safety():
+    js = (STATIC_DIR / "pages" / "mission.js").read_text(encoding="utf-8")
+    for token in ["export async function mount", "export function unmount", "isCurrent()", "ctx.api(",
+                  "/api/mission", "/api/mission/draft", "/api/mission/save", "/api/mission/feedback",
+                  "/api/mission/submit", "/api/mission/skip", "kind=mission", "kind=mission_feedback", "job_id",
+                  "오늘 미션 받기", "이걸로 할게요", "이걸로 바꿀게요", "다른 걸로", "완료 제출", "피드백 받기",
+                  "건너뛰기", "바꾸기", "renderMarkdown", "dropTitle", "fieldset", "legend", "mission_exists",
+                  "bad_file", "already_submitted", "aborted", "markHandled", "/yt-coach:yt-init",
+                  "날짜가 바뀌었습니다", "다시 제출하면 이전 제출을 덮어씁니다", "원본은 건드리지 않고",
+                  "adjust", "role: \"alert\"", "scope"]:
+        assert token in js, token
+    for bad in ["innerHTML", "insertAdjacentHTML", "outerHTML", "confirm(", "alert(", "prompt("]:
+        assert bad not in js.replace("inline-confirm", ""), bad
+    assert not re.search(r"https?://", js)
+
+
+def test_mission_page_served(client):
+    status, headers, raw = client.call("GET", "/static/pages/mission.js")
+    assert status == 200
+    assert "javascript" in headers["Content-Type"]
+    assert "/api/mission/draft" in raw.decode("utf-8")

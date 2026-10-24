@@ -572,3 +572,31 @@ code { background: var(--grid); padding: 1px 6px; border-radius: 4px; }
 .diag-compare[hidden] { display: none; }
 .diag-table th[scope="row"] { font-weight: 600; text-align: left; }
 @media (max-width: 520px) { .diag-action-row { flex-wrap: wrap; } }
+
+/* ---- mission screen ---- */
+.mi-sec { margin-top: var(--sp-5); }
+.mi-badges { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; }
+.badge.mi-submitted { color: var(--ok); border-color: var(--ok); }
+.badge.mi-skipped { color: var(--muted); border-style: dashed; }
+.badge.mi-open { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.mi-today h3, .preview-card h3 { margin: 0 0 var(--sp-2); overflow-wrap: anywhere; }
+.mi-part { margin-bottom: var(--sp-3); }
+.mi-part > h3 { font-size: 14px; color: var(--ink2); }
+.mi-steps { margin: 0 0 var(--sp-3); padding-left: 1.5em; }
+.mi-adjust { color: var(--accent); font-weight: 600; margin: 0 0 var(--sp-2); }
+.mi-panel { display: flex; flex-direction: column; gap: var(--sp-3); }
+.mi-panel > h3 { margin: 0; }
+.mi-panel textarea, .mi-panel input[type="text"] { width: 100%; font: inherit; color: var(--ink); background: var(--page); border: 1px solid var(--axis); border-radius: var(--radius-sm); padding: var(--sp-2); }
+.mi-panel textarea { resize: vertical; line-height: 1.5; }
+.mi-panel fieldset.seg { border: 0; padding: 0; margin: 0; }
+.mi-summary { display: grid; grid-template-columns: max-content 1fr; gap: var(--sp-1) var(--sp-3); margin: 0; }
+.mi-summary dt { color: var(--muted); }
+.mi-summary dd { margin: 0; overflow-wrap: anywhere; }
+.mi-profile .cmd-row { margin-top: var(--sp-2); }
+.mi-stale { margin: var(--sp-3) 0; }
+.mi-stale:empty { display: none; }
+.mi-week { font-weight: 600; margin: 0 0 var(--sp-3); }
+.mi-table { min-width: 480px; }
+.mi-table td:nth-child(4) { overflow-wrap: anywhere; min-width: 160px; }
+.mi-row-none { color: var(--muted); }
+@media (max-width: 640px) { .mi-summary { grid-template-columns: 1fr; } }

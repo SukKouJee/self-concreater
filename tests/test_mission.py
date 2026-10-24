@@ -137,7 +137,7 @@ def test_submit_and_skip(home):
     mission.submit("clips/a.mp4", "right", "탑뷰 각도가 안정적이었다. 다음엔 손 위치를 화면 중앙에.", date="2026-10-20")
     fm, body = refstore.read_md(home / "missions" / "2026-10-20.md")
     assert fm["status"] == "submitted" and fm["difficulty"] == "right"
-    assert "clips/a.mp4" in body.split("## 제출")[1] and "탑뷰 각도가" in body.split("## 피드백")[1]
+    assert "a.mp4" in body.split("## 제출")[1] and "탑뷰 각도가" in body.split("## 피드백")[1]
 
     mission.save(mission_json(home), date="2026-10-21")
     mission.skip("야근", date="2026-10-21")
@@ -210,3 +210,152 @@ def test_main_routes(home):
     assert mission.main(["submit", "x.mp4", "--difficulty", "easy", "--feedback", "좋음", "--date", "2026-10-20"])["status"] == "submitted"
     assert mission.main(["context", "--date", "2026-10-21"])["history"][0]["difficulty"] == "easy"
     assert mission.main(["week", "2026-W43"])["missions"]["total"] == 1
+
+
+# --- 특성 테스트: 검증 메시지·submit 출력(변경 전후 동일해야 하는 것) ---------------------------
+
+@pytest.mark.parametrize("patch, expected", [
+    ({"title": "  "}, "미션이 형식에 맞지 않습니다: title이 비어 있습니다"),
+    ({"kind": "운동"}, "미션이 형식에 맞지 않습니다: kind='운동' (허용: 관찰, 분석, 기획, 촬영, 편집, 업로드)"),
+    ({"minutes": 60}, "미션이 형식에 맞지 않습니다: minutes=60 (10~30분)"),
+    ({"minutes": "20"}, "미션이 형식에 맞지 않습니다: minutes='20' (10~30분)"),
+    ({"steps": []}, "미션이 형식에 맞지 않습니다: steps가 비어 있습니다"),
+    ({"steps": ["  ", ""]}, "미션이 형식에 맞지 않습니다: steps가 비어 있습니다"),
+])
+def test_save_validation_messages_are_stable(home, patch, expected):
+    data = json.loads(mission_json(home).read_text("utf-8")) | patch
+    with pytest.raises(ScriptError) as exc:
+        mission.save(_json(home, "m2.json", data), date="2026-10-20")
+    assert exc.value.code == "invalid_mission" and exc.value.message == expected
+    assert not (home / "missions" / "2026-10-20.md").exists()
+
+
+def test_submit_output_and_sections_are_stable(home):
+    mission.save(mission_json(home), date="2026-10-20")
+    out = mission.submit("a.mp4", "right", " 좋았다 ", date="2026-10-20")
+    assert out == {"status": "submitted", "date": "2026-10-20", "difficulty": "right"}
+    _, body = refstore.read_md(home / "missions" / "2026-10-20.md")
+    assert "## 제출\n- 파일: a.mp4\n- 난이도: right\n\n## 피드백\n좋았다\n" in body.replace("\r\n", "\n")
+
+
+# --- validate_mission ------------------------------------------------------------
+
+@pytest.mark.parametrize("bad", [None, [], "미션", 3])
+def test_validate_mission_rejects_non_dict(bad):
+    with pytest.raises(ScriptError) as exc:
+        mission.validate_mission(bad)
+    assert exc.value.code == "invalid_mission"
+
+
+@pytest.mark.parametrize("steps", ["한 줄 문자열", {"a": 1}, 5])
+def test_validate_mission_rejects_non_list_steps(steps):
+    with pytest.raises(ScriptError) as exc:
+        mission.validate_mission({"title": "t", "kind": "촬영", "minutes": 20, "steps": steps})
+    assert exc.value.code == "invalid_mission" and "steps" in exc.value.message
+
+
+def test_validate_mission_rejects_bool_minutes():
+    with pytest.raises(ScriptError) as exc:
+        mission.validate_mission({"title": "t", "kind": "촬영", "minutes": True, "steps": ["a"]})
+    assert exc.value.code == "invalid_mission"
+
+
+def test_validate_mission_cleans_one_line_fields():
+    out = mission.validate_mission({
+        "title": "  탑뷰 \n 촬영 ", "kind": "촬영", "minutes": 20.0, "source": "  M-x-001 ", "why": "왜\n그래",
+        "steps": [" 하나 ", "", "둘\n셋"], "deliverable": "  클립  ", "extra": "버림"})
+    assert out == {"title": "탑뷰 촬영", "kind": "촬영", "minutes": 20, "source": "M-x-001", "why": "왜 그래",
+                   "steps": ["하나", "둘 셋"], "deliverable": "클립"}
+
+
+def test_validate_mission_blank_optionals_become_none():
+    out = mission.validate_mission({"title": "t", "kind": "관찰", "minutes": 15, "steps": ["a"], "source": " "})
+    assert out["source"] is None and out["why"] is None and out["deliverable"] is None
+
+
+def test_save_writes_cleaned_title(home):
+    data = json.loads(mission_json(home).read_text("utf-8")) | {"title": "  제목 \n 둘  "}
+    mission.save(_json(home, "m3.json", data), date="2026-10-20")
+    _, body = refstore.read_md(home / "missions" / "2026-10-20.md")
+    assert "### 제목 둘 (20분 · 촬영)" in body
+
+
+# --- submit note / 파일 줄 ---------------------------------------------------------
+
+def _submission(home, day):
+    _, body = refstore.read_md(home / "missions" / f"{day}.md")
+    return body.replace("\r\n", "\n").split("## 제출\n")[1].split("\n## 피드백")[0].strip()
+
+
+def test_submit_records_note_and_file_name_only(home):
+    mission.save(mission_json(home), date="2026-10-20")
+    mission.submit(r"C:\Users\me\clips\a.mp4", "easy", "f", date="2026-10-20", note=" 탑뷰로 \n 찍었다 ")
+    assert _submission(home, "2026-10-20") == "- 한 일: 탑뷰로 찍었다\n- 파일: a.mp4\n- 난이도: easy"
+
+
+def test_submit_with_empty_file_omits_file_line(home):
+    mission.save(mission_json(home), date="2026-10-20")
+    mission.submit("", "right", "f", date="2026-10-20", note="찍음")
+    assert _submission(home, "2026-10-20") == "- 한 일: 찍음\n- 난이도: right"
+
+
+def test_resubmit_replaces_submission(home):
+    mission.save(mission_json(home), date="2026-10-20")
+    mission.submit("", "hard", "첫", date="2026-10-20", note="처음")
+    mission.submit("", "easy", "둘째", date="2026-10-20", note="다시")
+    fm, body = refstore.read_md(home / "missions" / "2026-10-20.md")
+    assert fm["difficulty"] == "easy" and _submission(home, "2026-10-20") == "- 한 일: 다시\n- 난이도: easy"
+    assert "첫" not in body
+
+
+def test_cli_submit_accepts_note(home, capsys):
+    mission.save(mission_json(home), date="2026-10-20")
+    mission.main(["submit", "x.png", "--difficulty", "right", "--feedback", "f", "--note", "했다", "--date", "2026-10-20"])
+    assert "- 한 일: 했다" in _submission(home, "2026-10-20")
+
+
+# --- 쓰기 원자화 ---------------------------------------------------------------------
+
+def test_save_and_submit_write_through_write_atomic(home, monkeypatch):
+    calls = []
+    real = refstore.write_atomic
+    monkeypatch.setattr(refstore, "write_atomic", lambda p, d: (calls.append(p.name), real(p, d))[1])
+    mission.save(mission_json(home), date="2026-10-20")
+    mission.submit("", "right", "f", date="2026-10-20")
+    assert calls == ["2026-10-20.md", "2026-10-20.md"]
+    assert not list((home / "missions").glob("*.tmp"))
+
+
+def test_context_skips_record_with_broken_frontmatter(home):
+    mission.save(mission_json(home), date="2026-10-21")
+    (home / "missions" / "2026-10-20.md").write_text("---\n: [oops\n---\nx", encoding="utf-8")
+    assert [m["date"] for m in mission.context(date="2026-10-22")["history"]] == ["2026-10-21"]
+
+
+# --- fix round 1 ---------------------------------------------------------------------
+
+def _real_sections(home, day):
+    _, body = refstore.read_md(home / "missions" / f"{day}.md")
+    return [line for line in body.replace("\r\n", "\n").split("\n") if line.startswith("## ")]
+
+
+def test_refstore_escape_headings_exists():
+    assert refstore.escape_headings("a\n## b\n#태그") == "a\n\## b\n#태그"
+
+
+def test_submit_escapes_feedback_headings_across_resubmit(home):
+    mission.save(mission_json(home), date="2026-10-20")
+    for _ in range(2):
+        mission.submit("", "right", "좋았다\n## 가짜\n내용", date="2026-10-20", note="n")
+        assert _real_sections(home, "2026-10-20") == ["## 미션", "## 제출", "## 피드백"]
+    _, body = refstore.read_md(home / "missions" / "2026-10-20.md")
+    assert "\## 가짜" in body
+
+
+def test_submit_folds_file_name_and_clears_skip_reason(home):
+    mission.save(mission_json(home), date="2026-10-20")
+    mission.skip("야근", date="2026-10-20")
+    mission.submit("a\nb.png", "right", "f", date="2026-10-20", note="n")
+    fm, _ = refstore.read_md(home / "missions" / "2026-10-20.md")
+    assert fm["skip_reason"] is None and fm["status"] == "submitted"
+    assert "- 파일: a b.png" in _submission(home, "2026-10-20")
