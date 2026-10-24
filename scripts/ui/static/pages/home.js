@@ -73,6 +73,7 @@ function recentCard(items) {
     const label = KIND_LABELS[it.kind] || it.kind;
     const link = it.kind === "draft"
       ? h("a", { href: `#/draft/view/${encodeURIComponent(it.path)}` }, name)
+      : it.kind === "report" ? h("a", { href: "#/report" }, name)
       : h("a", { href: filesUrl(it.path), target: "_blank", rel: "noopener" }, name);
     const when = new Date(it.mtime * 1000).toLocaleString("ko-KR", { dateStyle: "short", timeStyle: "short" });
     ul.append(h("li", {}, h("span", { class: "tag" }, label), link, h("time", { class: "muted" }, when)));

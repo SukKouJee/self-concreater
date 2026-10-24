@@ -6,8 +6,9 @@ from tests.test_ui_server import client, no_browser  # noqa: F401  (fixture 재�
 MENU_NAMES = ["홈", "레퍼런스 추가", "레퍼런스 목록", "유형화", "리포트", "모티브", "기획안", "콘티", "진단", "미션"]
 # yt-draft is no longer a terminal-only item: the draft screen is a live route.
 # diagnose is live too: its terminal command no longer appears in the menu definition.
-# mission is live too: only the report item still shows a terminal command.
-COMMANDS = ["/yt-coach:yt-review"]
+# mission and report are live too: no menu item shows a terminal command any more, so COMMANDS is empty
+# (the report screen's profile hint uses /yt-coach:yt-init inside its own page).
+COMMANDS: list[str] = []
 
 
 def test_index_loads_modules(client):
@@ -485,3 +486,35 @@ def test_mission_page_served(client):
     assert status == 200
     assert "javascript" in headers["Content-Type"]
     assert "/api/mission/draft" in raw.decode("utf-8")
+
+
+def test_report_menu_is_live_route():
+    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    home = (STATIC_DIR / "pages" / "home.js").read_text(encoding="utf-8")
+    assert 'route: "#/report"' in app
+    assert 'soon: "report"' not in app
+    assert 'case "report"' in app
+    assert '"#/report"' in home
+
+
+def test_report_page_contract_and_safety():
+    js = (STATIC_DIR / "pages" / "report.js").read_text(encoding="utf-8")
+    for token in ["export async function mount", "export function unmount", "export function onCategory", "isCurrent()",
+                  "ctx.api(", "/api/report/list", "/api/report/build", "/api/review/weeks", "/api/review",
+                  "/api/review/write", "/api/review/save", "/api/review/apply", "kind=review", "job_id",
+                  "리포트 만들기", "새 탭에서 열기", "sandbox", "회고 쓰기", "다시 쓰기", "프로필에 반영",
+                  "tablist", "aria-selected", "ArrowRight", "renderMarkdown", "dropTitle", "markHandled",
+                  "aborted", "/yt-coach:yt-init", "#/typify", "이번 주 미션 기록이 없습니다", "회고 있음"]:
+        assert token in js, token
+    assert "allow-scripts" not in js
+    assert re.search(r'sandbox:\s*""', js)
+    for bad in ["innerHTML", "insertAdjacentHTML", "outerHTML", "confirm(", "alert(", "prompt("]:
+        assert bad not in js.replace("inline-confirm", ""), bad
+    assert not re.search(r"https?://", js)
+
+
+def test_report_page_served(client):
+    status, headers, raw = client.call("GET", "/static/pages/report.js")
+    assert status == 200
+    assert "javascript" in headers["Content-Type"]
+    assert "/api/report/build" in raw.decode("utf-8")
