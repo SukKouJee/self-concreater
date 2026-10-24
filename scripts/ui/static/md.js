@@ -12,8 +12,9 @@
 // Inline = { t: "text", v } | { t: "br" } | { t: "code", v }
 //        | { t: "strong" | "em", c: Inline[] }
 //        | { t: "ref", id, c }       link to videos/<id>.md, resolved by opts.refHref
-//        | { t: "link", href, c }    https YouTube link only; any other link keeps just its label text
-// Not supported on purpose: images, raw HTML, indented code, setext headings, _emphasis_, footnotes.
+//        | { t: "link", href, c }    https YouTube link only; any other link becomes plain text "label (url)"
+// renderMarkdown opts: refHref(id) -> href for ref links; dropTitle (string) drops a leading "# <title>" heading.
+// Not supported on purpose: images, raw HTML, indented code, setext headings, footnotes.
 import { h } from "./dom.js";
 
 const MAX_BLOCK_DEPTH = 8;
@@ -27,7 +28,9 @@ const HR = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
 const QUOTE = /^ {0,3}> ?/;
 const LIST = /^( *)([-*+]|\d{1,9}[.)])(?:[ \t]+|$)/;
 const DELIM_CELL = /^:?-+:?$/;
-const VIDEO_MD = /^(?:\.{1,2}\/)*videos\/([^/?#\s]+)\.md$/;
+const VIDEO_MD = /(?:^|\/)videos\/([^/?#\s]+)\.md$/;
+const HAS_SCHEME = /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i;
+const WORD_CHAR = /[\p{L}\p{N}]/u;
 
 // ---- block parsing ------------------------------------------------------------------------
 
@@ -205,12 +208,16 @@ function parseList(lines, start, depth) {
 
 // ---- inline parsing -----------------------------------------------------------------------
 
-function classifyLink(rawHref, children) {
+function destinationOf(rawHref) {
   let href = rawHref.trim();
   const ws = href.search(/\s/);
   if (ws > 0) href = href.slice(0, ws);       // drop an optional "title"
   if (href.startsWith("<") && href.endsWith(">")) href = href.slice(1, -1);
-  const video = VIDEO_MD.exec(href);
+  return href;
+}
+
+function classifyLink(href, children) {
+  const video = HAS_SCHEME.test(href) ? null : VIDEO_MD.exec(href);
   if (video) {
     let id = video[1];
     try { id = decodeURIComponent(id); } catch { /* keep the raw id */ }
@@ -223,11 +230,15 @@ function classifyLink(rawHref, children) {
   return null;
 }
 
-// Index of the ")" that closes a link destination (balanced inner parens), or -1.
+const NOT_A_LINK = -2;
+
+// Index of the ")" that closes a link destination (balanced inner parens); -1 if none exists in the rest of the
+// text (cacheable); NOT_A_LINK if a "[" shows up first (this opener only, not cacheable).
 function closingParen(s, from) {
   let level = 0;
   for (let k = from; k < s.length; k++) {
     const c = s[k];
+    if (c === "[") return NOT_A_LINK;
     if (c === "(") level++;
     else if (c === ")") {
       if (level === 0) return k;
@@ -243,12 +254,13 @@ function parseInline(s, depth) {
   let buf = "";
   let i = 0;
   // "no closing delimiter exists after here" caches keep unclosed markers linear
-  const noClose = { strong: false, em: false, paren: false, link: false };
+  const noClose = { strong: false, strong3: false, em: false, us: false, paren: false, link: false };
   const noCode = new Set();
   let linkClose = -1;
   const flush = () => { if (buf) { out.push({ t: "text", v: buf }); buf = ""; } };
   const nested = (text) => (depth + 1 > MAX_INLINE_DEPTH ? [{ t: "text", v: text }] : parseInline(text, depth + 1));
   const isSpace = (c) => c === undefined || c === " " || c === "\t";
+  const isWord = (c) => c !== undefined && WORD_CHAR.test(c);
 
   while (i < n) {
     const ch = s[i];
@@ -288,11 +300,12 @@ function parseInline(s, depth) {
         const width = run >= 3 ? 3 : 2;
         const marker = "*".repeat(width);
         let close = -1;
-        if (!noClose.strong) {
+        const cacheKey = width === 3 ? "strong3" : "strong";
+        if (!noClose[cacheKey]) {
           let from = i + width;
           for (;;) {
             const at = s.indexOf(marker, from);
-            if (at < 0) { noClose.strong = true; break; }
+            if (at < 0) { noClose[cacheKey] = true; break; }
             if (at > i + width && !isSpace(s[at - 1])) { close = at; break; }
             from = at + 1;
           }
@@ -332,6 +345,27 @@ function parseInline(s, depth) {
       continue;
     }
 
+    if (ch === "_" && depth < MAX_INLINE_DEPTH && !noClose.us && s[i + 1] !== "_" && s[i - 1] !== "_" &&
+        !isWord(s[i - 1]) && !isSpace(s[i + 1])) {
+      let close = -1;
+      let from = i + 1;
+      for (;;) {
+        const at = s.indexOf("_", from);
+        if (at < 0) { noClose.us = true; break; }
+        if (at > i + 1 && s[at - 1] !== "_" && s[at + 1] !== "_" && !isSpace(s[at - 1]) && !isWord(s[at + 1])) {
+          close = at;
+          break;
+        }
+        from = at + 1;
+      }
+      if (close > 0) {
+        flush();
+        out.push({ t: "em", c: nested(s.slice(i + 1, close)) });
+        i = close + 1;
+        continue;
+      }
+    }
+
     if (ch === "[" && !noClose.link && !noClose.paren) {
       if (linkClose < i) {
         linkClose = s.indexOf("](", i + 1);
@@ -341,18 +375,16 @@ function parseInline(s, depth) {
         const nextOpen = s.indexOf("[", i + 1);
         if (nextOpen < 0 || nextOpen > linkClose) {
           const end = closingParen(s, linkClose + 2);
-          if (end < 0) noClose.paren = true;
-          else {
-            const rawHref = s.slice(linkClose + 2, end);
-            if (!rawHref.includes("[")) {
-              const label = nested(s.slice(i + 1, linkClose));
-              const node = classifyLink(rawHref, label);
-              flush();
-              if (node) out.push(node);
-              else out.push(...label);
-              i = end + 1;
-              continue;
-            }
+          if (end === -1) noClose.paren = true;
+          else if (end !== NOT_A_LINK) {
+            const href = destinationOf(s.slice(linkClose + 2, end));
+            const label = nested(s.slice(i + 1, linkClose));
+            const node = classifyLink(href, label);
+            flush();
+            if (node) out.push(node);
+            else out.push(...label, { t: "text", v: ` (${href})` });   // keep the target visible, but not clickable
+            i = end + 1;
+            continue;
           }
         }
       }
@@ -372,8 +404,17 @@ const defaultRefHref = (id) => "#/refs/" + encodeURIComponent(id);
 export function renderMarkdown(text, opts = {}) {
   const refHref = typeof opts.refHref === "function" ? opts.refHref : defaultRefHref;
   const frag = document.createDocumentFragment();
-  for (const block of parseMarkdown(text)) frag.append(renderBlock(block, refHref));
+  const blocks = parseMarkdown(text);
+  const first = blocks[0];
+  // opts.dropTitle: skip a leading "# <title>" that only repeats the page heading
+  if (typeof opts.dropTitle === "string" && first && first.t === "heading" && first.level === 1 &&
+      plainText(first.c).trim() === opts.dropTitle.trim()) blocks.shift();
+  for (const block of blocks) frag.append(renderBlock(block, refHref));
   return frag;
+}
+
+function plainText(nodes) {
+  return nodes.map((n) => (n.t === "text" || n.t === "code" ? n.v : n.t === "br" ? " " : plainText(n.c))).join("");
 }
 
 function renderInline(nodes, refHref) {

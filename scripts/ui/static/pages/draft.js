@@ -312,7 +312,7 @@ function renderView(mine, d) {
       h("li", {}, h("span", { class: `lb-dot lb-${s.label}`, "aria-hidden": "true" }), `${sectionTitle(s)} ${fmtRange(s)}`))));
   }
   for (const part of d.body || []) {
-    const text = h("div", { class: "md" }, renderMarkdown(part.text || ""));
+    const text = h("div", { class: "md" }, renderMarkdown(part.text || "", { dropTitle: String(d.title) }));
     kids.push(h("section", { class: "ref-block" }, part.heading ? h("h2", {}, part.heading) : null, text));
   }
   const copy = h("button", { type: "button", class: "btn" }, "경로 복사");

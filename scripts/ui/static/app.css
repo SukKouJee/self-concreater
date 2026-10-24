@@ -419,6 +419,7 @@ code { background: var(--grid); padding: 1px 6px; border-radius: 4px; }
 .md-table-wrap { margin: 0 0 var(--sp-3); overflow-x: auto; border: 1px solid var(--grid); border-radius: var(--radius-sm); }
 .md table { border-collapse: collapse; width: 100%; font-size: 13px; }
 .md th, .md td { padding: 6px var(--sp-2); border-bottom: 1px solid var(--grid); text-align: left; vertical-align: top; }
+.md th, .md td { overflow-wrap: normal; word-break: keep-all; min-width: 4em; }
 .md th { font-weight: 600; color: var(--ink2); background: var(--surface); }
 .md tbody tr:last-child td { border-bottom: 0; }
 .ref-path { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin: var(--sp-5) 0 0; }

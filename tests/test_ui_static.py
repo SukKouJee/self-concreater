@@ -390,3 +390,10 @@ def test_md_css_covers_rendered_elements():
 def test_md_served(client):
     status, headers, raw = client.call("GET", "/static/md.js")
     assert status == 200 and "javascript" in headers["Content-Type"]
+
+
+def test_md_table_cells_scroll_instead_of_breaking_and_draft_drops_repeated_title():
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    assert re.search(r"\.md th, \.md td \{[^}]*word-break: keep-all[^}]*min-width: 4em", css)
+    draft = (STATIC_DIR / "pages" / "draft.js").read_text(encoding="utf-8")
+    assert "dropTitle: String(d.title)" in draft

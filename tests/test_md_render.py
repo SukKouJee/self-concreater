@@ -140,10 +140,10 @@ def test_youtube_links_are_external():
     "javascript:alert(1)", "data:text/html,x", "http://www.youtube.com/x", "https://evil.example/x",
     "https://youtube.com.evil.example/x", "//youtube.com/x", "/etc/passwd", "videos/x.txt", "JaVaScRiPt:alert(1)",
 ])
-def test_other_links_become_plain_text(href):
+def test_rejected_links_show_label_and_url_as_text(href):
     (p,) = parse(f"앞 [라벨]({href}) 뒤")
     assert set(types(p["c"])) == {"text"}
-    assert plain(p["c"]) == "앞 라벨 뒤"
+    assert plain(p["c"]) == f"앞 라벨 ({href}) 뒤"
 
 
 def test_escapes_are_literal():
@@ -176,7 +176,7 @@ def test_deep_nesting_is_capped_not_crashing():
 
 
 @pytest.mark.parametrize("unit", [
-    "**a ", "[", "`", "*x ", "- a\n", "> b\n", "| a | b |\n", "[a](", "[a](b) ", "  - n\n", "```\n",
+    "**a ", "***a ", "_a ", "[", "`", "*x ", "- a\n", "> b\n", "| a | b |\n", "[a](", "[a](b) ", "  - n\n", "```\n",
 ])
 def test_large_input_finishes_within_a_second(unit):
     text = (unit * (100_000 // len(unit)))[:100_000]
@@ -193,3 +193,95 @@ def test_real_draft_markdown_sample():
           "## 패키징\n- 훅 후보\n  - 이전 훅 대본:\n    > 자막: 옛날 훅\n")
     blocks = parse(md)
     assert [b["t"] for b in blocks] == ["heading", "p", "ul", "table", "heading", "ul"]
+
+
+def test_unbalanced_link_openers_finish_within_a_second():
+    import os
+    text = "[a](" * 20000 + ")" * 20000
+    done = subprocess.run([NODE, "--input-type=module", "-e", SCRIPT], env=dict(os.environ, MD_IN=text),
+                          capture_output=True, text=True, encoding="utf-8", timeout=60)
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout)["ms"] < 1000
+
+
+def test_underscore_emphasis_with_word_boundaries():
+    (p,) = parse("앞 _기울임_ 뒤")
+    assert types(p["c"]) == ["text", "em", "text"] and plain(p["c"]) == "앞 기울임 뒤"
+    for literal in ["a_b_c", "abc_-12", "snake_case_name", "_열림만", "x _ y _ z", "__두개__"]:
+        (p,) = parse(literal)
+        assert set(types(p["c"])) == {"text"} and plain(p["c"]) == literal, literal
+
+
+def test_strong_and_triple_caches_are_independent():
+    (p,) = parse("***a **b** c")
+    assert "strong" in types(p["c"])
+
+
+def test_video_link_variants():
+    (p,) = parse("[a](../refs/x/videos/a00.md) [b](/videos/b11.md)")
+    assert [n["id"] for n in p["c"] if n["t"] == "ref"] == ["a00", "b11"]
+    for bad in ["https://evil.example/videos/a.md", "//evil.example/videos/a.md", "ftp://h/videos/a.md"]:
+        (p,) = parse(f"[a]({bad})")
+        assert "ref" not in types(p["c"]), bad
+
+
+RENDER = """
+class N {
+  constructor(tag) { this.tag = tag; this.kids = []; this.attrs = {}; }
+  setAttribute(k, v) { this.attrs[k] = String(v); }
+  set className(v) { this.attrs.class = v; }
+  append(...kids) { for (const k of kids) { if (k instanceof N && k.tag === "#f") this.kids.push(...k.kids); else this.kids.push(k); } }
+  json() { return { tag: this.tag, attrs: this.attrs, kids: this.kids.map((k) => (typeof k === "string" ? k : k.json())) }; }
+}
+globalThis.document = { createElement: (t) => new N(t), createDocumentFragment: () => new N("#f") };
+const { renderMarkdown } = await import(%s);
+console.log(JSON.stringify(renderMarkdown(process.env.MD_IN, JSON.parse(process.env.MD_OPTS || "{}")).json()));
+""" % json.dumps((STATIC_DIR / "md.js").as_uri())
+
+
+def render(text: str, opts: dict | None = None):
+    import os
+    env = dict(os.environ, MD_IN=text, MD_OPTS=json.dumps(opts or {}))
+    done = subprocess.run([NODE, "--input-type=module", "-e", RENDER], env=env,
+                          capture_output=True, text=True, encoding="utf-8", timeout=30)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)["kids"]
+
+
+def find(nodes, tag):
+    found = []
+    for n in nodes:
+        if isinstance(n, dict):
+            if n["tag"] == tag:
+                found.append(n)
+            found += find(n["kids"], tag)
+    return found
+
+
+def test_render_links_and_attributes():
+    kids = render("[y](https://youtu.be/x) [r](videos/a%2000.md) [b](javascript:alert(1))")
+    ext, ref = find(kids, "a")
+    assert ext["attrs"] == {"href": "https://youtu.be/x", "target": "_blank", "rel": "noopener noreferrer"}
+    assert ref["attrs"] == {"href": "#/refs/a%2000"}
+    assert len(find(kids, "a")) == 2
+
+
+def test_render_heading_levels_are_clamped_to_h3_h6():
+    kids = render("# a\n\n## b\n\n#### c\n\n###### d")
+    assert [k["tag"] for k in kids] == ["h3", "h3", "h4", "h6"]
+
+
+def test_render_table_cell_keeps_literal_pipe():
+    kids = render("| a | b |\n|---|---|\n| x \| y | z |")
+    td = find(kids, "td")[0]
+    assert td["kids"] == ["x | y"]
+    assert find(kids, "th")[0]["attrs"] == {"scope": "col"}
+
+
+def test_render_drops_leading_title_heading_only_when_it_matches():
+    kids = render("# 내 기획안\n본문", {"dropTitle": "내 기획안"})
+    assert [k["tag"] for k in kids] == ["p"]
+    kids = render("# 다른 제목\n본문", {"dropTitle": "내 기획안"})
+    assert [k["tag"] for k in kids] == ["h3", "p"]
+    kids = render("### 내 기획안\n본문", {"dropTitle": "내 기획안"})
+    assert kids[0]["tag"] == "h3"
