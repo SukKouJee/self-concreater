@@ -11,7 +11,7 @@
 - 상태는 모두 `Job._lock` 아래에서 바뀐다. 바깥에는 `snapshot()`(깊은 복사)만 내준다.
 - 결정 대기: 작업 스레드가 `update(i, state="awaiting")` 뒤 `wait_decision(item_id)`로 Event를 기다리고,
   HTTP 스레드가 `decide(item_id, decision)`로 결정을 넣고 깨운다. Event는 먼저 오는 쪽이 만든다(경합 없음).
-- 같은 kind 중 `SINGLE_KINDS`(collect, typify, motif, draft, polish, srtfit, diagnose, mission, mission_feedback)는 진행 중(running/awaiting)인 작업이 하나뿐이다.
+- 같은 kind 중 `SINGLE_KINDS`(collect, typify, motif, draft, polish, srtfit, diagnose, mission, mission_feedback, review)는 진행 중(running/awaiting)인 작업이 하나뿐이다.
 """
 from __future__ import annotations
 
@@ -37,6 +37,7 @@ SINGLE_KINDS = {
     "diagnose": "이미 진단 설명을 받는 중입니다",
     "mission": "이미 미션을 만드는 중입니다",
     "mission_feedback": "이미 피드백을 받는 중입니다",
+    "review": "이미 회고를 쓰는 중입니다",
 }
 STOP_MESSAGE = "중단됨"
 
@@ -213,6 +214,21 @@ class Job:
             with self._lock:
                 if self._status in ACTIVE:
                     self._status = "done"
+
+
+def mark_saved(app: Any, job_id: Any, kind: str, item_id: str) -> None:
+    """미리보기 항목(id == item_id)이 아직 저장 대기면 저장됨으로 바꾼다. 없는 작업·다른 종류·다른 항목은 무시."""
+    if not isinstance(job_id, str):
+        return
+    try:
+        job = app.jobs.get(job_id)
+    except ScriptError:
+        return
+    if job.kind != kind:
+        return
+    item = job.item(0)
+    if item["id"] == item_id and item["state"] == "awaiting":
+        job.update(0, state="saved", ask=None)
 
 
 class JobManager:

@@ -11,7 +11,7 @@ import { h } from "/static/dom.js";
 
 const CATEGORY_KEY = "ytc.category";
 
-// Menu definition. `soon` items are 2차: a placeholder page that shows the terminal command.
+// Menu definition. No item uses `soon` now; the `soon` mechanism and #/soon/<key> placeholder page are kept but unused.
 const MENU = [
   { group: null, items: [{ name: "홈", route: "#/home" }] },
   {
@@ -25,7 +25,7 @@ const MENU = [
     group: "분석",
     items: [
       { name: "유형화", route: "#/typify" },
-      { name: "리포트", soon: "report", command: "/yt-coach:yt-review" },
+      { name: "리포트", route: "#/report" },
     ],
   },
   {
@@ -143,7 +143,8 @@ function markActive() {
       || (href === "#/conti" && hash.startsWith("#/conti/"))
       || (href === "#/draft" && hash.startsWith("#/draft/"))
       || (href === "#/diagnose" && hash.startsWith("#/diagnose/"))
-      || (href === "#/refs" && hash.startsWith("#/refs/"));
+      || (href === "#/refs" && hash.startsWith("#/refs/"))
+      || (href === "#/report" && hash.startsWith("#/report/"));
     if (active) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
   }
@@ -254,6 +255,12 @@ function parseHash() {
     case "typify": return { page: "typify", params: {} };
     case "motif": return { page: "motif", params: {} };
     case "mission": return { page: "mission", params: {} };
+    case "report": {
+      // #/report = category report tab; #/report/review[/<week>] = weekly review tab.
+      const [sub, week] = tail.split("/");
+      if (sub === "review") return { page: "report", params: { tab: "review", week: week || null } };
+      return { page: "report", params: { tab: "report" } };
+    }
     case "draft": {
       // #/draft | #/draft/view/<encoded path> | #/draft/new[/<encoded source id>]; anything else is the list.
       const [sub, ...more] = tail.split("/");
