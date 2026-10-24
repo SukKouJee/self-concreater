@@ -356,3 +356,18 @@ def test_star_failure_after_add_returns_warning(client, home, monkeypatch):
     status, body = client.json("POST", "/api/motif/save", {"category": CAT, "cards": CARDS[:1], "star": [0]})
     assert status == 200 and body["ids"] == ["M-mukbang-001"] and body["starred"] == []
     assert "★" in body["warning"] and len(body["cards"]) == 1
+
+
+def test_mark_saved_ignores_other_category_job():
+    from types import SimpleNamespace
+
+    from scripts.ui import api_motif
+    updates = []
+    job = SimpleNamespace(kind="motif", category="other", item=lambda i: {"state": "awaiting"},
+                          update=lambda *a, **k: updates.append((a, k)))
+    req = SimpleNamespace(app=SimpleNamespace(jobs=SimpleNamespace(get=lambda _id: job)))
+    api_motif._mark_saved(req, "j1", CAT)
+    assert updates == []
+    job.category = CAT
+    api_motif._mark_saved(req, "j1", CAT)
+    assert updates and updates[0][1]["state"] == "saved"

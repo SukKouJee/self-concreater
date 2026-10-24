@@ -257,3 +257,36 @@ def test_cli_invalid_category(home):
     code, payload = cli(home, "count", "../etc")
     assert code != 0
     assert payload["error"] == "invalid_category"
+
+
+def test_write_atomic_retries_locked_replace(tmp_path, monkeypatch):
+    target = tmp_path / "index.md"
+    target.write_text("old", encoding="utf-8")
+    real, calls = os.replace, []
+
+    def flaky(src, dst):
+        calls.append(1)
+        if len(calls) < 3:
+            raise PermissionError("locked")
+        real(src, dst)
+
+    monkeypatch.setattr(refstore.os, "replace", flaky)
+    monkeypatch.setattr(refstore.time, "sleep", lambda s: None)
+    refstore.write_atomic(target, b"new")
+    assert target.read_bytes() == b"new" and len(calls) == 3
+    assert not (tmp_path / "index.md.tmp").exists()
+
+
+def test_write_atomic_cleans_tmp_when_replace_keeps_failing(tmp_path, monkeypatch):
+    target = tmp_path / "index.md"
+    target.write_text("old", encoding="utf-8")
+
+    def locked(src, dst):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(refstore.os, "replace", locked)
+    monkeypatch.setattr(refstore.time, "sleep", lambda s: None)
+    with pytest.raises(PermissionError):
+        refstore.write_atomic(target, b"new")
+    assert target.read_text(encoding="utf-8") == "old"
+    assert not (tmp_path / "index.md.tmp").exists()

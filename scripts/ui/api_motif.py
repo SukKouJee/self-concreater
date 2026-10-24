@@ -143,7 +143,7 @@ def _star_indexes(value: Any, count: int) -> list[int]:
     return sorted(set(value))
 
 
-def _mark_saved(req: Request, job_id: Any) -> None:
+def _mark_saved(req: Request, job_id: Any, category: str) -> None:
     """미리보기 항목이 아직 저장 대기면 저장됨으로 바꾼다. 없는 작업·다른 종류는 무시."""
     if not isinstance(job_id, str):
         return
@@ -151,7 +151,7 @@ def _mark_saved(req: Request, job_id: Any) -> None:
         job = req.app.jobs.get(job_id)
     except ScriptError:
         return
-    if job.kind == KIND and job.item(0)["state"] == "awaiting":
+    if job.kind == KIND and job.category == category and job.item(0)["state"] == "awaiting":
         job.update(0, state="saved", ask=None)
 
 
@@ -186,7 +186,7 @@ def _save(req: Request) -> dict:
                 break
             starred.append(ids[i])
         details = motif.card_details(category)
-    _mark_saved(req, job_id)
+    _mark_saved(req, job_id, category)
     result: dict = {"ids": ids, "starred": starred, "cards": details}
     if warning:
         result["warning"] = warning

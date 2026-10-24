@@ -15,6 +15,7 @@ import json
 import os
 import re
 import threading
+import time
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -73,11 +74,28 @@ def _write_text(path: Path, text: str) -> None:
     path.write_bytes(text.encode("utf-8"))
 
 
+REPLACE_RETRIES = 5
+
+
 def write_atomic(path: Path, data: bytes) -> None:
-    """같은 폴더의 임시 파일에 쓴 뒤 교체한다. 읽는 쪽이 반쯤 쓴 파일을 보지 않는다."""
+    """같은 폴더의 임시 파일에 쓴 뒤 교체한다. 읽는 쪽이 반쯤 쓴 파일을 보지 않는다.
+
+    Windows에서는 다른 프로그램(읽는 쪽, 백신, 동기화)이 잠깐 열고 있으면 교체가 거부되므로 짧게 다시 시도한다.
+    """
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_bytes(data)
-    os.replace(tmp, path)
+    try:
+        tmp.write_bytes(data)
+        for attempt in range(REPLACE_RETRIES):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if attempt == REPLACE_RETRIES - 1:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def read_md(path: Path) -> tuple[dict, str]:
@@ -247,9 +265,9 @@ def list_categories() -> list[dict]:
 def update_stage(category: str) -> dict:
     cat = existing_category_dir(category)
     index = cat / "index.md"
-    ref, mine = _role_counts(cat)
-    section = stage_text(ref, mine)
     with INDEX_LOCK:
+        ref, mine = _role_counts(cat)          # 락 안에서 세야 늦게 쓰는 쪽이 낡은 단계를 덮어쓰지 않는다
+        section = stage_text(ref, mine)
         text = _read_text(index)
         nl = "\r\n" if text.startswith("---\r\n") else "\n"
         fm, body = split_frontmatter(text)
