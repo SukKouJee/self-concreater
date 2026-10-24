@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "yt-coach-library": {
+      "command": "python",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/library_mcp.py"]
+    }
+  }
+}

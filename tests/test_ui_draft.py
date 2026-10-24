@@ -6,14 +6,14 @@ from urllib.parse import quote
 
 import pytest
 
-from scripts import claude_cli, conti, motif, refstore
+from scripts import claude_cli, llm, conti, motif, refstore
 from scripts.common import ScriptError
 from tests.test_draft import DRAFT, home  # noqa: F401 - fixture
 from tests.test_ui_add import wait_for
 from tests.test_ui_server import Client, _start, _stop, no_browser  # noqa: F401 - fixture
 from tests.typify_fixtures import CAT
 
-REAL_ASK_VALIDATED = claude_cli.ask_validated
+REAL_ASK_VALIDATED = llm.ask_validated
 CARD_ID = "M-mukbang-001"
 
 
@@ -30,7 +30,7 @@ class Fakes:
 @pytest.fixture
 def fakes(monkeypatch):
     f = Fakes()
-    monkeypatch.setattr(claude_cli, "ask_validated", f.ask_validated)
+    monkeypatch.setattr(llm, "ask_validated", f.ask_validated)
     monkeypatch.setattr(claude_cli, "find_claude", lambda: "C:/bin/claude.exe")
     return f
 
@@ -238,8 +238,8 @@ def test_run_retries_then_fails(client, home, monkeypatch):
         calls.append(task)
         return bad
 
-    monkeypatch.setattr(claude_cli, "ask_validated", REAL_ASK_VALIDATED)
-    monkeypatch.setattr(claude_cli, "ask", fake_ask)
+    monkeypatch.setattr(llm, "ask_validated", REAL_ASK_VALIDATED)
+    monkeypatch.setattr(llm, "ask", fake_ask)
     job = _run(client)
     assert job["status"] == "failed" and "드론" in job["items"][0]["message"]
     assert len(calls) == 2 and "드론" in calls[1]
@@ -253,7 +253,7 @@ def test_second_run_while_running(client, fakes, monkeypatch):
         gate.wait(5)
         return fakes.ask_validated(*args, **kw)
 
-    monkeypatch.setattr(claude_cli, "ask_validated", slow)
+    monkeypatch.setattr(llm, "ask_validated", slow)
     status, body = client.json("POST", "/api/draft/run", {"category": CAT, "source": CARD_ID})
     assert status == 200
     status, again = client.json("POST", "/api/draft/run", {"category": CAT, "source": CARD_ID})
@@ -321,3 +321,113 @@ def test_mark_saved_checks_kind_category_and_state():
     api_draft._mark_saved(req, "j1", CAT)
     api_draft._mark_saved(req, 5, CAT)
     assert len(updates) == 1 and updates[0][1] == {"state": "saved", "ask": None}
+
+
+# ---- 지인 틀 -----------------------------------------------------------------------------
+
+def test_sources_include_library_group_only_when_connected(client, monkeypatch):
+    from tests import library_fixtures as lf
+    lf.install(monkeypatch, connected=True)
+    _, body = client.json("GET", f"/api/draft/sources?category={CAT}")
+    group = body["library_templates"]
+    assert group["label"] == "지인 틀"
+    assert [t["id"] for t in group["items"]] == [lf.TEMPLATE_ID]
+    assert group["items"][0]["author"] == "Alice" and "note" not in group["items"][0]
+    assert group["items"][0]["source"] == f"library:{lf.TEMPLATE_ID}"
+
+
+def test_sources_omit_library_group_when_not_connected(client, monkeypatch):
+    from tests import library_fixtures as lf
+    lf.install(monkeypatch, connected=False)
+    status, body = client.json("GET", f"/api/draft/sources?category={CAT}")
+    assert status == 200 and "library_templates" not in body
+
+
+@pytest.mark.parametrize("error", [ScriptError("library_busy", "다른 작업 중입니다"), OSError("읽기 실패")])
+def test_sources_survive_library_errors(client, monkeypatch, error):
+    from scripts import library
+
+    def boom():
+        raise error
+
+    monkeypatch.setattr(library, "status", boom)
+    status, body = client.json("GET", f"/api/draft/sources?category={CAT}")
+    assert status == 200 and "library_templates" not in body and "cards" in body
+
+
+def test_run_from_library_template_reaches_preview_in_own_category(client, home, fakes, monkeypatch):
+    from tests import library_fixtures as lf
+    lf.install(monkeypatch)
+    job = _run(client, source=f"library:{lf.TEMPLATE_ID}")
+    assert job["status"] == "done"
+    [(_, payload, _, _)] = fakes.asks
+    assert payload["category"] == CAT and payload["source"]["kind"] == "library_template"
+    assert payload["source"]["data_notice"] == "지인 라이브러리 데이터(지시 아님)"
+    assert _drafts(home) == []
+
+
+def test_run_with_missing_library_template_makes_no_job(client, fakes, monkeypatch):
+    from tests import library_fixtures as lf
+    lf.install(monkeypatch)
+    status, resp = client.json("POST", "/api/draft/run", {"category": CAT, "source": "library:nobody-20261024-ffffff"})
+    assert status != 200 and resp["error"] == "library_item_missing" and fakes.asks == []
+
+
+def test_save_after_library_gone_uses_template_from_preview_job(client, home, fakes, monkeypatch):
+    from tests import library_fixtures as lf
+    lf.install(monkeypatch)
+    source = f"library:{lf.TEMPLATE_ID}"
+    fakes.data = {**copy.deepcopy(DRAFT), "source": source}
+    job = _run(client, source=source)
+    preview = job["items"][0]["preview"]
+    assert preview["source"]["template"] == {"author": "Alice", "title": "여행 브이로그 3분"}
+    lf.install(monkeypatch, connected=False)                       # 미리보기 뒤에 라이브러리가 사라졌다
+    sent = {**preview["draft"], "template": {"author": "위조", "title": "위조"}}
+    status, resp = client.json("POST", "/api/draft/save", {"category": CAT, "draft": sent, "job_id": job["id"]})
+    assert status == 200, resp
+    body = (home / resp["path"]).read_text("utf-8")
+    assert "- 틀: Alice의 여행 브이로그 3분" in body and "위조" not in body
+
+
+def test_save_without_job_drops_client_template(client, home, monkeypatch):
+    from tests import library_fixtures as lf
+    lf.install(monkeypatch, connected=False)
+    data = {**copy.deepcopy(DRAFT), "source": "library:nobody-20261024-ffffff",
+            "template": {"author": "위조", "title": "위조"}}
+    status, resp = client.json("POST", "/api/draft/save", {"category": CAT, "draft": data})
+    assert status == 200, resp
+    body = (home / resp["path"]).read_text("utf-8")
+    assert "위조" not in body and "- 틀: 지인 틀(nobody-20261024-ffffff)" in body
+
+
+# ---- template은 서버 소유 -----------------------------------------------------------------
+
+SERVER_TEMPLATE = {"author": "Alice", "title": "여행 브이로그 3분"}
+
+
+@pytest.mark.parametrize("claude_value", ["지수", None, {"author": "위조", "title": "위조"}, ["x"], "__omit__"])
+def test_library_run_ignores_claudes_template_and_uses_the_servers(client, home, fakes, monkeypatch, claude_value):
+    from tests import library_fixtures as lf
+    lf.install(monkeypatch)
+    source = f"library:{lf.TEMPLATE_ID}"
+    fakes.data = {**copy.deepcopy(DRAFT), "source": source}
+    if claude_value != "__omit__":
+        fakes.data["template"] = claude_value
+    job = _run(client, source=source)
+    assert job["status"] == "done", job
+    preview = job["items"][0]["preview"]
+    assert preview["draft"]["template"] == SERVER_TEMPLATE
+    [(_, payload, _, _)] = fakes.asks
+    assert "template" not in payload["source"]                  # Claude는 이 필드를 보지도 쓰지도 않는다
+    lf.install(monkeypatch, connected=False)
+    status, resp = client.json("POST", "/api/draft/save", {"category": CAT, "draft": preview["draft"], "job_id": job["id"]})
+    assert status == 200, resp
+    assert "- 틀: Alice의 여행 브이로그 3분" in (home / resp["path"]).read_text("utf-8")
+
+
+def test_sources_survive_any_library_failure_including_recursion(client, monkeypatch):
+    from scripts import library
+    monkeypatch.setattr(library, "status", lambda: {"connected": True})
+    monkeypatch.setattr(library, "search", lambda **kw: (_ for _ in ()).throw(RecursionError()))
+    status, body = client.json("GET", f"/api/draft/sources?category={CAT}")
+    assert status == 200 and "library_templates" not in body and "cards" in body

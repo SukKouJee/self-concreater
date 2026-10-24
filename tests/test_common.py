@@ -125,3 +125,12 @@ def test_category_name_is_validated(monkeypatch, tmp_path, bad):
     with pytest.raises(common.ScriptError) as exc:
         common.category_dir(bad)
     assert exc.value.code == "invalid_category"
+
+
+def test_scrub_masks_credentials_and_absolute_paths(tmp_path, monkeypatch):
+    from scripts.common import mask_credentials, scrub
+    monkeypatch.setenv("YT_COACH_HOME", str(tmp_path))
+    assert mask_credentials("https://user:tok@github.com/x.git") == "https://***@github.com/x.git"
+    out = scrub(f"실패 {tmp_path}\\workspace https://u:t@h.com/x.git C:\\Users\\kim\\a.md refs/heads/main")
+    assert "tok" not in out and "u:t" not in out and str(tmp_path) not in out and "kim" not in out
+    assert "<작업 폴더>" in out and "refs/heads/main" in out

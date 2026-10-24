@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-from scripts import claude_cli, mission, refstore
+from scripts import claude_cli, llm, mission, refstore
 from scripts.common import ScriptError
 from scripts.ui import api_report
 from tests.test_mission import PROFILE
@@ -20,7 +20,7 @@ LF_PROFILE = PROFILE.replace("\r\n", "\n")
 
 
 class FakeAsk:
-    """claude_cli.ask를 대신한다(ask_validated의 재시도 경로는 진짜). replies가 있으면 차례로 쓴다."""
+    """llm.ask를 대신한다(ask_validated의 재시도 경로는 진짜). replies가 있으면 차례로 쓴다."""
 
     def __init__(self):
         self.calls = []
@@ -47,7 +47,7 @@ def home(monkeypatch, tmp_path):
 @pytest.fixture
 def fake_ask(monkeypatch, home):
     f = FakeAsk()
-    monkeypatch.setattr(claude_cli, "ask", f)
+    monkeypatch.setattr(llm, "ask", f)
     monkeypatch.setattr(claude_cli, "find_claude", lambda: "C:/bin/claude.exe")
     return f
 

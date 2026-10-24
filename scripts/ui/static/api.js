@@ -1,4 +1,4 @@
-// JSON fetch helper. Throws {status, error, message} on failure (error "aborted" when signal fires).
+// JSON fetch helper. Throws {status, error, message, data} on failure (error "aborted" when signal fires).
 const BAD_TOKEN_TEXT = "서버가 다시 켜졌습니다. 터미널에 나온 새 주소로 여세요";
 
 export function showBanner(text) {
@@ -36,6 +36,7 @@ export async function api(method, path, body, signal) {
       status: res.status,
       error: (data && data.error) || "http_error",
       message: (data && data.message) || `요청이 실패했습니다 (${res.status})`,
+      data,   // full error body (extra fields such as shared_id / push_unknown)
     };
     if (res.status === 403 && err.error === "bad_token") {
       err.message = BAD_TOKEN_TEXT;

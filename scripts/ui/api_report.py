@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from scripts import claude_cli, mission, motif, refstore, report
+from scripts import claude_cli, llm, mission, motif, refstore, report
 from scripts.common import ScriptError, work_root, workspace_dir
 from scripts.ui.api_refs import _body_parts
 from scripts.ui.jobs import Job, mark_saved, new_item
@@ -164,7 +164,7 @@ def run_write(week: str) -> Any:
         payload = mission.week(week)
         job.update(0, step="claude")
         job.check_cancelled()
-        _, result = claude_cli.ask_validated(
+        _, result = llm.ask_validated(
             [claude_cli.SKILLS_DIR / "yt-mission" / "SKILL.md"], payload, REVIEW_TASK, mission.validate_review,
             schema=REVIEW_SCHEMA,
         )
@@ -177,7 +177,7 @@ def run_write(week: str) -> Any:
 @route("POST", "/api/review/write")
 def _write(req: Request) -> dict:
     week = _week(req.json.get("week"))
-    claude_cli.find_claude()                          # claude가 없으면 작업을 만들지 않는다
+    llm.check()                          # claude가 없으면 작업을 만들지 않는다
     items = [new_item(week, title=week, step="stats")]
     job = req.app.jobs.start(KIND, run_write(week), items=items)
     return {"job": job.snapshot()}

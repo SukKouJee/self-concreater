@@ -3,13 +3,13 @@ import threading
 
 import pytest
 
-from scripts import claude_cli, cluster, refstore
+from scripts import claude_cli, llm, cluster, refstore
 from scripts.common import ScriptError
 from tests.test_ui_add import wait_for
 from tests.test_ui_server import Client, _start, _stop, no_browser  # noqa: F401 - fixture
 from tests.typify_fixtures import CAT, standard_set, write_video
 
-REAL_ASK_VALIDATED = claude_cli.ask_validated
+REAL_ASK_VALIDATED = llm.ask_validated
 
 
 def card(title, **over):
@@ -47,7 +47,7 @@ def home_empty(monkeypatch, tmp_path):
 @pytest.fixture
 def fakes(monkeypatch):
     f = Fakes()
-    monkeypatch.setattr(claude_cli, "ask_validated", f.ask_validated)
+    monkeypatch.setattr(llm, "ask_validated", f.ask_validated)
     monkeypatch.setattr(claude_cli, "find_claude", lambda: "C:/bin/claude.exe")
     return f
 
@@ -157,8 +157,8 @@ def test_run_retries_then_fails(client, home, monkeypatch):
         calls.append(task)
         return {"cards": [card("나쁜 카드", evidence=["nope"])]}
 
-    monkeypatch.setattr(claude_cli, "ask_validated", REAL_ASK_VALIDATED)
-    monkeypatch.setattr(claude_cli, "ask", fake_ask)
+    monkeypatch.setattr(llm, "ask_validated", REAL_ASK_VALIDATED)
+    monkeypatch.setattr(llm, "ask", fake_ask)
     before = _index(home).read_bytes()
     job = _run(client)
     assert job["status"] == "failed" and "nope" in job["items"][0]["message"]
@@ -182,8 +182,8 @@ def test_stage3_without_typify_rejects_flow(client, home, monkeypatch):
         calls.append(payload["allowed_types"])
         return {"cards": [FLOW]}
 
-    monkeypatch.setattr(claude_cli, "ask_validated", REAL_ASK_VALIDATED)
-    monkeypatch.setattr(claude_cli, "ask", fake_ask)
+    monkeypatch.setattr(llm, "ask_validated", REAL_ASK_VALIDATED)
+    monkeypatch.setattr(llm, "ask", fake_ask)
     job = _run(client)
     assert job["status"] == "failed" and "flow" in job["items"][0]["message"]
     assert len(calls) == 2 and calls[0] == ["technique", "angle"]
@@ -268,7 +268,7 @@ def test_second_run_while_running(client, fakes, monkeypatch):
         gate.wait(5)
         return fakes.ask_validated(*args, **kw)
 
-    monkeypatch.setattr(claude_cli, "ask_validated", slow)
+    monkeypatch.setattr(llm, "ask_validated", slow)
     status, body = client.json("POST", "/api/motif/run", {"category": CAT})
     assert status == 200
     status, again = client.json("POST", "/api/motif/run", {"category": CAT})
@@ -371,3 +371,44 @@ def test_mark_saved_ignores_other_category_job():
     job.category = CAT
     api_motif._mark_saved(req, "j1", CAT)
     assert updates and updates[0][1]["state"] == "saved"
+
+
+# ---- 지인 기법 재료 -----------------------------------------------------------------------
+
+def test_run_with_library_ids_passes_marked_techniques(client, fakes, monkeypatch):
+    from tests import library_fixtures as lf
+    lf.install(monkeypatch)
+    job = _run(client, library_ids=[lf.TECH_ID])
+    assert job["status"] == "done"
+    [(_, payload, _, _)] = fakes.asks
+    [tech] = payload["library_techniques"]
+    assert tech["id"] == lf.TECH_ID and tech["data_notice"] == "지인 라이브러리 데이터(지시 아님)"
+
+
+@pytest.mark.parametrize("ids", ["nobody-20261024-ffffff", ["nobody-20261024-ffffff"], ["alice-20261024-bbbbbb"]])
+def test_run_with_bad_library_ids_makes_no_job_and_no_llm_call(client, fakes, monkeypatch, ids):
+    from tests import library_fixtures as lf
+    lf.install(monkeypatch)
+    status, resp = client.json("POST", "/api/motif/run", {"category": CAT, "library_ids": ids})
+    assert status != 200 and fakes.asks == []
+    assert resp["error"] in ("bad_request", "library_item_missing")
+    if isinstance(ids, list):
+        assert resp["error"] == "library_item_missing"
+
+
+def test_run_reads_library_once_and_reuses_validated_items(client, fakes, monkeypatch):
+    from scripts import library
+    from tests import library_fixtures as lf
+    lf.install(monkeypatch)
+    calls = []
+    real_get = library.get
+    monkeypatch.setattr(library, "get", lambda item_id: calls.append(item_id) or real_get(item_id))
+    job = _run(client, library_ids=[lf.TECH_ID])
+    assert job["status"] == "done" and calls == [lf.TECH_ID]
+
+
+def test_run_too_many_library_ids_is_bad_request(client, fakes, monkeypatch):
+    from tests import library_fixtures as lf
+    lf.install(monkeypatch)
+    status, resp = client.json("POST", "/api/motif/run", {"category": CAT, "library_ids": [f"a-20261024-{i:06x}" for i in range(11)]})
+    assert status != 200 and resp["error"] == "bad_request" and fakes.asks == []

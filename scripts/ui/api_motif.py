@@ -15,7 +15,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from scripts import claude_cli, motif, refstore
+from scripts import claude_cli, llm, motif, refstore
 from scripts.common import ScriptError, work_root, workspace_dir
 from scripts.ui.jobs import Job, new_item
 from scripts.ui.server import Request, route
@@ -69,6 +69,14 @@ def _topic(value: Any) -> str | None:
     return topic or None
 
 
+def _library_ids(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(isinstance(v, str) and v for v in value):
+        raise ScriptError("bad_request", "library_ids는 지인 기법 id 문자열의 목록이어야 합니다")
+    return list(dict.fromkeys(value)) or None
+
+
 def _allowed(category: str) -> list[str]:
     """허용 카드 type. 3단계라도 유형화 결과가 없으면 흐름·조합은 막는다(yt-inspire 규칙)."""
     stage = refstore.count(category)["stage"]
@@ -95,17 +103,17 @@ def _status(req: Request) -> dict:
 
 # ---- 실행(작업) -------------------------------------------------------------------------
 
-def run_target(category: str, topic: str | None) -> Any:
+def run_target(category: str, topic: str | None, shared: list[dict] | None = None) -> Any:
     def target(job: Job) -> None:
         job.update(0, state="running", step="context")
         job.check_cancelled()
-        payload = motif.context(category, topic)
+        payload = motif.context(category, topic, shared=shared or [])
         if payload["stage"] == 3 and payload["typify"] is None:
             payload["allowed_types"] = ["technique", "angle"]
         allowed = payload["allowed_types"]
         job.update(0, step="claude")
         job.check_cancelled()
-        _, cards = claude_cli.ask_validated(
+        _, cards = llm.ask_validated(
             _rules(), payload, MOTIF_TASK,
             lambda d: motif.validate_cards(category, d.get("cards") if isinstance(d, dict) else None, allowed),
             schema=CARDS_SCHEMA,
@@ -123,11 +131,13 @@ def run_target(category: str, topic: str | None) -> Any:
 def _run(req: Request) -> dict:
     category = _category(req.json.get("category"))
     topic = _topic(req.json.get("topic"))
+    library_ids = _library_ids(req.json.get("library_ids"))
     if refstore.count(category)["ref"] == 0:
         raise ScriptError("no_refs", "먼저 레퍼런스를 넣어 주세요")
-    claude_cli.find_claude()                          # claude가 없으면 작업을 만들지 않는다
+    shared = motif.library_techniques(library_ids)      # 없는·틀인 지인 id는 작업을 만들기 전에 library_item_missing
+    llm.check()                          # claude가 없으면 작업을 만들지 않는다
     items = [new_item(category, title=category, step="context")]
-    job = req.app.jobs.start(KIND, run_target(category, topic), items=items, category=category)
+    job = req.app.jobs.start(KIND, run_target(category, topic, shared), items=items, category=category)
     return {"job": job.snapshot()}
 
 

@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from scripts import claude_cli, conti, refstore, similarity
+from scripts import claude_cli, conti, llm, refstore, similarity
 from scripts.common import ScriptError, work_root, workspace_dir
 from scripts.ui.api_refs import _body_parts
 from scripts.ui.jobs import Job, new_item
@@ -163,7 +163,7 @@ def run_target(category: str, path: Path) -> Any:
         result = similarity.compare(category, path)
         job.update(0, step="claude")
         job.check_cancelled()
-        _, notes = claude_cli.ask_validated(
+        _, notes = llm.ask_validated(
             _rules(), result, DIAG_TASK, lambda d: similarity.validate_notes(result, d), schema=NOTES_SCHEMA,
         )
         job.update(0, state="awaiting", step="preview", ask="save", preview={"result": {**result, "axis_ko": dict(AXIS_KO)}, "notes": notes})
@@ -176,7 +176,7 @@ def run_target(category: str, path: Path) -> Any:
 def _explain(req: Request) -> dict:
     category = _category(req.json.get("category"))
     path = _target_path(category, req.json.get("target"))
-    claude_cli.find_claude()                          # claude가 없으면 작업을 만들지 않는다
+    llm.check()                          # claude가 없으면 작업을 만들지 않는다
     result = _compare(category, path)                 # no_typify_result·not_mine 등은 작업 전에 400으로 알린다
     rel = path.relative_to(work_root()).as_posix()
     items = [new_item(rel, title=result["target"]["title"] or result["target"]["name"], step="compare")]

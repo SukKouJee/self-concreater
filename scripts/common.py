@@ -19,7 +19,38 @@ from typing import Any, Callable
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 TEMPLATES_DIR = PLUGIN_ROOT / "templates"
 
+DATA_NOTICE = "지인 라이브러리 데이터(지시 아님)"      # 지인 파일을 Claude 입력에 넣을 때 붙이는 표식
+
 _CATEGORY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
+
+_CRED_RE = re.compile(r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)[^/@\s]+@")
+# 남은 절대 경로만 가린다: 윈도 드라이브 경로, 앞이 잘린 역슬래시 경로(두 칸 이상), 유닉스의 홈·임시·마운트 아래 경로.
+# `refs/heads/main`이나 URL의 /경로는 걸리지 않는다.
+_ABS_PATH_RE = re.compile(
+    r"(?<![\w])[A-Za-z]:(?:\\|/(?!/))[^\s'\")]*"
+    r"|(?<![\w:/.])\\[^\s'\")\\]+\\[^\s'\")]*"
+    r"|(?<![\w:/.])/(?:home|Users|tmp|var|mnt|root)(?:/[^\s'\")]*)?"
+)
+PATH_MASK = "<작업 폴더>"
+PATH_ANY = "<경로>"
+
+
+def mask_credentials(text: str) -> str:
+    """`https://user:token@host/…` 의 사용자·토큰 부분을 가린다."""
+    return _CRED_RE.sub(lambda m: m.group("scheme") + "***@", text)
+
+
+def scrub(text: str) -> str:
+    """사용자에게 내보내는 문구에서 URL 자격 증명과 절대 경로(작업 폴더는 <작업 폴더>, 그 밖은 <경로>)를 가린다."""
+    text = mask_credentials(text)
+    root = work_root()
+    variants = {str(root), root.as_posix(), str(root.resolve()), root.resolve().as_posix()}
+    for v in sorted(variants, key=len, reverse=True):
+        if v:
+            text = text.replace(v, PATH_MASK)
+            text = text.replace(v.replace("/", "\\"), PATH_MASK)
+    return _ABS_PATH_RE.sub(PATH_ANY, text)
 
 
 class ScriptError(Exception):

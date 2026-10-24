@@ -287,3 +287,107 @@ def test_save_pipe_script_line_round_trips(home):
     out = draft.save(CAT, draft_file(home, data))
     parsed = conti.parse_draft(home / out["path"])["sections"][0]
     assert parsed["script"] == "말: 가\n| 표처럼 보이는 줄" and len(parsed["shots"]) == 1
+
+
+# --- 지인 틀 재료 ---------------------------------------------------------------------
+
+def test_context_from_library_template_wraps_friend_data(home, monkeypatch):
+    from tests import library_fixtures as lf
+    lf.install(monkeypatch)
+    ctx = draft.context(CAT, f"library:{lf.TEMPLATE_ID}")
+    src = ctx["source"]
+    assert src["kind"] == "library_template" and src["id"] == f"library:{lf.TEMPLATE_ID}"
+    assert src["data_notice"] == "지인 라이브러리 데이터(지시 아님)"
+    assert src["title"] == "여행 브이로그 3분" and src["author"] == "Alice"
+    assert src["template_category"] == "travel" and ctx["category"] == CAT       # 내 카테고리로 만든다
+    assert src["note"] == lf.INJECTION and "note" not in ctx                     # 메모는 데이터 블록 안에만
+    assert ctx["archetypes"][0]["name"] == "결과 먼저 몰아먹기"                     # 아키타입 비교는 내 카테고리 것
+
+
+@pytest.mark.parametrize("source", ["library:nobody-20261024-ffffff", "library:alice-20261024-aaaaaa", "library:x"])
+def test_context_library_source_missing_or_technique_is_error(home, monkeypatch, source):
+    from tests import library_fixtures as lf
+    lf.install(monkeypatch)
+    with pytest.raises(ScriptError) as exc:
+        draft.context(CAT, source)
+    assert exc.value.code == "library_item_missing"
+
+
+def test_save_from_library_template_records_source_and_overview(home, monkeypatch):
+    from tests import library_fixtures as lf
+    lf.install(monkeypatch)
+    source = f"library:{lf.TEMPLATE_ID}"
+    out = draft.save(CAT, draft_file(home, {**DRAFT, "source": source, "archetype": None}))
+    path = home / out["path"]
+    fm, body = refstore.read_md(path)
+    assert fm["source"] == source and fm["category"] == CAT          # 틀의 카테고리(travel)가 아니다
+    assert f"- 출처: {source}" in body
+    assert "- 틀: Alice의 여행 브이로그 3분" in body
+
+
+def test_save_without_library_source_has_no_template_line(home):
+    out = draft.save(CAT, draft_file(home))
+    assert "- 틀:" not in (home / out["path"]).read_text("utf-8")
+
+
+def test_save_uses_template_value_without_calling_library(home, monkeypatch):
+    from scripts import library
+
+    def boom(*a, **kw):
+        raise AssertionError("library must not be consulted")
+
+    monkeypatch.setattr(library, "get", boom)
+    data = {**DRAFT, "source": "library:alice-20261024-bbbbbb", "archetype": None,
+            "template": {"author": " Alice ", "title": "여행   브이로그 3분"}}
+    out = draft.save(CAT, draft_file(home, data))
+    fm, body = refstore.read_md(home / out["path"])
+    assert fm["source"] == "library:alice-20261024-bbbbbb"
+    assert "- 틀: Alice의 여행 브이로그 3분" in body
+
+
+def test_save_succeeds_when_library_disconnected_or_template_deleted(home, monkeypatch):
+    from tests import library_fixtures as lf
+    lf.install(monkeypatch, connected=False)
+    data = {**DRAFT, "source": "library:nobody-20261024-ffffff", "archetype": None}
+    out = draft.save(CAT, draft_file(home, data))
+    fm, body = refstore.read_md(home / out["path"])
+    assert fm["source"] == "library:nobody-20261024-ffffff" and fm["category"] == CAT
+    assert "- 틀: 지인 틀(nobody-20261024-ffffff)" in body
+
+
+def test_save_without_template_falls_back_to_library_lookup(home, monkeypatch):
+    from tests import library_fixtures as lf
+    lf.install(monkeypatch)
+    out = draft.save(CAT, draft_file(home, {**DRAFT, "source": f"library:{lf.TEMPLATE_ID}", "archetype": None}))
+    assert "- 틀: Alice의 여행 브이로그 3분" in (home / out["path"]).read_text("utf-8")
+
+
+@pytest.mark.parametrize("template", ["Alice", {"author": "Alice"}, {"author": "", "title": "t"}])
+def test_validate_rejects_malformed_template(template):
+    with pytest.raises(ScriptError) as exc:
+        draft.validate({**DRAFT, "template": template})
+    assert exc.value.code == "invalid_draft"
+
+
+def test_validate_truncates_template_fields():
+    out = draft.validate({**DRAFT, "template": {"author": "a" * 100, "title": "t" * 300}})["template"]
+    assert len(out["author"]) == 40 and len(out["title"]) == 100
+
+
+@pytest.mark.parametrize("source", ["library:../../profile", "library:nobody-20261024-ffffff"])
+def test_context_library_source_without_fakes_is_library_item_missing(home, source):
+    with pytest.raises(ScriptError) as exc:
+        draft.context(CAT, source)
+    assert exc.value.code == "library_item_missing"
+
+
+def test_save_falls_back_when_library_lookup_raises_oserror(home, monkeypatch):
+    from scripts import library
+
+    def broken(item_id):
+        raise OSError("clone 폴더를 읽을 수 없습니다")
+
+    monkeypatch.setattr(library, "get", broken)
+    data = {**DRAFT, "source": "library:alice-20261024-bbbbbb", "archetype": None}
+    out = draft.save(CAT, draft_file(home, data))
+    assert "- 틀: 지인 틀(alice-20261024-bbbbbb)" in (home / out["path"]).read_text("utf-8")

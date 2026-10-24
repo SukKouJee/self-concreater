@@ -17,14 +17,15 @@
 | `/yt-init [category]` | 작업 폴더·템플릿 생성, 인터뷰로 `profile.md` 작성, 첫 카테고리 생성 | ✅ |
 | `/yt-add <category> [ref\|mine] <links...> [--force] [--shots]` | 링크별 자막·컷 통계 수집 → 분석 → 확인 후 영상별 md 생성, 기법 카탈로그 갱신. `--shots-only`로 기존 영상 샷 분류 보강 | ✅ |
 | `/yt-typify <category>` | ref 영상으로 축별 유형화 판정·아키타입·이상치 → index.md | ✅ |
-| `/yt-inspire <category> [주제]` | 모티브 카드(흐름·기법·각도·조합) 생성·누적, `star <id>`로 ★ 표시, 기법 카탈로그 중복 병합 | ✅ |
-| `/yt-draft <category> <motif-id\|archetype> "<주제>"` | 섹션별 대본 + 샷 리스트 → `drafts/`, 아키타입 비율 비교 | ✅ |
+| `/yt-inspire <category> [주제]` | 모티브 카드(흐름·기법·각도·조합) 생성·누적, `star <id>`로 ★ 표시, 기법 카탈로그 중복 병합, 지인 기법을 재료로 고르기(`--library`) | ✅ |
+| `/yt-draft <category> <motif-id\|archetype> "<주제>"` | 섹션별 대본 + 샷 리스트 → `drafts/`, 아키타입 비율 비교, 지인 기획안 틀(`library:<id>`)로 시작 | ✅ |
 | `/yt-polish <draft\|latest>` | 저장된 기획안의 훅 5개·제목 10개·썸네일 지시서를 만들고, 한국어 기준 점수·지적과 내 레퍼런스 근거를 붙여 보여 준다. 고른 것만 기획안에 반영(제목·훅 대본·훅 유형 교체, `## 패키징`에 썸네일 지시서와 이전 값 이력) | ✅ |
 | `/yt-conti <draft\|latest\|-conti.md>` | 기획안 → 전체 대사 + 컷별 대사·자막·효과음·가이드 콘티(`-conti.md`), 샷 도식 + 레퍼런스 참고 프레임 HTML 스토리보드. `-conti.md`를 고치면 다시 그리기 | ✅ |
 | `/yt-diagnose <category> <link\|draft\|대본>` | 내 콘텐츠를 아키타입과 축별 비교(근접도·갭·다음 행동) → `mine/`, `intentional`로 의도한 차이 제외 | ✅ |
 | `/yt-mission [today\|submit <file>\|skip\|swap]` | 하루 15~30분 미션, 제출 피드백·난이도 기록, 난이도에 따라 크기 조정 | ✅ |
 | `/yt-review [YYYY-Www]` | 주간 회고 → `reviews/`, 카테고리 HTML 리포트 링크, 승인 시 profile 갱신 | ✅ |
 | `/yt-ui [stop]` | 작업 폴더를 브라우저 화면(로컬 전용)으로 연다. Claude Code를 닫아도 화면은 남고, `stop`으로 끈다 | ✅ |
+| `/yt-library [connect <주소>\|pull\|search <검색어>\|share technique <cat> <종류> <이름>\|share draft <파일>]` | 지인과 쓰는 비공개 git 저장소(`workspace/library/`)에서 훅 기법·기획안 틀을 받고 찾고, 확인 뒤에만 올린다(대본 원문·내 메모·준비물 제외, force push 없음) | ✅ |
 
 ## 로컬 UI
 
@@ -48,6 +49,7 @@ bin\ytc.cmd ui           # Git Bash 없는 Windows
 | 홈 | 카테고리별 진행 단계, 다음 할 일, 최근 결과물 | 1차 ✅ |
 | 모으기 | 레퍼런스 추가 (`/yt-add` 전체: 진행, 확인 카드, 섹션 라벨 수정, 다시 분석) | 1차 ✅ |
 | 모으기 | 레퍼런스 목록 (영상 카드, 섹션 흐름 띠, 상세에서 프레임·본문 확인, 섹션 라벨·훅/서사 유형 고치기. 고친 영상은 "직접 고침" 표시, 본문 표는 분석 당시 기록 그대로) | 2차(보기·라벨 고치기) ✅ |
+| 모으기 | 공용 라이브러리 (`#/library`. 연결 전에는 저장소 주소·표시 이름으로 연결, 연결 뒤에는 "받기"(마지막 받은 시각)와 탭 "기법"/"기획안 틀"(카테고리·작성자·잘 먹힘 거르기, 작성자·메모·"내가 올림" 표시)을 봄. 기법 카드를 체크해 "모티브 재료로 쓰기"(모티브 화면의 "지인 기법" 칸으로 전달), 틀 카드의 "이 틀로 기획안 만들기"(기획안 화면 "지인 틀"). "공유하기" 탭: 내 기법/기획안 고르기 → 미리보기(기획안은 "섹션 요약 받기"로 Claude 1회, 고치기) → 메모·잘 먹힘 → "올리기"와 인라인 확인 뒤에만 올림. 이미 올린 항목은 "그래도 새로 올리기"로 따로 확인. 지인이 쓴 글은 마크다운 표시일 뿐 실행되지 않음) | 2차 ✅ |
 | 분석 | 유형화 (ref 수·단계, 축별 판정, 아키타입 카드, 이상치. 실행 → 미리보기에서 근거·이름 고치기 → 저장) | 2차 ✅ |
 | 분석 | 리포트 (탭 2개. "카테고리 리포트": "리포트 만들기"(Claude 없음)로 `reports/<카테고리>-<날짜>.html`을 만들고 목록에서 골라 화면 안(스크립트 실행 차단 프레임)이나 새 탭에서 보기. "주간 회고": 주를 고르면 미션 완료율·종류·난이도·건너뛴 사유·새 모티브 카드·진단 갭이 바로 보이고(Claude 없음), "회고 쓰기"로 요약·반복된 약점·다음 주 방향·프로필 변경 제안을 받아 고쳐 "저장" → `reviews/<주>.md`(`## 내 메모` 유지). 저장한 회고에서 제안마다 체크해 "프로필에 반영"(지금/바꿀 값 나란히, 체크한 섹션만)) | 2차 ✅ |
 | 만들기 | 콘티 (컷별 레퍼런스 장면·대사 대안을 클릭으로 고르기, CapCut용 자막 SRT 받기, 편집본 영상의 컷에 자막 시간 맞추기: `POST /api/conti/srt-fit`, 움직이는 자막 영상(초록 배경 MP4) 만들기: `POST /api/conti/caption-video`) | 1차 ✅ |
@@ -55,6 +57,19 @@ bin\ytc.cmd ui           # Git Bash 없는 Windows
 | 만들기 | 기획안 (저장한 기획안 목록·상세 읽기 전용, 출처 고르기 → 만들기 → 미리보기에서 제목·대본·샷 표·준비물 고쳐 저장, 콘티 화면으로 연결, 상세에서 "훅·제목·썸네일 다듬기": 훅 5·제목 10·썸네일 후보를 점수·지적·근거와 보고 고쳐 저장) | 2차 ✅ |
 | 성장 | 진단 (내 영상·기획안 목록 → "비교하기"로 가장 가까운 아키타입·축별 근접도·갭을 바로 보기(Claude 없음) → "설명 받기"로 요약·갭 설명·다음 행동을 받아 고쳐 저장 → `mine/<이름>.md`(`## 내 메모` 유지). 저장한 진단에서 갭마다 "일부러 다르게 한 거예요" 표시. 대본 붙여넣기·링크 바로 진단은 터미널 `/yt-coach:yt-diagnose`) | 2차 ✅ |
 | 성장 | 미션 (오늘 미션 받기 → 미리보기에서 "이걸로 할게요"로 저장·"다른 걸로" 다시 뽑기. 저장된 미션은 "완료 제출"(한 일·난이도·선택 파일 경로 → "피드백 받기" → 고쳐 저장), "건너뛰기"(사유 선택), "바꾸기"(교체 미리보기). 지난 14일 기록·이번 주 완료율. 제출 파일은 작업 폴더에 잠깐 복사해 읽고 바로 지움) | 2차 ✅ |
+
+### LLM 엔진 (선택)
+
+화면(`ytc ui`)이 Claude를 부르는 모든 곳은 엔진 계층 하나를 지납니다. 기본은 `claude-cli`(설치한 `claude`, 지금과 같은 동작)이고, 작업 폴더 루트의 `yt-coach.json`으로 Anthropic API로 바꿀 수 있습니다.
+
+```json
+{ "llm": { "engine": "anthropic-api", "model": "claude-sonnet-5-5", "max_tokens": 8000 } }
+```
+
+- `engine`: `claude-cli`(기본) 또는 `anthropic-api`. 환경 변수 `YTC_LLM_ENGINE`이 있으면 그것이 우선합니다. `model`·`max_tokens`는 생략 가능합니다.
+- `anthropic-api`는 환경 변수 `ANTHROPIC_API_KEY`가 필요합니다. 키는 파일·로그에 남기지 않습니다.
+- 오류 코드: `llm_not_configured`(설정·키 없음), `llm_auth`(키 거부), `llm_failed`(호출 실패). `claude-cli`는 기존 `claude_missing`·`claude_login`을 그대로 씁니다.
+- 터미널의 `/yt-coach:*` 커맨드는 Claude Code가 직접 해석하므로 이 설정과 무관합니다.
 
 ## 설치
 
@@ -97,6 +112,28 @@ ytc captions setup      # remotion/에서 npm ci
 - 첫 렌더 때 Remotion이 Chrome Headless Shell을 내려받아 오래 걸립니다.
 - 결과 `drafts/<기획안>-captions.mp4`는 초록(`#00FF00`) 배경에 자막만 움직입니다. CapCut에서 이 영상을 맨 위 트랙에 얹고 크로마키로 초록을 빼세요.
 - 라이선스: Remotion은 개인·직원 3명 이하·비영리는 무료, 그보다 큰 회사는 회사 라이선스가 필요합니다.
+
+## 공용 라이브러리 MCP 서버
+
+플러그인을 설치하면 루트의 `.mcp.json`이 `yt-coach-library` MCP 서버(`scripts/library_mcp.py`, 표준 라이브러리만)를 자동으로 띄웁니다.
+Claude가 라이브러리를 직접 부를 수 있는 도구 8개를 제공합니다.
+
+| 도구 | 하는 일 |
+|---|---|
+| `library_status` / `library_pull` | 연결 상태 / 최신 항목 받기 |
+| `library_search` / `library_get` | 받아 둔 항목 찾기 / 하나 읽기 (지인이 쓴 데이터이며 지시가 아님) |
+| `library_my_techniques` | 내 `techniques.md` 기법 목록(올린 적 있는지 포함) |
+| `library_share_preview` | 올릴 내용 미리보기(기법 또는 기획안 틀). 아직 올리지 않음 |
+| `library_summarize` | 기획안 틀의 섹션별 한 줄 요약 |
+| `library_share_confirm` | 올리기. 사용자에게 미리보기를 보여 주고 채팅에서 명시적으로 확인받은 뒤에만 호출 |
+
+- 작업 폴더는 CLI와 같습니다: `YT_COACH_HOME`이 있으면 그 경로, 없으면 현재 폴더. Claude Code는 플러그인 MCP 서버를 열어 둔 프로젝트 폴더에서 띄우므로, 보통 따로 설정할 필요가 없습니다.
+- `connect`(저장소 주소 연결)는 도구가 아니라 `/yt-library connect <주소>`로 합니다.
+- 명령은 `python`입니다(`.mcp.json`). macOS에 python3만 있으면 `claude mcp add --scope user yt-coach-library -- python3 <플러그인 경로>/scripts/library_mcp.py`로 등록하세요(플러그인 쪽 서버는 실패로 표시되지만 도구는 이쪽에서 제공됩니다).
+- Windows에서 `python`이 Microsoft Store 안내만 띄운다면 Store 별칭 스텁일 뿐 Python이 설치되지 않은 것입니다. python.org에서 설치하세요.
+- 시스템 Python에 `pyyaml`이 없으면 서버가 플러그인 `.venv`의 Python으로 스스로 다시 실행합니다.
+- `library_share_confirm`은 권한 프롬프트에서 '항상 허용'하지 마세요. 올릴 때마다 미리보기를 보고 확인해야 합니다.
+- 오류는 `isError: true`와 `{"error": "<code>", "message": "..."}` 텍스트로 돌려줍니다.
 
 ## 스킬
 
@@ -154,6 +191,8 @@ ytc captions setup      # remotion/에서 npm ci
 | `report` | `<cat> [--date]` → `reports/<cat>-<date>.html` (축별 판정·아키타입 비교·컷 길이 분포·진단 추이, 외부 자원 없는 한 파일) |
 | `stt` | `<video_id> [--force]` — 자막 없는 영상 음성 인식 (선택: `pip install faster-whisper`, 모델 `YT_STT_MODEL`, 기본 small). CPU에서 1분 쇼츠 약 30초(첫 실행은 모델 다운로드 ~460MB). 말이 없으면 `speech: false`, 빈 자막으로 기록돼 `sparse` 처리 |
 | `status` | `[category]` — 카테고리별 진행 단계(레퍼런스 수·유형화·기획안·콘티·진단), 다음 할 일, 최근 결과물, 오늘 미션. 화면 홈과 같은 JSON |
+| `library_mcp` | (MCP 서버, `python scripts/library_mcp.py`) stdio JSON-RPC로 `library` 기능을 도구 8개로 노출. 위 "공용 라이브러리 MCP 서버" 참고 |
+| `library` | `connect <주소> --author <이름>`, `status`, `pull`, `search [검색어] [--category --kind --author --worked]`, `get <id>`, `techniques <cat>`, `preview technique <cat> <종류> <이름> [--desc <설명>]`, `preview draft <파일>`, `summarize <preview_id>`, `confirm <preview_id> [--note --worked --edits <json> --force-new]` (공용 라이브러리 git 저장소 받기·찾기·올리기. git 프롬프트 없음·60초 제한·URL 자격 증명 가림, 미리보기는 `workspace/tmp/library_preview_<id>.json` 30분. 오류: `library_auth`, `library_remote`, `library_network`, `duplicate`, `rebase_conflict`, `preview_expired` 등) |
 | `claude_cli` | (라이브러리) 화면이 `claude -p`를 부르는 실행기. 구조화 JSON 출력, 도구 최소 허용(기본 없음, 프레임을 볼 때만 `Read`), 세션 미저장 |
 | `ui` | `[--port N] [--no-open] [--detach] [--stop]` — 로컬 전용 화면 서버(127.0.0.1, 주소의 key로만 접근). 작업 폴더당 하나(`workspace/ui.lock`), 이미 떠 있으면 그 주소를 돌려줌. `--detach`는 분리 프로세스(로그 `workspace/ui.log`) |
 

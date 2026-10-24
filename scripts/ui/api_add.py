@@ -6,8 +6,8 @@
 - blocked/proxy_failed(수집·STT·컷 어디서든): 그 영상 failed, 남은 영상 skipped("차단으로 중단"), job stopped
 - claude_missing/claude_login: 같은 방식으로 멈춘다(남은 영상을 받지 않는다). 라우트는 작업 전에 claude를 확인한다.
 - 예상치 못한 예외: 그 영상만 failed("예상치 못한 오류: ...")로 두고 다음 영상으로 간다.
-- 분석 호출은 항상 Read 도구를 준다(yt-analyze 0단계: examples md를 읽고, 필요하면 frame 1~2장).
-  화면 위주 분석 안내(SCREEN_HINT)는 sparse이거나 화면 분석을 고른 경우에만 task에 붙인다.
+- 분석 호출에는 examples md를 항상 첨부하고, 장면 프레임(최대 8장, 처음·끝 포함)은 sparse이거나 화면 분석을 고른 경우에만 첨부한다(yt-analyze 0단계).
+  화면 위주 분석 안내(SCREEN_HINT)도 같은 경우에만 task에 붙인다.
 - 단계 사이마다 `job.check_cancelled()`: 서버 종료 시 진행 중인 단계(다운로드 정리 try/finally 포함)를
   끝까지 마친 뒤 다음 단계로 가지 않고 멈춘다.
 """
@@ -21,30 +21,31 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from scripts import claude_cli, cuts, fetch, refstore, shots, stt, videomd
-from scripts.common import ScriptError, workspace_dir
+from scripts import claude_cli, cuts, fetch, llm, refstore, shots, stt, videomd
+from scripts.common import ScriptError, work_root, workspace_dir
 from scripts.ui.jobs import Job, JobCancelled, new_item
 from scripts.ui.server import Request, route
 
 KIND = "collect"
 ROLES = ("ref", "mine")
 BLOCK_CODES = frozenset({"blocked", "proxy_failed"})
-CLAUDE_CODES = frozenset({"claude_missing", "claude_login"})
+CLAUDE_CODES = frozenset({"claude_missing", "claude_login", "llm_auth", "llm_not_configured"})
 STOP_CODES = BLOCK_CODES | CLAUDE_CODES
 PREVIEW_ACTIONS = frozenset({"save", "save_all", "skip", "reanalyze"})
 TRANSCRIPT_ACTIONS = frozenset({"stt", "screen", "skip"})
 SAVE_ACTIONS = frozenset({"save", "save_all"})
 ALLOWED_ACTIONS: dict[str | None, frozenset[str]] = {None: PREVIEW_ACTIONS, "no_transcript": TRANSCRIPT_ACTIONS}
 
+ANALYZE_FRAME_CAP = 8
 ANALYZE_TASK = "yt-analyze 규칙대로 입력 영상의 분석 JSON을 만드세요(5절 출력 형식)."
-SCREEN_HINT = "\n자막이 없거나 말이 거의 없는 영상입니다. scenes의 frame 이미지를 Read로 보고 화면 위주로 분석하세요(0단계)."
+SCREEN_HINT = "\n자막이 없거나 말이 거의 없는 영상입니다. scenes의 frame 이미지(첨부되었거나 Read로 열 수 있는 이미지)를 보고 화면 위주로 분석하세요(0단계)."
 SHOTS_TASK = (
-    "yt-shots 규칙대로 frames의 이미지를 하나씩 Read로 보고 모든 프레임을 분류하세요. "
+    "yt-shots 규칙대로 frames의 이미지(첨부되었거나 Read로 열 수 있는 이미지)를 하나씩 보고 모든 프레임을 분류하세요. "
     '출력은 4절의 라벨 배열을 {"labels": [...]} 객체 하나로 감싸서 내세요.'
 )
 MSG_EXISTS = "이미 분석됨"
 MSG_BLOCKED = "차단으로 중단"
-MSG_CLAUDE_STOP = "Claude를 쓸 수 없어 중단"
+MSG_CLAUDE_STOP = "Claude(LLM 엔진)를 쓸 수 없어 중단"
 MSG_SKIPPED = "건너뜀"
 MSG_NO_FRAMES = "컷 통계가 없어 샷 분류를 건너뜁니다"
 
@@ -88,6 +89,19 @@ def _summary(job: Job, stage_text: str | None) -> dict:
             "failed": states.count("failed"), "stage_text": stage_text}
 
 
+def _frame_files(frames: Any) -> list[Path]:
+    """frame 경로(작업 폴더 기준)를 파일 경로로 바꾼다. frames는 {"frame": path} 목록."""
+    root = work_root()
+    return [root / f["frame"] for f in (frames or []) if isinstance(f, dict) and f.get("frame")]
+
+
+def _analysis_frames(cut_data: dict | None) -> list[Path]:
+    """yt-analyze 0단계: 장면 프레임 최대 8장(처음·끝 포함, 나머지는 고르게)."""
+    scenes = [s for s in (cut_data or {}).get("scenes", []) if s.get("frame")]
+    root = work_root()
+    return [root / scenes[i]["frame"] for i in cuts.pick_frame_scenes(len(scenes), ANALYZE_FRAME_CAP)]
+
+
 def _classify_shots(video_id: str, category: str) -> dict:
     """shots.context → Claude 분류 → tmp에 쓰고 shots.apply. apply가 invalid_shots면 한 번 다시 묻는다."""
     ctx = shots.context(video_id, category)
@@ -102,7 +116,9 @@ def _classify_shots(video_id: str, category: str) -> dict:
         return shots.apply(video_id, category, tmp)
 
     try:
-        _, applied = claude_cli.ask_validated(_shots_rules(), ctx, SHOTS_TASK, apply, tools=["Read"])
+        _, applied = llm.ask_validated(
+            _shots_rules(), ctx, SHOTS_TASK, apply, files=_frame_files(ctx.get("frames")),
+        )
     finally:
         tmp.unlink(missing_ok=True)
     return applied
@@ -213,11 +229,16 @@ class Collector:
         cut_data = videomd.load_cuts(video_id)
         duration = float(raw["meta"].get("duration") or (cut_data or {}).get("duration_sec") or 0)
         cut_times = cut_data["cuts"] if cut_data else []
-        task = ANALYZE_TASK + (SCREEN_HINT if (ctx.get("sparse") or screen) else "")
+        need_frames = bool(ctx.get("sparse") or screen)
+        files = [
+            *(_analysis_frames(cut_data) if need_frames else []),
+            *[work_root() / e for e in ctx.get("examples") or []],
+        ]
+        task = ANALYZE_TASK + (SCREEN_HINT if need_frames else "")
         if feedback:
             task += f"\n사용자 의견: {feedback}"
-        _, analysis = claude_cli.ask_validated(
-            _analyze_rules(), ctx, task, lambda d: videomd.validate(d, duration, cut_times), tools=["Read"],
+        _, analysis = llm.ask_validated(
+            _analyze_rules(), ctx, task, lambda d: videomd.validate(d, duration, cut_times), files=files,
         )
         return analysis
 
@@ -347,7 +368,7 @@ def _add(req: Request) -> dict:
         raise ScriptError("no_links", "분석할 유튜브 링크를 넣어 주세요")
     opts = AddOptions(category=category, role=role, shots=_flag(body, "shots"),
                       force=_flag(body, "force"), refetch=_flag(body, "refetch"))
-    claude_cli.find_claude()              # claude가 없으면 영상을 받기 전에 400으로 알린다
+    llm.check()              # claude가 없으면 영상을 받기 전에 400으로 알린다
     items = [new_item(link, url=link) for link in links]
     job = req.app.jobs.start(KIND, Collector(opts), items=items, category=category)
     return {"job": job.snapshot()}
@@ -356,7 +377,7 @@ def _add(req: Request) -> dict:
 @route("POST", "/api/add/shots-only")
 def _shots_only(req: Request) -> dict:
     category = _category(req.json)
-    claude_cli.find_claude()
+    llm.check()
     pending = shots.pending(category)["pending"]
     items = [new_item(vid, step="shots") for vid in pending]
     job = req.app.jobs.start(KIND, run_shots_only(category), items=items, category=category)

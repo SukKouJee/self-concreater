@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-from scripts import claude_cli, cluster, features, refstore
+from scripts import claude_cli, llm, cluster, features, refstore
 from scripts.common import ScriptError
 from tests.test_cluster import NOTES
 from tests.test_ui_add import wait_for
@@ -44,7 +44,7 @@ def home(monkeypatch, tmp_path):
 @pytest.fixture
 def fakes(monkeypatch):
     f = Fakes()
-    monkeypatch.setattr(claude_cli, "ask_validated", f.ask_validated)
+    monkeypatch.setattr(llm, "ask_validated", f.ask_validated)
     monkeypatch.setattr(claude_cli, "find_claude", lambda: "C:/bin/claude.exe")
     return f
 
@@ -142,7 +142,7 @@ def test_run_rejects_while_running(client, home, fakes, monkeypatch):
         gate.wait(5)
         return fakes.ask_validated(*args, **kw)
 
-    monkeypatch.setattr(claude_cli, "ask_validated", slow)
+    monkeypatch.setattr(llm, "ask_validated", slow)
     status, body = client.json("POST", "/api/typify/run", {"category": CAT})
     assert status == 200
     status, again = client.json("POST", "/api/typify/run", {"category": CAT})
@@ -155,7 +155,7 @@ def test_run_retries_once_then_fails_on_missing_notes(client, home, monkeypatch)
     standard_set(home)
     f = RetryFakes()
     f.notes = {**NOTES, "axes": {k: v for k, v in NOTES["axes"].items() if k != "hook"}}
-    monkeypatch.setattr(claude_cli, "ask_validated", f.ask_validated)
+    monkeypatch.setattr(llm, "ask_validated", f.ask_validated)
     before = _index(home).read_bytes()
     job = _run_preview(client)
     assert job["status"] == "failed" and "빠졌습니다" in job["items"][0]["message"]

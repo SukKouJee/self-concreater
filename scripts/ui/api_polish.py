@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from scripts import claude_cli, polish
+from scripts import claude_cli, llm, polish
 from scripts.common import ScriptError
 from scripts.ui.api_conti import _rel, _safe_path
 from scripts.ui.jobs import Job, new_item
@@ -80,7 +80,7 @@ def run_target(draft_rel: str) -> Any:
         ctx = polish.context(draft_rel)
         job.update(0, step="claude")
         job.check_cancelled()
-        _, result = claude_cli.ask_validated(
+        _, result = llm.ask_validated(
             _rules(), payload=ctx, task=POLISH_TASK, schema=POLISH_SCHEMA,
             validate=lambda data: polish.evaluate(ctx, data),
         )
@@ -95,7 +95,7 @@ def run_target(draft_rel: str) -> Any:
 def _run(req: Request) -> dict:
     path = _safe_path(req.json.get("draft"), conti_file=False)
     ctx = polish.context(_rel(path))                  # 없는 기획안은 작업 전에 draft_not_found
-    claude_cli.find_claude()                          # claude가 없으면 작업을 만들지 않는다
+    llm.check()                          # claude가 없으면 작업을 만들지 않는다
     items = [new_item(ctx["draft"], title=ctx["title"], step="context")]
     job = req.app.jobs.start(KIND, run_target(ctx["draft"]), items=items, category=ctx["category"])
     return {"job": job.snapshot()}

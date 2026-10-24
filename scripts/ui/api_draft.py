@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
 
-from scripts import claude_cli, conti, draft, motif, refstore
+from scripts import claude_cli, conti, draft, library, llm, motif, refstore
 from scripts.common import ScriptError, work_root, workspace_dir
 from scripts.ui.api_conti import CONTI_SUFFIX, _rel, _safe_path
 from scripts.ui.api_refs import _body_parts
@@ -105,6 +106,19 @@ def _conti_links(path: Path) -> tuple[str | None, str | None]:
 
 # ---- 출처 -------------------------------------------------------------------------------
 
+def _library_templates() -> list[dict] | None:
+    """연결된 라이브러리의 지인 틀 묶음. 연결 전이거나 라이브러리 조회가 실패하면 None(묶음을 뺀다)."""
+    try:
+        if not library.status().get("connected"):
+            return None
+        found = library.search(kind="template")
+    except Exception as e:  # noqa: BLE001 - 지인 파일이 무엇이든 출처 목록은 라이브러리 때문에 실패하지 않는다
+        print(f"[draft] 라이브러리 틀 목록을 읽지 못했습니다: {type(e).__name__}", file=sys.stderr)
+        return None
+    keys = ("id", "title", "author", "category", "target_sec", "hook_type", "narrative_type", "worked")
+    return [{**{k: t.get(k) for k in keys}, "source": f"{draft.LIBRARY_PREFIX}{t['id']}"} for t in found["items"]]
+
+
 @route("GET", "/api/draft/sources")
 def _sources(req: Request) -> dict:
     category = _category(req.query.get("category"))
@@ -117,19 +131,22 @@ def _sources(req: Request) -> dict:
     typify = motif._typify(category, index_fm)
     archetypes = [{"id": a["id"], "name": a.get("name"), "size": a.get("size"), "skeleton": a.get("skeleton"),
                    "mean_duration": a.get("mean_duration")} for a in (typify or {}).get("archetypes") or []]
-    return {
+    out = {
         "stars": [brief(c) for c in details if c["starred"]],
         "cards": [brief(c) for c in details if not c["starred"]],
         "archetypes": archetypes,
         "has_typify": motif.typify_path(category).exists(),
     }
+    templates = _library_templates()
+    if templates is not None:
+        out["library_templates"] = {"label": "지인 틀", "items": templates}
+    return out
 
 
 # ---- 목록 · 상세(읽기 전용) --------------------------------------------------------------
 
-@route("GET", "/api/draft/list")
-def _list(req: Request) -> dict:
-    category = _category(req.query.get("category"))
+def list_drafts(category: str) -> dict:
+    """카테고리의 저장된 기획안 목록(경로는 작업 폴더 기준 상대 경로)."""
     out = []
     folder = work_root() / "drafts"
     for path in sorted(folder.glob("*.md")) if folder.is_dir() else []:
@@ -149,6 +166,11 @@ def _list(req: Request) -> dict:
         })
     out.sort(key=lambda d: (d["date"], d["path"]), reverse=True)
     return {"drafts": out}
+
+
+@route("GET", "/api/draft/list")
+def _list(req: Request) -> dict:
+    return list_drafts(_category(req.query.get("category")))
 
 
 def _hook_of(path: Path) -> dict | None:
@@ -193,8 +215,18 @@ def run_target(category: str, source: str, topic: str | None, target_sec: float 
             payload["target_sec"] = target_sec
         job.update(0, step="claude")
         job.check_cancelled()
-        _, valid = claude_cli.ask_validated(
-            _rules(), payload=payload, task=DRAFT_TASK, schema=DRAFT_SCHEMA, validate=_validate_with_shots,
+        server_template = (payload.get("source") or {}).get("template")      # 틀 표시값은 서버 소유: Claude에게 보이지도 맡기지도 않는다
+        shown = {**payload, "source": {k: v for k, v in payload["source"].items() if k != "template"}}
+
+        def validate(data: Any) -> dict:
+            if isinstance(data, dict):
+                data = {k: v for k, v in data.items() if k != "template"}      # Claude가 낸 template은 버린다
+                if server_template:
+                    data["template"] = server_template
+            return _validate_with_shots(data)
+
+        _, valid = llm.ask_validated(
+            _rules(), payload=shown, task=DRAFT_TASK, schema=DRAFT_SCHEMA, validate=validate,
         )
         valid = {k: v for k, v in valid.items() if k != "script_only"}   # the UI never saves script-only drafts
         pacing = draft.planned_pacing(valid["sections"])
@@ -217,13 +249,28 @@ def _run(req: Request) -> dict:
     topic = _topic(body.get("topic"))
     target_sec = _target_sec(body.get("target_sec"))
     context = draft.context(category, source, topic)      # 작업 전에 출처를 확인한다(없으면 source_not_found)
-    claude_cli.find_claude()                              # claude가 없으면 작업을 만들지 않는다
+    llm.check()                              # claude가 없으면 작업을 만들지 않는다
     items = [new_item(category, title=context["source"]["title"], step="context")]
     job = req.app.jobs.start(KIND, run_target(category, source, topic, target_sec), items=items, category=category)
     return {"job": job.snapshot()}
 
 
 # ---- 저장 -------------------------------------------------------------------------------
+
+def _job_template(req: Request, job_id: Any, category: str, source: Any) -> dict | None:
+    """미리보기 작업이 들고 있는 지인 틀 표시값. 저장이 라이브러리에 기대지 않게 서버가 작업에서 복사한다."""
+    if not isinstance(job_id, str) or not isinstance(source, str) or not source.startswith(draft.LIBRARY_PREFIX):
+        return None
+    try:
+        job = req.app.jobs.get(job_id)
+        preview = job.item(0).get("preview") or {}
+    except ScriptError:
+        return None
+    src = preview.get("source") or {}
+    if job.kind != KIND or job.category != category or src.get("id") != source:
+        return None
+    return src.get("template")
+
 
 def _mark_saved(req: Request, job_id: Any, category: str) -> None:
     """미리보기 항목이 아직 저장 대기면 저장됨으로 바꾼다. 없는 작업·다른 종류는 무시."""
@@ -241,7 +288,13 @@ def _mark_saved(req: Request, job_id: Any, category: str) -> None:
 def _save(req: Request) -> dict:
     body = req.json
     category = _category(body.get("category"))
-    data = draft.validate(body.get("draft"))
+    raw = body.get("draft")
+    if isinstance(raw, dict):
+        raw = {k: v for k, v in raw.items() if k != "template"}      # 클라이언트가 보낸 template은 믿지 않는다
+        template = _job_template(req, body.get("job_id"), category, raw.get("source"))
+        if isinstance(template, dict):
+            raw["template"] = template                # 작업에 저장된 값만 되돌려 넣는다
+    data = draft.validate(raw)
     tmp_dir = workspace_dir("tmp")
     tmp_dir.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix="draft_ui_", suffix=".json", dir=tmp_dir)   # 요청마다 고유한 파일

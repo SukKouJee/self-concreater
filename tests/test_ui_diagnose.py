@@ -5,7 +5,7 @@ from urllib.parse import quote
 
 import pytest
 
-from scripts import claude_cli, cluster, refstore, similarity
+from scripts import claude_cli, llm, cluster, refstore, similarity
 from scripts.common import ScriptError
 from tests.test_similarity import LIKE_A1, UNLIKE, _json, make_draft
 from tests.test_ui_add import wait_for
@@ -26,7 +26,7 @@ def home(monkeypatch, tmp_path):
 
 
 class FakeAsk:
-    """claude_cli.ask를 대신한다(ask_validated의 재시도 경로는 진짜). 응답은 data가 있으면 그것, 없으면 reply()."""
+    """llm.ask를 대신한다(ask_validated의 재시도 경로는 진짜). 응답은 data가 있으면 그것, 없으면 reply()."""
 
     def __init__(self):
         self.calls = []
@@ -45,7 +45,7 @@ class FakeAsk:
 @pytest.fixture
 def fake_ask(monkeypatch):
     f = FakeAsk()
-    monkeypatch.setattr(claude_cli, "ask", f)
+    monkeypatch.setattr(llm, "ask", f)
     monkeypatch.setattr(claude_cli, "find_claude", lambda: "C:/bin/claude.exe")
     return f
 
@@ -235,7 +235,7 @@ def test_second_explain_while_running(client, home, fake_ask, monkeypatch):
         gate.wait(5)
         return fake_ask(*args, **kw)
 
-    monkeypatch.setattr(claude_cli, "ask", slow)
+    monkeypatch.setattr(llm, "ask", slow)
     status, body = client.json("POST", "/api/diagnose/explain", {"category": CAT, "target": rel})
     assert status == 200
     status, again = client.json("POST", "/api/diagnose/explain", {"category": CAT, "target": rel})
