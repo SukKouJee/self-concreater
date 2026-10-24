@@ -5,6 +5,7 @@ import pytest
 
 from scripts import cluster, draft, mission, refstore, status
 from tests.test_draft import DRAFT
+from tests.test_cluster import NOTES, notes
 from tests.typify_fixtures import CAT, standard_set, write_video
 
 
@@ -19,6 +20,12 @@ def _save_draft(home, category=CAT):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(DRAFT, ensure_ascii=False), encoding="utf-8")
     return home / draft.save(category, path)["path"]
+
+
+def _typify(home):
+    """유형화를 실행하고 저장(apply)까지 한다. 홈 화면은 저장된 것만 완료로 본다."""
+    cluster.run(CAT)
+    cluster.apply(CAT, notes(home, NOTES))
 
 
 def _cat(result, category=CAT):
@@ -50,7 +57,7 @@ def test_typify_then_draft_then_conti(home):
     assert _cat(status.overview())["current"] == "typify"
     assert _cat(status.overview())["next"]["menu"] == "typify"
 
-    cluster.run(CAT)
+    _typify(home)
     assert _cat(status.overview())["current"] == "draft"
 
     draft_path = _save_draft(home)
@@ -65,9 +72,17 @@ def test_typify_then_draft_then_conti(home):
     assert c["next"]["menu"] == "diagnose"
 
 
-def test_diagnose_done_reads_mine_category(home):
+def test_typify_done_only_after_apply(home):
     standard_set(home)
     cluster.run(CAT)
+    assert _cat(status.overview())["current"] == "typify"
+    cluster.apply(CAT, notes(home, NOTES))
+    assert _cat(status.overview())["current"] == "draft"
+
+
+def test_diagnose_done_reads_mine_category(home):
+    standard_set(home)
+    _typify(home)
     _save_draft(home)
     (home / "drafts" / f"{next((home / 'drafts').glob('*.md')).stem}-conti.md").write_text("x", encoding="utf-8")
     (home / "mine").mkdir()
@@ -80,7 +95,7 @@ def test_diagnose_done_reads_mine_category(home):
 
 def test_other_category_draft_not_counted(home):
     standard_set(home)
-    cluster.run(CAT)
+    _typify(home)
     (home / "drafts").mkdir()
     (home / "drafts" / "other.md").write_bytes(
         refstore.join_frontmatter({"category": "other"}, "본문\n").encode("utf-8"))

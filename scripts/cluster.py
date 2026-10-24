@@ -17,6 +17,7 @@ notes JSON (apply 입력, Claude가 작성·사용자가 이름 확정)
 from __future__ import annotations
 
 import json
+import os
 from collections import Counter
 from datetime import date, datetime, timezone
 from itertools import combinations
@@ -242,7 +243,16 @@ def result_path(category: str) -> Path:
     return workspace_dir("typify", f"{category}.json")
 
 
-def run(category: str) -> dict:
+def applied_path(category: str) -> Path:
+    return workspace_dir("typify", f"{category}.applied.json")
+
+
+def preview_path(category: str) -> Path:
+    """UI 실행 결과. 저장(apply)하기 전까지 result_path를 건드리지 않는다."""
+    return workspace_dir("typify", f"{category}.preview.json")
+
+
+def run(category: str, out: Path | None = None) -> dict:
     t = _thresholds()
     records = features.load_videos(category)       # ref만
     n = len(records)
@@ -263,12 +273,12 @@ def run(category: str) -> dict:
         "category": category,
         "status": "formal" if n >= t["stages"]["formal"] else "preliminary",
         "ref": n,
-        "run_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "run_at": datetime.now(timezone.utc).isoformat(timespec="microseconds"),
         "axes": axes,
         "archetypes": archetypes(axes["structure"], records, _previous_archetypes(category)),
         "outliers": [{"id": v, "title": titles[v], "axes": a} for v, a in sorted(outliers.items())],
     }
-    path = result_path(category)
+    path = out or result_path(category)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     return result
@@ -344,23 +354,71 @@ def render_outliers(result: dict) -> str:
     )
 
 
-def apply(category: str, notes_path: Path) -> dict:
-    path = result_path(category)
+def validate_notes(result: dict, notes: dict) -> tuple[dict, dict]:
+    """notes가 결과의 모든 축·아키타입을 채웠는지 확인하고 (축별 근거, id별 이름)을 돌려준다."""
+    bad_shape = ScriptError("invalid_notes", "notes 형식이 맞지 않습니다: axes는 객체, archetypes는 {id,name} 목록이어야 합니다")
+    if not isinstance(notes, dict):
+        raise bad_shape
+    axis_notes = {} if notes.get("axes") is None else notes["axes"]
+    items = [] if notes.get("archetypes") is None else notes["archetypes"]
+    if not isinstance(axis_notes, dict) or not isinstance(items, list) or not all(isinstance(a, dict) and "id" in a for a in items):
+        raise bad_shape
+    if (not all(isinstance(a.get("name", ""), str) or a.get("name") is None for a in items)
+            or not all(isinstance(v, str) for v in axis_notes.values())):
+        raise bad_shape
+    names = {str(a["id"]): (a.get("name") or "").strip() for a in items}
+    missing = [a for a, res in result["axes"].items()
+               if res["verdict"] != "insufficient" and not (axis_notes.get(a) or "").strip()]
+    missing += [a["id"] for a in result["archetypes"] if not names.get(a["id"])]
+    if missing:
+        raise ScriptError("invalid_notes", f"근거 문장 또는 아키타입 이름이 빠졌습니다: {', '.join(missing)}")
+    return axis_notes, names
+
+
+def video_titles(category: str, result: dict) -> dict[str, str]:
+    """결과에 나오는 ref 영상 id → 제목 (화면용). 제목이 없으면 id, 문자열이 아니면 str()."""
+    ids: set[str] = {v for a in result["archetypes"] for v in a["members"]}
+    ids |= {a["representative"]["id"] for a in result["archetypes"]}
+    ids |= {o["id"] for o in result["outliers"]}
+    ids |= {v for res in result["axes"].values() for c in res["clusters"] for v in c["members"]}
+    by_id = {r["id"]: r["fm"].get("title") for r in features.load_videos(category)}
+    out: dict[str, str] = {}
+    for vid in sorted(ids):
+        title = by_id.get(vid)
+        out[vid] = vid if title is None or title == "" else (title if isinstance(title, str) else str(title))
+    return out
+
+
+def _applied_snapshot(result: dict, axis_notes: dict, names: dict, titles: dict) -> dict:
+    keys = ("verdict", "n", "k", "silhouette", "max_share")
+    return {
+        "run_at": result["run_at"],
+        "applied_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "status": result["status"],
+        "ref": result["ref"],
+        "axes": {axis: {**{k: res[k] for k in keys}, "note": str(axis_notes.get(axis) or "").strip()}
+                 for axis, res in result["axes"].items()},
+        "archetypes": [{**a, "name": names[a["id"]]} for a in result["archetypes"]],
+        "outliers": result["outliers"],
+        "titles": titles,
+    }
+
+
+def apply(category: str, notes_path: Path, expected_run_at: str | None = None, source: Path | None = None) -> dict:
+    path = source or result_path(category)
     if not path.exists():
+        if source is not None:
+            raise ScriptError("typify_changed", "미리보기 뒤에 유형화가 다시 실행되었습니다. 다시 실행해 주세요")
         raise ScriptError("no_typify_result", f"유형화 결과가 없습니다. 먼저 run을 실행하세요: {category}")
     result = json.loads(path.read_text("utf-8"))
+    if expected_run_at is not None and result.get("run_at") != expected_run_at:
+        raise ScriptError("typify_changed", "미리보기 뒤에 유형화가 다시 실행되었습니다. 다시 실행해 주세요")
     try:
         notes = json.loads(Path(notes_path).read_text("utf-8"))
     except (OSError, json.JSONDecodeError) as e:
         raise ScriptError("invalid_notes", f"notes JSON을 읽을 수 없습니다: {e}") from e
 
-    axis_notes = notes.get("axes") or {}
-    names = {a["id"]: str(a.get("name") or "").strip() for a in notes.get("archetypes") or []}
-    missing = [a for a, res in result["axes"].items()
-               if res["verdict"] != "insufficient" and not str(axis_notes.get(a) or "").strip()]
-    missing += [a["id"] for a in result["archetypes"] if not names.get(a["id"])]
-    if missing:
-        raise ScriptError("invalid_notes", f"근거 문장 또는 아키타입 이름이 빠졌습니다: {', '.join(missing)}")
+    axis_notes, names = validate_notes(result, notes)
 
     index = refstore.existing_category_dir(category) / "index.md"
     text = index.read_bytes().decode("utf-8-sig")
@@ -374,6 +432,13 @@ def apply(category: str, notes_path: Path) -> dict:
     fm["archetypes"] = [{"id": a["id"], "name": names[a["id"]], "members": a["members"]}
                         for a in result["archetypes"]]
     index.write_bytes(refstore.join_frontmatter(fm, body.replace("\r\n", "\n").replace("\n", nl), nl).encode("utf-8"))
+    snapshot = _applied_snapshot(result, axis_notes, names, video_titles(category, result))
+    target = applied_path(category)
+    tmp = target.with_name(target.name + ".tmp")
+    tmp.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, target)                           # 읽는 쪽이 반쯤 쓴 파일을 보지 않게 한다
+    if source is not None and source != result_path(category):
+        os.replace(source, result_path(category))     # 저장된 미리보기를 확정 결과로 올린다
     Path(notes_path).unlink(missing_ok=True)
     return {"status": "applied", "index": index.relative_to(work_root()).as_posix(),
             "archetypes": [{"id": a["id"], "name": names[a["id"]]} for a in result["archetypes"]]}

@@ -24,7 +24,7 @@ const MENU = [
   {
     group: "분석",
     items: [
-      { name: "유형화", soon: "typify", command: "/yt-coach:yt-typify" },
+      { name: "유형화", route: "#/typify" },
       { name: "리포트", soon: "report", command: "/yt-coach:yt-review" },
     ],
   },
@@ -249,6 +249,7 @@ function parseHash() {
   const tail = rest.join("/");
   switch (head) {
     case "add": return { page: "add", params: {} };
+    case "typify": return { page: "typify", params: {} };
     case "conti": {
       let path = null;
       if (tail) { try { path = decodeURIComponent(tail); } catch { path = null; } }

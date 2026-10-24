@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 
 import pytest
 
@@ -233,3 +234,133 @@ def test_main_routes(home):
     notes(home, NOTES)
     out = cluster.main(["apply", CAT, "--notes", "workspace/tmp/typify_notes.json"])
     assert out["status"] == "applied"
+
+
+# --- apply 스냅숏 · 검증 -------------------------------------------------------------
+
+def test_apply_writes_applied_snapshot(home):
+    standard_set(home, odd=True)
+    result = cluster.run(CAT)
+
+    cluster.apply(CAT, notes(home, NOTES))
+
+    snap = json.loads(cluster.applied_path(CAT).read_text("utf-8"))
+    assert snap["run_at"] == result["run_at"] and snap["status"] == "formal" and snap["ref"] == result["ref"]
+    assert snap["applied_at"]
+    assert snap["axes"]["structure"]["note"] == NOTES["axes"]["structure"]
+    assert set(snap["axes"]["structure"]) == {"verdict", "n", "k", "silhouette", "max_share", "note"}
+    assert snap["archetypes"][0]["name"] == "결과 먼저 몰아먹기" and snap["archetypes"][0]["id"] == "A1"
+    assert any(o["id"] == "zodd" for o in snap["outliers"])
+
+
+def test_run_at_has_microseconds_and_report_prefix_still_date(home):
+    standard_set(home)
+    run_at = cluster.run(CAT)["run_at"]
+    assert "." in run_at and run_at[:10] == datetime.now(timezone.utc).date().isoformat()
+
+
+def test_video_titles_covers_result_ids_and_applied_snapshot(home):
+    standard_set(home, odd=True)
+    result = cluster.run(CAT)
+    titles = cluster.video_titles(CAT, result)
+    ids = {v for a in result["archetypes"] for v in a["members"]} | {o["id"] for o in result["outliers"]}
+    ids |= {v for res in result["axes"].values() for c in res["clusters"] for v in c["members"]}
+    assert ids <= set(titles) and all(isinstance(t, str) for t in titles.values())
+
+    cluster.apply(CAT, notes(home, NOTES))
+    assert json.loads(cluster.applied_path(CAT).read_text("utf-8"))["titles"] == titles
+
+
+@pytest.mark.parametrize("bad", [
+    [], "x", {"axes": []}, {"axes": {}, "archetypes": ["x"]}, {"axes": {}, "archetypes": [{"name": "a"}]},
+    {"axes": {}, "archetypes": {"A1": "a"}}, {"axes": "x"},
+])
+def test_validate_notes_malformed_shape(home, bad):
+    standard_set(home)
+    result = cluster.run(CAT)
+    with pytest.raises(ScriptError) as exc:
+        cluster.validate_notes(result, bad)
+    assert exc.value.code == "invalid_notes" and "notes 형식이 맞지 않습니다" in exc.value.message
+
+
+def test_apply_rejects_stale_run_at(home):
+    standard_set(home)
+    cluster.run(CAT)
+    index = home / "refs" / f"ref_{CAT}" / "index.md"
+    before = index.read_bytes()
+
+    with pytest.raises(ScriptError) as exc:
+        cluster.apply(CAT, notes(home, NOTES), expected_run_at="2000-01-01T00:00:00+00:00")
+
+    assert exc.value.code == "typify_changed"
+    assert index.read_bytes() == before
+    assert not cluster.applied_path(CAT).exists()
+
+
+@pytest.mark.parametrize("broken", [
+    {**NOTES, "axes": {k: v for k, v in NOTES["axes"].items() if k != "hook"}},
+    {**NOTES, "archetypes": [{"id": "A1", "name": "x"}, {"id": "A2", "name": " "}]},
+])
+def test_validate_notes_missing(home, broken):
+    standard_set(home)
+    result = cluster.run(CAT)
+    with pytest.raises(ScriptError) as exc:
+        cluster.validate_notes(result, broken)
+    assert exc.value.code == "invalid_notes"
+    assert "빠졌습니다" in exc.value.message
+
+
+def test_validate_notes_returns_axis_notes_and_names(home):
+    standard_set(home)
+    result = cluster.run(CAT)
+    axis_notes, names = cluster.validate_notes(result, NOTES)
+    assert axis_notes["hook"] == NOTES["axes"]["hook"] and names == {"A1": "결과 먼저 몰아먹기", "A2": "사이즈별 리스트 비교"}
+
+
+# --- 미리보기 분리 · notes 타입 ----------------------------------------------------------
+
+def test_run_with_out_leaves_result_path_untouched(home):
+    standard_set(home)
+    out = cluster.preview_path(CAT)
+    result = cluster.run(CAT, out=out)
+    assert out.name == f"{CAT}.preview.json"
+    assert json.loads(out.read_text("utf-8"))["run_at"] == result["run_at"]
+    assert not cluster.result_path(CAT).exists()
+
+
+def test_apply_with_source_promotes_preview(home):
+    standard_set(home)
+    cluster.run(CAT, out=cluster.preview_path(CAT))
+    preview = cluster.preview_path(CAT).read_bytes()
+    cluster.apply(CAT, notes(home, NOTES), source=cluster.preview_path(CAT))
+    assert cluster.result_path(CAT).read_bytes() == preview
+    assert not cluster.preview_path(CAT).exists()
+
+
+def test_apply_with_source_failure_keeps_preview(home):
+    standard_set(home)
+    cluster.run(CAT, out=cluster.preview_path(CAT))
+    with pytest.raises(ScriptError):
+        cluster.apply(CAT, notes(home, {**NOTES, "archetypes": []}), source=cluster.preview_path(CAT))
+    assert cluster.preview_path(CAT).exists() and not cluster.result_path(CAT).exists()
+
+
+def test_cli_run_and_apply_without_preview(home):
+    standard_set(home)
+    cluster.run(CAT)
+    cluster.apply(CAT, notes(home, NOTES))
+    assert cluster.result_path(CAT).exists() and not cluster.preview_path(CAT).exists()
+
+
+@pytest.mark.parametrize("axes_over,archetypes", [
+    ({"structure": 5}, NOTES["archetypes"]),
+    ({"structure": ["x"]}, NOTES["archetypes"]),
+    ({}, [{"id": "A1", "name": 7}, {"id": "A2", "name": "b"}]),
+])
+def test_validate_notes_non_string_values_are_invalid(home, axes_over, archetypes):
+    standard_set(home)
+    result = cluster.run(CAT)
+    bad = {"axes": {**NOTES["axes"], **axes_over}, "archetypes": archetypes}
+    with pytest.raises(ScriptError) as exc:
+        cluster.validate_notes(result, bad)
+    assert exc.value.code == "invalid_notes"
