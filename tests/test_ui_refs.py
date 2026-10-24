@@ -144,3 +144,96 @@ def test_non_dict_pacing_and_camera_become_none(client, home):  # noqa: F811
     refstore.update_frontmatter(video_path(home, "a00"), {"pacing": 3, "camera": "x"})
     v = get(client, "/api/refs/a00?category=mukbang")["video"]
     assert v["pacing"] is None and v["camera"] is None
+
+
+def _strict_get(client, path, status=200):
+    """Fetch raw and parse as strict JSON (NaN/Infinity tokens are rejected like a browser would)."""
+    def reject(token):
+        raise AssertionError(f"non-strict JSON token: {token}")
+
+    code, data = client.json("GET", path)
+    assert code == status, data
+    json.loads(json.dumps(data, allow_nan=True), parse_constant=reject)
+    return data
+
+
+def test_nan_section_start_skips_video_and_response_is_strict_json(client, home):  # noqa: F811
+    path = video_path(home, "a00")
+    path.write_text(path.read_text(encoding="utf-8").replace("start: 3.0", "start: .nan", 1), encoding="utf-8")
+    assert ".nan" in path.read_text(encoding="utf-8")
+    data = _strict_get(client, "/api/refs?category=mukbang")
+    assert data["skipped"] == 1 and "a00" not in {v["id"] for v in data["videos"]}
+    assert get(client, "/api/refs/a00?category=mukbang", status=400)["error"] == "bad_md"
+
+
+def test_non_finite_duration_pacing_camera_are_strict_json(client, home):  # noqa: F811
+    refstore.update_frontmatter(video_path(home, "a00"), {
+        "duration_sec": float("inf"), "pacing": {"avg_cut_sec": float("nan"), "by_section": {"hook": 1.0}},
+        "camera": {"static": float("inf"), "pan": 0.1}})
+    data = _strict_get(client, "/api/refs?category=mukbang")
+    assert next(v for v in data["videos"] if v["id"] == "a00")["duration_sec"] is None
+    d = _strict_get(client, "/api/refs/a00?category=mukbang")
+    assert d["video"]["pacing"] == {"by_section": {"hook": 1.0}}
+    assert d["video"]["camera"] == {"pan": 0.1}
+
+
+def test_non_finite_scene_times_are_skipped(client, home):  # noqa: F811
+    make_frames(home, "a00", n=2)
+    cuts = home / "workspace" / "cuts" / "a00.json"
+    data = json.loads(cuts.read_text(encoding="utf-8"))
+    data["scenes"][0]["start"] = float("nan")
+    cuts.write_text(json.dumps(data), encoding="utf-8")   # json.dumps writes NaN, which python json reads back
+    d = _strict_get(client, "/api/refs/a00?category=mukbang")
+    assert len(d["frames"]) == 1
+
+
+def test_yaml_date_and_int_titles_become_strings(client, home):  # noqa: F811
+    import datetime
+    refstore.update_frontmatter(video_path(home, "a00"), {"title": datetime.date(2024, 5, 1)})
+    refstore.update_frontmatter(video_path(home, "a01"), {"title": 1984, "channel": 7})
+    vids = {v["id"]: v for v in get(client, "/api/refs?category=mukbang")["videos"]}
+    assert vids["a00"]["title"] == "2024-05-01"
+    assert vids["a01"]["title"] == "1984" and vids["a01"]["channel"] == "7"
+    assert get(client, "/api/refs/a01?category=mukbang")["video"]["title"] == "1984"
+
+
+def test_detail_non_utf8_md_is_bad_md(client, home):  # noqa: F811
+    video_path(home, "a00").write_bytes(b"---\nid: a00\n---\n\xff\xfe\x80bad")
+    assert get(client, "/api/refs/a00?category=mukbang", status=400)["error"] == "bad_md"
+
+
+def test_bad_md_message_has_no_raw_exception_text(client, home):  # noqa: F811
+    path = video_path(home, "a00")
+    fm, body = refstore.read_md(path)
+    fm["sections"][0]["start"] = "abc"
+    path.write_bytes(refstore.join_frontmatter(fm, body).encode("utf-8"))
+    d = get(client, "/api/refs/a00?category=mukbang", status=400)
+    assert "abc" not in d["message"] and "could not convert" not in d["message"]
+    assert "숫자" in d["message"]
+
+
+def test_list_skips_stems_failing_id_re(client, home):  # noqa: F811
+    good = video_path(home, "a00")
+    (good.parent / "bad name.md").write_bytes(good.read_bytes())
+    data = get(client, "/api/refs?category=mukbang")
+    assert "bad name" not in {v["id"] for v in data["videos"]} and data["skipped"] == 1
+
+
+def test_api_is_read_only(client, home):  # noqa: F811
+    make_frames(home, "a00", n=3)
+    files = sorted((home / "refs").rglob("*.md"))
+    assert files
+    before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in files}
+    get(client, "/api/refs?category=mukbang")
+    get(client, "/api/refs/a00?category=mukbang")
+    after = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in files}
+    assert after == before
+
+
+def test_send_backstop_returns_500_json_for_unserializable_payload(client, home, monkeypatch):  # noqa: F811
+    from scripts.ui import server
+
+    monkeypatch.setattr(server, "ROUTES", list(server.ROUTES))
+    server.route("GET", r"/api/_nan_probe")(lambda req: {"x": float("nan")})
+    code, data = client.json("GET", "/api/_nan_probe")
+    assert code == 500 and data["error"] == "internal"

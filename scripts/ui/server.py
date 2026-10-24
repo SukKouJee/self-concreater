@@ -348,7 +348,12 @@ class _Handler(BaseHTTPRequestHandler):
             resp = result
         else:
             code, payload = result if isinstance(result, tuple) else (200, result)
-            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            try:
+                body = json.dumps(payload, ensure_ascii=False, allow_nan=False, default=str).encode("utf-8")
+            except (ValueError, TypeError) as e:
+                code = 500
+                body = json.dumps({"error": "internal", "message": f"응답을 만들지 못했습니다: {type(e).__name__}"},
+                                  ensure_ascii=False).encode("utf-8")
             resp = Response(code, body, "application/json; charset=utf-8")
         self.send_response(resp.status)
         self.send_header("Content-Type", resp.content_type)

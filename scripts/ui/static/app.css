@@ -379,7 +379,7 @@ code { background: var(--grid); padding: 1px 6px; border-radius: 4px; }
 .ref-card:hover { border-color: var(--axis); }
 .ref-link { display: block; color: inherit; text-decoration: none; height: 100%; }
 .ref-card:focus-within { border-color: var(--accent); box-shadow: var(--focus-ring); }
-.ref-link:focus-visible { box-shadow: none; }
+.ref-link:focus-visible { box-shadow: none; outline-offset: -3px; }
 .ref-thumb { aspect-ratio: 16 / 9; background: var(--grid); display: flex; align-items: center; justify-content: center;
   color: var(--muted); font-size: 13px; overflow: hidden; }
 .ref-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }

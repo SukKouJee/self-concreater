@@ -22,7 +22,8 @@ const SORTS = [
 
 const refsHref = (id) => `#/refs/${encodeURIComponent(id)}`;
 const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
-const displayTitle = (v) => v.title || v.id;
+const displayTitle = (v) => String(v.title || v.id);
+const sortByStart = (list) => [...list].sort((a, b) => num(a.start) - num(b.start));
 
 function fmtTime(sec) {
   const s = Math.max(0, Math.floor(num(sec)));
@@ -34,8 +35,8 @@ function fmtRange(s) {
 }
 
 function roleBadge(role) {
-  const text = ROLE_TEXT[role];
-  return text ? h("span", { class: `badge role-${role}` }, text) : null;
+  const text = ROLE_TEXT[role] || (role ? String(role) : "");
+  return text ? h("span", { class: `badge role-${String(role).replace(/[^\w-]/g, "_")}` }, text) : null;
 }
 
 function alive(mine) {
@@ -50,7 +51,7 @@ function ignorable(e) {
 
 // Segment widths are percentages of the video length (or of the last section end when the length is unknown).
 function sectionBand(sections, duration) {
-  const segs = (sections || []).filter((s) => s && typeof s.label === "string" && s.label);
+  const segs = sortByStart((sections || []).filter((s) => s && typeof s.label === "string" && s.label));
   if (segs.length === 0) return null;
   const total = num(duration) > 0 ? num(duration) : Math.max(...segs.map((s) => num(s.end)));
   if (!(total > 0)) return null;
@@ -111,7 +112,8 @@ function loadError(title, e, retryFn) {
   S.el.replaceChildren(
     h("h1", {}, title),
     h("p", { class: "error", role: "alert" }, e.message || "불러오지 못했습니다"),
-    h("div", { class: "btn-row" }, retry, h("a", { class: "btn", href: "#/refs" }, "← 목록")),
+    h("div", { class: "btn-row" }, retry,
+      S.params && S.params.id ? h("a", { class: "btn", href: "#/refs" }, "← 목록") : null),
   );
 }
 
@@ -276,7 +278,7 @@ function renderDetail(data) {
     v.url ? h("p", {}, h("a", { href: v.url, target: "_blank", rel: "noopener noreferrer" }, "유튜브에서 보기")) : null,
   );
 
-  const sections = (v.sections || []).filter((s) => s && s.label);
+  const sections = sortByStart((v.sections || []).filter((s) => s && s.label));
   if (sections.length) {
     S.el.append(h("section", { class: "ref-block", "aria-labelledby": "ref-sec-title" },
       h("h2", { id: "ref-sec-title" }, "섹션 흐름"),

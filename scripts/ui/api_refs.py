@@ -7,8 +7,9 @@
 """
 from __future__ import annotations
 
+import math
 import re
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -32,7 +33,47 @@ def _category(req: Request) -> str:
 
 
 def _dict_or_none(value: Any) -> dict | None:
-    return value if isinstance(value, dict) else None
+    return _json_safe(value) if isinstance(value, dict) else None
+
+
+def _finite(value: Any) -> float:
+    """Number -> float, but NaN/inf (YAML `.nan`/`.inf`) are rejected so the response stays strict JSON."""
+    number = float(value or 0)
+    if not math.isfinite(number):
+        raise ValueError("non-finite number")
+    return number
+
+
+def _text(value: Any) -> str | None:
+    """Frontmatter scalar -> display string (YAML may load `2024-05-01` as a date or `1984` as an int)."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, date)) and not isinstance(value, bool):
+        return str(value)
+    return None
+
+
+def _duration(value: Any) -> float | int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    return value
+
+
+def _json_safe(value: Any) -> Any:
+    """Recursively drop non-finite numbers and stringify keys/dates so json.dumps(allow_nan=False) cannot fail."""
+    if isinstance(value, dict):
+        cleaned = {str(k): _json_safe(v) for k, v in value.items()}
+        return {k: v for k, v in cleaned.items() if v is not _DROP}
+    if isinstance(value, list):
+        return [v for v in (_json_safe(i) for i in value) if v is not _DROP]
+    if isinstance(value, float) and not math.isfinite(value):
+        return _DROP
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+_DROP: Any = object()
 
 
 def _sections(fm: dict) -> list[dict]:
@@ -41,10 +82,10 @@ def _sections(fm: dict) -> list[dict]:
     for s in raw if isinstance(raw, list) else []:
         if not isinstance(s, dict):
             continue
-        item: dict[str, Any] = {"label": s.get("label"), "start": float(s.get("start") or 0),
-                                "end": float(s.get("end") or 0)}
+        item: dict[str, Any] = {"label": _text(s.get("label")), "start": _finite(s.get("start")),
+                                "end": _finite(s.get("end"))}
         if s.get("sub"):
-            item["sub"] = s["sub"]
+            item["sub"] = _text(s["sub"])
         out.append(item)
     return out
 
@@ -71,7 +112,7 @@ def _scene_frames(video_id: str) -> list[dict]:
             target = (root / frame).resolve()
             if not target.is_relative_to(base) or not target.is_file():
                 continue
-            start, end = float(scene.get("start") or 0), float(scene.get("end") or 0)
+            start, end = _finite(scene.get("start")), _finite(scene.get("end"))
         except (OSError, ValueError, TypeError):
             continue
         out.append({"frame": frame, "start": start, "end": end})
@@ -81,9 +122,10 @@ def _scene_frames(video_id: str) -> list[dict]:
 def _summary(path: Path, fm: dict, frames: list[dict]) -> dict:
     added = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     return {
-        "id": path.stem, "role": fm.get("role"), "title": fm.get("title"), "channel": fm.get("channel"),
-        "duration_sec": fm.get("duration_sec"), "format": fm.get("format"),
-        "hook_type": fm.get("hook_type"), "narrative_type": fm.get("narrative_type"),
+        "id": path.stem, "role": _text(fm.get("role")), "title": _text(fm.get("title")),
+        "channel": _text(fm.get("channel")), "duration_sec": _duration(fm.get("duration_sec")),
+        "format": _text(fm.get("format")), "hook_type": _text(fm.get("hook_type")),
+        "narrative_type": _text(fm.get("narrative_type")),
         "reviewed": bool(fm.get("reviewed")), "sections": _sections(fm),
         "thumb": frames[0]["frame"] if frames else None, "added": added,
     }
@@ -121,6 +163,9 @@ def _list(req: Request) -> dict:
     videos = []
     skipped = 0
     for path in sorted(folder.glob("*.md")) if folder.is_dir() else []:
+        if not ID_RE.fullmatch(path.stem):
+            skipped += 1                  # 상세가 400으로 거절할 id는 목록에도 싣지 않는다
+            continue
         try:
             fm, _ = refstore.read_md(path)
             videos.append(_summary(path, fm, _scene_frames(path.stem)))
@@ -137,14 +182,19 @@ def _detail(req: Request, video_id: str) -> dict:
     path = refstore.existing_category_dir(category) / "videos" / f"{video_id}.md"
     if not path.is_file():
         raise ScriptError("video_not_found", f"영상 md가 없습니다: {video_id}")
-    fm, body = refstore.read_md(path)
+    try:
+        fm, body = refstore.read_md(path)
+    except ScriptError:
+        raise
+    except (OSError, ValueError) as e:
+        raise ScriptError("bad_md", f"영상 md를 읽지 못했습니다: {video_id}") from e
     frames = _scene_frames(video_id)
     try:
         summary = _summary(path, fm, frames)
         for f in frames:
             f["section"] = _section_at(summary["sections"], (f["start"] + f["end"]) / 2)
     except (ValueError, TypeError, AttributeError) as e:
-        raise ScriptError("bad_md", f"영상 md의 값이 올바르지 않습니다({video_id}): {e}") from e
+        raise ScriptError("bad_md", f"영상 md의 값이 올바르지 않습니다({video_id}): 섹션 시작/끝은 숫자여야 합니다") from e
     video = {**summary, "url": _youtube_url(fm.get("url")), "pacing": _dict_or_none(fm.get("pacing")),
              "camera": _dict_or_none(fm.get("camera"))}
     try:
