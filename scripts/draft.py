@@ -14,6 +14,7 @@ draft JSON (yt-draft 규칙)
 from __future__ import annotations
 
 import json
+import math
 import re
 from datetime import date
 from pathlib import Path
@@ -76,32 +77,95 @@ def _invalid(message: str) -> ScriptError:
     return ScriptError("invalid_draft", f"기획안이 형식에 맞지 않습니다: {message}")
 
 
+def _one_line(value: Any) -> str:
+    """줄바꿈·연속 공백을 접어 한 줄로 만든다(md 표·제목·목록이 깨지지 않게)."""
+    return " ".join(str(value).split())
+
+
+def _escape_headings(text: str) -> str:
+    """줄바꿈을 LF로 맞추고, 진짜 md 제목(`#`~`######` + 공백/줄끝)인 줄 앞에 백슬래시를 붙인다. `#해시태그`는 그대로."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return re.sub(r"^([ \t]*)(#{1,6}(?=\s|$))", r"\1\\\2", text, flags=re.MULTILINE)
+
+
+def _finite(value: Any, name: str) -> float:
+    if isinstance(value, bool):
+        raise _invalid(f"{name}은(는) 숫자여야 합니다")
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as e:
+        raise _invalid(f"{name}은(는) 숫자여야 합니다: {value!r}") from e
+    if not math.isfinite(number):
+        raise _invalid(f"{name}은(는) 유한한 숫자여야 합니다")
+    return number
+
+
 def validate(data: dict) -> dict:
-    if not str(data.get("title") or "").strip():
+    if not isinstance(data, dict):
+        raise _invalid("기획안은 객체여야 합니다")
+    title = _one_line(data.get("title") or "")
+    if not title:
         raise _invalid("title이 비어 있습니다")
     if data.get("hook_type") not in HOOK_TYPES:
         raise _invalid(f"hook_type={data.get('hook_type')!r} (허용: {', '.join(HOOK_TYPES)})")
     if data.get("narrative_type") not in NARRATIVE_TYPES:
         raise _invalid(f"narrative_type={data.get('narrative_type')!r} (허용: {', '.join(NARRATIVE_TYPES)})")
-    sections = sorted(data.get("sections") or [], key=lambda s: float(s["start"]))
-    if not sections:
+    raw_sections = data.get("sections") or []
+    if not isinstance(raw_sections, list):
+        raise _invalid("sections는 목록이어야 합니다")
+    if not raw_sections:
         raise _invalid("sections가 비어 있습니다")
+    if any(not isinstance(s, dict) for s in raw_sections):
+        raise _invalid("섹션은 객체여야 합니다")
+    prep = data.get("prep")
+    if prep is not None and not isinstance(prep, list):
+        raise _invalid("prep은 목록이어야 합니다")
+    starts = [_finite(s.get("start"), "섹션 start") for s in raw_sections]
+    ordered = [s for _, s in sorted(zip(starts, raw_sections), key=lambda pair: pair[0])]
+    sections: list[dict] = []
     prev = 0.0
-    for s in sections:
+    for raw in ordered:
+        s = dict(raw)
         if s.get("label") not in LABELS:
             raise _invalid(f"label={s.get('label')!r} (허용: {', '.join(LABELS)})")
         if s.get("sub") is not None and (s["label"] != "body" or s["sub"] not in BODY_SUBS):
             raise _invalid(f"sub={s.get('sub')!r}는 body에만, {', '.join(BODY_SUBS)} 중 하나")
-        s["start"], s["end"] = prev, float(s["end"])
+        s["start"], s["end"] = prev, _finite(s.get("end"), "섹션 end")
         if s["end"] <= s["start"]:
             raise _invalid(f"섹션 {s['label']}의 구간이 비었습니다")
-        if not s.get("shots") and not data.get("script_only"):
+        shots = s.get("shots") or []
+        if not isinstance(shots, list):
+            raise _invalid(f"섹션 {s['label']}의 shots는 목록이어야 합니다")
+        if not shots and not data.get("script_only"):
             raise _invalid(f"섹션 {s['label']}에 샷이 없습니다")
-        for shot in s.get("shots") or []:
+        clean_shots: list[dict] = []
+        for raw_shot in shots:
+            if not isinstance(raw_shot, dict):
+                raise _invalid(f"섹션 {s['label']}의 샷은 객체여야 합니다")
+            shot = dict(raw_shot)
             if shot.get("size") not in SHOT_SIZES:
                 raise _invalid(f"샷 크기 {shot.get('size')!r} (허용: {', '.join(SHOT_SIZES)})")
+            if shot.get("sec") is None:
+                raise _invalid(f"섹션 {s['label']}의 샷 sec가 필요합니다")
+            if _finite(shot["sec"], "샷 sec") <= 0:
+                raise _invalid(f"샷 sec는 0보다 커야 합니다: {shot['sec']!r}")
+            for key in ("angle", "action"):
+                if shot.get(key) is not None:
+                    shot[key] = _one_line(shot[key])
+            clean_shots.append(shot)
+        if "shots" in s:
+            s["shots"] = clean_shots
+        if s.get("script") is not None:
+            s["script"] = _escape_headings(str(s["script"]))
+        sections.append(s)
         prev = s["end"]
-    return {**data, "sections": sections}
+    out = {**data, "title": title, "sections": sections}
+    for key in ("topic", "source"):
+        if data.get(key) is not None:
+            out[key] = _one_line(data[key])
+    if prep is not None:
+        out["prep"] = [line for line in (_one_line(p) for p in prep) if line]
+    return out
 
 
 def planned_pacing(sections: list[dict]) -> dict:
@@ -176,6 +240,13 @@ def render(data: dict, pacing: dict, comp: dict | None) -> str:
     return "\n".join(out)
 
 
+def find_archetype(category: str, archetype_id: Any) -> dict | None:
+    """유형화 결과에서 아키타입을 찾는다. 없거나 유형화 전이면 None."""
+    index_fm, _ = refstore.read_md(refstore.existing_category_dir(category) / "index.md")
+    archetypes = (motif._typify(category, index_fm) or {}).get("archetypes") or []
+    return next((a for a in archetypes if a["id"] == archetype_id), None)
+
+
 def save(category: str, draft_path: Path) -> dict:
     refstore.existing_category_dir(category)
     try:
@@ -183,9 +254,7 @@ def save(category: str, draft_path: Path) -> dict:
     except (OSError, json.JSONDecodeError) as e:
         raise ScriptError("invalid_draft", f"기획 JSON을 읽을 수 없습니다: {e}") from e
     data = validate(data)
-    index_fm, _ = refstore.read_md(refstore.existing_category_dir(category) / "index.md")
-    archetypes = (motif._typify(category, index_fm) or {}).get("archetypes") or []
-    archetype = next((a for a in archetypes if a["id"] == data.get("archetype")), None)
+    archetype = find_archetype(category, data.get("archetype"))
     pacing = planned_pacing(data["sections"])
     comp = compare(data["sections"], archetype)
 
@@ -193,10 +262,6 @@ def save(category: str, draft_path: Path) -> dict:
     drafts = work_root() / "drafts"
     drafts.mkdir(parents=True, exist_ok=True)
     base = f"{today}-{slugify(data['title'])}"
-    path, i = drafts / f"{base}.md", 2
-    while path.exists():
-        path, i = drafts / f"{base}-{i}.md", i + 1
-
     fm = {
         "date": today, "category": category, "title": data["title"], "topic": data.get("topic"),
         "source": data.get("source"), "archetype": data.get("archetype"),
@@ -207,7 +272,15 @@ def save(category: str, draft_path: Path) -> dict:
         "title_pattern": title_patterns(data["title"]), "pacing": pacing,
         "status": "script" if data.get("script_only") else "draft", "schema_version": 1,
     }
-    path.write_bytes(refstore.join_frontmatter(fm, render(data, pacing, comp)).encode("utf-8"))
+    content = refstore.join_frontmatter(fm, render(data, pacing, comp)).encode("utf-8")
+    path, i = drafts / f"{base}.md", 2
+    while True:
+        try:
+            with open(path, "xb") as f:          # exclusive create: never overwrite a file that appeared meanwhile
+                f.write(content)
+            break
+        except FileExistsError:
+            path, i = drafts / f"{base}-{i}.md", i + 1
     Path(draft_path).unlink(missing_ok=True)
     return {"status": "saved", "path": path.relative_to(work_root()).as_posix(), "pacing": pacing, "compare": comp}
 

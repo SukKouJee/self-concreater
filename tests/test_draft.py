@@ -135,3 +135,145 @@ def test_main_routes(home):
     assert draft.main(["context", CAT, "M-mukbang-001"])["source"]["kind"] == "motif"
     draft_file(home)
     assert draft.main(["save", CAT, "--draft", "workspace/tmp/draft.json"])["status"] == "saved"
+
+
+# --- render 특성(characterization) · 검증 보강 ------------------------------------------
+
+CHARACTERIZED = {
+    **DRAFT, "archetype": None, "source": "직접",
+    "sections": [
+        {"label": "body", "start": 10, "end": 20, "script": "둘째\n줄 | 파이프",
+         "shots": [{"size": "탑뷰", "sec": 10, "action": "a|b"}]},
+        {"label": "hook", "start": 0, "end": 3, "script": "첫째",
+         "shots": [{"size": "탑뷰", "angle": "정면", "sec": 3, "action": "x"}]},
+    ],
+}
+CHARACTERIZED_BODY = (
+    "# 편의점 라면 3단계 맵기 도전!\n\n## 개요\n- 주제: 편의점 라면\n- 출처: 직접\n"
+    "- 길이: 0:20 · 계획 컷 2개 (평균 10.0초)\n- 훅: result_first · 서사: journey\n\n## 대본\n\n"
+    "### 0:00–0:03 · hook (3초)\n첫째\n\n| # | 샷 | 앵글 | 길이 | 내용 |\n|---|---|---|---|---|\n"
+    "| 1 | 탑뷰 | 정면 | 3초 | x |\n\n"
+    "### 0:03–0:20 · body (17초)\n둘째\n줄 | 파이프\n\n| # | 샷 | 앵글 | 길이 | 내용 |\n|---|---|---|---|---|\n"
+    "| 2 | 탑뷰 | - | 10초 | a\|b |\n\n## 준비물\n- 컵라면 3종\n- 삼각대\n\n## 내 메모\n"
+)
+
+
+def test_render_characterization(home):
+    out = draft.save(CAT, draft_file(home, CHARACTERIZED))
+    assert refstore.read_md(home / out["path"])[1] == CHARACTERIZED_BODY
+
+
+def _mutated(fn):
+    data = json.loads(json.dumps(DRAFT))
+    fn(data)
+    return data
+
+
+_MALFORMED_IDS = [
+    "list-root", "string-root", "sections-string", "section-not-object", "shots-item-not-object", "shots-string",
+    "start-string", "end-none", "start-missing", "sec-zero", "sec-negative", "sec-string", "sec-nan", "sec-inf",
+    "sec-bool", "end-nan", "sec-null", "sec-missing",
+]
+
+
+@pytest.mark.parametrize("data", [
+    [],
+    "x",
+    _mutated(lambda d: d.update(sections="x")),
+    _mutated(lambda d: d.update(sections=[1])),
+    _mutated(lambda d: d["sections"][0].update(shots=["x"])),
+    _mutated(lambda d: d["sections"][0].update(shots="x")),
+    _mutated(lambda d: d["sections"][0].update(start="x")),
+    _mutated(lambda d: d["sections"][0].update(end=None)),
+    _mutated(lambda d: d["sections"][0].pop("start")),
+    _mutated(lambda d: d["sections"][0]["shots"][0].update(sec=0)),
+    _mutated(lambda d: d["sections"][0]["shots"][0].update(sec=-1)),
+    _mutated(lambda d: d["sections"][0]["shots"][0].update(sec="a")),
+    _mutated(lambda d: d["sections"][0]["shots"][0].update(sec=float("nan"))),
+    _mutated(lambda d: d["sections"][0]["shots"][0].update(sec=float("inf"))),
+    _mutated(lambda d: d["sections"][0]["shots"][0].update(sec=True)),
+    _mutated(lambda d: d["sections"][0].update(end=float("nan"))),
+    _mutated(lambda d: d["sections"][0]["shots"][0].update(sec=None)),
+    _mutated(lambda d: d["sections"][0]["shots"][0].pop("sec")),
+], ids=_MALFORMED_IDS)
+def test_validate_rejects_malformed(data):
+    with pytest.raises(ScriptError) as exc:
+        draft.validate(data)
+    assert exc.value.code == "invalid_draft"
+
+
+def test_validate_single_lines_and_heading_escape(home):
+    data = json.loads(json.dumps(DRAFT))
+    data["archetype"] = None
+    data["title"] = "제목\n## 가짜   제목"
+    data["prep"] = ["컵\n## 내 메모", "삼각대"]
+    data["sections"][0]["script"] = "첫 줄\n## 내 메모\n# 큰제목"
+    data["sections"][0]["shots"][0].update(angle="정면\n앵글", action="한 줄\n두 줄 | 셋")
+    out = draft.save(CAT, draft_file(home, data))
+    fm, body = refstore.read_md(home / out["path"])
+    assert fm["title"] == "제목 ## 가짜 제목"
+    assert body.startswith("# 제목 ## 가짜 제목\n")
+    assert r"\## 내 메모" in body and r"\# 큰제목" in body
+    assert [ln for ln in body.split("\n") if ln == "## 내 메모"] == ["## 내 메모"]
+    assert r"| 1 | 탑뷰 | 정면 앵글 | 3초 | 한 줄 두 줄 \| 셋 |" in body
+    assert "- 컵 ## 내 메모" in body
+
+
+def test_cli_save_still_works(home):
+    draft_file(home)
+    assert draft.main(["save", CAT, "--draft", "workspace/tmp/draft.json"])["path"].startswith("drafts/")
+
+
+def test_hashtag_lines_kept_and_headings_round_trip(home):
+    from scripts import conti
+    data = json.loads(json.dumps(DRAFT))
+    data["archetype"] = None
+    data["sections"][0]["script"] = "#해시태그\n## 내 메모\n#### 넷\n#"
+    out = draft.save(CAT, draft_file(home, data))
+    _, body = refstore.read_md(home / out["path"])
+    assert [ln for ln in body.split("\n") if ln == "## 내 메모"] == ["## 내 메모"]
+    assert "\n#해시태그\n" in body and "\## 내 메모" in body
+    script = conti.parse_draft(home / out["path"])["sections"][0]["script"]
+    assert script == "#해시태그\n## 내 메모\n#### 넷\n#"
+
+
+def test_validate_folds_topic_and_source():
+    data = json.loads(json.dumps(DRAFT))
+    data["topic"] = "x\n## 내 메모\ny"
+    data["source"] = "a\r\nb"
+    out = draft.validate(data)
+    assert out["topic"] == "x ## 내 메모 y" and out["source"] == "a b"
+    data["topic"] = None
+    assert draft.validate(data)["topic"] is None
+
+
+def test_validate_normalizes_carriage_returns_in_script():
+    data = json.loads(json.dumps(DRAFT))
+    data["sections"][0]["script"] = "a\r## b\r\n## c"
+    assert draft.validate(data)["sections"][0]["script"] == "a\n\## b\n\## c"
+
+
+def test_validate_is_idempotent_for_escaped_headings():
+    data = json.loads(json.dumps(DRAFT))
+    data["sections"][0]["script"] = "a\n## b\n#태그\n\\## c"
+    once = draft.validate(data)
+    assert draft.validate(once) == once
+
+
+def test_save_picks_next_free_name_without_touching_existing(home):
+    first = home / draft.save(CAT, draft_file(home))["path"]
+    second = home / draft.save(CAT, draft_file(home))["path"]
+    before = {p: p.read_bytes() for p in (first, second)}
+    third = draft.save(CAT, draft_file(home))["path"]
+    assert third.endswith("-3.md")
+    assert all(p.read_bytes() == b for p, b in before.items())
+
+
+def test_parse_draft_keeps_backslash_before_non_heading_hash(home):
+    from scripts import conti
+    data = json.loads(json.dumps(DRAFT))
+    data["archetype"] = None
+    data["sections"][0]["script"] = "\#tag\n## 제목"
+    out = draft.save(CAT, draft_file(home, data))
+    script = conti.parse_draft(home / out["path"])["sections"][0]["script"]
+    assert script == "\#tag\n## 제목"

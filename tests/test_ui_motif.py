@@ -87,7 +87,7 @@ def test_status_flags(client, home):
     assert body["allowed_types"] == ["technique", "angle"]       # 3단계라도 유형화 전에는 흐름·조합 없음
     assert body["allowed_ko"] == ["기법", "각도"]
     assert body["has_profile"] is False and body["has_typify"] is False
-    assert body["cards"] == [] and body["draft_hint"] == "/yt-coach:yt-draft"
+    assert body["cards"] == []
 
     (home / "profile.md").write_text("---\ncreated: 2026-10-20\n---\n# 프로필\n", encoding="utf-8")
     typify = home / "workspace" / "typify" / f"{CAT}.json"

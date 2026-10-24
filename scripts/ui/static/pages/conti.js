@@ -210,7 +210,8 @@ function renderDraftList() {
     } else {
       card.append(h("h2", {}, "기획안이 아직 없습니다"),
         h("p", { class: "muted" }, "콘티는 기획안(drafts/)에서 만듭니다. 터미널에서 먼저 기획안을 만드세요."),
-        h("p", {}, h("code", { class: "cmd" }, "/yt-coach:yt-draft")));
+        h("p", {}, h("code", { class: "cmd" }, "/yt-coach:yt-draft")),
+        h("a", { class: "btn", href: "#/draft/new" }, "기획안 만들기"));
     }
     list.append(card);
     return;

@@ -1,7 +1,7 @@
 import { h, filesUrl } from "/static/dom.js";
 
 const STEP_LABELS = { collect: "모으기", typify: "유형화", draft: "기획안", conti: "콘티", diagnose: "진단" };
-const MENU_ROUTES = { add: "#/add", conti: "#/conti", typify: "#/typify", draft: "#/soon/draft", diagnose: "#/soon/diagnose" };
+const MENU_ROUTES = { add: "#/add", conti: "#/conti", typify: "#/typify", draft: "#/draft", diagnose: "#/soon/diagnose" };
 const MENU_NAMES = { add: "레퍼런스 추가", conti: "콘티", typify: "유형화", draft: "기획안", diagnose: "진단" };
 const KIND_LABELS = { conti: "콘티", report: "리포트", draft: "기획안" };
 const MISSION_STATUS = { done: "제출함", skipped: "건너뜀", replaced: "교체됨", pending: "진행 전", active: "진행 중" };
@@ -71,7 +71,7 @@ function recentCard(items) {
     const name = it.path.split("/").pop();
     const label = KIND_LABELS[it.kind] || it.kind;
     const link = it.kind === "draft"
-      ? h("a", { href: `#/conti/${encodeURIComponent(it.path)}` }, name)
+      ? h("a", { href: `#/draft/view/${encodeURIComponent(it.path)}` }, name)
       : h("a", { href: filesUrl(it.path), target: "_blank", rel: "noopener" }, name);
     const when = new Date(it.mtime * 1000).toLocaleString("ko-KR", { dateStyle: "short", timeStyle: "short" });
     ul.append(h("li", {}, h("span", { class: "tag" }, label), link, h("time", { class: "muted" }, when)));

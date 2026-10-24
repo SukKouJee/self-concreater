@@ -359,22 +359,6 @@ async function toggleStar(card) {
   }
 }
 
-async function copyCommand(card) {
-  const mine = S;
-  const hint = (mine.data && mine.data.draft_hint) || "/yt-coach:yt-draft";
-  const cat = /\s/.test(mine.category) ? `"${mine.category}"` : mine.category;
-  // The last argument is the video topic (what the user typed here), not the card title.
-  // Double quotes inside it would break the quoted argument, so they become single quotes.
-  const topic = mine.topic.trim().replace(/"/g, "'") || "<주제>";
-  const text = `${hint} ${cat} ${card.id} "${topic}"`;
-  try {
-    await navigator.clipboard.writeText(text);
-    if (alive(mine)) mine.ctx.toast("기획안 명령을 복사했습니다", "info");
-  } catch {
-    if (alive(mine)) mine.ctx.toast("복사하지 못했습니다. 직접 선택해 복사하세요", "error");
-  }
-}
-
 // ---- render -------------------------------------------------------------------
 
 function render() {
@@ -565,8 +549,7 @@ function savedCard(card) {
     "aria-label": `${card.title} 즐겨찾기`, "data-star-id": card.id,
   }, card.starred ? "★" : "☆");
   star.addEventListener("click", () => toggleStar(card));
-  const copy = h("button", { type: "button", class: "btn" }, "기획안 명령 복사");
-  copy.addEventListener("click", () => copyCommand(card));
+  const make = h("a", { class: "btn", href: `#/draft/new/${encodeURIComponent(card.id)}` }, "기획안 만들기");
   const titles = new Map();
   const ids = [];
   for (const ev of card.evidence || []) {
@@ -585,7 +568,7 @@ function savedCard(card) {
     card.basis ? h("p", { class: "small" }, h("span", { class: "muted" }, "바탕 "), card.basis) : null,
     evidenceLinks(ids, titles, "근거 영상"),
     card.made ? h("p", { class: "muted small" }, `만든 날 ${card.made}`) : null,
-    h("div", { class: "btn-row" }, copy));
+    h("div", { class: "btn-row" }, make));
 }
 
 function filterButtons(types) {
