@@ -58,6 +58,7 @@ _CRED_PASSWORD_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://[^/@\s]*:[^/@\s]*@")
 _HTTP_USERINFO_RE = re.compile(r"^https?://[^/?#]*@", re.IGNORECASE)
 _FM_BLOCK_RE = re.compile(r"\A\ufeff?---\r?\n(.*?)\r?\n---(?:\r?\n|\Z)", re.DOTALL)
 LOCK_STALE_SEC = 10 * 60
+YTC_EMAIL_SUFFIX = "@yt-coach.local"
 SUMMARY_COPY_RUN = 15
 _THREAD_LOCK = threading.Lock()
 
@@ -158,7 +159,7 @@ def _tail(text: str, limit: int = 300) -> str:
     return mask_credentials(" ".join(text.split()))[-limit:]
 
 
-_SSH_CONFIGURED: bool | None = None
+_SSH_CONFIGURED: dict[str, bool] = {}
 
 
 def _kill_tree(proc: subprocess.Popen[bytes]) -> None:
@@ -196,13 +197,13 @@ def _execute(cmd: list[str], cwd: Path, env: dict[str, str], timeout: float) -> 
 
 
 def _git_env(cwd: Path) -> dict[str, str]:
-    global _SSH_CONFIGURED
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never", "LC_ALL": "C", "LANGUAGE": "C"}
     if "GIT_SSH_COMMAND" not in os.environ and "GIT_SSH" not in os.environ:
-        if _SSH_CONFIGURED is None:
+        key = str(cwd)           # 저장소마다 설정이 다를 수 있으므로 폴더별로 기억한다
+        if key not in _SSH_CONFIGURED:
             code, out, _ = _execute(["git", "config", "--get", "core.sshCommand"], cwd, env, 15)
-            _SSH_CONFIGURED = code == 0 and bool(out.strip())
-        if not _SSH_CONFIGURED:
+            _SSH_CONFIGURED[key] = code == 0 and bool(out.strip())
+        if not _SSH_CONFIGURED[key]:
             env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes"      # 사용자 ssh 설정이 없을 때만: 암호 프롬프트로 멈추지 않게
     return env
 
@@ -224,39 +225,116 @@ def _git(args: list[str], cwd: Path, *, check: bool = True, what: str = "git") -
     return proc
 
 
-def _recover(root: Path) -> None:
-    """이전 실패로 남은 rebase가 있으면 중단한다(자동 해결하지 않는다)."""
+def _abort_rebase(root: Path) -> None:
     git_dir = root / ".git"
     if (git_dir / "rebase-merge").exists() or (git_dir / "rebase-apply").exists():
         _git(["rebase", "--abort"], root, check=False)
 
 
+def _recover(root: Path) -> str | None:
+    """이전 실패·중단으로 남은 것을 정리한다. 경고할 것이 있으면 문장을 돌려준다.
+
+    1. 남은 rebase는 중단한다(자동 해결하지 않는다).
+    2. 아직 올라가지 않은 로컬 커밋이 전부 yt-coach가 만든 것(`@yt-coach.local`)이면 원격 상태로 되돌린다.
+       사용자가 직접 만든 커밋이 하나라도 섞여 있으면 건드리지 않고 경고만 한다.
+    """
+    _abort_rebase(root)
+    branch = _git(["symbolic-ref", "--short", "-q", "HEAD"], root, check=False).stdout.strip()
+    if not branch or _head(root) is None:
+        return None
+    ref = f"refs/remotes/origin/{branch}"
+    if _git(["rev-parse", "--verify", "-q", ref], root, check=False).returncode != 0:
+        return None
+    ahead = _git(["log", "--format=%ae", f"{ref}..HEAD"], root, check=False).stdout.split()
+    if not ahead:
+        return None
+    _git(["fetch", "origin", branch], root, what="원격 확인(fetch)")      # 올라갔는지 최신 상태로 다시 본다
+    ahead = _git(["log", "--format=%ae", f"{ref}..HEAD"], root, check=False).stdout.split()
+    if not ahead:
+        return None
+    if all(email.endswith(YTC_EMAIL_SUFFIX) for email in ahead):
+        _git(["reset", "--hard", ref], root, check=False)
+        return None
+    return "라이브러리 폴더에 올라가지 않은 로컬 커밋이 있습니다(yt-coach가 만든 것이 아니라 그대로 두었습니다). 직접 확인하세요."
+
+
+def _pid_alive(pid: int) -> bool:
+    """프로세스가 살아 있는지만 본다(어떤 프로세스도 끄지 않는다)."""
+    if pid == os.getpid():
+        return True
+    if os.name == "nt":
+        import ctypes
+        kernel32 = ctypes.windll.kernel32                                    # type: ignore[attr-defined]
+        handle = kernel32.OpenProcess(0x1000, False, pid)                    # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ctypes.GetLastError() != 87                               # 87 = 없는 PID. 그 밖(접근 거부 등)은 살아 있다고 본다
+        try:
+            code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return True
+            return code.value == 259                                         # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _lock_is_stale(path: Path) -> bool:
+    try:
+        if time.time() - path.stat().st_mtime > LOCK_STALE_SEC:
+            return True
+        text = path.read_text(encoding="ascii").strip()
+    except FileNotFoundError:
+        return True
+    except (OSError, UnicodeDecodeError):
+        return False
+    return text.isdigit() and not _pid_alive(int(text))
+
+
+def _take_lock(path: Path, busy: ScriptError) -> int:
+    for attempt in range(2):
+        try:
+            return os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            if attempt == 1 or not _lock_is_stale(path):
+                raise busy from None
+            # 낡은 잠금은 고유한 이름으로 옮기는 데 성공한 프로세스 하나만 치운다(확인과 삭제 사이의 경쟁 방지)
+            grave = path.with_name(f"{path.name}.stale-{uuid.uuid4().hex}")
+            try:
+                os.replace(path, grave)
+            except OSError:
+                continue
+            if not _lock_is_stale(grave):            # 옮기는 사이 다른 프로세스가 새로 잡은 잠금이었다면 되돌린다
+                try:
+                    os.link(grave, path)
+                except OSError:
+                    pass
+                grave.unlink(missing_ok=True)
+                raise busy from None
+            grave.unlink(missing_ok=True)
+    raise busy
+
+
 @contextmanager
 def _exclusive() -> Iterator[None]:
-    """confirm·pull을 한 번에 하나씩(프로세스 안 스레드 잠금 + 프로세스 사이 잠금 파일)."""
+    """connect·confirm·pull을 한 번에 하나씩(프로세스 안 스레드 잠금 + 프로세스 사이 잠금 파일)."""
     busy = _fail("library_busy", "다른 라이브러리 작업이 진행 중입니다. 잠시 뒤 다시 시도하세요.")
     if not _THREAD_LOCK.acquire(blocking=False):
         raise busy
-    path = workspace_dir("library.lock")
     try:
+        path = workspace_dir("library.lock")
         path.parent.mkdir(parents=True, exist_ok=True)
-        for attempt in range(2):
+        fd = _take_lock(path, busy)
+        try:
             try:
-                fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                break
-            except FileExistsError:
-                try:
-                    stale = time.time() - path.stat().st_mtime > LOCK_STALE_SEC
-                except FileNotFoundError:
-                    stale = True
-                if attempt == 1 or not stale:
-                    raise busy from None
-                path.unlink(missing_ok=True)
-        try:
-            os.write(fd, str(os.getpid()).encode("ascii"))
-        finally:
-            os.close(fd)
-        try:
+                os.write(fd, str(os.getpid()).encode("ascii"))
+            finally:
+                os.close(fd)
             yield
         finally:
             path.unlink(missing_ok=True)
@@ -306,6 +384,11 @@ def connect(remote: str, author: str) -> dict[str, Any]:
     _check_remote(remote)
     if not name:
         raise _fail("invalid_author", "표시 이름(author)이 필요합니다")
+    with _exclusive():
+        return _connect_locked(remote, name)
+
+
+def _connect_locked(remote: str, name: str) -> dict[str, Any]:
     root = clone_dir()
     existing = _read_config()
     if (root / ".git").exists():
@@ -354,15 +437,15 @@ def _with_readme_cleared(root: Path, action: Any) -> Any:
 
 
 def pull() -> dict[str, Any]:
-    cfg, root = _require_connected()
     with _exclusive():
-        _recover(root)
+        cfg, root = _require_connected()
+        warning = _recover(root)
         branch = _branch(root)
-        warning = None
         dirty = [line for line in _git(["status", "--porcelain"], root, what="상태 확인").stdout.splitlines()
                  if line.strip() and not line.endswith("README.md")]
         if dirty:
-            warning = "라이브러리 폴더에 로컬 변경이 있습니다(yt-coach가 만든 것이 아닙니다). 받기에 영향을 줄 수 있습니다."
+            warning = (warning + " " if warning else "") + \
+                "라이브러리 폴더에 로컬 변경이 있습니다(yt-coach가 만든 것이 아닙니다). 받기에 영향을 줄 수 있습니다."
         if not _remote_has_branch(root, branch):
             result = "empty"
         else:
@@ -922,7 +1005,7 @@ def _rollback(root: Path, before: str | None, rels: list[str], branch: str) -> N
 
     원격 브랜치를 이미 받아 왔으면(rebase가 성공한 뒤 재push가 실패한 경우 등) 그 상태로 맞춘다.
     """
-    _recover(root)
+    _abort_rebase(root)
     remote_ref = f"refs/remotes/origin/{branch}"
     if _git(["rev-parse", "--verify", "-q", remote_ref], root, check=False).returncode == 0:
         _git(["reset", "--hard", remote_ref], root, check=False)
@@ -940,13 +1023,13 @@ def _rebase_pull(root: Path, branch: str) -> None:
     try:
         proc = _git(["pull", "--rebase", "origin", branch], root, check=False)
     except ScriptError:
-        _recover(root)                    # 시간 초과 등으로 rebase가 반쯤 남았을 수 있다
+        _abort_rebase(root)                    # 시간 초과 등으로 rebase가 반쯤 남았을 수 있다
         raise
     if proc.returncode == 0:
         return
     text = proc.stderr + "\n" + proc.stdout
     leftover = (root / ".git" / "rebase-merge").exists() or (root / ".git" / "rebase-apply").exists()
-    _recover(root)
+    _abort_rebase(root)
     if leftover or "conflict" in text.lower():
         raise _fail("rebase_conflict", "다른 사람의 변경과 겹쳐 합치지 못했습니다. 자동으로 해결하지 않고 중단했습니다. "
                     "받기(pull) 후 다시 시도하거나 저장소 관리자에게 알리세요.")
@@ -964,12 +1047,12 @@ def _sync_before_share(root: Path, branch: str) -> None:
         _with_readme_cleared(root, lambda: _rebase_pull(root, branch))
 
 
-def _remote_has_file(root: Path, branch: str, rel: str) -> bool:
-    """push가 시간 초과된 뒤, 원격이 실제로 커밋을 받았는지 확인한다."""
+def _remote_has_file(root: Path, branch: str, rel: str) -> bool | None:
+    """push가 시간 초과된 뒤, 원격이 실제로 커밋을 받았는지 확인한다. 확인하지 못하면 None."""
     try:
         _git(["fetch", "origin", branch], root)
     except ScriptError:
-        return False          # 확인할 수 없으면 호출한 쪽이 원래의 시간 초과 오류를 그대로 낸다
+        return None
     return _git(["cat-file", "-e", f"refs/remotes/origin/{branch}:{rel}"], root, check=False).returncode == 0
 
 
@@ -978,8 +1061,13 @@ def _push(root: Path, branch: str, rel: str) -> subprocess.CompletedProcess[str]
     try:
         return _git(args, root, check=False)
     except ScriptError as e:
-        if e.code == "git_timeout" and _remote_has_file(root, branch, rel):
+        if e.code != "git_timeout":
+            raise
+        received = _remote_has_file(root, branch, rel)
+        if received:
             return subprocess.CompletedProcess(args, 0, "", "")     # 시간은 초과했지만 원격에 올라가 있다
+        if received is None:
+            raise _fail("git_timeout", "올라갔는지 확인하지 못했습니다. 받기 후 목록에서 확인하세요", push_unknown=True) from e
         raise
 
 
@@ -995,16 +1083,16 @@ def _new_id(root: Path, data: dict[str, Any], author: str, today: str) -> str:
 def confirm(preview_id: str, note: str | None = None, worked: bool | None = None,
             edits: dict[str, Any] | None = None, force_new: bool = False) -> dict[str, Any]:
     data = load_preview(preview_id)
-    cfg, root = _require_connected()
-    prior = _ledger_ids(data["key"])
-    if prior and not force_new:
-        last = prior[-1]
-        raise _fail("duplicate", f"이미 올렸습니다 ({last.get('shared_at')}, {last.get('id')}). 새 파일로 또 올리려면 "
-                    "force_new로 다시 확인하세요.", shared_id=last.get("id"), shared_at=last.get("shared_at"))
-    _apply_edits(data, note, worked, edits)
-    if not _CATEGORY_RE.match(data["category"]):
-        raise _fail("invalid_category", f"카테고리 이름이 올바르지 않습니다: {data['category']!r}")
     with _exclusive():
+        cfg, root = _require_connected()
+        prior = _ledger_ids(data["key"])
+        if prior and not force_new:
+            last = prior[-1]
+            raise _fail("duplicate", f"이미 올렸습니다 ({last.get('shared_at')}, {last.get('id')}). 새 파일로 또 올리려면 "
+                        "force_new로 다시 확인하세요.", shared_id=last.get("id"), shared_at=last.get("shared_at"))
+        _apply_edits(data, note, worked, edits)
+        if not _CATEGORY_RE.match(data["category"]):
+            raise _fail("invalid_category", f"카테고리 이름이 올바르지 않습니다: {data['category']!r}")
         _recover(root)
         return _share(preview_id, data, cfg, root)
 
@@ -1028,21 +1116,21 @@ def _share(preview_id: str, data: dict[str, Any], cfg: dict[str, Any], root: Pat
     target = (root / rel).resolve()
     if root.resolve() not in target.parents:
         raise _fail("invalid_path", "라이브러리 폴더 밖에는 쓸 수 없습니다")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    refstore.write_atomic(target, content)
-    rels = [rel]
-    readme = root / "README.md"
-    if not readme.exists():
-        refstore.write_atomic(readme, README_TEXT.encode("utf-8"))
-    if not _is_tracked(root, "README.md"):
-        rels.append("README.md")
 
     before = _head(root)
-    try:
+    rels = [rel]
+    try:                                       # 쓰기부터 push까지: 어떤 예외(Ctrl+C 포함)에도 이번 변경을 되돌린다
+        target.parent.mkdir(parents=True, exist_ok=True)
+        refstore.write_atomic(target, content)
+        readme = root / "README.md"
+        if not readme.exists():
+            refstore.write_atomic(readme, README_TEXT.encode("utf-8"))
+        if not _is_tracked(root, "README.md"):
+            rels.append("README.md")
         _git(["add", "--", *rels], root, what="파일 추가(add)")
         message = _one_line(f"share({data['category']}): {_name_of(data)} by {author}", 200)
         slug = author_slug(author)
-        _git(["-c", f"user.name={author}", "-c", f"user.email={slug}@yt-coach.local", "-c", "commit.gpgsign=false",
+        _git(["-c", f"user.name={author}", "-c", f"user.email={slug}{YTC_EMAIL_SUFFIX}", "-c", "commit.gpgsign=false",
               "commit", "-q", "-m", message, "--", *rels], root, what="커밋(commit)")
         push = _push(root, branch, rel)
         if push.returncode != 0 and _push_rejected(push.stderr):
@@ -1053,8 +1141,9 @@ def _share(preview_id: str, data: dict[str, Any], cfg: dict[str, Any], root: Pat
         if push.returncode != 0:
             code, why = _classify(push.stderr + "\n" + push.stdout)
             raise _fail(code, f"올리기(push) 실패: {why} (git: {_tail(push.stderr or push.stdout)})")
-    except ScriptError:
-        _rollback(root, before, rels, branch)
+    except BaseException as e:
+        if not (isinstance(e, ScriptError) and e.details.get("push_unknown")):
+            _rollback(root, before, rels, branch)      # 올라갔는지 모를 때만 로컬 커밋을 남긴다(다음 _recover가 정리)
         raise
     commit = _head(root)
     cfg["shared"].append({"key": data["key"], "hash": data["hash"], "id": item_id, "shared_at": today})

@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -163,9 +164,9 @@ def test_connect_rejects_credentials_in_url_and_option_like_remote(tmp_path, mon
 
 @pytest.fixture(autouse=True)
 def _reset_ssh_cache():
-    library._SSH_CONFIGURED = None
+    library._SSH_CONFIGURED = {}
     yield
-    library._SSH_CONFIGURED = None
+    library._SSH_CONFIGURED = {}
 
 
 def fake_execute(monkeypatch, handler):
@@ -201,12 +202,12 @@ def test_ssh_batch_mode_only_when_user_has_no_ssh_setup(monkeypatch, tmp_path):
     library._git(["fetch"], tmp_path)
     assert next(c for c in calls if "fetch" in c["cmd"])["env"]["GIT_SSH_COMMAND"] == "ssh -o BatchMode=yes"
 
-    library._SSH_CONFIGURED = None
+    library._SSH_CONFIGURED = {}
     calls = fake_execute(monkeypatch, lambda cmd: (0, "ssh -i mykey\n", "") if "config" in cmd else (0, "", ""))
     library._git(["fetch"], tmp_path)
     assert "GIT_SSH_COMMAND" not in next(c for c in calls if "fetch" in c["cmd"])["env"]
 
-    library._SSH_CONFIGURED = None
+    library._SSH_CONFIGURED = {}
     monkeypatch.setenv("GIT_SSH_COMMAND", "ssh -F mine")
     calls = fake_execute(monkeypatch, lambda cmd: (0, "", ""))
     library._git(["fetch"], tmp_path)
@@ -691,7 +692,7 @@ def test_timeout_during_rebase_triggers_recover(pair, monkeypatch):
     def boom(args, cwd, **kw):
         raise ScriptError("git_timeout", "시간 초과")
     monkeypatch.setattr(library, "_git", boom)
-    monkeypatch.setattr(library, "_recover", lambda r: recovered.append(r))
+    monkeypatch.setattr(library, "_abort_rebase", lambda r: recovered.append(r))
     with pytest.raises(ScriptError) as e:
         library._rebase_pull(root, "main")
     assert e.value.code == "git_timeout" and recovered == [root]
@@ -820,7 +821,7 @@ def test_unshareable_content_is_refused_before_commit(pair, remote):
 def test_lock_file_blocks_concurrent_confirm_and_pull_but_stale_lock_is_ignored(pair):
     a, _ = pair
     lock = a / "workspace" / "library.lock"
-    lock.write_text("123", encoding="ascii")
+    lock.write_text(str(os.getpid()), encoding="ascii")
     pv = library.preview_technique(CAT, "훅", "결과 선공개")
     for call in (lambda: library.confirm(pv["preview_id"]), library.pull):
         with pytest.raises(ScriptError) as e:
@@ -895,3 +896,227 @@ def test_edits_can_be_read_from_file_or_inline_json(pair):
     pv2 = library.preview_technique(CAT, "훅", "질문 던지기")
     out2 = library.main(["confirm", pv2["preview_id"], "--edits", '{"note": "인라인"}'])
     assert library.get(out2["id"])["frontmatter"]["note"] == "인라인"
+
+
+# --- 수정 라운드 2 ------------------------------------------------------------------------------
+
+def test_keyboard_interrupt_during_push_rolls_back_to_clean_clone(pair, monkeypatch):
+    a, _ = pair
+    root = a / "workspace" / "library"
+
+    def interrupted(root_, branch, rel):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(library, "_push", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        share_technique()
+    assert not has_head(root) and not list(root.glob("techniques/**/*.md"))
+    assert not (a / "workspace" / "library.lock").exists()
+    assert json.loads((a / "library.json").read_text("utf-8"))["shared"] == []
+
+
+def test_write_failure_is_rolled_back_too(pair, monkeypatch):
+    a, _ = pair
+    root = a / "workspace" / "library"
+    real = refstore.write_atomic
+    state = {"n": 0}
+
+    def flaky(path, data):
+        state["n"] += 1
+        if state["n"] == 1:                  # 기법 파일은 썼고 README에서 실패
+            return real(path, data)
+        raise OSError("disk full")
+    pv = library.preview_technique(CAT, "훅", "결과 선공개")
+    (root / "README.md").unlink()
+    monkeypatch.setattr(library.refstore, "write_atomic", flaky)
+    with pytest.raises(OSError):
+        library.confirm(pv["preview_id"])
+    assert not list(root.glob("techniques/**/*.md")) and not has_head(root)
+
+
+def leave_unpushed_yt_coach_commit(monkeypatch, b):
+    """Bob이 커밋까지 만들고 rollback 없이 죽은 상황(강제 종료)을 만든다."""
+    as_user(monkeypatch, b)
+    pb = library.preview_technique(CAT, "훅", "질문 던지기")
+
+    def killed(*args, **kw):
+        raise KeyboardInterrupt
+    with monkeypatch.context() as m:
+        m.setattr(library, "_rollback", lambda *args, **kw: None)
+        m.setattr(library, "_push", killed)
+        with pytest.raises(KeyboardInterrupt):
+            library.confirm(pb["preview_id"])
+
+
+def test_leftover_yt_coach_commit_is_reset_on_next_pull(pair, monkeypatch):
+    a, b = pair
+    share_technique()
+    leave_unpushed_yt_coach_commit(monkeypatch, b)
+    root_b = b / "workspace" / "library"
+    assert git(root_b, "rev-list", "--count", "origin/main..HEAD").strip() == "1"
+    library.pull()
+    assert git(root_b, "rev-list", "--count", "origin/main..HEAD").strip() == "0"
+    assert git(root_b, "rev-parse", "HEAD").strip() == git(root_b, "rev-parse", "origin/main").strip()
+    assert len(library.search()["items"]) == 1
+
+
+def user_commit(root):
+    (root / "notes.txt").write_text("내 메모", encoding="utf-8")
+    git(root, "add", "notes.txt")
+    git(root, "-c", "user.name=Bob", "-c", "user.email=bob@example.com", "commit", "-q", "-m", "mine")
+
+
+def test_users_own_commit_is_not_reset(pair, monkeypatch):
+    a, b = pair
+    share_technique()
+    as_user(monkeypatch, b)
+    library.pull()
+    root_b = b / "workspace" / "library"
+    user_commit(root_b)
+    out = library.pull()
+    assert (root_b / "notes.txt").exists()
+    assert git(root_b, "rev-list", "--count", "origin/main..HEAD").strip() == "1"
+    assert "직접 확인" in out["warning"]
+
+
+def test_leftover_mixed_with_user_commit_is_left_alone(pair, monkeypatch):
+    a, b = pair
+    share_technique()
+    leave_unpushed_yt_coach_commit(monkeypatch, b)
+    root_b = b / "workspace" / "library"
+    user_commit(root_b)
+    assert library.pull()["warning"]
+    assert git(root_b, "rev-list", "--count", "origin/main..HEAD").strip() == "2"
+
+
+def test_lock_file_is_removed_even_if_pid_write_fails(pair, monkeypatch):
+    a, _ = pair
+    monkeypatch.setattr(library.os, "write", lambda fd, data: (_ for _ in ()).throw(OSError("disk full")))
+    with pytest.raises(OSError):
+        with library._exclusive():
+            pass
+    assert not (a / "workspace" / "library.lock").exists()
+    assert library._THREAD_LOCK.acquire(blocking=False)         # 스레드 잠금도 풀렸다
+    library._THREAD_LOCK.release()
+
+
+def dead_pid():
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    return proc.pid
+
+
+def test_lock_with_dead_pid_is_stale_even_when_fresh(pair):
+    a, _ = pair
+    lock = a / "workspace" / "library.lock"
+    lock.write_text(str(dead_pid()), encoding="ascii")
+    with library._exclusive():
+        assert lock.read_text("ascii") == str(os.getpid())
+    assert not lock.exists()
+    assert not list((a / "workspace").glob("library.lock.stale-*"))
+
+
+def test_lock_with_live_pid_is_busy_and_liveness_check_only_reads(pair):
+    a, _ = pair
+    assert library._pid_alive(os.getpid()) and library._pid_alive(os.getppid())
+    assert not library._pid_alive(dead_pid())
+    lock = a / "workspace" / "library.lock"
+    lock.write_text(str(os.getppid()), encoding="ascii")
+    with pytest.raises(ScriptError) as e:
+        with library._exclusive():
+            pass
+    assert e.value.code == "library_busy" and lock.exists()
+
+
+def test_stale_lock_takeover_renames_to_unique_name_first(pair, monkeypatch):
+    a, _ = pair
+    lock = a / "workspace" / "library.lock"
+    lock.write_text(str(dead_pid()), encoding="ascii")
+    real = library.os.replace
+    calls = []
+
+    def spy(src, dst):
+        calls.append((Path(src).name, Path(dst).name))
+        return real(src, dst)
+    monkeypatch.setattr(library.os, "replace", spy)
+    with library._exclusive():
+        pass
+    assert calls[0][0] == "library.lock" and calls[0][1].startswith("library.lock.stale-")
+    assert not list((a / "workspace").glob("library.lock.stale-*"))
+
+
+def test_stale_lock_takeover_loser_does_not_proceed(pair, monkeypatch):
+    a, _ = pair
+    lock = a / "workspace" / "library.lock"
+    lock.write_text(str(dead_pid()), encoding="ascii")
+
+    def lose_race(src, dst):
+        Path(src).write_text(str(os.getppid()), encoding="ascii")      # 다른 프로세스가 먼저 새 잠금을 잡았다
+        raise FileNotFoundError
+    monkeypatch.setattr(library.os, "replace", lose_race)
+    with pytest.raises(ScriptError) as e:
+        with library._exclusive():
+            pass
+    assert e.value.code == "library_busy"
+    assert lock.read_text("ascii") == str(os.getppid())                # 이긴 쪽의 잠금을 지우지 않았다
+
+
+def test_push_timeout_with_failed_verification_reports_unknown_and_keeps_local_commit(pair, monkeypatch):
+    a, b = pair
+    share_technique()
+    as_user(monkeypatch, b)
+    pb = library.preview_technique(CAT, "훅", "질문 던지기")
+    root_b = b / "workspace" / "library"
+    real = library._git
+    real_sync = library._sync_before_share
+    state = {"on": False}
+
+    def blackout(args, cwd, **kw):
+        if state["on"] and args[:1] in (["push"], ["fetch"]):
+            raise ScriptError("git_timeout", "시간 초과")
+        return real(args, cwd, **kw)
+
+    def sync_then_blackout(root, branch):
+        real_sync(root, branch)
+        state["on"] = True
+    monkeypatch.setattr(library, "_git", blackout)
+    monkeypatch.setattr(library, "_sync_before_share", sync_then_blackout)
+    with pytest.raises(ScriptError) as e:
+        library.confirm(pb["preview_id"])
+    assert e.value.code == "git_timeout" and e.value.details["push_unknown"] is True
+    assert "올라갔는지 확인하지 못했습니다" in e.value.message
+    assert git(root_b, "rev-list", "--count", "origin/main..HEAD").strip() == "1"      # 로컬 커밋 유지
+    assert json.loads((b / "library.json").read_text("utf-8"))["shared"] == []
+    state["on"] = False
+    monkeypatch.setattr(library, "_git", real)
+    monkeypatch.setattr(library, "_sync_before_share", real_sync)
+    library.pull()                                           # 실제로는 올라가지 않았으므로 다음 받기에서 정리된다
+    assert git(root_b, "rev-parse", "HEAD").strip() == git(root_b, "rev-parse", "origin/main").strip()
+
+
+def test_state_reads_happen_inside_the_lock(pair, monkeypatch):
+    a, _ = pair
+    seen = []
+    real = library._require_connected
+    monkeypatch.setattr(library, "_require_connected", lambda: seen.append(library._THREAD_LOCK.locked()) or real())
+    library.pull()
+    pv = library.preview_technique(CAT, "훅", "결과 선공개")
+    library.confirm(pv["preview_id"])
+    assert seen == [True, True]
+    seen.clear()
+    monkeypatch.setattr(library, "_connect_locked", lambda r, n: seen.append(library._THREAD_LOCK.locked()) or {})
+    library.connect("/x/y.git", "Alice")
+    assert seen == [True]
+
+
+def test_ssh_config_cache_is_per_working_directory(monkeypatch, tmp_path):
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
+    monkeypatch.delenv("GIT_SSH", raising=False)
+    one, two = tmp_path / "one", tmp_path / "two"
+    one.mkdir()
+    two.mkdir()
+    fake_execute(monkeypatch, lambda cmd: (0, "ssh -i key\n", "") if "config" in cmd else (0, "", ""))
+    library._git(["fetch"], one)                       # one에는 sshCommand가 있다
+    calls = fake_execute(monkeypatch, lambda cmd: (1, "", "") if "config" in cmd else (0, "", ""))
+    library._git(["fetch"], two)                       # two에는 없다 -> 한 번 조회한 one의 결과를 쓰면 안 된다
+    fetch = next(c for c in calls if "fetch" in c["cmd"])
+    assert fetch["env"]["GIT_SSH_COMMAND"] == "ssh -o BatchMode=yes"
