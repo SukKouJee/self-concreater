@@ -423,7 +423,8 @@ def test_duplicate_key_requires_force_new(pair):
     assert pv["duplicate"]["id"] == first["id"]
     with pytest.raises(ScriptError) as e:
         library.confirm(pv["preview_id"])
-    assert e.value.code == "duplicate" and first["id"] in e.value.message
+    assert e.value.code == "duplicate" and e.value.details["shared_id"] == first["id"]
+    assert "force_new" not in e.value.message and e.value.details["changed"] is False
     second = library.confirm(pv["preview_id"], force_new=True)
     assert second["id"] != first["id"]
 
@@ -1085,7 +1086,8 @@ def test_push_timeout_with_failed_verification_reports_unknown_and_keeps_local_c
     assert e.value.code == "git_timeout" and e.value.details["push_unknown"] is True
     assert "올라갔는지 확인하지 못했습니다" in e.value.message
     assert git(root_b, "rev-list", "--count", "origin/main..HEAD").strip() == "1"      # 로컬 커밋 유지
-    assert json.loads((b / "library.json").read_text("utf-8"))["shared"] == []
+    pending = json.loads((b / "library.json").read_text("utf-8"))["shared"]
+    assert len(pending) == 1 and pending[0]["pending"] is True          # 올라갔는지 모르니 기록은 pending으로 남는다
     state["on"] = False
     monkeypatch.setattr(library, "_git", real)
     monkeypatch.setattr(library, "_sync_before_share", real_sync)
@@ -1204,3 +1206,251 @@ def test_connect_on_existing_clone_warns_when_cleanup_cannot_fetch(pair, monkeyp
     remote.rename(gone)
     out = library.connect(str(remote), "Bob")
     assert out["status"] == "already_connected" and "정리를 하지 못했습니다" in out["warning"]
+
+
+# --- 최종 리뷰 수정 ------------------------------------------------------------------------------
+
+def test_deeply_nested_friend_yaml_is_skipped_not_fatal(pair):
+    a, _ = pair
+    d = f"techniques/{CAT}"
+    bomb = GOOD.format(id="eve-20261024-bbbbbb", name="x", body="b").replace(
+        "schema_version: 1", "schema_version: 1\nsections: " + "[" * 2000)
+    nested = GOOD.format(id="eve-20261024-cccccc", name="y", body="b").replace(
+        "schema_version: 1", "schema_version: 1\nextra: " + "[" * 12 + "]" * 12)
+    put_raw(a, {
+        f"{d}/eve-20261024-aaaaaa.md": GOOD.format(id="eve-20261024-aaaaaa", name="정상", body="좋은 기법"),
+        f"{d}/eve-20261024-bbbbbb.md": bomb,
+        f"{d}/eve-20261024-cccccc.md": nested,
+    })
+    out = library.search()
+    assert [i["name"] for i in out["items"]] == ["정상"] and out["skipped"] == 2
+    for bad in ("eve-20261024-bbbbbb", "eve-20261024-cccccc"):
+        with pytest.raises(ScriptError) as e:
+            library.get(bad)
+        assert e.value.code == "invalid_item"
+
+
+def test_recursion_error_inside_yaml_parser_becomes_value_error(monkeypatch):
+    monkeypatch.setattr(library.refstore, "split_frontmatter", lambda text: (_ for _ in ()).throw(RecursionError()))
+    with pytest.raises(ValueError):
+        library._parse_item(GOOD.format(id="eve-20261024-aaaaaa", name="n", body="b"), "technique", CAT,
+                            "eve-20261024-aaaaaa")
+
+
+def test_user_commit_in_clone_blocks_confirm_and_survives(pair, monkeypatch):
+    a, b = pair
+    share_technique()
+    as_user(monkeypatch, b)
+    library.pull()
+    root_b = b / "workspace" / "library"
+    user_commit(root_b)
+    pb = library.preview_technique(CAT, "훅", "질문 던지기")
+    with pytest.raises(ScriptError) as e:
+        library.confirm(pb["preview_id"])
+    assert e.value.code == "library_dirty" and "정리한 뒤 다시 올리세요." in e.value.message
+    assert (root_b / "notes.txt").exists()
+    assert git(root_b, "rev-list", "--count", "origin/main..HEAD").strip() == "1"
+    assert not list(root_b.glob("techniques/*/bob-*.md"))
+
+
+def test_race_with_user_commit_rolls_back_only_our_commit(pair, monkeypatch):
+    a, b = pair
+    share_technique()
+    as_user(monkeypatch, b)
+    library.pull()
+    root_b = b / "workspace" / "library"
+    user_commit(root_b)
+    pb = library.preview_technique(CAT, "훅", "질문 던지기")
+    monkeypatch.setattr(library, "_recover", lambda root: None)       # 첫 관문을 지나친 경쟁 상황
+    with pytest.raises(ScriptError) as e:
+        library.confirm(pb["preview_id"])
+    assert e.value.code == "library_dirty"
+    assert (root_b / "notes.txt").exists()
+    assert git(root_b, "rev-list", "--count", "origin/main..HEAD").strip() == "1"
+    assert git(root_b, "log", "-1", "--format=%ae").strip() == "bob@example.com"
+    assert not list(root_b.glob("techniques/*/bob-*.md"))
+    assert json.loads((b / "library.json").read_text("utf-8"))["shared"] == []
+
+
+def blackout_after_real_push(monkeypatch, b, *, deliver):
+    """push가 시간 초과되고 확인 fetch도 실패하는 상황. deliver=True면 push 자체는 원격에 도착했다."""
+    real = library._git
+    state = {"on": False}
+
+    def patched(args, cwd, **kw):
+        if state["on"] and args[:1] == ["push"]:
+            if deliver:
+                real(args, cwd, **kw)
+            raise ScriptError("git_timeout", "시간 초과")
+        if state["on"] and args[:1] == ["fetch"]:
+            raise ScriptError("git_timeout", "시간 초과")
+        return real(args, cwd, **kw)
+    real_sync = library._sync_before_share
+
+    def sync_then_blackout(root, branch):
+        real_sync(root, branch)
+        state["on"] = True
+    monkeypatch.setattr(library, "_git", patched)
+    monkeypatch.setattr(library, "_sync_before_share", sync_then_blackout)
+
+    def restore():
+        state["on"] = False
+        monkeypatch.setattr(library, "_git", real)
+        monkeypatch.setattr(library, "_sync_before_share", real_sync)
+    return restore
+
+
+def test_push_unknown_keeps_pending_entry_that_blocks_a_duplicate_share(pair, monkeypatch):
+    a, b = pair
+    share_technique()
+    as_user(monkeypatch, b)
+    pb = library.preview_technique(CAT, "훅", "질문 던지기")
+    restore = blackout_after_real_push(monkeypatch, b, deliver=True)
+    with pytest.raises(ScriptError) as e:
+        library.confirm(pb["preview_id"])
+    assert e.value.details["push_unknown"] is True
+    entry = json.loads((b / "library.json").read_text("utf-8"))["shared"][0]
+    assert entry["pending"] is True and entry["path"].startswith(f"techniques/{CAT}/")
+    # 확인할 수 없는 동안에도 중복으로 보고, 내 것으로 센다
+    pb2 = library.preview_technique(CAT, "훅", "질문 던지기")
+    assert pb2["duplicate"]["id"] == entry["id"]
+    with pytest.raises(ScriptError) as dup:
+        library.confirm(pb2["preview_id"])
+    assert dup.value.code == "duplicate"
+    # 네트워크가 돌아오면 받기에서 확정된다: 원격에 있으므로 pending 표시만 사라진다
+    restore()
+    library.pull()
+    final = json.loads((b / "library.json").read_text("utf-8"))["shared"][0]
+    assert "pending" not in final and "path" not in final and final["id"] == entry["id"]
+    assert any(i["id"] == entry["id"] and i["mine"] for i in library.search()["items"])
+
+
+def test_pending_entry_is_dropped_when_remote_never_received_it(pair, monkeypatch):
+    a, b = pair
+    share_technique()
+    as_user(monkeypatch, b)
+    pb = library.preview_technique(CAT, "훅", "질문 던지기")
+    restore = blackout_after_real_push(monkeypatch, b, deliver=False)
+    with pytest.raises(ScriptError):
+        library.confirm(pb["preview_id"])
+    assert json.loads((b / "library.json").read_text("utf-8"))["shared"][0]["pending"] is True
+    restore()
+    library.pull()
+    assert json.loads((b / "library.json").read_text("utf-8"))["shared"] == []
+    assert library.confirm(pb["preview_id"])["status"] == "shared"          # 다시 올릴 수 있다
+
+
+def test_confirm_resolves_pending_before_its_duplicate_check(pair, monkeypatch):
+    a, b = pair
+    share_technique()
+    as_user(monkeypatch, b)
+    pb = library.preview_technique(CAT, "훅", "질문 던지기")
+    restore = blackout_after_real_push(monkeypatch, b, deliver=False)
+    with pytest.raises(ScriptError):
+        library.confirm(pb["preview_id"])
+    restore()
+    out = library.confirm(pb["preview_id"])            # 올라가지 않았음을 확인하고 지운 뒤 정상 공유
+    assert out["status"] == "shared"
+    shared = json.loads((b / "library.json").read_text("utf-8"))["shared"]
+    assert [e["id"] for e in shared] == [out["id"]] and "pending" not in shared[0]
+
+
+def test_pending_entry_is_cleared_when_share_fails_normally(pair, monkeypatch):
+    a, _ = pair
+
+    def refused(root, branch, rel):
+        raise ScriptError("library_auth", "권한 없음")
+    monkeypatch.setattr(library, "_push", refused)
+    with pytest.raises(ScriptError):
+        share_technique()
+    assert json.loads((a / "library.json").read_text("utf-8"))["shared"] == []
+
+
+def test_duplicate_message_is_neutral_and_cli_adds_its_own_hint(pair):
+    a, _ = pair
+    share_technique()
+    pv = library.preview_technique(CAT, "훅", "결과 선공개")
+    with pytest.raises(ScriptError) as e:
+        library.confirm(pv["preview_id"])
+    assert e.value.message == "이미 올린 항목입니다. 새 항목으로 또 올릴 수도 있습니다."
+    with pytest.raises(ScriptError) as cli:
+        library.main(["confirm", pv["preview_id"]])
+    assert cli.value.code == "duplicate" and "--force-new" in cli.value.message
+    assert cli.value.details["shared_id"] == e.value.details["shared_id"]
+
+
+def test_duplicate_reports_whether_content_changed(pair):
+    a, _ = pair
+    share_technique()
+    same = library.preview_technique(CAT, "훅", "결과 선공개")
+    assert same["duplicate"]["changed"] is False
+    tech = a / "refs" / f"ref_{CAT}" / "techniques.md"
+    tech.write_text(tech.read_text("utf-8").replace("첫 1초에 완성품을 보여준다", "첫 2초에 완성품을 보여준다"), encoding="utf-8")
+    changed = library.preview_technique(CAT, "훅", "결과 선공개")
+    assert changed["duplicate"]["changed"] is True
+    with pytest.raises(ScriptError) as e:
+        library.confirm(changed["preview_id"])
+    assert e.value.details["changed"] is True
+
+
+def test_summarize_does_not_resurrect_a_preview_gone_meanwhile(pair, monkeypatch):
+    a, _ = pair
+    pv = library.preview_template(make_draft(a))
+
+    def ask_then_discard(rules, payload, task, **kw):
+        library.discard_preview(pv["preview_id"])               # 요약하는 사이 버려졌다
+        return {"sections": [{"label": "hook", "summary": "결과를 먼저 보인다"},
+                             {"label": "body", "summary": "단계를 반복한다"}, {"label": "cta", "summary": "마무리한다"}]}
+    monkeypatch.setattr(library.llm, "ask", ask_then_discard)
+    with pytest.raises(ScriptError) as e:
+        library.summarize_template(pv["preview_id"])
+    assert e.value.code == "preview_not_found"
+    assert not (a / "workspace" / "tmp" / f"library_preview_{pv['preview_id']}.json").exists()
+
+
+def test_clone_sets_last_pull_and_preview_fills_author(tmp_path, monkeypatch, remote):
+    home = make_home(tmp_path, monkeypatch, "h")
+    library.connect(str(remote), "Alice")
+    assert library.status()["last_pull"]
+    pv = library.preview_technique(CAT, "훅", "결과 선공개")
+    assert pv["frontmatter"]["author"] == "Alice"
+    tpl = library.preview_template(make_draft(home))
+    assert tpl["frontmatter"]["author"] == "Alice"
+
+
+def test_author_does_not_change_the_content_hash(pair, monkeypatch):
+    a, b = pair
+    one = library.load_preview(library.preview_technique(CAT, "훅", "결과 선공개")["preview_id"])["hash"]
+    as_user(monkeypatch, b)
+    two = library.load_preview(library.preview_technique(CAT, "훅", "결과 선공개")["preview_id"])["hash"]
+    assert one == two
+
+
+def test_cli_desc_picks_one_of_two_same_named_techniques(pair):
+    a, _ = pair
+    tech = a / "refs" / f"ref_{CAT}" / "techniques.md"
+    tech.write_text(tech.read_text("utf-8").replace(
+        "- **질문 던지기**:", "- **결과 선공개**: 두 번째 설명 — [a9](videos/a9.md)\n- **질문 던지기**:"), encoding="utf-8")
+    with pytest.raises(ScriptError) as e:
+        library.main(["preview", "technique", CAT, "훅", "결과 선공개"])
+    assert e.value.code == "ambiguous_technique"
+    pv = library.main(["preview", "technique", CAT, "훅", "결과 선공개", "--desc", "두 번째 설명"])
+    assert "두 번째 설명" in pv["markdown"]
+
+
+def test_error_messages_never_carry_absolute_paths_or_credentials(tmp_path, monkeypatch, remote):
+    home = make_home(tmp_path, monkeypatch, "h")
+    library.connect(str(remote), "Alice")
+    with pytest.raises(ScriptError) as e:
+        library.connect(str(tmp_path / "other.git"), "Alice")
+    assert e.value.code == "remote_mismatch" and str(tmp_path) not in e.value.message
+    assert str(home) not in e.value.message
+    fresh = make_home(tmp_path, monkeypatch, "h2")
+    (fresh / "workspace" / "library").mkdir(parents=True)
+    (fresh / "workspace" / "library" / "stray.txt").write_text("x", encoding="utf-8")
+    with pytest.raises(ScriptError) as e2:
+        library.connect(str(remote), "Alice")
+    assert e2.value.code == "clone_dir_conflict" and str(tmp_path) not in e2.value.message
+    with pytest.raises(ScriptError) as e3:
+        library.connect(str(tmp_path / "nope.git"), "Alice")
+    assert str(tmp_path) not in e3.value.message

@@ -12,8 +12,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from scripts.claude_cli import _parse_result_text
-from scripts.common import ScriptError
+from scripts.claude_cli import parse_result_text
+from scripts.common import ScriptError, scrub
 
 API_URL = "https://api.anthropic.com/v1/messages"
 API_VERSION = "2023-06-01"
@@ -93,7 +93,7 @@ def _build_body(
 
 
 def _scrub(text: str, key: str) -> str:
-    return text.replace(key, "***") if key else text
+    return scrub(text.replace(key, "***") if key else text)
 
 
 def _http_error(e: urllib.error.HTTPError, key: str) -> ScriptError:
@@ -126,7 +126,7 @@ def _extract(response: Any, schema: dict | None) -> dict:
         # tool_choice가 auto라 모델이 텍스트로 답할 수 있다: 텍스트 JSON으로 대체
     text = "".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
     try:
-        return _parse_result_text(text)
+        return parse_result_text(text)
     except ScriptError as e:
         raise ScriptError("llm_failed", e.message) from e
 

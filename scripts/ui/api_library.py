@@ -13,40 +13,23 @@ from __future__ import annotations
 import re
 from typing import Any, Callable
 
-from scripts import library, llm, refstore
-from scripts.common import ScriptError, work_root
+from scripts import conti, library, llm, refstore
+from scripts.common import ScriptError, scrub
 from scripts.ui import api_draft
-from scripts.ui.api_conti import _rel, _safe_path
+from scripts.ui.api_conti import rel_path
 from scripts.ui.jobs import Job, new_item
 from scripts.ui.server import Request, route
 
 KIND = "library_summary"
 BUSY_CODE = "library_busy"
-PATH_MASK = "<작업 폴더>"
 _LOCAL_REMOTE_RE = re.compile(r"^(?:[A-Za-z]:[\\/]|[\\/]|file:|\.{1,2}[\\/])")
-# 남은 절대 경로만 가린다: 윈도 드라이브 경로, 앞이 잘린 역슬래시 경로(두 칸 이상), 유닉스의 홈·임시·마운트 아래 경로.
-# `refs/heads/main`이나 URL의 /경로는 걸리지 않는다.
-_ABS_PATH_RE = re.compile(
-    r"(?<![\w])[A-Za-z]:(?:\\|/(?!/))[^\s'\")]*"
-    r"|(?<![\w:/.])\\[^\s'\")\\]+\\[^\s'\")]*"
-    r"|(?<![\w:/.])/(?:home|Users|tmp|var|mnt|root)(?:/[^\s'\")]*)?"
-)
-PATH_ANY = "<경로>"
 
 
 # ---- 도우미 -----------------------------------------------------------------------------
 
 def _scrub(text: Any) -> Any:
-    """문자열에서 작업 폴더의 절대 경로를 가린다(슬래시·역슬래시 모두)."""
-    if not isinstance(text, str):
-        return text
-    root = work_root()
-    variants = {str(root), root.as_posix(), str(root.resolve()), root.resolve().as_posix()}
-    for v in sorted(variants, key=len, reverse=True):
-        if v:
-            text = text.replace(v, PATH_MASK)
-            text = text.replace(v.replace("/", "\\"), PATH_MASK)
-    return _ABS_PATH_RE.sub(PATH_ANY, text)
+    """문자열의 자격 증명·절대 경로를 가린다(공용 scripts.common.scrub). 문자열이 아니면 그대로."""
+    return scrub(text) if isinstance(text, str) else text
 
 
 def _remote_label(remote: Any) -> Any:
@@ -177,10 +160,10 @@ def _preview(req: Request) -> dict:
             created = library.preview_technique(category, technique_kind, name, desc)
             return _present(created["preview_id"])
     elif kind == "template":
-        path = _safe_path(body.get("draft"), conti_file=False)
+        path = conti.safe_draft_path(body.get("draft"), conti_file=False)
 
         def make() -> dict[str, Any]:
-            created = library.preview_template(_rel(path))
+            created = library.preview_template(rel_path(path))
             return _present(created["preview_id"])
     else:
         raise ScriptError("bad_request", "kind는 technique 또는 template이어야 합니다")

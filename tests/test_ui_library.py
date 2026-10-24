@@ -94,7 +94,7 @@ def test_connect_hides_local_paths(client, remote, home):
     assert body["status"] == "connected" and body["author"] == "Alice"
     assert body["remote"] == "(로컬) remote.git"
     status, st = client.json("GET", "/api/library/status")
-    assert st["connected"] is True and st["remote"] == "(로컬) remote.git" and st["last_pull"] is None
+    assert st["connected"] is True and st["remote"] == "(로컬) remote.git" and st["last_pull"]
     for text in (json.dumps(body), json.dumps(st)):
         assert str(home) not in text and str(remote) not in text
 

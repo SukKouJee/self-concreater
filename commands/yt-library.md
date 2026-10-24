@@ -30,6 +30,7 @@ argument-hint: 'connect <주소> | pull | search <검색어> | share technique <
 ## 3. 공유하기
 
 1. 기법: `ytc library techniques <category>`로 목록을 보여 주고 고르게 한다 → `ytc library preview technique <category> <종류> "<이름>"`
+   같은 종류·이름의 기법이 둘 이상이면(`ambiguous_technique`) 목록의 설명(`desc`)으로 구분해 `--desc "<설명>"`을 붙인다.
    기획안: `ytc library preview draft drafts/<파일>.md`
 2. 기획안이면 `ytc library summarize <preview_id>`로 섹션 요약을 제안받아 보여 주고, 사용자가 고친다(고친 것은 `--edits`의 `sections`: `[{"label", "summary"}]`, 미리보기와 같은 순서).
 3. 미리보기의 `markdown`을 보여 주고, 한 줄 메모와 "잘 먹혔다" 여부를 묻는다.

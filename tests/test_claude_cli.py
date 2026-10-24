@@ -136,39 +136,6 @@ def test_ask_non_json_stdout(home, monkeypatch):
     assert e.value.code == "claude_failed" and "crashed" in e.value.message
 
 
-def _validator(data):
-    if "y" not in data:
-        raise ScriptError("invalid_x", "필드 y 없음")
-    return data["y"]
-
-
-def test_ask_validated_retries_once_with_message(home, monkeypatch):
-    fake = _install(monkeypatch, Fake(_ok({"z": 1}), _ok({"y": 5})))
-    data, checked = claude_cli.ask_validated([], {}, "할일", _validator)
-    assert (data, checked) == ({"y": 5}, 5)
-    assert "이전 출력이 거절됐습니다: 필드 y 없음" in fake.calls[1][1]["input"]
-    assert "이전 출력이 거절됐습니다" not in fake.calls[0][1]["input"]
-
-
-def test_ask_validated_fails_twice_raises_original(home, monkeypatch):
-    fake = _install(monkeypatch, Fake(_ok({"z": 1}), _ok({"z": 2})))
-    with pytest.raises(ScriptError) as e:
-        claude_cli.ask_validated([], {}, "t", _validator)
-    assert e.value.code == "invalid_x"
-    assert len(fake.calls) == 2
-
-
-def test_ask_validated_does_not_retry_other_errors(home, monkeypatch):
-    def validate(data):
-        raise ScriptError("conti_changed", "바뀜")
-
-    fake = _install(monkeypatch, Fake(_ok({"y": 1}), _ok({"y": 1})))
-    with pytest.raises(ScriptError) as e:
-        claude_cli.ask_validated([], {}, "t", validate)
-    assert e.value.code == "conti_changed"
-    assert len(fake.calls) == 1
-
-
 @pytest.mark.parametrize("exc", [FileNotFoundError("claude"), PermissionError("denied"), OSError("boom")])
 def test_ask_spawn_failure_is_claude_missing(home, monkeypatch, exc):
     _install(monkeypatch, Fake(exc))

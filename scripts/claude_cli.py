@@ -7,7 +7,6 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any, Callable
 
 from scripts.common import PLUGIN_ROOT, ScriptError, work_root
 
@@ -65,7 +64,7 @@ def _build_prompt(rules: list[Path], payload: dict, task: str, files: list[Path]
     return "\n\n".join(parts)
 
 
-def _parse_result_text(text: str) -> dict:
+def parse_result_text(text: str) -> dict:
     text = _FENCE_RE.sub(lambda m: m.group(1), text)
     start, end = text.find("{"), text.rfind("}")
     if start < 0 or end <= start:
@@ -95,7 +94,7 @@ def _interpret(proc: subprocess.CompletedProcess[str]) -> dict:
     structured = envelope.get("structured_output")
     if isinstance(structured, dict):
         return structured
-    return _parse_result_text(result)
+    return parse_result_text(result)
 
 
 def ask(
@@ -132,21 +131,3 @@ def ask(
     except OSError as e:
         raise ScriptError("claude_missing", f"Claude Code CLI(claude)를 실행하지 못했습니다: {e}") from e
     return _interpret(proc)
-
-
-def ask_validated(
-    rules: list[Path],
-    payload: dict,
-    task: str,
-    validate: Callable[[dict], Any],
-    **kw: Any,
-) -> tuple[dict, Any]:
-    data = ask(rules, payload, task, **kw)
-    try:
-        return data, validate(data)
-    except ScriptError as first:
-        if not first.code.startswith("invalid_"):
-            raise
-        retry_task = f"{task}\n\n이전 출력이 거절됐습니다: {first.message}\n고쳐서 다시 출력하세요."
-    data = ask(rules, payload, retry_task, **kw)
-    return data, validate(data)

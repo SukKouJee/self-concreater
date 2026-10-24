@@ -46,8 +46,11 @@ def _rules() -> list[Path]:
 _safe_path = conti.safe_draft_path          # 경로 규칙은 conti에 있다(기존 이름 유지)
 
 
-def _rel(path: Path) -> str:
+def rel_path(path: Path) -> str:
     return path.resolve().relative_to(work_root().resolve()).as_posix()
+
+
+_rel = rel_path                          # 기존 이름 유지
 
 
 def _flag(body: dict, key: str) -> bool:

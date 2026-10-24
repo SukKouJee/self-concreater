@@ -38,7 +38,7 @@ from typing import Any, Iterator
 import yaml
 
 from scripts import claude_cli, conti, llm, motif, refstore
-from scripts.common import DATA_NOTICE, ArgParser, ScriptError, run, work_root, workspace_dir
+from scripts.common import DATA_NOTICE, ArgParser, ScriptError, mask_credentials, run, scrub, work_root, workspace_dir
 from scripts.videomd import HOOK_TYPES, LABELS, NARRATIVE_TYPES, TECHNIQUE_KINDS
 
 CONFIG_FILE = "library.json"
@@ -53,7 +53,6 @@ LIMITS = {"name": 80, "title": 100, "note": 200, "summary": 120, "author": 40}
 _CATEGORY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 _ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*-\d{8}-[0-9a-f]{6}$")
 _PREVIEW_RE = re.compile(r"^[0-9a-f]{12}$")
-_CRED_RE = re.compile(r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)[^/@\s]+@")
 _CRED_PASSWORD_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://[^/@\s]*:[^/@\s]*@")
 _HTTP_USERINFO_RE = re.compile(r"^https?://[^/?#]*@", re.IGNORECASE)
 _FM_BLOCK_RE = re.compile(r"\A\ufeff?---\r?\n(.*?)\r?\n---(?:\r?\n|\Z)", re.DOTALL)
@@ -73,11 +72,6 @@ README_TEXT = (
 
 # --- 문자열 도우미 ------------------------------------------------------------------
 
-def mask_credentials(text: str) -> str:
-    """`https://user:token@host/…` 의 사용자·토큰 부분을 가린다."""
-    return _CRED_RE.sub(lambda m: m.group("scheme") + "***@", text)
-
-
 def author_slug(name: str) -> str:
     """소문자 ASCII [a-z0-9-]. 한글 등 비ASCII 이름이거나 비면 `u` + sha1 앞 6자."""
     if name.isascii():
@@ -92,7 +86,7 @@ def _one_line(value: Any, limit: int) -> str:
 
 
 def _fail(code: str, message: str, **details: Any) -> ScriptError:
-    return ScriptError(code, message, **details)
+    return ScriptError(code, scrub(message), **details)         # 자격 증명·절대 경로는 어느 표면에도 나가지 않는다
 
 
 # --- 설정(library.json) · 경로 --------------------------------------------------------
@@ -428,6 +422,7 @@ def _connect_locked(remote: str, name: str) -> dict[str, Any]:
     root = clone_dir()
     existing = _read_config()
     warning: str | None = None
+    cloned_at: str | None = None
     if (root / ".git").exists():
         try:
             warning = _recover(root)
@@ -435,17 +430,18 @@ def _connect_locked(remote: str, name: str) -> dict[str, Any]:
             warning = f"이전 작업 정리를 하지 못했습니다: {e.message}"
         current = _git(["remote", "get-url", "origin"], root, what="원격 주소 확인").stdout.strip()
         if _norm_remote(current) != _norm_remote(remote):
-            raise _fail("remote_mismatch", f"이미 다른 저장소({mask_credentials(current)})가 연결돼 있습니다. 바꾸려면 "
-                        f"{root} 폴더와 {CONFIG_FILE}을 지우고 다시 연결하세요.")
+            raise _fail("remote_mismatch", f"이미 다른 저장소({current})가 연결돼 있습니다. 바꾸려면 "
+                        f"workspace/library 폴더와 {CONFIG_FILE}을 지우고 다시 연결하세요.")
         status = "already_connected"
     else:
         if root.exists() and any(root.iterdir()):
-            raise _fail("clone_dir_conflict", f"{root} 폴더가 비어 있지 않아 clone할 수 없습니다")
+            raise _fail("clone_dir_conflict", "workspace/library 폴더가 비어 있지 않아 clone할 수 없습니다")
         root.parent.mkdir(parents=True, exist_ok=True)
         _git(["clone", "--", remote, str(root)], root.parent, what="저장소 받기(clone)")
         status = "connected"
+        cloned_at = datetime.now().astimezone().isoformat(timespec="seconds")
     cfg = {"remote": remote, "author": name, "shared": (existing or {}).get("shared", []) if existing else [],
-           "last_pull": (existing or {}).get("last_pull")}
+           "last_pull": cloned_at or (existing or {}).get("last_pull")}      # 방금 받았으면 "받은 시각"도 지금
     _write_config(cfg)
     readme = root / "README.md"
     if not readme.exists():
@@ -484,6 +480,7 @@ def pull() -> dict[str, Any]:
         cfg, root = _require_connected()
         warning = _recover(root)
         branch = _branch(root)
+        _resolve_pending(cfg, root, branch)
         dirty = [line for line in _git(["status", "--porcelain"], root, what="상태 확인").stdout.splitlines()
                  if line.strip() and not line.endswith("README.md")]
         if dirty:
@@ -567,28 +564,44 @@ def _validate_template(fm: dict) -> None:
         raise ValueError("shot_mix")
 
 
+_OPEN_TOKENS = (yaml.tokens.FlowSequenceStartToken, yaml.tokens.FlowMappingStartToken,
+                yaml.tokens.BlockMappingStartToken, yaml.tokens.BlockSequenceStartToken)
+_CLOSE_TOKENS = (yaml.tokens.FlowSequenceEndToken, yaml.tokens.FlowMappingEndToken, yaml.tokens.BlockEndToken)
+MAX_YAML_DEPTH = 8
+
+
 def _reject_yaml_aliases(text: str) -> None:
     """앵커(&)·별칭(*)이 있는 프런트매터는 받지 않는다(별칭 폭탄 방지). 토큰만 훑으므로 펼치지 않는다."""
     m = _FM_BLOCK_RE.match(text)
     if not m:
         raise ValueError("no frontmatter")
+    depth = 0
     try:
         for token in yaml.scan(m.group(1), Loader=yaml.SafeLoader):
             if isinstance(token, (yaml.tokens.AnchorToken, yaml.tokens.AliasToken)):
                 raise ValueError("yaml anchor/alias")
+            if isinstance(token, _OPEN_TOKENS):
+                depth += 1
+                if depth > MAX_YAML_DEPTH:                 # `[[[[…` 같은 깊은 중첩은 파서 재귀를 터뜨린다
+                    raise ValueError("yaml too deep")
+            elif isinstance(token, _CLOSE_TOKENS):
+                depth -= 1
     except yaml.YAMLError as e:
         raise ValueError("yaml") from e
 
 
 def _parse_item(text: str, kind: str, category: str, stem: str) -> tuple[dict, str]:
     """프런트매터·본문 검증. 모양이 틀리면 ValueError."""
-    _reject_yaml_aliases(text)
     try:
-        fm, body = refstore.split_frontmatter(text.lstrip("\ufeff"))
-    except ScriptError as e:
-        raise ValueError(e.code) from e
-    _validate_common(fm, kind, category, stem)
-    (_validate_technique if kind == "technique" else _validate_template)(fm)
+        _reject_yaml_aliases(text)
+        try:
+            fm, body = refstore.split_frontmatter(text.lstrip("\ufeff"))
+        except ScriptError as e:
+            raise ValueError(e.code) from e
+        _validate_common(fm, kind, category, stem)
+        (_validate_technique if kind == "technique" else _validate_template)(fm)
+    except RecursionError as e:                            # 지인 파일 하나가 목록 전체를 막지 않게
+        raise ValueError("yaml too deep") from e
     return fm, body.replace("\r\n", "\n")
 
 
@@ -805,11 +818,28 @@ def _shell(kind: str, category: str, key: Any, fields: dict[str, Any], body: dic
             "fm": fields, "body": body, "note": None, "worked": None}
 
 
+def _my_author() -> str | None:
+    cfg = _read_config()
+    return cfg["author"] if cfg else None
+
+
+def _hash_fields(fields: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in fields.items() if k != "author"}      # 내용 해시에는 작성자 이름을 넣지 않는다
+
+
+def _duplicate(data: dict[str, Any]) -> dict[str, Any] | None:
+    prior = _ledger_ids(data["key"])
+    if not prior:
+        return None
+    last = prior[-1]
+    return {**last, "changed": last.get("hash") != data.get("hash")}
+
+
 def _present(data: dict[str, Any]) -> dict[str, Any]:
     left = max(0, int(PREVIEW_TTL_SEC - (time.time() - data["created_at"])))
     return {"preview_id": data["preview_id"], "kind": data["kind"], "category": data["category"],
             "expires_in_sec": left, "frontmatter": data["fm"], "note": data["note"], "worked": data["worked"],
-            "markdown": _render_body(data), "duplicate": (_ledger_ids(data["key"]) or [None])[-1]}
+            "markdown": _render_body(data), "duplicate": _duplicate(data)}
 
 
 def present_preview(preview_id: str) -> dict[str, Any]:
@@ -834,11 +864,11 @@ def preview_technique(category: str, kind: str, name: str, desc: str | None = No
         raise _fail("ambiguous_technique", "같은 종류·이름의 기법이 둘 이상입니다. 설명으로 구분하세요: "
                     + " / ".join(m["desc"][:60] for m in matches))
     t = matches[0]
-    fields = {"kind": "technique", "author": None, "category": category, "technique_kind": kind,
+    fields = {"kind": "technique", "author": _my_author(), "category": category, "technique_kind": kind,
               "name": _one_line(name, LIMITS["name"])}
     body = {"description": refstore.escape_headings(t["desc"]).strip(), "source_count": t["source_count"]}
     data = _shell("technique", category, t["key"], fields, body)
-    data["hash"] = _content_hash([fields, body])
+    data["hash"] = _content_hash([_hash_fields(fields), body])
     _save_preview(data)
     return _present(data)
 
@@ -885,7 +915,7 @@ def preview_template(draft_path: str | Path) -> dict[str, Any]:
     pacing = fm.get("pacing") if isinstance(fm.get("pacing"), dict) else {}
     avg = pacing.get("avg_cut_sec")
     fields = {
-        "kind": "template", "author": None, "category": category,
+        "kind": "template", "author": _my_author(), "category": category,
         "title": _one_line(parsed["title"], LIMITS["title"]),
         "target_sec": _round(fm.get("target_sec") or total, 2),
         "hook_type": fm["hook_type"], "narrative_type": fm["narrative_type"],
@@ -899,7 +929,7 @@ def preview_template(draft_path: str | Path) -> dict[str, Any]:
     key = "drafts/" + rel.as_posix()
     data = _shell("template", category, key, fields, body)
     data["source"] = key
-    data["hash"] = _content_hash([fields, body["rhythms"]])
+    data["hash"] = _content_hash([_hash_fields(fields), body["rhythms"]])
     _save_preview(data)
     return _present(data)
 
@@ -962,6 +992,8 @@ def summarize_template(preview_id: str) -> dict[str, Any]:
     _, summaries = llm.ask_validated(
         [claude_cli.SKILLS_DIR / "yt-library" / "SKILL.md"], payload, task,
         lambda d: _validate_summaries(d, labels, [str(x["script"]) for x in secs]), schema=SUMMARY_SCHEMA)
+    if not preview_path(preview_id).is_file():            # 요약하는 동안 올렸거나 버린 미리보기를 되살리지 않는다
+        raise _fail("preview_not_found", "미리보기가 없습니다(이미 올렸거나 취소됨). 다시 미리보기를 만드세요.")
     data["body"]["summaries"] = summaries
     _save_preview(data)
     return _present(data)
@@ -1060,10 +1092,10 @@ def _rollback(root: Path, before: str | None, rels: list[str], branch: str) -> N
     """
     _abort_rebase(root)
     remote_ref = f"refs/remotes/origin/{branch}"
-    if _git(["rev-parse", "--verify", "-q", remote_ref], root, check=False).returncode == 0:
-        _git(["reset", "--hard", remote_ref], root, check=False)
-    elif before is not None:
-        _git(["reset", "--hard", before], root, check=False)
+    if before is not None:
+        _git(["reset", "--hard", before], root, check=False)          # 사용자의 올리지 않은 커밋도 before에 들어 있다
+    elif _git(["rev-parse", "--verify", "-q", remote_ref], root, check=False).returncode == 0:
+        _git(["reset", "--hard", remote_ref], root, check=False)      # 첫 공유: 비어 있던 clone은 받아 온 원격 상태로
     else:
         _git(["update-ref", "-d", "HEAD"], root, check=False)
         _git(["rm", "--cached", "-q", "--ignore-unmatch", "--", *rels], root, check=False)
@@ -1103,6 +1135,8 @@ def _sync_before_share(root: Path, branch: str) -> None:
 def _remote_has_file(root: Path, branch: str, rel: str) -> bool | None:
     """push가 시간 초과된 뒤, 원격이 실제로 커밋을 받았는지 확인한다. 확인하지 못하면 None."""
     try:
+        if not _remote_has_branch(root, branch):
+            return False                       # 원격이 비어 있으면 받았을 리 없다
         _git(["fetch", "origin", branch], root)
     except ScriptError:
         return None
@@ -1124,6 +1158,45 @@ def _push(root: Path, branch: str, rel: str) -> subprocess.CompletedProcess[str]
         raise
 
 
+DIRTY_MESSAGE = "라이브러리 폴더에 올라가지 않은 다른 커밋이 있어 올리지 않았습니다."
+_ITEM_PATH_RE = re.compile(r"^(?:techniques|templates)/[a-z0-9][a-z0-9_-]*/[a-z0-9-]+\.md$")
+
+
+def _ensure_only_ours(root: Path, branch: str) -> None:
+    """push 직전: 원격 위에 올라갈 커밋이 우리 것 하나뿐인지 본다. 사용자의 커밋이 섞여 있으면 우리 것만 떼어 내고 멈춘다."""
+    ref = f"refs/remotes/origin/{branch}"
+    if _git(["rev-parse", "--verify", "-q", ref], root, check=False).returncode != 0:
+        return
+    count = _git(["rev-list", "--count", f"{ref}..HEAD"], root, check=False).stdout.strip()
+    if count != "1":
+        _git(["reset", "--keep", "HEAD~1"], root, check=False)         # 우리 커밋만 되돌린다(사용자 커밋은 남긴다)
+        raise _fail("library_dirty", f"{DIRTY_MESSAGE} 정리한 뒤 다시 올리세요.")
+
+
+def _resolve_pending(cfg: dict[str, Any], root: Path, branch: str) -> None:
+    """올라갔는지 몰랐던 원장 항목(pending)을 원격 상태로 확정하거나 지운다. 확인하지 못하면 그대로 둔다."""
+    if not any(isinstance(e, dict) and e.get("pending") for e in cfg["shared"]):
+        return
+    try:
+        has_branch = _remote_has_branch(root, branch)
+        if has_branch:
+            _git(["fetch", "origin", branch], root, what="원격 확인(fetch)")
+    except ScriptError:
+        return
+    kept: list[Any] = []
+    for entry in cfg["shared"]:
+        if isinstance(entry, dict) and entry.get("pending"):
+            path = entry.get("path")
+            landed = (has_branch and isinstance(path, str) and _ITEM_PATH_RE.match(path) is not None
+                      and _git(["cat-file", "-e", f"refs/remotes/origin/{branch}:{path}"], root, check=False).returncode == 0)
+            if not landed:
+                continue                              # 원격에 없다: 올라가지 않았으니 기록을 지운다
+            entry = {k: v for k, v in entry.items() if k not in ("pending", "path")}
+        kept.append(entry)
+    cfg["shared"] = kept
+    _write_config(cfg)
+
+
 def _new_id(root: Path, data: dict[str, Any], author: str, today: str) -> str:
     slug = author_slug(author)
     while True:
@@ -1138,15 +1211,17 @@ def confirm(preview_id: str, note: str | None = None, worked: bool | None = None
     data = load_preview(preview_id)
     with _exclusive():
         cfg, root = _require_connected()
-        prior = _ledger_ids(data["key"])
-        if prior and not force_new:
-            last = prior[-1]
-            raise _fail("duplicate", f"이미 올렸습니다 ({last.get('shared_at')}, {last.get('id')}). 새 파일로 또 올리려면 "
-                        "force_new로 다시 확인하세요.", shared_id=last.get("id"), shared_at=last.get("shared_at"))
+        warning = _recover(root)
+        if warning:                           # 사용자의 로컬 커밋 등: 함께 올라가거나 지워지지 않도록 멈춘다
+            raise _fail("library_dirty", f"{warning} 정리한 뒤 다시 올리세요.")
+        _resolve_pending(cfg, root, _branch(root))
+        dup = _duplicate(data)
+        if dup and not force_new:
+            raise _fail("duplicate", "이미 올린 항목입니다. 새 항목으로 또 올릴 수도 있습니다.",
+                        shared_id=dup.get("id"), shared_at=dup.get("shared_at"), changed=dup["changed"])
         _apply_edits(data, note, worked, edits)
         if not _CATEGORY_RE.match(data["category"]):
             raise _fail("invalid_category", f"카테고리 이름이 올바르지 않습니다: {data['category']!r}")
-        _recover(root)
         return _share(preview_id, data, cfg, root)
 
 
@@ -1172,6 +1247,7 @@ def _share(preview_id: str, data: dict[str, Any], cfg: dict[str, Any], root: Pat
 
     before = _head(root)
     rels = [rel]
+    entry: dict[str, Any] | None = None
     try:                                       # 쓰기부터 push까지: 어떤 예외(Ctrl+C 포함)에도 이번 변경을 되돌린다
         target.parent.mkdir(parents=True, exist_ok=True)
         refstore.write_atomic(target, content)
@@ -1185,9 +1261,14 @@ def _share(preview_id: str, data: dict[str, Any], cfg: dict[str, Any], root: Pat
         slug = author_slug(author)
         _git(["-c", f"user.name={author}", "-c", f"user.email={slug}{YTC_EMAIL_SUFFIX}", "-c", "commit.gpgsign=false",
               "commit", "-q", "-m", message, "--", *rels], root, what="커밋(commit)")
+        entry = {"key": data["key"], "hash": data["hash"], "id": item_id, "shared_at": today, "path": rel, "pending": True}
+        cfg["shared"].append(entry)               # push 전에 기록한다: 올라갔는지 모르게 끝나도 중복으로 또 올리지 않게
+        _write_config(cfg)
+        _ensure_only_ours(root, branch)
         push = _push(root, branch, rel)
         if push.returncode != 0 and _push_rejected(push.stderr):
             _rebase_pull(root, branch)
+            _ensure_only_ours(root, branch)
             push = _push(root, branch, rel)
             if push.returncode != 0 and _push_rejected(push.stderr):
                 raise _fail("library_busy", "다른 사람이 동시에 올렸습니다. 잠시 뒤 다시 올리세요")
@@ -1196,10 +1277,14 @@ def _share(preview_id: str, data: dict[str, Any], cfg: dict[str, Any], root: Pat
             raise _fail(code, f"올리기(push) 실패: {why} (git: {_tail(push.stderr or push.stdout)})")
     except BaseException as e:
         if not (isinstance(e, ScriptError) and e.details.get("push_unknown")):
-            _rollback(root, before, rels, branch)      # 올라갔는지 모를 때만 로컬 커밋을 남긴다(다음 _recover가 정리)
+            _rollback(root, before, rels, branch)      # 올라갔는지 모를 때만 로컬 커밋·pending 기록을 남긴다(다음 받기·올리기가 정리)
+            if entry is not None and entry in cfg["shared"]:
+                cfg["shared"].remove(entry)
+                _write_config(cfg)
         raise
     commit = _head(root)
-    cfg["shared"].append({"key": data["key"], "hash": data["hash"], "id": item_id, "shared_at": today})
+    entry.pop("pending", None)
+    entry.pop("path", None)
     _write_config(cfg)
     preview_path(preview_id).unlink(missing_ok=True)
     unsummarized = sum(1 for x in data["body"].get("summaries", []) if not x)
@@ -1252,6 +1337,7 @@ def main(argv: list[str]) -> Any:
     pt.add_argument("category")
     pt.add_argument("kind")
     pt.add_argument("name")
+    pt.add_argument("--desc", help="같은 종류·이름의 기법이 둘 이상일 때 설명으로 구분(techniques 목록의 desc 그대로)")
     pd = psub.add_parser("draft")
     pd.add_argument("file")
     sm = sub.add_parser("summarize")
@@ -1278,11 +1364,17 @@ def main(argv: list[str]) -> Any:
         return {"techniques": my_techniques(args.category)}
     if args.cmd == "preview":
         if args.what == "technique":
-            return preview_technique(args.category, args.kind, args.name)
+            return preview_technique(args.category, args.kind, args.name, args.desc)
         return preview_template(args.file)
     if args.cmd == "summarize":
         return summarize_template(args.preview_id)
-    return confirm(args.preview_id, args.note, True if args.worked else None, _load_edits(args.edits), args.force_new)
+    try:
+        return confirm(args.preview_id, args.note, True if args.worked else None, _load_edits(args.edits), args.force_new)
+    except ScriptError as e:
+        if e.code == "duplicate":
+            raise ScriptError(e.code, f"{e.message} 사용자가 원하면 --force-new를 붙여 다시 실행하세요.", e.exit_code,
+                              **e.details) from e
+        raise
 
 
 if __name__ == "__main__":

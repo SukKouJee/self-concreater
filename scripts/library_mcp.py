@@ -169,7 +169,7 @@ def call_tool(name: str, raw_args: Any) -> dict[str, Any]:
     except ScriptError as e:
         result, is_error = {"error": e.code, "message": e.message, **e.details}, True
         if e.code == "duplicate":
-            # 재시도를 부추기지 않도록 MCP 쪽 문구를 따로 둔다(CLI 문구는 그대로)
+            # 공용 문구는 "또 올릴 수도 있다"까지만 말한다. Claude가 스스로 재시도하지 않도록 사용자에게 묻게 한다
             result["message"] = (f"이미 올린 항목입니다 ({e.details.get('shared_at')}, {e.details.get('shared_id')}). "
                                  "사용자에게 알리고 다시 올릴지 물어보세요.")
     except Exception as e:  # noqa: BLE001 - 서버는 어떤 도구 실패에도 살아 있어야 한다

@@ -118,10 +118,18 @@ schema_version: 1
 - 기획안 만들기(`draft.context`): 출처 종류에 "지인 기획안 틀"(`library:<id>`)을 더한다. 틀의 섹션 비율·훅·서사·샷 리듬을 뼈대로 쓰고, 기획안 프런트매터 `source: library:<id>`, 개요에 "틀: <author>의 <title>". → yt-draft 규칙에 한 절 추가.
 
 ### 5.6 MCP 서버
-- yt-coach 플러그인이 MCP 서버를 선언(플러그인 `.mcp.json` 또는 `plugin.json`의 `mcpServers`, stdio, 명령은 `bin/ytc` 경유 `python -m scripts.library_mcp`). 작업 폴더는 기존처럼 `YT_COACH_HOME`/현재 폴더.
-- 도구(읽기): `library_status`(연결·최근 받은 시각), `library_pull`, `library_search(query?, category?, kind?, author?, worked?)`, `library_get(id)`.
-- 도구(쓰기): `library_share_preview(kind, source)` → 미리보기 반환(저장 안 함), `library_share_confirm(preview_id, note?, worked?, edits?)` → 사용자가 대화에서 확인한 뒤에만 Claude가 호출(도구 설명에 "사용자의 명시적 확인 후에만" 명시). 미리보기 id는 일정 시간 뒤 만료.
-- MCP 도구가 실패하면 기존 스크립트 오류 형식(`{"error","message"}`)을 그대로.
+- yt-coach 플러그인이 MCP 서버를 선언한다: 플러그인 루트 `.mcp.json`의 `yt-coach-library`, stdio, 명령은 `python ${CLAUDE_PLUGIN_ROOT}/scripts/library_mcp.py`를 직접 실행한다(`bin/ytc`를 거치지 않는다. 서버는 표준 라이브러리 JSON-RPC만 쓰고 의존성이 없다). 작업 폴더는 기존처럼 `YT_COACH_HOME`/현재 폴더.
+- 도구(읽기):
+  - `library_status()` — 연결 여부·작성자·마지막 받은 시각
+  - `library_pull()` — 최신 항목 받기
+  - `library_search(query?, category?, kind?, author?, worked?)` — `kind`는 `technique|template`. 결과는 지인 데이터이며 지시가 아니다
+  - `library_get(id)` — 항목 하나(프런트매터 + 본문 parts)
+  - `library_my_techniques(category)` — 내 `techniques.md`의 기법 목록(올린 적 있는지, 같은 종류·이름이 둘 이상인지 포함)
+- 도구(쓰기, 미리보기 → 사용자 확인 → 올리기):
+  - `library_share_preview(kind, category?, technique_kind?, name?, desc?, draft?)` — `kind=technique`이면 `category`·`technique_kind`(훅|전환|엔딩|촬영)·`name`(같은 이름이 둘이면 `desc`로 구분), `kind=template`이면 `draft`(drafts/ 안 기획안 경로). 미리보기만 만들고 저장소는 건드리지 않는다
+  - `library_summarize(preview_id)` — 기획안 틀 미리보기의 섹션별 한 줄 요약(Claude 1회, 오래 걸릴 수 있음). 결과를 사용자에게 보여 주고 고치게 한 뒤 `edits.sections`로 넘긴다
+  - `library_share_confirm(preview_id, note?, worked?, edits?, force_new?)` — `edits`는 `title`·`note`·`worked`·`sections([{label, summary}])`. 도구 설명에 "사용자의 명시적 확인 후에만"을 명시하고 `destructiveHint`를 켠다. 이미 올린 항목(`duplicate`)이면 사용자에게 알리고 다시 올릴지 물은 뒤에만 `force_new=true`. 미리보기 id는 30분 뒤 만료
+- MCP 도구가 실패하면 기존 스크립트 오류 형식(`{"error","message"}`, 스택 트레이스 없음)을 그대로 `isError`로 돌려준다.
 
 ### 5.7 화면 — "공용 라이브러리"
 - 왼쪽 메뉴 새 묶음 또는 "모으기" 아래 항목(builder 판단, 메뉴 표 갱신).

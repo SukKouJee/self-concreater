@@ -716,7 +716,7 @@ function renderShareEdit() {
   ];
   if (pv.duplicate) {
     kids.push(h("p", { class: "muted small", role: "status" },
-      `이미 올린 적 있는 항목입니다(${pv.duplicate.shared_at || ""}). 올리면 새 항목이 하나 더 생깁니다.`));
+      `이미 올린 적 있는 항목입니다(${pv.duplicate.shared_at || ""}${pv.duplicate.changed ? ", 내용이 바뀜" : ""}). 올리면 새 항목이 하나 더 생깁니다.`));
   }
   if (pv.kind === "template") kids.push(templateEditor());
   kids.push(
@@ -942,7 +942,7 @@ async function upload(forceNew) {
     sh.uploading = false;
     const data = e.data || {};
     if (e.error === "duplicate") {
-      sh.dup = { message: e.message };
+      sh.dup = { message: (data.changed ? `${e.message} (내용이 바뀜)` : e.message) };
     } else if (data.push_unknown) {
       sh.error = { message: e.message, pushUnknown: true };
     } else if (e.error === "preview_expired" || e.error === "preview_not_found") {
