@@ -11,7 +11,7 @@
 - 상태는 모두 `Job._lock` 아래에서 바뀐다. 바깥에는 `snapshot()`(깊은 복사)만 내준다.
 - 결정 대기: 작업 스레드가 `update(i, state="awaiting")` 뒤 `wait_decision(item_id)`로 Event를 기다리고,
   HTTP 스레드가 `decide(item_id, decision)`로 결정을 넣고 깨운다. Event는 먼저 오는 쪽이 만든다(경합 없음).
-- 같은 kind 중 `SINGLE_KINDS`(collect, typify, motif, draft, polish, srtfit)는 진행 중(running/awaiting)인 작업이 하나뿐이다.
+- 같은 kind 중 `SINGLE_KINDS`(collect, typify, motif, draft, polish, srtfit, diagnose)는 진행 중(running/awaiting)인 작업이 하나뿐이다.
 """
 from __future__ import annotations
 
@@ -34,6 +34,7 @@ SINGLE_KINDS = {
     "draft": "이미 기획안을 만드는 중입니다",
     "polish": "이미 다듬는 중입니다",
     "srtfit": "이미 자막 시간을 맞추는 중입니다",
+    "diagnose": "이미 진단 설명을 받는 중입니다",
 }
 STOP_MESSAGE = "중단됨"
 

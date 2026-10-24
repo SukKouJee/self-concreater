@@ -173,3 +173,47 @@ def test_main_routes(home):
     _json(home, "notes.json", {"summary": "가깝다", "gaps": {}, "actions": ["그대로 찍기"]})
     assert similarity.main(["save", CAT, rel, "--notes", "workspace/tmp/notes.json"])["status"] == "saved"
     assert similarity.main(["intentional", CAT, target.stem, "hook"])["intentional"] == ["hook"]
+
+
+# --- save 검증 메시지 특성 · validate_notes ------------------------------------------
+
+def _save_error(home, notes):
+    target = make_draft(home, UNLIKE, hook="shock_line")
+    with pytest.raises(ScriptError) as exc:
+        similarity.save(CAT, target, _json(home, "notes.json", notes))
+    return exc.value
+
+
+def test_save_validation_messages_are_kept(home):
+    target = make_draft(home, UNLIKE, hook="shock_line")
+    gaps = {g["key"]: "설명" for g in similarity.compare(CAT, target)["gaps"]}
+    base = "요약, 모든 갭의 설명, 다음 행동 1~3개가 필요합니다"
+    err = _save_error(home, {"summary": "요약", "gaps": {}, "actions": ["a"]})
+    assert err.code == "invalid_notes" and err.message.startswith(base + " (빠진 갭: ")
+    assert err.message.endswith(", ".join(gaps) + ")")
+    assert _save_error(home, {"summary": " ", "gaps": gaps, "actions": ["a"]}).message == base
+    assert _save_error(home, {"summary": "요약", "gaps": gaps, "actions": []}).message == base
+    assert _save_error(home, {"summary": "요약", "gaps": gaps, "actions": ["a", "b", "c", "d"]}).message == base
+
+
+def test_validate_notes_returns_cleaned_notes(home):
+    target = make_draft(home, UNLIKE, hook="shock_line")
+    result = similarity.compare(CAT, target)
+    gaps = {g["key"]: f" {g['key']} 설명 " for g in result["gaps"]}
+    out = similarity.validate_notes(result, {"summary": "  한 줄   요약 ", "gaps": {**gaps, "사라진:갭": "무시"},
+                                              "actions": [" 하나 ", "", "둘"]})
+    assert out["summary"] == "한 줄 요약"
+    assert out["actions"] == ["하나", "둘"]
+    assert out["gaps"] == {k: v.strip() for k, v in gaps.items()}      # 여분 갭 설명은 버린다
+
+
+@pytest.mark.parametrize("notes", [
+    None, [], "x", {"summary": 5, "gaps": {}, "actions": ["a"]},
+    {"summary": "s", "gaps": [], "actions": ["a"]}, {"summary": "s", "gaps": {}, "actions": "a"},
+    {"summary": "s", "gaps": {}, "actions": [1]}, {"summary": "s", "gaps": {"hook": 3}, "actions": ["a"]},
+])
+def test_validate_notes_rejects_bad_shape(home, notes):
+    target = make_draft(home, LIKE_A1)
+    with pytest.raises(ScriptError) as exc:
+        similarity.validate_notes(similarity.compare(CAT, target), notes)
+    assert exc.value.code == "invalid_notes" and "형식" in exc.value.message
