@@ -412,3 +412,90 @@ def test_main_update_scenes_cut_context(saved, home):
                        conti.content_hash(saved)])["cut"]["caption"] == "새 자막"
     assert isinstance(conti.main(["scenes", rel, "--cut", "1", "--limit", "3"]), list)
     assert conti.main(["cut-context", rel, "--cut", "1"])["cut"]["n"] == 1
+
+
+# --- SRT 내보내기 ----------------------------------------------------------------------
+
+def _srt_cuts(monkeypatch, cuts):
+    fm = {"script": [{"label": "hook", "text": "x", "start": 0, "end": 1}], "cuts": cuts}
+    monkeypatch.setattr(conti, "_load_conti", lambda path: fm)
+
+
+def _cut(sec, caption="", line=""):
+    return {"sec": sec, "caption": caption, "line": line}
+
+
+def test_export_srt_basic_format(saved, home):
+    out = conti.export_srt(saved)
+    assert out == {"path": "drafts/" + saved.name.replace("-conti.md", "-captions.srt"), "track": "caption",
+                   "count": 3, "duration_sec": 8.0}
+    raw = (home / out["path"]).read_bytes()
+    assert not raw.startswith(b"\xef\xbb\xbf")
+    text = raw.decode("utf-8")
+    assert text == ("1\r\n00:00:00,000 --> 00:00:02,000\r\n4단계 도전\r\n\r\n"
+                    "2\r\n00:00:04,000 --> 00:00:06,000\r\n순한맛\r\n\r\n"
+                    "3\r\n00:00:06,000 --> 00:00:08,000\r\n다음은 불닭\r\n\r\n")
+
+
+def test_export_srt_line_track_name(saved, home):
+    out = conti.export_srt(saved, "line")
+    assert out["path"].endswith("-lines.srt") and out["track"] == "line" and out["count"] == 3
+    assert "1단계부터 갑니다." in (home / out["path"]).read_text("utf-8")
+
+
+def test_export_srt_merges_same_caption_only_when_adjacent(saved, monkeypatch):
+    _srt_cuts(monkeypatch, [_cut(2, "A"), _cut(1, "A"), _cut(1, ""), _cut(1, "A")])
+    out = conti.export_srt(saved)
+    text = conti._resolve(out["path"]).read_bytes().decode("utf-8")
+    assert out["count"] == 2
+    assert "00:00:00,000 --> 00:00:03,000\r\nA" in text and "00:00:04,000 --> 00:00:05,000\r\nA" in text
+
+
+def test_export_srt_skips_empty_cuts_but_keeps_time(saved, monkeypatch):
+    _srt_cuts(monkeypatch, [_cut(1.5, ""), _cut(2, "B")])
+    out = conti.export_srt(saved)
+    assert "1\r\n00:00:01,500 --> 00:00:03,500\r\nB" in conti._resolve(out["path"]).read_bytes().decode("utf-8")
+
+
+def test_export_srt_no_float_drift(saved, monkeypatch):
+    _srt_cuts(monkeypatch, [_cut(0.1, f"c{i}") for i in range(30)])
+    out = conti.export_srt(saved)
+    assert out["duration_sec"] == 3.0
+    assert "00:00:02,900 --> 00:00:03,000\r\nc29" in conti._resolve(out["path"]).read_bytes().decode("utf-8")
+
+
+def test_export_srt_cleans_text(saved, monkeypatch):
+    _srt_cuts(monkeypatch, [_cut(1, "  a \n\n b\nc\nd  "), _cut(1, "x --> y")])
+    text = conti._resolve(conti.export_srt(saved)["path"]).read_bytes().decode("utf-8")
+    assert "a\r\nb c d\r\n" in text and "x → y" in text and "-->" not in text.replace(" --> ", "")
+
+
+def test_export_srt_no_blocks_writes_nothing(draft_md, home):
+    data = with_cuts(**{f"c{i}": {"caption": ""} for i in range(4)})
+    path = conti_file(home, data)
+    saved = home / conti.save(draft_md, path)["path"]
+    out = conti.export_srt(saved)
+    assert out["path"] is None and out["count"] == 0
+    assert not list((home / "drafts").glob("*.srt"))
+
+
+def test_export_srt_rejects_bad_track_and_path(saved, draft_md):
+    with pytest.raises(ScriptError) as e:
+        conti.export_srt(saved, "sfx")
+    assert e.value.code == "bad_request"
+    with pytest.raises(ScriptError) as e:
+        conti.export_srt(draft_md)
+    assert e.value.code == "bad_path"
+
+
+def test_export_srt_leaves_conti_files_untouched(saved):
+    md, html = saved, saved.with_suffix(".html")
+    before = (md.read_bytes(), html.read_bytes())
+    conti.export_srt(saved)
+    conti.export_srt(saved, "line")
+    assert (md.read_bytes(), html.read_bytes()) == before
+
+
+def test_main_srt(saved, home):
+    out = conti.main(["srt", saved.relative_to(home).as_posix(), "--track", "line"])
+    assert out["track"] == "line"

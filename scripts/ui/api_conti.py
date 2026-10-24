@@ -210,3 +210,14 @@ def _cut(req: Request) -> dict:
     if not isinstance(expected, str) or not expected:
         raise ScriptError("bad_request", "hash가 필요합니다. 콘티를 다시 불러오세요")
     return conti.update_cut(path, _int(body.get("n"), "n"), fields, expected_hash=expected)
+
+
+@route("POST", "/api/conti/srt")
+def _srt(req: Request) -> dict:
+    body = req.json
+    path = _safe_path(body.get("path"), conti_file=True)
+    track = body.get("track", "caption")
+    if not isinstance(track, str):
+        raise ScriptError("bad_request", "track은 문자열이어야 합니다")
+    result = conti.export_srt(path, track)
+    return {**result, "url": f"/files/{result['path']}"} if result["path"] else result

@@ -182,6 +182,7 @@
 - [x] 참고 프레임 매칭: 프레임별 라벨(샷 크기+섹션) → 섹션별 대표 샷 크기 근사, 같은 프레임 반복 최소화
 - [x] `conti.py render <conti.md>`: 고친 프런트매터로 HTML 다시 그림
 - [x] `skills/yt-conti/SKILL.md`, `commands/yt-conti.md`, README 표
+- [x] `conti.py srt <conti> [--track caption|line]`: 컷별 자막(또는 대사)을 CapCut용 `.srt`로 내보내기(`drafts/<기획안>-captions.srt`·`-lines.srt`), 콘티 화면 버튼
 
 완료 조건
 - 실제 draft 1개로 콘티를 만들고, HTML에서 컷마다 도식·참고 프레임·대사·가이드가 보이며 대사 길이 경고가 맞게 나온다

@@ -50,7 +50,7 @@ bin\ytc.cmd ui           # Git Bash 없는 Windows
 | 모으기 | 레퍼런스 목록 (영상 카드, 섹션 흐름 띠, 상세에서 프레임·본문 확인, 섹션 라벨·훅/서사 유형 고치기. 고친 영상은 "직접 고침" 표시, 본문 표는 분석 당시 기록 그대로) | 2차(보기·라벨 고치기) ✅ |
 | 분석 | 유형화 (ref 수·단계, 축별 판정, 아키타입 카드, 이상치. 실행 → 미리보기에서 근거·이름 고치기 → 저장) | 2차 ✅ |
 | 분석 | 리포트 | 2차 (터미널: `/yt-coach:yt-review`) |
-| 만들기 | 콘티 (컷별 레퍼런스 장면·대사 대안을 클릭으로 고르기) | 1차 ✅ |
+| 만들기 | 콘티 (컷별 레퍼런스 장면·대사 대안을 클릭으로 고르기, CapCut용 자막 SRT 받기) | 1차 ✅ |
 | 만들기 | 모티브 (새 카드 뽑기 → 미리보기에서 고쳐 고른 카드만 저장, 저장한 카드 거르기·★·"기획안 만들기"로 그 카드를 출처로 기획안 화면 열기. 기법 카탈로그 병합은 터미널 `/yt-coach:yt-inspire`) | 2차 ✅ |
 | 만들기 | 기획안 (저장한 기획안 목록·상세 읽기 전용, 출처 고르기 → 만들기 → 미리보기에서 제목·대본·샷 표·준비물 고쳐 저장, 콘티 화면으로 연결, 상세에서 "훅·제목·썸네일 다듬기": 훅 5·제목 10·썸네일 후보를 점수·지적·근거와 보고 고쳐 저장) | 2차 ✅ |
 | 성장 | 진단, 미션 | 2차 (터미널: `/yt-coach:yt-diagnose`, `/yt-coach:yt-mission`) |
@@ -135,7 +135,7 @@ Claude Code 안에서:
 | `motif` | `context <cat> [--topic]`, `add <cat> --cards <json>`, `star <cat> <id> [--off]`, `merge-techniques <cat> --plan <json>` |
 | `draft` | `context <cat> <motif-id\|A1>`, `save <cat> --draft <json>` (검증·계획 컷·아키타입 비교 → `drafts/`) |
 | `polish` | `context <draft.md>`, `evaluate <draft.md> --data <json>`, `apply <draft.md> --choice <json> --hash <sha>` (훅·제목·썸네일 한국어 점수·지적·레퍼런스 근거 → 고른 것을 기획안에 반영, 이전 값은 `## 패키징` 이력. 해시가 다르면 `draft_changed`) |
-| `conti` | `context <draft.md>`, `save <draft.md> --conti <json> [--force]`, `render <conti.md>`, `update`, `scenes`, `cut-context` (검증·대사 길이 경고·참고 프레임 매칭 → `drafts/*-conti.md`·`.html`. 뒤 셋은 화면의 컷 단위 편집·장면 후보·대사 대안 입력) |
+| `conti` | `context <draft.md>`, `save <draft.md> --conti <json> [--force]`, `render <conti.md>`, `srt <conti.md> [--track caption|line]`(CapCut용 `.srt`), `update`, `scenes`, `cut-context` (검증·대사 길이 경고·참고 프레임 매칭 → `drafts/*-conti.md`·`.html`. 뒤 셋은 화면의 컷 단위 편집·장면 후보·대사 대안 입력) |
 | `similarity` | `compare <cat> <target>`, `save <cat> <target> --notes <json>` (→ `mine/`), `intentional <cat> <name> <key> [--off]` |
 | `mission` | `context`, `save --mission <json> [--replace]`, `submit <file> --difficulty --feedback`, `skip --reason`, `week [YYYY-Www]`, `review-save`, `profile-update` (모두 `--date`로 날짜 지정 가능) |
 | `shots` | `pending <cat>`, `context <id> --category`, `apply <id> --category --labels <json>` (장면 길이 가중 분포 → md `shots`) |
