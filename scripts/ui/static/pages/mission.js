@@ -276,6 +276,15 @@ function finishJob(mine) {
   const kind = mine.kind;
   if (job.status === "done") {
     adoptJob(mine, job, kind);
+    if (kind === "mission" && mine.preview && !mine.preview.replace && mine.data.today) {
+      // Saved elsewhere while this first-draft preview was running: never offer to save it.
+      markHandled(job.id);
+      mine.preview = null;
+      mine.job = null;
+      mine.jobId = null;
+      mine.mode = null;
+      mine.conflict = true;
+    }
   } else {
     const item = itemOf(job);
     mine.runError = (item && item.message) || job.message || "작업을 마치지 못했습니다";
@@ -357,7 +366,7 @@ async function startFeedback() {
   } catch (e) {
     if (!alive(mine) || ignorable(e)) return;
     if (e.error === "bad_file") mine.formErrors = { file: e.message || "이 파일은 낼 수 없습니다" };
-    else if (e.error === "no_mission") { mine.runError = e.message; refreshData(); }
+    else if (e.error === "no_mission") { mine.runError = e.message; refreshData(true); }
     else mine.runError = e.message || "피드백을 받지 못했습니다";
   } finally {
     if (alive(mine)) {
@@ -468,7 +477,7 @@ async function submitFeedback() {
     if (!alive(mine) || ignorable(e)) return;
     mine.saveError = e.message || "저장하지 못했습니다";
     mine.busy = false;
-    if (e.error === "no_mission") refreshData();
+    if (e.error === "no_mission") refreshData(true);
     renderToday("[data-save-error]");
   }
 }
@@ -723,7 +732,8 @@ function existsView(today) {
       { disabled: busy, "aria-pressed": String(S.mode === "submit") }),
     status === "submitted" ? null
       : btn("건너뛰기", "", () => openMode("skip"), { disabled: busy, "aria-pressed": String(S.mode === "skip") }),
-    btn("바꾸기", "", () => openMode("swap"), { disabled: swapDisabled, "aria-pressed": String(S.mode === "swap") }));
+    status === "submitted" ? null
+      : btn("바꾸기", "", () => openMode("swap"), { disabled: swapDisabled, "aria-pressed": String(S.mode === "swap") }));
   const kids = [
     h("article", { class: "card mi-today" },
       h("div", { class: "card-head" }, h("div", { class: "mi-badges" }, ...badges)),
@@ -793,7 +803,7 @@ function submitPanel(today) {
 
 function feedbackPanel(today) {
   const fb = S.fb;
-  const text = h("textarea", { rows: "6", "aria-label": "피드백 (고칠 수 있어요)", "data-fb-text": "", disabled: S.busy });
+  const text = h("textarea", { rows: "6", "data-fb-text": "", disabled: S.busy });
   text.value = S.fbText;
   text.addEventListener("input", () => { S.fbText = text.value; });
   const save = btn("저장", "btn-primary", submitFeedback, { disabled: S.busy });
