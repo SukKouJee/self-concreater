@@ -24,11 +24,13 @@ POLISH_SCHEMA: dict = {
     "properties": {
         "hooks": {
             "type": "array",
+            "minItems": polish.HOOK_COUNT[0],
+            "maxItems": polish.HOOK_COUNT[1],
             "items": {
                 "type": "object",
                 "properties": {
                     "script": {"type": "string"},
-                    "formula": {"type": "string"},
+                    "formula": {"type": "string", "enum": [h["id"] for h in polish._hooks_file()["hooks"]]},
                     "hook_type": {"type": "string"},
                     "why": {"type": "string"},
                 },
@@ -37,6 +39,8 @@ POLISH_SCHEMA: dict = {
         },
         "titles": {
             "type": "array",
+            "minItems": polish.TITLE_COUNT[0],
+            "maxItems": polish.TITLE_COUNT[1],
             "items": {
                 "type": "object",
                 "properties": {"title": {"type": "string"}, "why": {"type": "string"}},
@@ -104,8 +108,13 @@ def _mark_saved(req: Request, job_id: Any, draft_rel: str) -> None:
         job = req.app.jobs.get(job_id)
     except ScriptError:
         return
-    item = job.item(0)
-    if job.kind == KIND and item["id"] == draft_rel and item["state"] == "awaiting":
+    if job.kind != KIND:
+        return
+    try:
+        item = job.item(0)
+    except IndexError:
+        return                                        # 항목이 없는 작업: 저장은 이미 끝났으니 표시만 건너뛴다
+    if item["id"] == draft_rel and item["state"] == "awaiting":
         job.update(0, state="saved", ask=None)
 
 

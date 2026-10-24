@@ -156,3 +156,68 @@ def test_save_stale_hash_and_missing_hash(client, draft_md, home):
     assert status == 400 and body["error"] == "bad_request"
     status, _ = client.json("POST", "/api/polish/save", {"draft": "../x.md", "hash": "a", "choice": choice()})
     assert status == 400
+
+
+def _nohook_draft(home):
+    import json
+
+    from scripts import draft as draft_mod
+    from tests.test_conti import DRAFT
+    from tests.typify_fixtures import CAT
+    data = json.loads(json.dumps(DRAFT))
+    data["sections"] = data["sections"][1:]
+    data["sections"][0]["start"], data["sections"][0]["end"] = 0, 4
+    data["sections"][1]["start"], data["sections"][1]["end"] = 4, 6
+    path = home / "workspace" / "tmp" / "nohook.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    return home / draft_mod.save(CAT, path)["path"]
+
+
+def test_save_with_job_of_other_kind_or_no_items_still_succeeds(client, draft_md, home):
+    path = _rel(draft_md, home)
+    job = client.app.jobs.start("typify", lambda j: None, items=None)
+    job.join(5)
+    status, body = client.json("POST", "/api/polish/save", {
+        "draft": path, "hash": sha(draft_md), "choice": choice(), "job_id": job.id})
+    assert status == 200, body
+    assert "컵라면 4단계 전부 먹어 봤다" in body_of(draft_md)
+
+
+def test_save_with_job_not_awaiting_keeps_item_state(client, draft_md, home):
+    path = _rel(draft_md, home)
+    job = _run(client, path)
+    status, _ = client.json("POST", "/api/polish/save", {
+        "draft": path, "hash": sha(draft_md), "choice": choice(), "job_id": job["id"]})
+    assert status == 200
+    wait_for(client, job["id"], lambda j: j["items"][0]["state"] == "saved")
+    status, _ = client.json("POST", "/api/polish/save", {
+        "draft": path, "hash": sha(draft_md), "choice": choice(title="컵라면 5단계 도전"), "job_id": job["id"]})
+    assert status == 200
+    assert _current(client)["items"][0]["state"] == "saved"
+
+
+def test_save_invalid_choice_is_400_and_file_unchanged(client, draft_md, home):
+    before = draft_md.read_bytes()
+    status, body = client.json("POST", "/api/polish/save", {
+        "draft": _rel(draft_md, home), "hash": sha(draft_md), "choice": {"title": ""}})
+    assert status == 400 and body["error"] == "invalid_polish"
+    assert draft_md.read_bytes() == before
+
+
+def test_run_on_draft_without_hook_section(client, home):
+    path = _rel(_nohook_draft(home), home)
+    job = _run(client, path)
+    assert job["status"] == "done"
+    assert job["items"][0]["preview"]["context"]["hook"] is None
+    assert job["items"][0]["preview"]["result"]["hooks"][0]["lint"]["fits"] is True
+
+
+def test_schema_bounds_match_polish_rules():
+    from scripts import polish
+    from scripts.ui.api_polish import POLISH_SCHEMA
+    props = POLISH_SCHEMA["properties"]
+    assert (props["hooks"]["minItems"], props["hooks"]["maxItems"]) == polish.HOOK_COUNT
+    assert (props["titles"]["minItems"], props["titles"]["maxItems"]) == polish.TITLE_COUNT
+    ids = [h["id"] for h in polish._hooks_file()["hooks"]]
+    assert props["hooks"]["items"]["properties"]["formula"]["enum"] == ids
