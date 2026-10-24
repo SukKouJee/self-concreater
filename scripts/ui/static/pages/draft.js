@@ -100,7 +100,7 @@ let S = null;
 function freshState(el, ctx, category, params) {
   return {
     el, ctx, category, mode: params.mode || "list", path: params.path || null, wantSource: params.source || null,
-    sources: null, source: params.source || "", topic: "", target: "", sourceNote: null,
+    sources: null, source: params.source || "", topic: "", target: "", targetBad: false, sourceNote: null,
     job: null, jobId: null, preview: null, edit: null, dirty: false,
     timer: null, pollErrors: 0, running: false, saving: false,
     runError: null, saveError: null, confirmRerun: false, confirmDiscard: false,
@@ -211,6 +211,7 @@ function adoptJob(mine, job) {
   if (preview && (!mine.preview || mine.jobId !== job.id)) {
     mine.preview = preview;
     mine.jobId = job.id;
+    if (preview.source && preview.source.id) mine.source = preview.source.id;
     initEdit(mine, preview);
   }
 }
@@ -336,6 +337,7 @@ function sourceSelect(disabled) {
 // Why the run button is disabled (empty string when it can be used).
 function runBlocker() {
   if (!S.source) return "출처를 골라 주세요";
+  if (S.targetBad) return "목표 길이는 숫자로 적어 주세요";
   if (S.target.trim() !== "") {
     const v = parseNum(S.target);
     if (!(v >= MIN_TARGET && v <= MAX_TARGET)) return `목표 길이는 ${MIN_TARGET}~${MAX_TARGET}초로 적어 주세요`;
@@ -409,7 +411,16 @@ async function startRun() {
     if (!alive(mine) || ignorable(e)) return;
     mine.runError = e.message || "기획안을 만들지 못했습니다";
   } finally {
-    if (alive(mine)) { mine.running = false; renderNew(); if (!mine.runError) focusStatus(); }
+    if (alive(mine)) {
+      mine.running = false;
+      if (mine.runError) {            // keep the preview and its focus; only the run box changes
+        renderRunBox();
+        if (mine.nodes.runBtn) mine.nodes.runBtn.focus();
+      } else {
+        renderNew();
+        focusStatus();
+      }
+    }
   }
 }
 
@@ -436,7 +447,8 @@ function renderRunBox() {
     inputmode: "numeric", placeholder: "예: 60", disabled: busy, "aria-describedby": "draft-run-hint",
   });
   target.value = S.target;
-  target.addEventListener("input", () => { S.target = target.value; updateRunControls(); });
+  S.targetBad = false;          // a rebuilt input starts from the stored value, so a typed-but-invalid text is gone
+  target.addEventListener("input", () => { S.target = target.value; S.targetBad = target.validity.badInput; updateRunControls(); });
   S.nodes.runBtn = h("button", { type: "button", class: "btn btn-primary", "aria-describedby": "draft-run-hint" }, "기획안 만들기");
   S.nodes.runBtn.addEventListener("click", () => requestRerun("run"));
   S.nodes.runHint = h("span", { class: "muted small", id: "draft-run-hint" });
@@ -554,6 +566,7 @@ function saveBlocker() {
   for (const [i, sec] of S.edit.sections.entries()) {
     if (!sec.shots.length) return `${i + 1}번 섹션에 샷이 하나 이상 있어야 합니다`;
     for (const [k, sh] of sec.shots.entries()) {
+      if (!SHOT_SIZES.includes(sh.size)) return `${i + 1}번 섹션 ${k + 1}번 샷의 크기를 고르세요`;
       if (!(parseNum(sh.sec) > 0)) return `${i + 1}번 섹션 ${k + 1}번 샷의 길이는 0보다 큰 숫자여야 합니다`;
     }
   }
@@ -596,17 +609,20 @@ function compareView(c) {
 function shotRow(sec, si, k) {
   const sh = sec.shots[k];
   const label = (what) => `${si + 1}번 섹션 ${k + 1}번 샷 ${what}`;
-  const touch = () => { S.dirty = true; updateSection(sec, si); updateSummary(); updateActions(); };
+  // The section warning is a live region: it is refreshed on change/blur, not on every keystroke.
+  const touch = () => { S.dirty = true; updateSummary(); updateActions(); };
+  const settle = () => updateSection(sec, si);
   const size = h("select", { "aria-label": label("크기") },
-    ...(sh.size && !SHOT_SIZES.includes(sh.size) ? [sh.size] : []).concat(SHOT_SIZES).map((v) => h("option", { value: v }, v)));
-  size.value = sh.size;
-  size.addEventListener("change", () => { sh.size = size.value; touch(); });
+    ...(SHOT_SIZES.includes(sh.size) ? [] : [""]).concat(SHOT_SIZES).map((v) => h("option", { value: v }, v || "크기 선택")));
+  size.value = SHOT_SIZES.includes(sh.size) ? sh.size : "";
+  size.addEventListener("change", () => { sh.size = size.value; touch(); settle(); });
   const angle = h("input", { type: "text", "aria-label": label("앵글"), maxlength: "60" });
   angle.value = sh.angle;
   angle.addEventListener("input", () => { sh.angle = angle.value; touch(); });
   const secInput = h("input", { type: "number", min: "0.1", step: "0.1", class: "dr-sec-input", "aria-label": label("길이(초)") });
   secInput.value = sh.sec;
   secInput.addEventListener("input", () => { sh.sec = secInput.value; touch(); });
+  secInput.addEventListener("change", settle);
   const action = h("input", { type: "text", "aria-label": label("내용"), maxlength: "200" });
   action.value = sh.action;
   action.addEventListener("input", () => { sh.action = action.value; touch(); });

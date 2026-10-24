@@ -497,3 +497,4 @@ code { background: var(--grid); padding: 1px 6px; border-radius: 4px; }
 .dr-sec .warn-text:empty { display: none; }
 .dr-sec .warn-text { margin: var(--sp-2) 0 0; }
 .dr-shots td:nth-child(5) { min-width: 0; }
+.dr-sec .table-wrap { max-height: none; }

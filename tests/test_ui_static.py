@@ -339,3 +339,15 @@ def test_draft_page_served(client):
     assert status == 200
     assert "javascript" in headers["Content-Type"]
     assert "/api/draft" in raw.decode("utf-8")
+
+def test_draft_shot_sizes_match_server_and_invalid_input_is_blocked():
+    import json
+    from scripts.features import SHOT_SIZES
+    js = (STATIC_DIR / "pages" / "draft.js").read_text(encoding="utf-8")
+    literal = re.search(r"const SHOT_SIZES = (\[[^\]]*\]);", js).group(1)
+    assert json.loads(literal) == SHOT_SIZES
+    for token in ["크기 선택", "의 크기를 고르세요", "목표 길이는 숫자로 적어 주세요", "validity.badInput"]:
+        assert token in js, token
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    assert ".dr-sec .table-wrap { max-height: none; }" in css
+
