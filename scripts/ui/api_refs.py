@@ -28,12 +28,17 @@ def _category(req: Request) -> str:
     category = req.query.get("category")
     if not category:
         raise ScriptError("bad_request", "category가 필요합니다")
-    return category
+    return str(category)
+
+
+def _dict_or_none(value: Any) -> dict | None:
+    return value if isinstance(value, dict) else None
 
 
 def _sections(fm: dict) -> list[dict]:
     out = []
-    for s in fm.get("sections") or []:
+    raw = fm.get("sections")
+    for s in raw if isinstance(raw, list) else []:
         if not isinstance(s, dict):
             continue
         item: dict[str, Any] = {"label": s.get("label"), "start": float(s.get("start") or 0),
@@ -45,22 +50,35 @@ def _sections(fm: dict) -> list[dict]:
 
 
 def _scene_frames(video_id: str) -> list[dict]:
-    """컷 json의 장면 중 프레임 파일이 실제로 있는 것만(작업 폴더 상대 경로가 frames/ 아래인 것)."""
-    cuts = videomd.load_cuts(video_id)
+    """컷 json의 장면 중 프레임 파일이 실제로 있는 것만. 깨진 컷 json은 프레임 없음으로 본다."""
+    try:
+        cuts = videomd.load_cuts(video_id)
+    except (ValueError, OSError):
+        return []
+    scenes = cuts.get("scenes") if isinstance(cuts, dict) else None
+    if not isinstance(scenes, list):
+        return []
     root = work_root()
+    base = (root / "workspace" / "frames").resolve()
     out = []
-    for scene in (cuts or {}).get("scenes") or []:
+    for scene in scenes:
+        if not isinstance(scene, dict):
+            continue
         frame = scene.get("frame")
-        if not isinstance(frame, str) or not frame.startswith(FRAMES_PREFIX) or ".." in frame.split("/"):
+        if not isinstance(frame, str) or not frame.startswith(FRAMES_PREFIX) or "\\" in frame or "\x00" in frame:
             continue
-        if not (root / frame).is_file():
+        try:
+            target = (root / frame).resolve()
+            if not target.is_relative_to(base) or not target.is_file():
+                continue
+            start, end = float(scene.get("start") or 0), float(scene.get("end") or 0)
+        except (OSError, ValueError, TypeError):
             continue
-        out.append({"frame": frame, "start": float(scene.get("start") or 0), "end": float(scene.get("end") or 0)})
+        out.append({"frame": frame, "start": start, "end": end})
     return out
 
 
-def _summary(path: Path, fm: dict) -> dict:
-    frames = _scene_frames(path.stem)
+def _summary(path: Path, fm: dict, frames: list[dict]) -> dict:
     added = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     return {
         "id": path.stem, "role": fm.get("role"), "title": fm.get("title"), "channel": fm.get("channel"),
@@ -98,17 +116,17 @@ def _youtube_url(value: Any) -> str | None:
 
 @route("GET", "/api/refs")
 def _list(req: Request) -> dict:
-    folder = refstore.existing_category_dir(_category(req)) / "videos"
+    category = _category(req)
+    folder = refstore.existing_category_dir(category) / "videos"
     videos = []
     skipped = 0
     for path in sorted(folder.glob("*.md")) if folder.is_dir() else []:
         try:
             fm, _ = refstore.read_md(path)
-        except ScriptError:
-            skipped += 1
-            continue
-        videos.append(_summary(path, fm))
-    return {"category": req.query["category"], "videos": videos, "skipped": skipped}
+            videos.append(_summary(path, fm, _scene_frames(path.stem)))
+        except (ScriptError, ValueError, TypeError, AttributeError, OSError):
+            skipped += 1                  # 한 파일이 깨졌다고 목록 전체를 막지 않는다
+    return {"category": category, "videos": videos, "skipped": skipped}
 
 
 @route("GET", r"/api/refs/(?P<video_id>[^/?]+)")
@@ -120,10 +138,17 @@ def _detail(req: Request, video_id: str) -> dict:
     if not path.is_file():
         raise ScriptError("video_not_found", f"영상 md가 없습니다: {video_id}")
     fm, body = refstore.read_md(path)
-    summary = _summary(path, fm)
     frames = _scene_frames(video_id)
-    for f in frames:
-        f["section"] = _section_at(summary["sections"], (f["start"] + f["end"]) / 2)
-    video = {**summary, "url": _youtube_url(fm.get("url")), "pacing": fm.get("pacing"), "camera": fm.get("camera")}
-    return {"video": video, "frames": frames, "body": _body_parts(body),
-            "md": path.resolve().relative_to(work_root().resolve()).as_posix()}
+    try:
+        summary = _summary(path, fm, frames)
+        for f in frames:
+            f["section"] = _section_at(summary["sections"], (f["start"] + f["end"]) / 2)
+    except (ValueError, TypeError, AttributeError) as e:
+        raise ScriptError("bad_md", f"영상 md의 값이 올바르지 않습니다({video_id}): {e}") from e
+    video = {**summary, "url": _youtube_url(fm.get("url")), "pacing": _dict_or_none(fm.get("pacing")),
+             "camera": _dict_or_none(fm.get("camera"))}
+    try:
+        md = path.relative_to(work_root()).as_posix()
+    except ValueError:
+        md = path.resolve().relative_to(work_root().resolve()).as_posix()
+    return {"video": video, "frames": frames, "body": _body_parts(body), "md": md}

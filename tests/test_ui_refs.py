@@ -1,4 +1,5 @@
 """읽기 전용 레퍼런스 API: 목록과 상세."""
+import json
 import re
 
 import pytest
@@ -102,3 +103,44 @@ def test_detail_requires_category(client, home):  # noqa: F811
 def test_detail_url_only_youtube_https(client, home, url):  # noqa: F811
     refstore.update_frontmatter(video_path(home, "a00"), {"url": url})
     assert get(client, "/api/refs/a00?category=mukbang")["video"]["url"] is None
+
+
+@pytest.mark.parametrize("evil", ["workspace/frames/..\\..\\x.jpg", "workspace/frames/../../x.jpg"])
+def test_frames_outside_frames_dir_are_ignored(client, home, evil):  # noqa: F811
+    (home / "x.jpg").write_bytes(b"x")
+    (home / "workspace" / "cuts").mkdir(parents=True, exist_ok=True)
+    (home / "workspace" / "cuts" / "a00.json").write_text(
+        json.dumps({"scenes": [{"start": 0, "end": 30, "frame": evil}]}), encoding="utf-8")
+    v = next(v for v in get(client, "/api/refs?category=mukbang")["videos"] if v["id"] == "a00")
+    assert v["thumb"] is None
+    assert get(client, "/api/refs/a00?category=mukbang")["frames"] == []
+
+
+def test_truncated_cuts_json_means_no_frames(client, home):  # noqa: F811
+    make_frames(home, "a00", n=3)
+    (home / "workspace" / "cuts" / "a00.json").write_text('{"scenes": [', encoding="utf-8")
+    v = next(v for v in get(client, "/api/refs?category=mukbang")["videos"] if v["id"] == "a00")
+    assert v["thumb"] is None
+    assert get(client, "/api/refs/a00?category=mukbang")["frames"] == []
+
+
+def test_non_dict_scenes_means_no_frames(client, home):  # noqa: F811
+    (home / "workspace" / "cuts").mkdir(parents=True, exist_ok=True)
+    (home / "workspace" / "cuts" / "a00.json").write_text(json.dumps({"scenes": ["x", 3]}), encoding="utf-8")
+    assert get(client, "/api/refs/a00?category=mukbang")["frames"] == []
+
+
+def test_bad_section_value_skips_in_list_and_400_in_detail(client, home):  # noqa: F811
+    path = video_path(home, "a00")
+    fm, body = refstore.read_md(path)
+    fm["sections"][0]["start"] = "abc"
+    path.write_bytes(refstore.join_frontmatter(fm, body).encode("utf-8"))
+    data = get(client, "/api/refs?category=mukbang")
+    assert data["skipped"] == 1 and "a00" not in {v["id"] for v in data["videos"]}
+    assert get(client, "/api/refs/a00?category=mukbang", status=400)["error"] == "bad_md"
+
+
+def test_non_dict_pacing_and_camera_become_none(client, home):  # noqa: F811
+    refstore.update_frontmatter(video_path(home, "a00"), {"pacing": 3, "camera": "x"})
+    v = get(client, "/api/refs/a00?category=mukbang")["video"]
+    assert v["pacing"] is None and v["camera"] is None
