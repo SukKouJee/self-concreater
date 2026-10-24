@@ -56,6 +56,19 @@ bin\ytc.cmd ui           # Git Bash 없는 Windows
 | 성장 | 진단 (내 영상·기획안 목록 → "비교하기"로 가장 가까운 아키타입·축별 근접도·갭을 바로 보기(Claude 없음) → "설명 받기"로 요약·갭 설명·다음 행동을 받아 고쳐 저장 → `mine/<이름>.md`(`## 내 메모` 유지). 저장한 진단에서 갭마다 "일부러 다르게 한 거예요" 표시. 대본 붙여넣기·링크 바로 진단은 터미널 `/yt-coach:yt-diagnose`) | 2차 ✅ |
 | 성장 | 미션 (오늘 미션 받기 → 미리보기에서 "이걸로 할게요"로 저장·"다른 걸로" 다시 뽑기. 저장된 미션은 "완료 제출"(한 일·난이도·선택 파일 경로 → "피드백 받기" → 고쳐 저장), "건너뛰기"(사유 선택), "바꾸기"(교체 미리보기). 지난 14일 기록·이번 주 완료율. 제출 파일은 작업 폴더에 잠깐 복사해 읽고 바로 지움) | 2차 ✅ |
 
+### LLM 엔진 (선택)
+
+화면(`ytc ui`)이 Claude를 부르는 모든 곳은 엔진 계층 하나를 지납니다. 기본은 `claude-cli`(설치한 `claude`, 지금과 같은 동작)이고, 작업 폴더 루트의 `yt-coach.json`으로 Anthropic API로 바꿀 수 있습니다.
+
+```json
+{ "llm": { "engine": "anthropic-api", "model": "claude-sonnet-5-5", "max_tokens": 8000 } }
+```
+
+- `engine`: `claude-cli`(기본) 또는 `anthropic-api`. 환경 변수 `YTC_LLM_ENGINE`이 있으면 그것이 우선합니다. `model`·`max_tokens`는 생략 가능합니다.
+- `anthropic-api`는 환경 변수 `ANTHROPIC_API_KEY`가 필요합니다. 키는 파일·로그에 남기지 않습니다.
+- 오류 코드: `llm_not_configured`(설정·키 없음), `llm_auth`(키 거부), `llm_failed`(호출 실패). `claude-cli`는 기존 `claude_missing`·`claude_login`을 그대로 씁니다.
+- 터미널의 `/yt-coach:*` 커맨드는 Claude Code가 직접 해석하므로 이 설정과 무관합니다.
+
 ## 설치
 
 ### 1. 준비물

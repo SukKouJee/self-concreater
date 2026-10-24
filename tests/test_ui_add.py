@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from scripts import claude_cli, cuts, fetch, refstore, shots, stt, videomd
+from scripts import claude_cli, llm, cuts, fetch, refstore, shots, stt, videomd
 from scripts.common import ScriptError
 from scripts.ui import api_add, jobs
 from scripts.ui import __main__ as ui_main
@@ -79,7 +79,8 @@ class Fakes:
         return None
 
     def context(self, vid, category):
-        return {"id": vid, "title": f"제목 {vid}", "sparse": False, "duration_sec": 60}
+        return {"id": vid, "title": f"제목 {vid}", "sparse": False, "duration_sec": 60,
+                "examples": ["refs/ref_food/videos/ex.md"]}
 
     def write(self, vid, category, role, analysis_path, force=False):
         with open(analysis_path, encoding="utf-8") as f:
@@ -131,7 +132,7 @@ def fakes(monkeypatch):
     monkeypatch.setattr(videomd, "load_cuts", f.load_cuts)
     monkeypatch.setattr(videomd, "context", f.context)
     monkeypatch.setattr(videomd, "write", f.write)
-    monkeypatch.setattr(claude_cli, "ask_validated", f.ask_validated)
+    monkeypatch.setattr(llm, "ask_validated", f.ask_validated)
     monkeypatch.setattr(claude_cli, "find_claude", lambda: "C:/bin/claude.exe")
     monkeypatch.setattr(shots, "context", f.shots_context)
     monkeypatch.setattr(shots, "apply", f.shots_apply)
@@ -198,7 +199,8 @@ def test_add_happy_path_awaits_then_saves(client, fakes, tmp_path):
     assert item["frames"] == [f"workspace/frames/{A}/scene001_0.5s.jpg"]
     rules, payload, _, kw = fakes.asks[0]
     assert rules == [claude_cli.SKILLS_DIR / "yt-analyze" / "SKILL.md"]
-    assert payload["id"] == A and kw["tools"] == ["Read"]   # examples(사용자 교정 md)를 읽어야 한다
+    assert payload["id"] == A
+    assert kw["files"] == [tmp_path / "refs/ref_food/videos/ex.md"]   # examples(사용자 교정 md)를 읽어야 한다
     assert api_add.SCREEN_HINT not in fakes.asks[0][2]
 
     status, body = decide(client, job["id"], A, action="save")
@@ -280,7 +282,7 @@ def test_no_transcript_screen_uses_read_tool(client, fakes):
     decide(client, job["id"], A, action="screen")
     wait_for(client, job["id"], lambda j: j["items"][0]["preview"] is not None)
     assert fakes.stt_calls == []
-    assert fakes.analyze_asks()[0][3]["tools"] == ["Read"]
+    assert fakes.analyze_asks()[0][3]["files"]
     assert api_add.SCREEN_HINT in fakes.analyze_asks()[0][2]
 
 
@@ -397,7 +399,8 @@ def test_shots_option_runs_after_save(client, fakes, tmp_path):
     vid, labels = fakes.applied[0]
     assert vid == A and labels[0]["size"] == "바스트"
     rules, _, _, kw = fakes.asks[-1]
-    assert rules == [claude_cli.SKILLS_DIR / "yt-shots" / "SKILL.md"] and kw["tools"] == ["Read"]
+    assert rules == [claude_cli.SKILLS_DIR / "yt-shots" / "SKILL.md"] 
+    assert kw["files"] == [tmp_path / f"workspace/frames/{A}/scene001_0.5s.jpg"]
     assert not (tmp_path / "workspace" / "tmp" / f"shots_{A}.json").exists()
 
 

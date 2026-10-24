@@ -15,7 +15,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from scripts import claude_cli, cluster, refstore
+from scripts import claude_cli, cluster, llm, refstore
 from scripts.common import ScriptError, workspace_dir
 from scripts.ui.jobs import Job, new_item
 from scripts.ui.server import Request, route
@@ -98,7 +98,7 @@ def run_target(category: str) -> Any:
         result = cluster.run(category, out=cluster.preview_path(category))   # ref만 쓴다(mine은 cluster가 뺀다)
         job.update(0, step="claude")
         job.check_cancelled()
-        notes, _ = claude_cli.ask_validated(
+        notes, _ = llm.ask_validated(
             _rules(), result, TYPIFY_TASK, lambda d: cluster.validate_notes(result, d), schema=NOTES_SCHEMA,
         )
         job.update(0, state="awaiting", step="preview", ask="save", preview={
@@ -116,7 +116,7 @@ def _run(req: Request) -> dict:
     stage, need = _stage(ref)
     if stage == "too_few":
         raise ScriptError("too_few", f"ref가 {ref}개라 아직 유형을 볼 수 없습니다. {need}개 더 넣어 주세요")
-    claude_cli.find_claude()                          # claude가 없으면 작업을 만들지 않는다
+    llm.check()                          # claude가 없으면 작업을 만들지 않는다
     items = [new_item(category, title=category, step="cluster")]
     job = req.app.jobs.start(KIND, run_target(category), items=items, category=category)
     return {"job": job.snapshot()}

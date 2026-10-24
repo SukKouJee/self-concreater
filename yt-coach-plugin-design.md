@@ -38,6 +38,7 @@
 - 구조: 서버(Python)가 `scripts.*`를 함수로 직접 호출하고, 해석이 필요한 일은 `claude -p`(사용자 구독, `skills/*/SKILL.md` 규칙 재사용)로 실행. 정적 HTML/CSS/JS, 빌드 단계 없음.
 - 메뉴: 홈 / 모으기(레퍼런스 추가 1차, 목록 2차: 보기·라벨 고치기) / 분석(유형화·리포트 2차) / 만들기(콘티 1차, 모티브·기획안 2차) / 성장(진단·미션 2차).
 - 원칙: md 프런트매터가 유일한 원본이고 화면은 읽고 쓰는 창. 저장·바꾸기 클릭이 사용자 확인이며, 클릭 없이 AI 출력이 파일에 쓰이지 않는다(`--shots-only`, `script_mismatch` 자동 맞춤 제외). 화면 밖 수정은 내용 해시로 감지해 저장을 거부한다.
+- LLM 엔진: 화면의 모든 Claude 호출은 `scripts/llm.py` 하나를 지난다. 기본 `claude-cli`(위 `claude -p`), 작업 폴더 `yt-coach.json`의 `{"llm": {"engine": "anthropic-api"}}` 또는 `YTC_LLM_ENGINE`으로 Anthropic Messages API(표준 라이브러리 HTTP, 키는 `ANTHROPIC_API_KEY` 환경 변수만)로 바꾼다. 새 엔진은 `check()`·`ask()`를 가진 모듈을 `ENGINES`에 등록하면 된다. 터미널 커맨드(Claude Code 대화)는 무관.
 - 오래 걸리는 수집은 job으로 돌리고(동시에 하나), 화면을 닫아도 계속된다. 서버를 끄면 멈춘다.
 - 새 스크립트: `status`(홈 데이터), `claude_cli`(Claude 호출기), `ui`(서버). `conti`에 `update`·`scenes`·`cut-context` 추가.
 
@@ -70,7 +71,9 @@ yt-coach/
 │   ├── conti.py      draft → 콘티 검증·저장, 도식+참고 프레임 HTML 스토리보드
 │   ├── report.py     HTML 리포트
 │   ├── status.py     카테고리별 진행 단계·다음 할 일 (UI 홈)
-│   ├── claude_cli.py claude -p 호출기 (UI)
+│   ├── claude_cli.py claude -p 호출기 (UI, `claude-cli` 엔진)
+│   ├── llm.py        LLM 엔진 계층 (설정·점검·ask·ask_validated)
+│   ├── llm_anthropic.py Anthropic Messages API 엔진 (`anthropic-api`)
 │   └── ui/           로컬 UI 서버 + 정적 화면
 ├── templates/        video.md, index.md, techniques.md, profile.md, mission.md, thresholds.json
 ├── CLAUDE.md

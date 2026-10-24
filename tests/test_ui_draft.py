@@ -6,14 +6,14 @@ from urllib.parse import quote
 
 import pytest
 
-from scripts import claude_cli, conti, motif, refstore
+from scripts import claude_cli, llm, conti, motif, refstore
 from scripts.common import ScriptError
 from tests.test_draft import DRAFT, home  # noqa: F401 - fixture
 from tests.test_ui_add import wait_for
 from tests.test_ui_server import Client, _start, _stop, no_browser  # noqa: F401 - fixture
 from tests.typify_fixtures import CAT
 
-REAL_ASK_VALIDATED = claude_cli.ask_validated
+REAL_ASK_VALIDATED = llm.ask_validated
 CARD_ID = "M-mukbang-001"
 
 
@@ -30,7 +30,7 @@ class Fakes:
 @pytest.fixture
 def fakes(monkeypatch):
     f = Fakes()
-    monkeypatch.setattr(claude_cli, "ask_validated", f.ask_validated)
+    monkeypatch.setattr(llm, "ask_validated", f.ask_validated)
     monkeypatch.setattr(claude_cli, "find_claude", lambda: "C:/bin/claude.exe")
     return f
 
@@ -238,8 +238,8 @@ def test_run_retries_then_fails(client, home, monkeypatch):
         calls.append(task)
         return bad
 
-    monkeypatch.setattr(claude_cli, "ask_validated", REAL_ASK_VALIDATED)
-    monkeypatch.setattr(claude_cli, "ask", fake_ask)
+    monkeypatch.setattr(llm, "ask_validated", REAL_ASK_VALIDATED)
+    monkeypatch.setattr(llm, "ask", fake_ask)
     job = _run(client)
     assert job["status"] == "failed" and "드론" in job["items"][0]["message"]
     assert len(calls) == 2 and "드론" in calls[1]
@@ -253,7 +253,7 @@ def test_second_run_while_running(client, fakes, monkeypatch):
         gate.wait(5)
         return fakes.ask_validated(*args, **kw)
 
-    monkeypatch.setattr(claude_cli, "ask_validated", slow)
+    monkeypatch.setattr(llm, "ask_validated", slow)
     status, body = client.json("POST", "/api/draft/run", {"category": CAT, "source": CARD_ID})
     assert status == 200
     status, again = client.json("POST", "/api/draft/run", {"category": CAT, "source": CARD_ID})

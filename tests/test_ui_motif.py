@@ -3,13 +3,13 @@ import threading
 
 import pytest
 
-from scripts import claude_cli, cluster, refstore
+from scripts import claude_cli, llm, cluster, refstore
 from scripts.common import ScriptError
 from tests.test_ui_add import wait_for
 from tests.test_ui_server import Client, _start, _stop, no_browser  # noqa: F401 - fixture
 from tests.typify_fixtures import CAT, standard_set, write_video
 
-REAL_ASK_VALIDATED = claude_cli.ask_validated
+REAL_ASK_VALIDATED = llm.ask_validated
 
 
 def card(title, **over):
@@ -47,7 +47,7 @@ def home_empty(monkeypatch, tmp_path):
 @pytest.fixture
 def fakes(monkeypatch):
     f = Fakes()
-    monkeypatch.setattr(claude_cli, "ask_validated", f.ask_validated)
+    monkeypatch.setattr(llm, "ask_validated", f.ask_validated)
     monkeypatch.setattr(claude_cli, "find_claude", lambda: "C:/bin/claude.exe")
     return f
 
@@ -157,8 +157,8 @@ def test_run_retries_then_fails(client, home, monkeypatch):
         calls.append(task)
         return {"cards": [card("나쁜 카드", evidence=["nope"])]}
 
-    monkeypatch.setattr(claude_cli, "ask_validated", REAL_ASK_VALIDATED)
-    monkeypatch.setattr(claude_cli, "ask", fake_ask)
+    monkeypatch.setattr(llm, "ask_validated", REAL_ASK_VALIDATED)
+    monkeypatch.setattr(llm, "ask", fake_ask)
     before = _index(home).read_bytes()
     job = _run(client)
     assert job["status"] == "failed" and "nope" in job["items"][0]["message"]
@@ -182,8 +182,8 @@ def test_stage3_without_typify_rejects_flow(client, home, monkeypatch):
         calls.append(payload["allowed_types"])
         return {"cards": [FLOW]}
 
-    monkeypatch.setattr(claude_cli, "ask_validated", REAL_ASK_VALIDATED)
-    monkeypatch.setattr(claude_cli, "ask", fake_ask)
+    monkeypatch.setattr(llm, "ask_validated", REAL_ASK_VALIDATED)
+    monkeypatch.setattr(llm, "ask", fake_ask)
     job = _run(client)
     assert job["status"] == "failed" and "flow" in job["items"][0]["message"]
     assert len(calls) == 2 and calls[0] == ["technique", "angle"]
@@ -268,7 +268,7 @@ def test_second_run_while_running(client, fakes, monkeypatch):
         gate.wait(5)
         return fakes.ask_validated(*args, **kw)
 
-    monkeypatch.setattr(claude_cli, "ask_validated", slow)
+    monkeypatch.setattr(llm, "ask_validated", slow)
     status, body = client.json("POST", "/api/motif/run", {"category": CAT})
     assert status == 200
     status, again = client.json("POST", "/api/motif/run", {"category": CAT})

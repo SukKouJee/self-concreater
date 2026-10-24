@@ -14,7 +14,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from scripts import claude_cli, conti, draft, motif, refstore
+from scripts import claude_cli, conti, draft, llm, motif, refstore
 from scripts.common import ScriptError, work_root, workspace_dir
 from scripts.ui.api_conti import CONTI_SUFFIX, _rel, _safe_path
 from scripts.ui.api_refs import _body_parts
@@ -193,7 +193,7 @@ def run_target(category: str, source: str, topic: str | None, target_sec: float 
             payload["target_sec"] = target_sec
         job.update(0, step="claude")
         job.check_cancelled()
-        _, valid = claude_cli.ask_validated(
+        _, valid = llm.ask_validated(
             _rules(), payload=payload, task=DRAFT_TASK, schema=DRAFT_SCHEMA, validate=_validate_with_shots,
         )
         valid = {k: v for k, v in valid.items() if k != "script_only"}   # the UI never saves script-only drafts
@@ -217,7 +217,7 @@ def _run(req: Request) -> dict:
     topic = _topic(body.get("topic"))
     target_sec = _target_sec(body.get("target_sec"))
     context = draft.context(category, source, topic)      # 작업 전에 출처를 확인한다(없으면 source_not_found)
-    claude_cli.find_claude()                              # claude가 없으면 작업을 만들지 않는다
+    llm.check()                              # claude가 없으면 작업을 만들지 않는다
     items = [new_item(category, title=context["source"]["title"], step="context")]
     job = req.app.jobs.start(KIND, run_target(category, source, topic, target_sec), items=items, category=category)
     return {"job": job.snapshot()}

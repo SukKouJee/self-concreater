@@ -14,7 +14,7 @@ from urllib.parse import quote
 from pathlib import Path
 from typing import Any
 
-from scripts import captions, claude_cli, conti, refstore
+from scripts import captions, claude_cli, conti, llm, refstore
 from scripts.common import ScriptError, work_root, workspace_dir
 from scripts.ui.jobs import Job, JobCancelled, new_item
 from scripts.ui.server import Request, route
@@ -97,7 +97,7 @@ def create_target(ctx: dict) -> Any:
     def target(job: Job) -> None:
         job.update(0, state="running", step="claude")
         job.check_cancelled()
-        data, (script, cuts) = claude_cli.ask_validated(
+        data, (script, cuts) = llm.ask_validated(
             _rules(), ctx, CREATE_TASK, lambda d: conti.validate(d, ctx["sections"]),
         )
         preview = {"conti": data, "script": script, "cuts": cuts,
@@ -116,7 +116,7 @@ def _create(req: Request) -> dict:
     ctx = conti.context(_rel(draft))
     if ctx["conti_exists"] and not force:
         raise ScriptError("conti_exists", f"이미 콘티가 있습니다: {ctx['conti']} (다시 만들려면 덮어쓰기를 고르세요)")
-    claude_cli.find_claude()              # claude가 없으면 작업을 만들지 않는다
+    llm.check()              # claude가 없으면 작업을 만들지 않는다
     items = [new_item(_rel(draft), title=ctx["title"], step="claude")]
     job = req.app.jobs.start(KIND, create_target(ctx), items=items, category=ctx["category"])
     return {"job": job.snapshot()}
@@ -185,9 +185,9 @@ def _alternatives(req: Request) -> dict:
     if not isinstance(exclude, list) or not all(isinstance(x, str) for x in exclude):
         raise ScriptError("bad_request", "exclude는 문자열 목록이어야 합니다")
     ctx = conti.cut_context(path, n)
-    claude_cli.find_claude()
+    llm.check()
     payload = {**ctx, "count": count, "exclude": exclude}
-    answer = claude_cli.ask(_rules(), payload, f"7절 규칙으로 컷 대사 대안을 {count}개 만드세요", schema=ALT_SCHEMA)
+    answer = llm.ask(_rules(), payload, f"7절 규칙으로 컷 대사 대안을 {count}개 만드세요", schema=ALT_SCHEMA)
     raw = answer.get("alternatives")
     if not isinstance(raw, list) or not all(isinstance(a, dict) and isinstance(a.get("line"), str) for a in raw):
         raise ScriptError("claude_failed", "Claude의 대안 응답이 형식에 맞지 않습니다. 다시 시도해 주세요")

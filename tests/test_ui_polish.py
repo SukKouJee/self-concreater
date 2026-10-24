@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-from scripts import claude_cli
+from scripts import claude_cli, llm
 from scripts.common import ScriptError
 from tests.test_conti import draft_md, home  # noqa: F401 - fixtures
 from tests.test_polish import body_of, choice, llm_output, sha
@@ -25,7 +25,7 @@ class Fakes:
 @pytest.fixture
 def fakes(monkeypatch):
     f = Fakes()
-    monkeypatch.setattr(claude_cli, "ask", f.ask)
+    monkeypatch.setattr(llm, "ask", f.ask)
     monkeypatch.setattr(claude_cli, "find_claude", lambda: "C:/bin/claude.exe")
     return f
 
@@ -109,7 +109,7 @@ def test_duplicate_run_while_running(client, draft_md, home, fakes, monkeypatch)
         gate.wait(5)
         return original(*a, **kw)
 
-    monkeypatch.setattr(claude_cli, "ask", slow)
+    monkeypatch.setattr(llm, "ask", slow)
     path = _rel(draft_md, home)
     status, resp = client.json("POST", "/api/polish/run", {"draft": path})
     assert status == 200

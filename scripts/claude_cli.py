@@ -37,10 +37,31 @@ def find_claude() -> str:
     return path
 
 
-def _build_prompt(rules: list[Path], payload: dict, task: str) -> str:
+def check() -> None:
+    """엔진 준비 확인(llm.check에서 부른다): claude가 없으면 claude_missing."""
+    find_claude()
+
+
+def _display_path(path: Path) -> str:
+    try:
+        return Path(path).relative_to(work_root()).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _build_prompt(rules: list[Path], payload: dict, task: str, files: list[Path] | None = None) -> str:
     rule_texts = [Path(p).read_text(encoding="utf-8") for p in rules]
     body = json.dumps(payload, ensure_ascii=False, indent=2)
-    parts = [*rule_texts, f"## 입력\n```json\n{body}\n```\n\n## 할 일\n{task}\n\n출력은 JSON 하나만."]
+    if not files:
+        parts = [*rule_texts, f"## 입력\n```json\n{body}\n```\n\n## 할 일\n{task}\n\n출력은 JSON 하나만."]
+        return "\n\n".join(parts)
+    listing = "\n".join(f"- {_display_path(f)}" for f in files)
+    parts = [
+        *rule_texts,
+        f"## 입력\n```json\n{body}\n```",
+        f"## 읽을 파일\n아래 파일을 Read 도구로 열어 보세요.\n{listing}",
+        f"## 할 일\n{task}\n\n출력은 JSON 하나만.",
+    ]
     return "\n\n".join(parts)
 
 
@@ -84,8 +105,12 @@ def ask(
     *,
     schema: dict | None = None,
     tools: list[str] | None = None,
+    files: list[Path] | None = None,
     timeout: int = 600,
+    options: dict | None = None,  # 엔진 공통 인터페이스용(claude-cli는 model 등을 쓰지 않는다)
 ) -> dict:
+    if files and not tools:
+        tools = ["Read"]
     cmd = [find_claude(), "-p", "--output-format", "json", "--no-session-persistence", *_ISOLATION_FLAGS]
     if schema is not None:
         cmd += ["--json-schema", json.dumps(schema, ensure_ascii=False)]
@@ -94,7 +119,7 @@ def ask(
     try:
         proc = subprocess.run(
             cmd,
-            input=_build_prompt(rules, payload, task),
+            input=_build_prompt(rules, payload, task, files),
             capture_output=True,
             text=True,
             encoding="utf-8",

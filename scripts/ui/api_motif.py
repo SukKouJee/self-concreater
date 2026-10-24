@@ -15,7 +15,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from scripts import claude_cli, motif, refstore
+from scripts import claude_cli, llm, motif, refstore
 from scripts.common import ScriptError, work_root, workspace_dir
 from scripts.ui.jobs import Job, new_item
 from scripts.ui.server import Request, route
@@ -105,7 +105,7 @@ def run_target(category: str, topic: str | None) -> Any:
         allowed = payload["allowed_types"]
         job.update(0, step="claude")
         job.check_cancelled()
-        _, cards = claude_cli.ask_validated(
+        _, cards = llm.ask_validated(
             _rules(), payload, MOTIF_TASK,
             lambda d: motif.validate_cards(category, d.get("cards") if isinstance(d, dict) else None, allowed),
             schema=CARDS_SCHEMA,
@@ -125,7 +125,7 @@ def _run(req: Request) -> dict:
     topic = _topic(req.json.get("topic"))
     if refstore.count(category)["ref"] == 0:
         raise ScriptError("no_refs", "먼저 레퍼런스를 넣어 주세요")
-    claude_cli.find_claude()                          # claude가 없으면 작업을 만들지 않는다
+    llm.check()                          # claude가 없으면 작업을 만들지 않는다
     items = [new_item(category, title=category, step="context")]
     job = req.app.jobs.start(KIND, run_target(category, topic), items=items, category=category)
     return {"job": job.snapshot()}

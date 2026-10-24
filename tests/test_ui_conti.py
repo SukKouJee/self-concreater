@@ -4,7 +4,7 @@ from urllib.parse import quote
 
 import pytest
 
-from scripts import claude_cli, conti
+from scripts import claude_cli, llm, conti
 from scripts.common import ScriptError
 from scripts.ui import api_conti
 from tests.test_conti import CONTI, DRAFT, conti_file, draft_md, home, pin_frame  # noqa: F401 - fixtures
@@ -33,8 +33,8 @@ class Fakes:
 @pytest.fixture
 def fakes(monkeypatch):
     f = Fakes()
-    monkeypatch.setattr(claude_cli, "ask_validated", f.ask_validated)
-    monkeypatch.setattr(claude_cli, "ask", f.ask)
+    monkeypatch.setattr(llm, "ask_validated", f.ask_validated)
+    monkeypatch.setattr(llm, "ask", f.ask)
     monkeypatch.setattr(claude_cli, "find_claude", lambda: "C:/bin/claude.exe")
     return f
 
@@ -163,7 +163,7 @@ def test_alternatives_counts_and_over_flag(client, home, draft_md, fakes):
     assert payload["exclude"] == ["이전 안"] and payload["count"] == 3
     assert payload["prev_line"] == "4단계 다 먹을 수 있을까?"
     assert task == "7절 규칙으로 컷 대사 대안을 3개 만드세요"
-    assert kw["schema"] == api_conti.ALT_SCHEMA and not kw.get("tools")
+    assert kw["schema"] == api_conti.ALT_SCHEMA and not kw.get("files")
 
 
 def test_alternatives_claude_missing_returns_400(client, home, draft_md, fakes):

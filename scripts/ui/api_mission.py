@@ -23,7 +23,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-from scripts import claude_cli, mission, refstore
+from scripts import claude_cli, llm, mission, refstore
 from scripts.common import ScriptError, work_root, workspace_dir
 from scripts.ui.api_refs import _body_parts
 from scripts.ui.jobs import Job, mark_saved, new_item
@@ -212,7 +212,7 @@ def run_draft(day: str, replace: bool) -> Any:
             task += SWAP_TASK_SUFFIX
         job.update(0, step="claude")
         job.check_cancelled()
-        _, result = claude_cli.ask_validated(
+        _, result = llm.ask_validated(
             _rules(), payload, task, mission.validate_mission, schema=MISSION_SCHEMA,
         )
         job.update(0, state="awaiting", step="preview", ask="save", preview={
@@ -227,7 +227,7 @@ def run_draft(day: str, replace: bool) -> Any:
 def _draft(req: Request) -> dict:
     day = _day(req.json.get("date"), required=False)
     replace = _flag(req.json.get("replace"), "replace")
-    claude_cli.find_claude()                          # claude가 없으면 작업을 만들지 않는다
+    llm.check()                          # claude가 없으면 작업을 만들지 않는다
     if replace:
         _refuse_replacing_completed(day)
     elif mission._mission_path(day).exists():
@@ -319,9 +319,9 @@ def run_feedback(day: str, note: str, difficulty: str, picked: tuple[Path, str] 
                 payload["file"] = tmp.relative_to(work_root()).as_posix()
                 job.update(0, step="claude")
                 job.check_cancelled()
-            _, feedback = claude_cli.ask_validated(
+            _, feedback = llm.ask_validated(
                 _rules(), payload, FEEDBACK_TASK, _validate_feedback,
-                schema=FEEDBACK_SCHEMA, tools=["Read"] if tmp else None,
+                schema=FEEDBACK_SCHEMA, files=[tmp] if tmp else None,
             )
             job.update(0, state="awaiting", step="preview", ask="save", preview={
                 "feedback": feedback, "note": note, "difficulty": difficulty, "file_name": picked[1] if picked else None,
@@ -342,7 +342,7 @@ def _feedback(req: Request) -> dict:
     difficulty = _difficulty(body.get("difficulty"))
     _require(day)
     picked = _user_file(body.get("file"))                # 작업을 만들기 전에 거른다(임시 복사도 아직 없다)
-    claude_cli.find_claude()                          # claude가 없으면 작업을 만들지 않는다
+    llm.check()                          # claude가 없으면 작업을 만들지 않는다
     _remove_stale_copies()
     items = [new_item(day, title=day, step="copy" if picked else "claude")]
     job = req.app.jobs.start(FEEDBACK_KIND, run_feedback(day, note, difficulty, picked), items=items)

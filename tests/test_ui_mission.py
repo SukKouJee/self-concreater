@@ -3,11 +3,12 @@ import json
 import os
 import time
 import threading
+from pathlib import Path
 from datetime import date as Date
 
 import pytest
 
-from scripts import claude_cli, mission, refstore
+from scripts import claude_cli, llm, mission, refstore
 from scripts.common import ScriptError
 from scripts.ui import api_mission
 from tests.test_mission import PROFILE
@@ -22,7 +23,7 @@ FEEDBACK = "탑뷰 각도가 좋았어요. 다음엔 손을 중앙에 두세요.
 
 
 class FakeAsk:
-    """claude_cli.ask를 대신한다(ask_validated의 재시도 경로는 진짜). replies가 있으면 차례로 쓴다."""
+    """llm.ask를 대신한다(ask_validated의 재시도 경로는 진짜). replies가 있으면 차례로 쓴다."""
 
     def __init__(self, root):
         self.root = root
@@ -61,7 +62,7 @@ def home(monkeypatch, tmp_path):
 @pytest.fixture
 def fake_ask(monkeypatch, home):
     f = FakeAsk(home)
-    monkeypatch.setattr(claude_cli, "ask", f)
+    monkeypatch.setattr(llm, "ask", f)
     monkeypatch.setattr(claude_cli, "find_claude", lambda: "C:/bin/claude.exe")
     return f
 
@@ -337,7 +338,7 @@ def test_feedback_without_file_uses_no_tools(client, home, fake_ask):
     assert item["id"] == DAY and item["state"] == "awaiting" and item["ask"] == "save" and item["step"] == "preview"
     assert item["preview"] == {"feedback": FEEDBACK, "note": "탑뷰로 찍었어요", "difficulty": "right", "file_name": None}
     [call] = fake_ask.calls
-    assert call["tools"] is None and "file" not in call["payload"]
+    assert call["files"] is None and "file" not in call["payload"]
     assert call["payload"]["mission"]["title"] == GOOD["title"] and call["payload"]["mission"]["body"]
     assert call["payload"]["note"] == "탑뷰로 찍었어요" and call["payload"]["difficulty"] == "right"
     assert call["task"].startswith("yt-mission 규칙 5절대로")
@@ -351,7 +352,7 @@ def test_feedback_with_image_copies_temp_then_deletes_and_keeps_original(client,
     src = _user_file(home, data=b"PNG-original")
     job = _feedback(client, file=str(src))
     [call] = fake_ask.calls
-    assert call["tools"] == ["Read"]
+    assert [p.name for p in call["files"]] == [Path(call["payload"]["file"]).name]
     assert call["payload"]["file"].startswith("workspace/tmp/mission_submit_") and call["payload"]["file"].endswith(".png")
     assert fake_ask.file_seen == {"exists": True, "bytes": b"PNG-original"}      # 복사본이 Claude 호출 중 존재
     assert _tmp(home, "mission_submit_*") == []                                   # 끝난 뒤 삭제
@@ -395,7 +396,7 @@ def test_feedback_accepts_quoted_path(client, home):
 def test_feedback_blank_file_means_no_file(client, home, fake_ask):
     _put(home)
     assert _feedback(client, file="  ")["status"] == "done"
-    assert fake_ask.calls[0]["tools"] is None
+    assert fake_ask.calls[0]["files"] is None
 
 
 def test_feedback_bad_file_is_rejected_before_any_work(client, home, fake_ask):
