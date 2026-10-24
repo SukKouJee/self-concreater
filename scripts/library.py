@@ -992,10 +992,11 @@ def summarize_template(preview_id: str) -> dict[str, Any]:
     _, summaries = llm.ask_validated(
         [claude_cli.SKILLS_DIR / "yt-library" / "SKILL.md"], payload, task,
         lambda d: _validate_summaries(d, labels, [str(x["script"]) for x in secs]), schema=SUMMARY_SCHEMA)
-    if not preview_path(preview_id).is_file():            # 요약하는 동안 올렸거나 버린 미리보기를 되살리지 않는다
-        raise _fail("preview_not_found", "미리보기가 없습니다(이미 올렸거나 취소됨). 다시 미리보기를 만드세요.")
-    data["body"]["summaries"] = summaries
-    _save_preview(data)
+    with _exclusive():                                    # Claude 호출은 잠금 밖, 확인·저장만 confirm과 겹치지 않게 잠근다
+        if not preview_path(preview_id).is_file():        # 요약하는 동안 올렸거나 버린 미리보기를 되살리지 않는다
+            raise _fail("preview_not_found", "미리보기가 없습니다(이미 올렸거나 취소됨). 다시 미리보기를 만드세요.")
+        data["body"]["summaries"] = summaries
+        _save_preview(data)
     return _present(data)
 
 
@@ -1166,11 +1167,13 @@ def _ensure_only_ours(root: Path, branch: str) -> None:
     """push 직전: 원격 위에 올라갈 커밋이 우리 것 하나뿐인지 본다. 사용자의 커밋이 섞여 있으면 우리 것만 떼어 내고 멈춘다."""
     ref = f"refs/remotes/origin/{branch}"
     if _git(["rev-parse", "--verify", "-q", ref], root, check=False).returncode != 0:
-        return
-    count = _git(["rev-list", "--count", f"{ref}..HEAD"], root, check=False).stdout.strip()
+        range_ = "HEAD"                       # 비어 있던 원격: 로컬 히스토리 전체가 올라갈 것이므로 우리 커밋 하나뿐이어야 한다
+    else:
+        range_ = f"{ref}..HEAD"
+    count = _git(["rev-list", "--count", range_], root, check=False).stdout.strip()
     if count != "1":
         _git(["reset", "--keep", "HEAD~1"], root, check=False)         # 우리 커밋만 되돌린다(사용자 커밋은 남긴다)
-        raise _fail("library_dirty", f"{DIRTY_MESSAGE} 정리한 뒤 다시 올리세요.")
+        raise _fail("library_dirty", f"{DIRTY_MESSAGE} 정리한 뒤 다시 올리세요.")      # 루트 커밋이면 _rollback이 정리한다
 
 
 def _resolve_pending(cfg: dict[str, Any], root: Path, branch: str) -> None:

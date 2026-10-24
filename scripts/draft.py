@@ -71,7 +71,7 @@ def context(category: str, source: str, topic: str | None = None) -> dict:
             "worked": item["worked"], "target_sec": item["target_sec"], "hook_type": item["hook_type"],
             "narrative_type": item["narrative_type"], "sections": fm.get("sections"), "pacing": fm.get("pacing"),
             "shot_mix": fm.get("shot_mix"), "text": item["body"][:LIBRARY_BODY_LIMIT],
-            "template": {"author": item["author"], "title": item["title"]},   # save에 그대로 복사한다(라이브러리 없이 저장)
+            "template": {"author": item["author"], "title": item["title"]},   # 서버 소유: UI는 작업에 보관해 저장 때 다시 넣는다. Claude 출력의 값은 쓰지 않는다
         }
     elif _ARCHETYPE_RE.match(source):
         arc = next((a for a in archetypes if a["id"] == source), None)

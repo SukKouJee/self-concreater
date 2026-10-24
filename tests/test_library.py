@@ -1454,3 +1454,19 @@ def test_error_messages_never_carry_absolute_paths_or_credentials(tmp_path, monk
     with pytest.raises(ScriptError) as e3:
         library.connect(str(tmp_path / "nope.git"), "Alice")
     assert str(tmp_path) not in e3.value.message
+
+
+def test_first_share_on_empty_remote_is_blocked_by_a_user_commit(tmp_path, monkeypatch, remote):
+    home = make_home(tmp_path, monkeypatch, "h")
+    library.connect(str(remote), "Alice")                       # 빈 원격 clone
+    root = home / "workspace" / "library"
+    user_commit(root)
+    pv = library.preview_technique(CAT, "훅", "결과 선공개")
+    with pytest.raises(ScriptError) as e:
+        library.confirm(pv["preview_id"])
+    assert e.value.code == "library_dirty"
+    assert (root / "notes.txt").exists() and git(root, "rev-list", "--count", "HEAD").strip() == "1"
+    assert git(root, "log", "-1", "--format=%ae").strip() == "bob@example.com"
+    assert not list(root.glob("techniques/**/*.md"))
+    assert json.loads((home / "library.json").read_text("utf-8"))["shared"] == []
+    assert git(remote, "branch", "--list").strip() == ""        # 사용자 커밋이 원격에 올라가지 않았다
