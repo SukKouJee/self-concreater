@@ -419,7 +419,9 @@ function editBlock(data, viewBlock) {
   }
 
   function typeField(id, text, state, values) {
-    const sel = selectOf({ id, class: "label-select" }, optionList(values, state.cur), state.cur);
+    const opts = optionList(values, state.cur);
+    if (!state.cur) opts.unshift(h("option", { value: "", disabled: true, selected: true }, "(없음)"));
+    const sel = selectOf({ id, class: "label-select" }, opts, state.cur);
     sel.addEventListener("change", () => { state.cur = sel.value; refresh(); });
     controls.push(sel);
     return h("div", { class: "field" }, h("label", { for: id }, text), sel);
@@ -452,8 +454,9 @@ function editBlock(data, viewBlock) {
     busy = true;
     notice.replaceChildren();
     refresh();
+    let saved;
     try {
-      await mine.ctx.api("POST",
+      saved = await mine.ctx.api("POST",
         `/api/refs/${encodeURIComponent(mine.params.id)}/labels?category=${encodeURIComponent(mine.ctx.category)}`, payload);
     } catch (e) {
       if (!alive(mine) || ignorable(e)) return;
@@ -464,7 +467,9 @@ function editBlock(data, viewBlock) {
       return;
     }
     if (!alive(mine)) return;
-    mine.ctx.toast("저장했습니다 — 다음 분석 때 교정 예시로 쓰입니다");
+    const note = v.role === "ref" ? " — 다음 분석 때 교정 예시로 쓰입니다" : "";
+    const stale = saved && saved.pacing_stale ? " (컷 데이터가 없어 컷 속도는 다시 계산하지 못했습니다)" : "";
+    mine.ctx.toast(`저장했습니다${note}${stale}`);
     loadDetail({ quiet: true, focus: true });
   });
   cancel.addEventListener("click", () => {

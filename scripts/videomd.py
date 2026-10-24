@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -383,6 +384,7 @@ def write(video_id: str, category: str, role: str, analysis_path: Path, force: b
 # --- relabel ----------------------------------------------------------------------
 
 VIDEO_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+_RELABEL_LOCK = threading.Lock()
 
 
 def _file_hash(path: Path) -> str:
@@ -397,6 +399,14 @@ def _bad_labels(message: str) -> ScriptError:
     return ScriptError("invalid_labels", message)
 
 
+def _where(i: int, section: dict) -> str:
+    """오류 메시지용 위치 표기: 'i번째 섹션(m:ss–m:ss)'. 시간이 숫자가 아니면 번호만 쓴다."""
+    try:
+        return f"{i}번째 섹션({fmt_time(section['start'])}–{fmt_time(section['end'])})"
+    except (KeyError, TypeError, ValueError):
+        return f"{i}번째 섹션"
+
+
 def _relabeled_sections(old: Any, edits: Any) -> list[dict]:
     """기존 섹션 dict를 복사해 label/sub만 교체한다(시간 등 다른 키 보존, body가 아니면 sub 삭제).
 
@@ -408,15 +418,16 @@ def _relabeled_sections(old: Any, edits: Any) -> list[dict]:
         raise _bad_labels(f"sections는 기존과 같은 길이({len(old)})의 목록이어야 합니다")
     out = []
     for i, (section, edit) in enumerate(zip(old, edits), start=1):
+        where = _where(i, section)
         if not isinstance(edit, dict):
-            raise _bad_labels(f"{i}번째 섹션은 객체여야 합니다")
+            raise _bad_labels(f"{where}은 객체여야 합니다")
         label, sub = edit.get("label"), edit.get("sub")
         if label not in LABELS:
-            raise _bad_labels(f"{i}번째 섹션의 라벨이 올바르지 않습니다: {label!r}")
+            raise _bad_labels(f"{where}의 라벨이 올바르지 않습니다: {label!r}")
         if sub is not None and label != "body":
-            raise _bad_labels(f"{i}번째 섹션: sub는 body에만 쓸 수 있습니다")
+            raise _bad_labels(f"{where}: sub는 body에만 쓸 수 있습니다")
         if sub is not None and sub not in BODY_SUBS:
-            raise _bad_labels(f"{i}번째 섹션의 sub가 올바르지 않습니다: {sub!r}")
+            raise _bad_labels(f"{where}의 sub가 올바르지 않습니다: {sub!r}")
         item = {k: v for k, v in section.items() if k not in ("label", "sub")}
         item = {"label": label, **item}
         if sub:
@@ -436,43 +447,47 @@ def relabel(video_id: str, category: str, changes: dict, expected_hash: str) -> 
     path = video_md_path(video_id, category)
     if not path.is_file():
         raise ScriptError("video_not_found", f"영상 md가 없습니다: {video_id}")
-    if _file_hash(path) != expected_hash:
-        raise _stale()
-    fm, _ = refstore.read_md(path)
+    with _RELABEL_LOCK:
+        if _file_hash(path) != expected_hash:
+            raise _stale()
+        fm, _ = refstore.read_md(path)
 
-    updates: dict[str, Any] = {}
-    if "sections" in changes:
-        new_sections = _relabeled_sections(fm.get("sections"), changes["sections"])
-        if new_sections != fm.get("sections"):
-            updates["sections"] = new_sections
-    for field, vocab in (("hook_type", HOOK_TYPES), ("narrative_type", NARRATIVE_TYPES)):
-        if field in changes:
-            value = changes[field]
-            if value not in vocab:
-                raise _bad_labels(f"{field} 값이 올바르지 않습니다: {value!r}")
-            if value != fm.get(field):
-                updates[field] = value
+        updates: dict[str, Any] = {}
+        if "sections" in changes:
+            new_sections = _relabeled_sections(fm.get("sections"), changes["sections"])
+            if new_sections != fm.get("sections"):
+                updates["sections"] = new_sections
+        for field, vocab in (("hook_type", HOOK_TYPES), ("narrative_type", NARRATIVE_TYPES)):
+            if field in changes:
+                value = changes[field]
+                if value not in vocab:
+                    raise _bad_labels(f"{field} 값이 올바르지 않습니다: {value!r}")
+                if value != fm.get(field):
+                    updates[field] = value
 
-    rel = _rel(path)
-    if not updates:
-        return {"id": video_id, "md": rel, "hash": expected_hash, "changed": [],
-                "reviewed": bool(fm.get("reviewed"))}
-    changed = list(updates)
-    if "sections" in updates:
-        try:
-            cuts = load_cuts(video_id)
-        except (ValueError, OSError):
-            cuts = None                     # 깨진 컷 json이면 pacing은 그대로 둔다
-        if _valid_cuts(cuts):
+        rel = _rel(path)
+        if not updates:
+            return {"id": video_id, "md": rel, "hash": expected_hash, "changed": [],
+                    "reviewed": bool(fm.get("reviewed")), "pacing_stale": False}
+        pacing_stale = False
+        changed = list(updates)
+        if "sections" in updates:
             try:
-                updates["pacing"] = pacing(updates["sections"], cuts)
-            except (KeyError, TypeError, ValueError) as e:
-                raise ScriptError("bad_md", "섹션 시작/끝 또는 컷 값이 숫자가 아니어서 pacing을 다시 계산할 수 없습니다") from e
-    updates["reviewed"] = True
-    if _file_hash(path) != expected_hash:   # 쓰기 직전 재확인(경쟁 구간 축소)
-        raise _stale()
-    refstore.update_frontmatter(path, updates)
-    return {"id": video_id, "md": rel, "hash": _file_hash(path), "changed": changed, "reviewed": True}
+                cuts = load_cuts(video_id)
+            except (ValueError, OSError):
+                cuts = None                     # 깨진 컷 json이면 pacing은 그대로 둔다
+            pacing_stale = not _valid_cuts(cuts)
+            if not pacing_stale:
+                try:
+                    updates["pacing"] = pacing(updates["sections"], cuts)
+                except (KeyError, TypeError, ValueError) as e:
+                    raise ScriptError("bad_md", "섹션 시작/끝 또는 컷 값이 숫자가 아니어서 pacing을 다시 계산할 수 없습니다") from e
+        updates["reviewed"] = True
+        if _file_hash(path) != expected_hash:   # 쓰기 직전 재확인(경쟁 구간 축소)
+            raise _stale()
+        refstore.update_frontmatter(path, updates)
+        return {"id": video_id, "md": rel, "hash": _file_hash(path), "changed": changed, "reviewed": True,
+                "pacing_stale": pacing_stale}
 
 
 def main(argv: list[str]) -> Any:

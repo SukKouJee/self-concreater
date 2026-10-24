@@ -243,8 +243,14 @@ def frame_pool(category: str | None) -> list[dict]:
         fm, vid = r["fm"], r["id"]
         labels_path = workspace_dir("shots", f"{vid}.json")
         if labels_path.exists():
+            # 저장된 section은 분류 시점 값이라 라벨 교정 뒤에는 낡는다 → 현재 sections로 장면 중간점에서 다시 구한다
+            mid = {sc["frame"]: (sc["start"] + sc["end"]) / 2
+                   for sc in ((load_cuts(vid) or {}).get("scenes") or [])
+                   if sc.get("frame") and "start" in sc and "end" in sc}
             for lab in json.loads(labels_path.read_text("utf-8")).get("labels") or []:
-                pool.append({"frame": lab["frame"], "size": lab["size"], "section": lab.get("section"),
+                t = mid.get(lab["frame"])
+                current = _section_at(fm.get("sections") or [], t) if t is not None else None
+                pool.append({"frame": lab["frame"], "size": lab["size"], "section": current or lab.get("section"),
                              "video": vid, "title": fm.get("title"), "match": "exact"})
             continue
         by_section = (fm.get("shots") or {}).get("by_section") or {}

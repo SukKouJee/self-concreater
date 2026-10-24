@@ -83,7 +83,7 @@ def test_relabel_drops_sub_when_leaving_body(home):  # noqa: F811
     assert "sub" not in fm["sections"][1]
 
 
-def test_relabel_keeps_crlf_bom_and_memo(home):  # noqa: F811
+def test_relabel_keeps_crlf_and_memo_and_drops_bom_on_bom_input(home):  # noqa: F811
     path = vpath(home)
     text = path.read_bytes().decode("utf-8").replace("\r\n", "\n").rstrip("\n")
     text = text + "\n내용\n\n## 내 메모\n내 생각\n"
@@ -96,6 +96,7 @@ def test_relabel_keeps_crlf_bom_and_memo(home):  # noqa: F811
     assert b"\n" not in head.replace(b"\r\n", b"")
     assert "## 내 메모\r\n내 생각\r\n".encode() in raw
     assert refstore.read_md(path)[0]["hook_type"] == "question"
+    assert not raw.startswith("﻿".encode())   # current behavior: BOM is not preserved
 
 
 def test_relabel_noop_does_not_write(home):  # noqa: F811
@@ -215,3 +216,37 @@ def test_relabel_omitted_sub_clears_existing_sub(home):  # noqa: F811
     path = vpath(home)
     videomd.relabel("a00", CAT, {"sections": [{"label": "hook"}, {"label": "body"}, {"label": "cta"}]}, sha(path))
     assert "sub" not in refstore.read_md(path)[0]["sections"][1]
+
+
+def test_frame_pool_exact_section_follows_relabel(home):  # noqa: F811
+    from scripts import conti
+    from tests.test_conti import make_frames
+    frames = make_frames(home, "a00")
+    shots = home / "workspace" / "shots" / "a00.json"
+    shots.parent.mkdir(parents=True, exist_ok=True)
+    shots.write_text(json.dumps({"labels": [{"frame": frames[3], "size": "탑뷰", "section": "cta"}]}), encoding="utf-8")
+    assert conti.frame_pool(CAT)[0]["section"] == "cta"
+    videomd.relabel("a00", CAT, OUTRO, sha(vpath(home)))
+    assert conti.frame_pool(CAT)[0]["section"] == "outro"
+
+
+def test_relabel_reports_pacing_stale_without_cuts(home):  # noqa: F811
+    r = videomd.relabel("a00", CAT, OUTRO, sha(vpath(home)))
+    assert r["pacing_stale"] is True
+
+
+def test_relabel_reports_pacing_stale_with_broken_cuts(home):  # noqa: F811
+    _write_cuts(home, "{broken")
+    assert videomd.relabel("a00", CAT, OUTRO, sha(vpath(home)))["pacing_stale"] is True
+
+
+def test_relabel_pacing_not_stale_with_cuts_or_without_section_change(home):  # noqa: F811
+    assert videomd.relabel("a00", CAT, {"hook_type": "question"}, sha(vpath(home)))["pacing_stale"] is False
+    _write_cuts(home, json.dumps({"cuts": [10, 20, 55], "avg_cut_sec": 15}))
+    assert videomd.relabel("a00", CAT, OUTRO, sha(vpath(home)))["pacing_stale"] is False
+
+
+def test_relabel_invalid_label_message_includes_time_range(home):  # noqa: F811
+    with pytest.raises(ScriptError) as e:
+        videomd.relabel("a00", CAT, _with(1, label="nope"), sha(vpath(home)))
+    assert "0:03–0:52" in e.value.message

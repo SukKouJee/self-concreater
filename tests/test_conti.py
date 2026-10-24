@@ -373,6 +373,10 @@ def test_crlf_preserved_on_update(saved):
 
 def test_scenes_order_and_limit(saved, home):
     f = make_frames(home, "a00")
+    cuts_path = home / "workspace" / "cuts" / "a00.json"          # 첫 장면을 hook(0~3초) 안으로 맞춘다
+    cuts = json.loads(cuts_path.read_text("utf-8"))
+    cuts["scenes"][0]["end"] = 3
+    cuts_path.write_text(json.dumps(cuts), encoding="utf-8")
     shots = home / "workspace" / "shots" / "a00.json"
     shots.parent.mkdir(parents=True, exist_ok=True)
     shots.write_text(json.dumps({"labels": [
