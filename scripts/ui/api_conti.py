@@ -14,9 +14,9 @@ from urllib.parse import quote
 from pathlib import Path
 from typing import Any
 
-from scripts import claude_cli, conti, refstore
+from scripts import captions, claude_cli, conti, refstore
 from scripts.common import ScriptError, work_root, workspace_dir
-from scripts.ui.jobs import Job, new_item
+from scripts.ui.jobs import Job, JobCancelled, new_item
 from scripts.ui.server import Request, route
 
 KIND = "conti"
@@ -254,4 +254,51 @@ def _srt_fit(req: Request) -> dict:
     video = conti._clean_video_path(body.get("video"))       # 작업을 만들기 전에 영상 경로부터 확인
     items = [new_item(_rel(path), title=path.name, step="detect")]
     job = req.app.jobs.start("srtfit", srt_fit_target(path, track, video), items=items)
+    return {"job": job.snapshot()}
+
+
+# ---- 움직이는 자막 영상(Remotion, 선택 설치) -----------------------------------------------------
+
+@route("GET", "/api/captions/check")
+def _captions_check(req: Request) -> dict:
+    try:
+        captions.check_setup()
+    except ScriptError as e:
+        return {"ready": False, "message": e.message}
+    return {"ready": True}
+
+
+def caption_video_target(path: Path, track: str, video: Path | None) -> Any:
+    def target(job: Job) -> None:
+        job.update(0, state="running", step="render")
+        job.check_cancelled()
+
+        def on_progress(done: int, total: int) -> None:
+            job.update(0, step="render", message=f"{done}/{total} 프레임")
+
+        try:
+            result = captions.render(path, video, track, progress=on_progress, cancel=job.is_cancelled,
+                                     step=lambda name: job.update(0, step=name))
+        except captions.RenderCancelled as e:
+            raise JobCancelled from e
+        job.update(0, state="done", step="render", ask=None, message=None,
+                   preview={**result, "url": _file_url(result["path"])})
+        job.finish("done", {"count": result["count"]})
+
+    return target
+
+
+@route("POST", "/api/conti/caption-video")
+def _caption_video(req: Request) -> dict:
+    body = req.json
+    path = _safe_path(body.get("path"), conti_file=True)
+    track = body.get("track", "caption")
+    if not isinstance(track, str) or track not in conti.SRT_TRACKS:
+        raise ScriptError("bad_request", "track은 caption 또는 line이어야 합니다")
+    video = None if body.get("video") is None else conti._clean_video_path(body.get("video"))
+    captions.check_setup()                                   # 작업을 만들기 전에 설치부터 확인
+    if not conti.caption_blocks(path, track)["blocks"]:
+        raise ScriptError("no_captions", "내보낼 자막이 없습니다")
+    items = [new_item(_rel(path), title=path.name, step="render")]
+    job = req.app.jobs.start("caption_video", caption_video_target(path, track, video), items=items)
     return {"job": job.snapshot()}

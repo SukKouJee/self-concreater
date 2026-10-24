@@ -517,3 +517,14 @@ def test_report_page_served(client):
     assert status == 200
     assert "javascript" in headers["Content-Type"]
     assert "/api/report/build" in raw.decode("utf-8")
+
+
+def test_conti_caption_video_contract():
+    text = (STATIC_DIR / "pages" / "conti.js").read_text(encoding="utf-8")
+    for token in ["/api/conti/caption-video", "/api/captions/check", "kind=caption_video", "자막 영상 만들기",
+                  "움직이는 자막 영상", "크로마키", "ytc captions setup", "download", "aria-live",
+                  "/cancel", "멈추기", "멈췄습니다", "다시 확인", "컷을 찾는 중", ".focus()"]:
+        assert token in text, token
+    section = text[text.index("// ---- caption video"):text.index("// ---- end caption video")]
+    for banned in ["localStorage", "sessionStorage", "innerHTML", "confirm(", "alert(", "prompt(", "http://", "https://"]:
+        assert banned not in section, banned

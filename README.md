@@ -50,7 +50,7 @@ bin\ytc.cmd ui           # Git Bash 없는 Windows
 | 모으기 | 레퍼런스 목록 (영상 카드, 섹션 흐름 띠, 상세에서 프레임·본문 확인, 섹션 라벨·훅/서사 유형 고치기. 고친 영상은 "직접 고침" 표시, 본문 표는 분석 당시 기록 그대로) | 2차(보기·라벨 고치기) ✅ |
 | 분석 | 유형화 (ref 수·단계, 축별 판정, 아키타입 카드, 이상치. 실행 → 미리보기에서 근거·이름 고치기 → 저장) | 2차 ✅ |
 | 분석 | 리포트 (탭 2개. "카테고리 리포트": "리포트 만들기"(Claude 없음)로 `reports/<카테고리>-<날짜>.html`을 만들고 목록에서 골라 화면 안(스크립트 실행 차단 프레임)이나 새 탭에서 보기. "주간 회고": 주를 고르면 미션 완료율·종류·난이도·건너뛴 사유·새 모티브 카드·진단 갭이 바로 보이고(Claude 없음), "회고 쓰기"로 요약·반복된 약점·다음 주 방향·프로필 변경 제안을 받아 고쳐 "저장" → `reviews/<주>.md`(`## 내 메모` 유지). 저장한 회고에서 제안마다 체크해 "프로필에 반영"(지금/바꿀 값 나란히, 체크한 섹션만)) | 2차 ✅ |
-| 만들기 | 콘티 (컷별 레퍼런스 장면·대사 대안을 클릭으로 고르기, CapCut용 자막 SRT 받기, 편집본 영상의 컷에 자막 시간 맞추기: `POST /api/conti/srt-fit`) | 1차 ✅ |
+| 만들기 | 콘티 (컷별 레퍼런스 장면·대사 대안을 클릭으로 고르기, CapCut용 자막 SRT 받기, 편집본 영상의 컷에 자막 시간 맞추기: `POST /api/conti/srt-fit`, 움직이는 자막 영상(초록 배경 MP4) 만들기: `POST /api/conti/caption-video`) | 1차 ✅ |
 | 만들기 | 모티브 (새 카드 뽑기 → 미리보기에서 고쳐 고른 카드만 저장, 저장한 카드 거르기·★·"기획안 만들기"로 그 카드를 출처로 기획안 화면 열기. 기법 카탈로그 병합은 터미널 `/yt-coach:yt-inspire`) | 2차 ✅ |
 | 만들기 | 기획안 (저장한 기획안 목록·상세 읽기 전용, 출처 고르기 → 만들기 → 미리보기에서 제목·대본·샷 표·준비물 고쳐 저장, 콘티 화면으로 연결, 상세에서 "훅·제목·썸네일 다듬기": 훅 5·제목 10·썸네일 후보를 점수·지적·근거와 보고 고쳐 저장) | 2차 ✅ |
 | 성장 | 진단 (내 영상·기획안 목록 → "비교하기"로 가장 가까운 아키타입·축별 근접도·갭을 바로 보기(Claude 없음) → "설명 받기"로 요약·갭 설명·다음 행동을 받아 고쳐 저장 → `mine/<이름>.md`(`## 내 메모` 유지). 저장한 진단에서 갭마다 "일부러 다르게 한 거예요" 표시. 대본 붙여넣기·링크 바로 진단은 터미널 `/yt-coach:yt-diagnose`) | 2차 ✅ |
@@ -85,6 +85,18 @@ Claude Code 안에서:
 ```
 
 설치 후 Claude Code를 재시작하고 `/help` 또는 `/`를 입력해 `yt-` 커맨드 10개가 보이는지 확인합니다.
+
+### 4. (선택) 움직이는 자막 영상
+
+콘티 화면의 "자막 영상 만들기(초록 배경)"와 `ytc captions render`는 Remotion을 씁니다. 쓰려면 Node 18 이상을 깔고 처음 한 번만 설치하세요(자동 설치하지 않습니다).
+
+```bash
+ytc captions setup      # remotion/에서 npm ci
+```
+
+- 첫 렌더 때 Remotion이 Chrome Headless Shell을 내려받아 오래 걸립니다.
+- 결과 `drafts/<기획안>-captions.mp4`는 초록(`#00FF00`) 배경에 자막만 움직입니다. CapCut에서 이 영상을 맨 위 트랙에 얹고 크로마키로 초록을 빼세요.
+- 라이선스: Remotion은 개인·직원 3명 이하·비영리는 무료, 그보다 큰 회사는 회사 라이선스가 필요합니다.
 
 ## 스킬
 
@@ -135,6 +147,7 @@ Claude Code 안에서:
 | `draft` | `context <cat> <motif-id\|A1>`, `save <cat> --draft <json>` (검증·계획 컷·아키타입 비교 → `drafts/`) |
 | `polish` | `context <draft.md>`, `evaluate <draft.md> --data <json>`, `apply <draft.md> --choice <json> --hash <sha>` (훅·제목·썸네일 한국어 점수·지적·레퍼런스 근거 → 고른 것을 기획안에 반영, 이전 값은 `## 패키징` 이력. 해시가 다르면 `draft_changed`) |
 | `conti` | `context <draft.md>`, `save <draft.md> --conti <json> [--force]`, `render <conti.md>`, `srt <conti.md> [--track caption\|line] [--video <편집본>]`(CapCut용 `.srt`. `--video`면 자막 없는 편집본의 실제 컷에 시간을 맞춤), `update`, `scenes`, `cut-context` (검증·대사 길이 경고·참고 프레임 매칭 → `drafts/*-conti.md`·`.html`. 뒤 셋은 화면의 컷 단위 편집·장면 후보·대사 대안 입력) |
+| `captions` | `setup`(처음 한 번, `remotion/`에서 `npm ci`), `check`, `render <conti.md> [--video <편집본>] [--track caption\|line]` — 콘티 자막을 초록 배경 움직이는 자막 MP4(`drafts/<기획안>-captions.mp4`)로 렌더(선택 설치, Remotion). 취소·시간 초과 시 그 하위 프로세스만 종료 |
 | `similarity` | `compare <cat> <target>`, `save <cat> <target> --notes <json>` (→ `mine/`), `intentional <cat> <name> <key> [--off]` |
 | `mission` | `context`, `save --mission <json> [--replace]`, `submit <file> --difficulty --feedback`, `skip --reason`, `week [YYYY-Www]`, `review-save`, `profile-update` (모두 `--date`로 날짜 지정 가능) |
 | `shots` | `pending <cat>`, `context <id> --category`, `apply <id> --category --labels <json>` (장면 길이 가중 분포 → md `shots`) |

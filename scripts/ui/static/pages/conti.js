@@ -103,6 +103,7 @@ function freshState(el, params, ctx) {
 function stopPolling() {
   if (S && S.timer) { clearTimeout(S.timer); S.timer = null; }
   if (S && S.fitTimer) { clearTimeout(S.fitTimer); S.fitTimer = null; }
+  if (S && S.cvTimer) { clearTimeout(S.cvTimer); S.cvTimer = null; }
 }
 
 function announce(text) {
@@ -464,6 +465,7 @@ async function loadEditor(keep = false) {
     if (!keep || !mine.nodes.board) renderEditor();
     else { renderHeader(); renderCutList(); renderPanel(); }
     if (!mine.fitChecked) { mine.fitChecked = true; resumeFit(); }
+    if (!mine.cvChecked) { mine.cvChecked = true; loadCaptionVideo(); }
   } catch (e) {
     if (!alive(mine) || e.error === "aborted") return;
     if (keep && mine.nodes.board) { mine.ctx.toast(e.message, "error"); return; }
@@ -529,7 +531,7 @@ function srtRow() {
   const line = h("button", { type: "button", class: "btn" }, "대사도 따로 받기");
   caption.addEventListener("click", () => exportSrt("caption", [caption, line], note));
   line.addEventListener("click", () => exportSrt("line", [caption, line], note));
-  return h("div", { class: "srt-row" }, h("div", { class: "btn-row" }, caption, line), note, srtFitBox());
+  return h("div", { class: "srt-row" }, h("div", { class: "btn-row" }, caption, line), note, srtFitBox(), captionVideoBox());
 }
 
 // ---- srt fit ----------------------------------------------------------------------
@@ -682,6 +684,208 @@ async function resumeFit() {
   } catch { /* no progress to restore */ }
 }
 // ---- end srt fit ----
+
+// ---- caption video ----------------------------------------------------------------
+// Animated caption video (Remotion, chroma-green MP4). Uses the same edited-video path field as the srt fit
+// (S.fitVideo, this visit only, never stored). The install state comes from /api/captions/check.
+
+const CV_SETUP_COMMAND = "ytc captions setup";
+const CV_HINT = "CapCut: 이 영상을 맨 위 트랙에 얹고 크로마키로 초록을 빼세요";
+
+function cvActive() {
+  return !!S.cvJob && ACTIVE.has(S.cvJob.status);
+}
+
+function captionVideoBox() {
+  const busy = cvActive() || !!S.cvStarting;
+  const box = h("div", { class: "capvideo" }, h("h2", { class: "capvideo-title" }, "움직이는 자막 영상"));
+  if (S.cvReady === null || S.cvReady === undefined) {
+    box.append(h("p", { class: "muted srt-note" }, "설치 상태를 확인하는 중…"));
+    return box;
+  }
+  if (!S.cvReady.ready) {
+    const copy = h("button", { type: "button", class: "btn" }, "명령 복사");
+    copy.addEventListener("click", copySetupCommand);
+    const recheck = h("button", { type: "button", class: "btn" }, "다시 확인");
+    recheck.addEventListener("click", recheckCaptionSetup);
+    box.append(
+      h("p", { class: "muted hint" }, S.cvReady.message || "움직이는 자막을 만들려면 처음 한 번 설치가 필요합니다"),
+      h("div", { class: "cmd-row" }, h("code", { class: "cmd" }, CV_SETUP_COMMAND), copy, recheck));
+    return box;
+  }
+  const button = h("button", { type: "button", class: "btn", disabled: busy }, "자막 영상 만들기(초록 배경)");
+  button.addEventListener("click", startCaptionVideo);
+  const status = h("div", { class: "srtfit-status", role: "status", "aria-live": "polite" });
+  if (busy) {
+    const item = S.cvJob && S.cvJob.items && S.cvJob.items[0];
+    const detecting = item && item.step === "detect";
+    const label = detecting ? "컷을 찾는 중…" : `자막 영상을 만드는 중… ${(item && item.message) || ""}`;
+    const stop = h("button", { type: "button", class: "btn", disabled: !S.cvJob || !!S.cvStopping },
+      S.cvStopping ? "멈추는 중…" : "멈추기");
+    stop.addEventListener("click", stopCaptionVideo);
+    status.append(h("span", {}, h("span", { class: "spinner", "aria-hidden": "true" }), label, stop));
+  } else if (S.cvDone) {
+    const p = S.cvDone.preview;
+    const name = p.path.split("/").pop();
+    status.append(h("p", { class: "srt-note" }, `${p.width}×${p.height} · ${fmtSec(p.duration_sec)} · 자막 ${p.count}개 · `,
+      h("a", { class: "btn", href: p.url, download: name }, `${name} 받기`)),
+    h("p", { class: "muted hint" }, CV_HINT));
+  }
+  const err = h("p", { class: "error field-error", role: "alert" }, S.cvError || "");
+  err.hidden = !S.cvError;
+  box.append(
+    h("p", { class: "muted hint" }, "편집본 경로 칸이 채워져 있으면 그 영상의 컷·비율에 맞춰 만듭니다. 처음 한 번은 Chrome을 내려받느라 오래 걸릴 수 있습니다"),
+    h("div", { class: "btn-row" }, button), err, status);
+  return box;
+}
+
+function refreshCaptionVideo() {
+  const box = S.el.querySelector(".capvideo");
+  if (!box) return;
+  box.replaceWith(captionVideoBox());
+  if (S.cvFocus && S.cvDone) {
+    S.cvFocus = false;
+    const link = S.el.querySelector(".capvideo a[download]");
+    if (link) link.focus();
+  }
+}
+
+async function stopCaptionVideo() {
+  const mine = S;
+  if (!mine.cvJob || mine.cvStopping) return;
+  mine.cvStopping = true;
+  refreshCaptionVideo();
+  try {
+    await mine.ctx.api("POST", `/api/jobs/${encodeURIComponent(mine.cvJob.id)}/cancel`, {});
+  } catch (e) {
+    if (!alive(mine) || e.error === "aborted") return;
+    if (e.error !== "not_running") mine.cvError = e.message || "멈추지 못했습니다";
+    mine.cvStopping = false;
+    refreshCaptionVideo();
+  }
+}
+
+async function recheckCaptionSetup() {
+  const mine = S;
+  mine.cvReady = null;
+  refreshCaptionVideo();
+  await checkCaptionSetup();
+  if (alive(mine)) refreshCaptionVideo();
+}
+
+async function copySetupCommand() {
+  const mine = S;
+  try {
+    await navigator.clipboard.writeText(CV_SETUP_COMMAND);
+    if (alive(mine)) mine.ctx.toast("명령을 복사했습니다", "info");
+  } catch {
+    if (alive(mine)) mine.ctx.toast("복사하지 못했습니다. 직접 선택해 복사하세요", "error");
+  }
+}
+
+function adoptCaptionVideo(job, focusResult = true) {
+  S.cvJob = job;
+  const item = job.items && job.items[0];
+  if (ACTIVE.has(job.status)) return;
+  S.cvStopping = false;
+  if (job.status === "done" && item && item.state === "done" && item.preview) {
+    S.cvDone = { preview: item.preview };
+    S.cvError = "";
+    S.cvFocus = focusResult;
+    announce("자막 영상이 만들어졌습니다");
+  } else if (job.status === "stopped") {
+    S.cvDone = null;
+    S.cvError = "멈췄습니다";
+    announce("자막 영상 만들기를 멈췄습니다");
+  } else if (job.status === "failed") {
+    S.cvDone = null;
+    S.cvError = (item && item.message) || job.message || "자막 영상 만들기가 중단되었습니다";
+    announce(`자막 영상 만들기 실패: ${S.cvError}`);
+  }
+}
+
+async function startCaptionVideo() {
+  const mine = S;
+  if (mine.cvStarting || cvActive()) return;
+  const body = { path: mine.data.path };
+  const video = (mine.fitVideo || "").trim();
+  if (video) body.video = video;
+  mine.cvStarting = true;
+  mine.cvStopping = false;
+  mine.cvError = "";
+  mine.cvDone = null;
+  refreshCaptionVideo();
+  try {
+    const data = await mine.ctx.api("POST", "/api/conti/caption-video", body);
+    if (!alive(mine)) return;
+    mine.cvJob = data.job;
+    mine.cvErrors = 0;
+    adoptCaptionVideo(mine.cvJob);
+    if (cvActive()) scheduleCaptionPoll();
+  } catch (e) {
+    if (!alive(mine) || e.error === "aborted") return;
+    mine.cvError = e.message || "시작하지 못했습니다";
+  } finally {
+    if (alive(mine)) { mine.cvStarting = false; refreshCaptionVideo(); }
+  }
+}
+
+function scheduleCaptionPoll() {
+  if (S.cvTimer) clearTimeout(S.cvTimer);
+  const mine = S;
+  mine.cvTimer = setTimeout(async () => {
+    mine.cvTimer = null;
+    if (!alive(mine) || !mine.cvJob) return;
+    try {
+      const data = await mine.ctx.api("GET", `/api/jobs/${encodeURIComponent(mine.cvJob.id)}`);
+      if (!alive(mine)) return;
+      mine.cvErrors = 0;
+      adoptCaptionVideo(data.job);
+      refreshCaptionVideo();
+    } catch (e) {
+      if (!alive(mine) || e.error === "aborted") return;
+      if (e.error === "job_not_found" || e.status === 404) {
+        mine.cvJob = null;
+        mine.cvError = "작업을 찾을 수 없습니다. 서버가 다시 켜졌다면 다시 시도하세요";
+        refreshCaptionVideo();
+        return;
+      }
+      mine.cvErrors = (mine.cvErrors || 0) + 1;
+    }
+    if (alive(mine) && cvActive()) scheduleCaptionPoll();
+  }, pollDelay(mine.cvErrors || 0));
+}
+
+async function checkCaptionSetup() {
+  const mine = S;
+  try {
+    const res = await mine.ctx.api("GET", "/api/captions/check");
+    if (alive(mine)) mine.cvReady = res;
+  } catch (e) {
+    if (!alive(mine) || e.error === "aborted") return;
+    mine.cvReady = { ready: false, message: e.message || "설치 상태를 확인하지 못했습니다" };
+  }
+}
+
+// On entering the screen: check the install state, and bring back the latest caption job for this conti
+// (running: progress; done: the download link; failed or stopped: the message).
+async function loadCaptionVideo() {
+  const mine = S;
+  await checkCaptionSetup();
+  if (!alive(mine)) return;
+  try {
+    const cur = await mine.ctx.api("GET", "/api/jobs/current?kind=caption_video");
+    const job = cur.job;
+    const item = job && job.items && job.items[0];
+    if (alive(mine) && !mine.cvJob && item && item.id === mine.data.path) {
+      mine.cvErrors = 0;
+      adoptCaptionVideo(job, false);
+      if (cvActive()) scheduleCaptionPoll();
+    }
+  } catch { /* nothing to restore */ }
+  if (alive(mine)) refreshCaptionVideo();
+}
+// ---- end caption video ----
 
 async function exportSrt(track, buttons, note) {
   const mine = S;

@@ -6,3 +6,5 @@ workspace/
 
 # brainstorming visual companion
 .superpowers/
+remotion/node_modules/
+remotion/out/

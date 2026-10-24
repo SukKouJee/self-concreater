@@ -244,6 +244,20 @@
 
 ---
 
+## Phase 16. 움직이는 자막 영상 — Remotion (추가 요건)
+
+계획: `docs/superpowers/plans/2026-10-24-caption-video.md`. 콘티 자막을 초록 배경 MP4로 렌더해 CapCut 크로마키로 쓴다.
+
+- [x] `remotion/` 프로젝트 (Captions 컴포지션, 버전 고정, lock 커밋)
+- [x] `conti.caption_blocks` 추출(SRT와 같은 계산), `captions.py` (`setup`·`check`·`render`, 취소·시간 제한·임시 교체)
+- [x] 로컬 UI: `GET /api/captions/check`, `POST /api/conti/caption-video`, 콘티 화면의 "자막 영상 만들기(초록 배경)"
+- [x] `commands/yt-conti.md` 6절, README 설치·라이선스·스크립트 표, 설계서 7.1
+
+완료 조건
+- 설치 후 콘티 화면에서 버튼으로 mp4를 만들고 받아, CapCut 맨 위 트랙에 얹어 크로마키로 초록이 빠진다(사용자 확인 대기)
+
+---
+
 ## 일정 요약
 
 | Phase | 내용 | 예상 |
@@ -258,6 +272,7 @@
 | 13 | 로컬 UI 1차 (추가) | 계획서 참조 |
 | 14 | 로컬 UI 2차 (추가) | 미정 |
 | 15 | 다듬기 (추가) | 계획서 참조 |
+| 16 | 움직이는 자막 영상 (추가) | 계획서 참조 |
 
 **첫 마일스톤(Phase 0~4)**: 링크를 넣으면 영상별 md가 쌓이는 상태. 여기서 한 번 실사용하며 섹션 라벨·md 양식을 다듬고 나서 Phase 5로 간다.
 

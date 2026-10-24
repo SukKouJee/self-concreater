@@ -62,3 +62,17 @@ python -m scripts.conti srt <conti.md> --video <편집본 영상 경로> [--trac
 - 영상의 컷을 찾아(`retime.detected`) 콘티 컷 경계에 가까운 컷에 붙이고(`retime.snapped`/`inner`), 못 맞춘 경계는 길이 비율로 둔다.
 - `retime.warnings`가 있으면 그대로 전한다(컷을 못 찾음, 콘티 길이와 영상 길이가 많이 다름 → 다른 영상인지 확인).
 - 결과는 기존 SRT와 같은 이름의 파일을 덮어쓴다. 화면에서는 `POST /api/conti/srt-fit` 작업으로 같은 일을 한다.
+
+## 6. 움직이는 자막 영상 (선택 설치, Remotion)
+
+CapCut 위 트랙에 얹어 쓸 "초록 배경 + 움직이는 자막" MP4가 필요하다고 하면, 저장된 `-conti.md`의 자막(`caption`)으로 만든다. SRT와 같은 시간 계산을 쓴다.
+
+```
+python -m scripts.captions check
+python -m scripts.captions setup        # 처음 한 번, 사용자가 직접 (Node 18 이상, remotion/에서 npm ci)
+python -m scripts.captions render <conti.md> [--video <편집본 영상 경로>] [--track caption|line]
+```
+- `remotion_missing`이 나오면 자동으로 설치하지 말고 `ytc captions setup`을 사용자에게 안내한다. 첫 렌더 때 Remotion이 Chrome Headless Shell을 내려받아 오래 걸릴 수 있다고 알린다.
+- 결과는 `drafts/<기획안>-captions.mp4`(H.264, 30fps, 초록 `#00FF00` 배경, 같은 이름이면 교체). 크기는 쇼츠 1080×1920, 롱폼 1920×1080, `--video`를 주면 그 영상의 비율(짧은 변 1080)과 실제 컷에 맞춘 시간을 따른다. 영상 파일은 읽기만 한다.
+- 자막이 하나도 없으면 `no_captions`("내보낼 자막이 없습니다"), 렌더가 실패하면 `render_failed`(마지막 출력 몇 줄 포함)이며 기존 mp4는 그대로 둔다.
+- CapCut: 이 영상을 맨 위 트랙에 얹고 크로마키로 초록을 빼도록 안내한다. 화면에서는 `POST /api/conti/caption-video` 작업(진행률 "N/M 프레임")으로 같은 일을 한다.
