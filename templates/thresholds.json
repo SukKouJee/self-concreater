@@ -27,5 +27,11 @@
     "structure": 0.08,
     "pacing": 0.15,
     "shots": 0.15
+  },
+  "polish": {
+    "title_width_mobile": 56,
+    "title_width_desktop": 100,
+    "thumb_max_words": 3,
+    "hook_default_cps": 7.0
   }
 }
