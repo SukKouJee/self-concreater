@@ -50,7 +50,7 @@ let S = null;
 function freshState(el, ctx, category) {
   return {
     el, ctx, category, data: null, cards: [], job: null, jobId: null, preview: null, edits: [],
-    topic: "", filter: "all", starBusy: new Set(), pinned: new Set(), saveWarning: null,
+    topic: "", filter: "all", starBusy: new Set(), pinned: new Set(), saveWarning: null, warnShown: false,
     timer: null, pollErrors: 0, running: false, saving: false,
     runError: null, saveError: null, listError: null, confirmRerun: false, confirmDiscard: false,
     runSig: null, alertSig: null, nodes: {},
@@ -287,11 +287,12 @@ async function save() {
   updateActions();
   renderAlerts();
   try {
-    const res = await mine.ctx.api("POST", "/api/motif/save", { category: mine.category, cards, star });
+    const res = await mine.ctx.api("POST", "/api/motif/save", { category: mine.category, cards, star, job_id: mine.jobId });
     markHandled(mine.jobId);                    // before the alive check: a finished save is never restored as a preview
     if (!alive(mine)) return;
     mine.ctx.toast(`카드 ${cards.length}장을 저장했습니다`, "info");
     mine.saveWarning = res.warning ? String(res.warning) : null;
+    mine.warnShown = false;
     mine.cards = res.cards || mine.cards;
     mine.preview = null;
     mine.edits = [];
@@ -301,6 +302,8 @@ async function save() {
     render();
     focusStatus();
   } catch (e) {
+    // An aborted request (page left mid-save) may still have been saved by the server: never restore that preview.
+    if (e && e.error === "aborted") markHandled(mine.jobId);
     if (!alive(mine) || ignorable(e)) return;
     mine.saveError = e.message || "저장하지 못했습니다";
     mine.saving = false;
@@ -342,7 +345,9 @@ async function toggleStar(card) {
   try {
     const res = await mine.ctx.api("POST", "/api/motif/star", { category: mine.category, id: card.id, on: target });
     if (!alive(mine)) return;
-    mine.cards = res.cards || mine.cards;
+    // Apply only this card's value: responses of different cards can arrive out of order.
+    const fresh = (res.cards || []).find((c) => c.id === card.id);
+    if (fresh) card.starred = !!fresh.starred;
   } catch (e) {
     if (!alive(mine) || ignorable(e)) return;
     card.starred = !target;
@@ -358,8 +363,10 @@ async function copyCommand(card) {
   const mine = S;
   const hint = (mine.data && mine.data.draft_hint) || "/yt-coach:yt-draft";
   const cat = /\s/.test(mine.category) ? `"${mine.category}"` : mine.category;
-  // Double quotes inside the title would break the quoted argument, so they become single quotes.
-  const text = `${hint} ${cat} ${card.id} "${String(card.title).replace(/"/g, "'")}"`;
+  // The last argument is the video topic (what the user typed here), not the card title.
+  // Double quotes inside it would break the quoted argument, so they become single quotes.
+  const topic = mine.topic.trim().replace(/"/g, "'") || "<주제>";
+  const text = `${hint} ${cat} ${card.id} "${topic}"`;
   try {
     await navigator.clipboard.writeText(text);
     if (alive(mine)) mine.ctx.toast("기획안 명령을 복사했습니다", "info");
@@ -392,10 +399,13 @@ function render() {
   for (const n of notes) kids.push(h("p", { class: "muted hint" }, n));
   kids.push(h("p", { class: "muted small" }, CATALOG_HINT));
 
-  S.nodes.run = h("section", { class: "job-box motif-run", "aria-label": "새 카드 뽑기" });
   S.nodes.body = h("div", { class: "motif-body" });
   S.nodes.list = h("section", { class: "motif-sec", "aria-labelledby": "motif-list-title" });
-  kids.push(S.nodes.run, S.nodes.body, S.nodes.list);
+  if (d.ref > 0) {            // without ref there is nothing to run: no empty section
+    S.nodes.run = h("section", { class: "job-box motif-run", "aria-label": "새 카드 뽑기" });
+    kids.push(S.nodes.run);
+  }
+  kids.push(S.nodes.body, S.nodes.list);
   fill(S.el, ...kids);
   renderRunBox();
   renderBody();
@@ -611,12 +621,22 @@ function renderList(focusId) {
   }
   fill(box, ...kids);
   const notes = [];
-  if (S.saveWarning) notes.push(h("p", { class: "warn-text", role: "alert" }, S.saveWarning));
+  if (S.saveWarning) {
+    // Announced as an alert once; later re-renders (star / filter clicks) stay quiet.
+    notes.push(h("p", { class: "warn-text", role: S.warnShown ? "status" : "alert" }, S.saveWarning));
+    S.warnShown = true;
+  }
   if (S.listError) notes.push(h("p", { class: "error", role: "alert" }, S.listError));
   if (notes.length) fill(S.nodes.listAlert, ...notes);
   if (focusId) {
     const btn = box.querySelector(`[data-star-id="${CSS.escape(focusId)}"]`);
-    if (btn) btn.focus({ preventScroll: true });
+    if (btn) {
+      btn.focus({ preventScroll: true });
+    } else {
+      // The card left the current filter (un-starred under ★): keep focus inside the list.
+      const heading = box.querySelector("#motif-list-title");
+      if (heading) { heading.setAttribute("tabindex", "-1"); heading.focus({ preventScroll: true }); }
+    }
   }
 }
 
