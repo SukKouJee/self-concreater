@@ -12,7 +12,6 @@ import json
 import os
 import re
 import tempfile
-import threading
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +23,6 @@ from scripts.ui.server import Request, route
 KIND = "motif"
 MAX_TOPIC = 100
 DRAFT_HINT = "/yt-coach:yt-draft"
-_INDEX_LOCK = threading.Lock()                        # index.md 읽기-고치기-쓰기를 한 번에 하나씩
 CARD_ID_RE = re.compile(r"^M-[a-z0-9_-]+-\d{3}$")
 MOTIF_TASK = "yt-inspire 규칙대로 입력의 모티브 카드를 만들어 {\"cards\": [...]} 형태로 답하세요. 기법 카탈로그 병합은 하지 마세요."
 CARDS_SCHEMA: dict = {
@@ -72,13 +70,21 @@ def _topic(value: Any) -> str | None:
     return topic or None
 
 
+def _allowed(category: str) -> list[str]:
+    """허용 카드 type. 3단계라도 유형화 결과가 없으면 흐름·조합은 막는다(yt-inspire 규칙)."""
+    stage = refstore.count(category)["stage"]
+    if stage == 3 and not motif.typify_path(category).exists():
+        return ["technique", "angle"]
+    return motif.ALLOWED_BY_STAGE[stage]
+
+
 # ---- 상태 -------------------------------------------------------------------------------
 
 @route("GET", "/api/motif")
 def _status(req: Request) -> dict:
     category = _category(req.query.get("category"))
     counts = refstore.count(category)
-    allowed = motif.ALLOWED_BY_STAGE[counts["stage"]]
+    allowed = _allowed(category)
     return {
         "category": category, "ref": counts["ref"], "stage": counts["stage"],
         "allowed_types": allowed, "allowed_ko": [motif.TYPE_KO[t] for t in allowed],
@@ -95,11 +101,14 @@ def run_target(category: str, topic: str | None) -> Any:
         job.update(0, state="running", step="context")
         job.check_cancelled()
         payload = motif.context(category, topic)
+        if payload["stage"] == 3 and payload["typify"] is None:
+            payload["allowed_types"] = ["technique", "angle"]
+        allowed = payload["allowed_types"]
         job.update(0, step="claude")
         job.check_cancelled()
         _, cards = claude_cli.ask_validated(
             _rules(), payload, MOTIF_TASK,
-            lambda d: motif.validate_cards(category, d.get("cards") if isinstance(d, dict) else None),
+            lambda d: motif.validate_cards(category, d.get("cards") if isinstance(d, dict) else None, allowed),
             schema=CARDS_SCHEMA,
         )
         job.update(0, state="awaiting", step="preview", ask="save", preview={
@@ -134,6 +143,18 @@ def _star_indexes(value: Any, count: int) -> list[int]:
     return sorted(set(value))
 
 
+def _mark_saved(req: Request, job_id: Any) -> None:
+    """미리보기 항목이 아직 저장 대기면 저장됨으로 바꾼다. 없는 작업·다른 종류는 무시."""
+    if not isinstance(job_id, str):
+        return
+    try:
+        job = req.app.jobs.get(job_id)
+    except ScriptError:
+        return
+    if job.kind == KIND and job.item(0)["state"] == "awaiting":
+        job.update(0, state="saved", ask=None)
+
+
 @route("POST", "/api/motif/save")
 def _save(req: Request) -> dict:
     body = req.json
@@ -142,15 +163,17 @@ def _save(req: Request) -> dict:
     if not isinstance(cards, list) or not cards:
         raise ScriptError("bad_request", "저장할 카드를 하나 이상 골라 주세요")
     star_at = _star_indexes(body.get("star", []), len(cards))
+    job_id = body.get("job_id")
+    allowed = _allowed(category)
     tmp_dir = workspace_dir("tmp")
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    with _INDEX_LOCK:
+    with refstore.INDEX_LOCK:
         fd, name = tempfile.mkstemp(prefix="motif_cards_", suffix=".json", dir=tmp_dir)   # 요청마다 고유한 파일
         tmp = Path(name)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(cards, f, ensure_ascii=False)
-            ids = motif.add(category, tmp)["ids"]
+            ids = motif.add(category, tmp, allowed)["ids"]
         finally:
             tmp.unlink(missing_ok=True)
         starred: list[str] = []
@@ -163,6 +186,7 @@ def _save(req: Request) -> dict:
                 break
             starred.append(ids[i])
         details = motif.card_details(category)
+    _mark_saved(req, job_id)
     result: dict = {"ids": ids, "starred": starred, "cards": details}
     if warning:
         result["warning"] = warning
@@ -178,6 +202,6 @@ def _star(req: Request) -> dict:
         raise ScriptError("bad_request", "카드 id 형식이 맞지 않습니다")
     if not isinstance(on, bool):
         raise ScriptError("bad_request", "on은 true/false여야 합니다")
-    with _INDEX_LOCK:
+    with refstore.INDEX_LOCK:
         motif.star(category, card_id, off=not on)
         return {"cards": motif.card_details(category)}

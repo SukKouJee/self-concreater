@@ -9,6 +9,8 @@ from tests.test_ui_add import wait_for
 from tests.test_ui_server import Client, _start, _stop, no_browser  # noqa: F401 - fixture
 from tests.typify_fixtures import CAT, standard_set, write_video
 
+REAL_ASK_VALIDATED = claude_cli.ask_validated
+
 
 def card(title, **over):
     return {"type": "technique", "title": title, "idea": f"{title} 아이디어", "how": ["하나", "둘"],
@@ -26,17 +28,6 @@ class Fakes:
     def ask_validated(self, rules, payload, task, validate, **kw):
         self.asks.append((rules, payload, task, kw))
         return self.data, validate(self.data)
-
-
-class RetryFakes(Fakes):
-    def ask_validated(self, rules, payload, task, validate, **kw):
-        for _ in range(2):
-            self.asks.append((rules, payload, task, kw))
-            try:
-                return self.data, validate(self.data)
-            except ScriptError as e:
-                last = e
-        raise last
 
 
 @pytest.fixture
@@ -93,8 +84,8 @@ def test_status_flags(client, home):
     status, body = client.json("GET", f"/api/motif?category={CAT}")
     assert status == 200
     assert body["category"] == CAT and body["ref"] == 10 and body["stage"] == 3
-    assert body["allowed_types"] == ["flow", "technique", "angle", "combo"]
-    assert body["allowed_ko"] == ["흐름", "기법", "각도", "조합"]
+    assert body["allowed_types"] == ["technique", "angle"]       # 3단계라도 유형화 전에는 흐름·조합 없음
+    assert body["allowed_ko"] == ["기법", "각도"]
     assert body["has_profile"] is False and body["has_typify"] is False
     assert body["cards"] == [] and body["draft_hint"] == "/yt-coach:yt-draft"
 
@@ -104,6 +95,7 @@ def test_status_flags(client, home):
     cluster.run(CAT, out=typify)
     body = client.json("GET", f"/api/motif?category={CAT}")[1]
     assert body["has_profile"] is True and body["has_typify"] is True
+    assert body["allowed_types"] == ["flow", "technique", "angle", "combo"]
 
 
 def test_status_stage_one_and_bad_category(client_empty, home_empty):
@@ -148,7 +140,7 @@ def test_run_reaches_preview(client, home, fakes):
     preview = item["preview"]
     assert [c["title"] for c in preview["cards"]] == ["첫째 카드", "둘째 카드", "셋째 카드"]
     assert preview["topic"] == "라면 먹방" and preview["stage"] == 3
-    assert preview["allowed_types"] == ["flow", "technique", "angle", "combo"]
+    assert preview["allowed_types"] == ["technique", "angle"]
     assert preview["titles"]["a00"] == "라면 5봉지 먹방!" and len(preview["titles"]) == 10
     [(rules, payload, task, kw)] = fakes.asks
     assert rules == [claude_cli.SKILLS_DIR / "yt-inspire" / "SKILL.md"]
@@ -159,14 +151,114 @@ def test_run_reaches_preview(client, home, fakes):
 
 
 def test_run_retries_then_fails(client, home, monkeypatch):
-    f = RetryFakes()
-    f.data = {"cards": [card("나쁜 카드", evidence=["nope"])]}
-    monkeypatch.setattr(claude_cli, "ask_validated", f.ask_validated)
+    calls = []
+
+    def fake_ask(rules, payload, task, **kw):
+        calls.append(task)
+        return {"cards": [card("나쁜 카드", evidence=["nope"])]}
+
+    monkeypatch.setattr(claude_cli, "ask_validated", REAL_ASK_VALIDATED)
+    monkeypatch.setattr(claude_cli, "ask", fake_ask)
     before = _index(home).read_bytes()
     job = _run(client)
     assert job["status"] == "failed" and "nope" in job["items"][0]["message"]
-    assert len(f.asks) == 2
+    assert len(calls) == 2
     assert _index(home).read_bytes() == before
+
+
+def _write_typify(home):
+    typify = home / "workspace" / "typify" / f"{CAT}.json"
+    typify.parent.mkdir(parents=True, exist_ok=True)
+    cluster.run(CAT, out=typify)
+
+
+FLOW = card("흐름 카드", type="flow")
+
+
+def test_stage3_without_typify_rejects_flow(client, home, monkeypatch):
+    calls = []
+
+    def fake_ask(rules, payload, task, **kw):
+        calls.append(payload["allowed_types"])
+        return {"cards": [FLOW]}
+
+    monkeypatch.setattr(claude_cli, "ask_validated", REAL_ASK_VALIDATED)
+    monkeypatch.setattr(claude_cli, "ask", fake_ask)
+    job = _run(client)
+    assert job["status"] == "failed" and "flow" in job["items"][0]["message"]
+    assert len(calls) == 2 and calls[0] == ["technique", "angle"]
+    status = client.json("GET", f"/api/motif?category={CAT}")[1]
+    assert status["allowed_types"] == ["technique", "angle"] and status["allowed_ko"] == ["기법", "각도"]
+
+
+def test_stage3_without_typify_save_rejects_flow(client, home):
+    before = _index(home).read_bytes()
+    status, body = client.json("POST", "/api/motif/save", {"category": CAT, "cards": [FLOW], "star": []})
+    assert status == 400 and body["error"] == "invalid_cards"
+    assert _index(home).read_bytes() == before
+
+
+def test_stage3_with_typify_allows_flow(client, home, fakes):
+    _write_typify(home)
+    fakes.data = {"cards": [FLOW]}
+    job = _run(client)
+    assert job["status"] == "done"
+    assert job["items"][0]["preview"]["allowed_types"] == ["flow", "technique", "angle", "combo"]
+    status = client.json("GET", f"/api/motif?category={CAT}")[1]
+    assert status["allowed_types"] == ["flow", "technique", "angle", "combo"]
+    assert client.json("POST", "/api/motif/save", {"category": CAT, "cards": [FLOW], "star": []})[0] == 200
+
+
+def test_save_with_job_id_marks_item_saved(client, home):
+    job = _run(client)
+    assert job["items"][0]["state"] == "awaiting"
+    status, _ = client.json("POST", "/api/motif/save",
+                            {"category": CAT, "cards": CARDS[:1], "star": [], "job_id": job["id"]})
+    assert status == 200
+    item = client.json("GET", f"/api/jobs/{job['id']}")[1]["job"]["items"][0]
+    assert item["state"] == "saved" and item["ask"] is None
+
+
+def test_save_with_unknown_job_id_ignored(client, home):
+    status, body = client.json("POST", "/api/motif/save",
+                               {"category": CAT, "cards": CARDS[:1], "star": [], "job_id": "nope"})
+    assert status == 200 and body["ids"] == ["M-mukbang-001"]
+
+
+def test_index_writes_do_not_lose_updates(home):
+    import json
+
+    from scripts import motif
+    errors = []
+    barrier = threading.Barrier(2)
+
+    def adder():
+        try:
+            barrier.wait()
+            for i in range(15):
+                path = home / "workspace" / f"c{i}.json"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps([card(f"동시 카드 {i}")]), encoding="utf-8")
+                motif.add(CAT, path)
+        except Exception as e:  # noqa: BLE001 - surfaced by the assertion below
+            errors.append(e)
+
+    def stager():
+        try:
+            barrier.wait()
+            for _ in range(15):
+                refstore.update_stage(CAT)
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=adder), threading.Thread(target=stager)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(30)
+    assert not errors
+    assert len(motif.card_details(CAT)) == 15
+    assert "현재 단계: 3" in refstore.read_md(_index(home))[1]
 
 
 def test_second_run_while_running(client, fakes, monkeypatch):

@@ -12,7 +12,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import threading
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -23,6 +25,7 @@ from scripts.common import (
     TEMPLATES_DIR, ArgParser, ScriptError, category_dir, run, work_root,
 )
 
+INDEX_LOCK = threading.RLock()        # index.md 읽기-고치기-쓰기를 한 번에 하나씩 (프로세스 안)
 PROTECTED_SECTIONS = {"## 내 메모"}
 WORK_DIRS = ["refs", "mine", "drafts", "missions", "reviews", "workspace"]
 
@@ -68,6 +71,13 @@ def _read_text(path: Path) -> str:
 
 def _write_text(path: Path, text: str) -> None:
     path.write_bytes(text.encode("utf-8"))
+
+
+def write_atomic(path: Path, data: bytes) -> None:
+    """같은 폴더의 임시 파일에 쓴 뒤 교체한다. 읽는 쪽이 반쯤 쓴 파일을 보지 않는다."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
 
 
 def read_md(path: Path) -> tuple[dict, str]:
@@ -238,11 +248,12 @@ def update_stage(category: str) -> dict:
     cat = existing_category_dir(category)
     index = cat / "index.md"
     ref, mine = _role_counts(cat)
-    text = _read_text(index)
-    nl = "\r\n" if text.startswith("---\r\n") else "\n"
-    fm, body = split_frontmatter(text)
     section = stage_text(ref, mine)
-    _write_text(index, join_frontmatter(fm, replace_section(body, "## 단계", section), nl))
+    with INDEX_LOCK:
+        text = _read_text(index)
+        nl = "\r\n" if text.startswith("---\r\n") else "\n"
+        fm, body = split_frontmatter(text)
+        write_atomic(index, join_frontmatter(fm, replace_section(body, "## 단계", section), nl).encode("utf-8"))
     return {"ref": ref, "mine": mine, "stage": stage_for(ref), "text": section}
 
 

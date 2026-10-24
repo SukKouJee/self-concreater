@@ -51,7 +51,7 @@ def _read(path: Path) -> tuple[dict, str, str]:
 
 
 def _write(path: Path, fm: dict, body: str, nl: str) -> None:
-    path.write_bytes(refstore.join_frontmatter(fm, body.replace("\n", nl), nl).encode("utf-8"))
+    refstore.write_atomic(path, refstore.join_frontmatter(fm, body.replace("\n", nl), nl).encode("utf-8"))
 
 
 def _norm(title: str) -> str:
@@ -231,14 +231,16 @@ def render_card(card_id: str, card: dict, titles: dict) -> str:
     return "\n".join(lines)
 
 
-def validate_cards(category: str, cards: Any) -> list[dict]:
-    """카드 묶음을 검증하고 정규화한 목록을 돌려준다. 어긋나면 invalid_cards."""
+def validate_cards(category: str, cards: Any, allowed: list[str] | None = None) -> list[dict]:
+    """카드 묶음을 검증하고 정규화한 목록을 돌려준다. 어긋나면 invalid_cards.
+
+    allowed: 허용 type 목록. None이면 단계 기본값."""
     if not isinstance(cards, list) or not cards:
         raise _invalid("카드 목록이 비어 있습니다")
     cat = refstore.existing_category_dir(category)
     _, body, _ = _read(cat / "index.md")
     stage = refstore.count(category)["stage"]
-    allowed = ALLOWED_BY_STAGE[stage]
+    allowed = ALLOWED_BY_STAGE[stage] if allowed is None else allowed
     titles = ref_titles(category)
     taken = {_norm(c["title"]): c["id"] for c in parse_cards(body)}
 
@@ -274,25 +276,27 @@ def validate_cards(category: str, cards: Any) -> list[dict]:
     return normalized
 
 
-def add(category: str, cards_path: Path) -> dict:
-    cards = validate_cards(category, _load_json(cards_path, "invalid_cards"))
+def add(category: str, cards_path: Path, allowed: list[str] | None = None) -> dict:
     index_path = refstore.existing_category_dir(category) / "index.md"
-    fm, body, nl = _read(index_path)
-    stage = refstore.count(category)["stage"]
+    raw = _load_json(cards_path, "invalid_cards")
+    stage = refstore.count(category)["stage"]            # 영상 폴더만 읽는다: index.md 락 밖에서 먼저 계산
     titles = ref_titles(category)
-    existing = parse_cards(body)
+    with refstore.INDEX_LOCK:
+        cards = validate_cards(category, raw, allowed)
+        fm, body, nl = _read(index_path)
+        existing = parse_cards(body)
 
-    ids, blocks = [], []
-    next_number = int(_next_id(category, existing).rsplit("-", 1)[1])
-    for i, card in enumerate(cards):
-        card_id = f"M-{category}-{next_number + i:03d}"
-        ids.append(card_id)
-        blocks.append(render_card(card_id, card, titles))
+        ids, blocks = [], []
+        next_number = int(_next_id(category, existing).rsplit("-", 1)[1])
+        for i, card in enumerate(cards):
+            card_id = f"M-{category}-{next_number + i:03d}"
+            ids.append(card_id)
+            blocks.append(render_card(card_id, card, titles))
 
-    lines, start, end = _section_lines(body, SECTION)
-    content = "\n".join(lines[start + 1:end]).strip("\n")
-    content = "\n\n".join(([content] if content else []) + blocks)
-    _write(index_path, fm, refstore.replace_section(body, SECTION, content), nl)
+        lines, start, end = _section_lines(body, SECTION)
+        content = "\n".join(lines[start + 1:end]).strip("\n")
+        content = "\n\n".join(([content] if content else []) + blocks)
+        _write(index_path, fm, refstore.replace_section(body, SECTION, content), nl)
     Path(cards_path).unlink(missing_ok=True)
     return {"status": "added", "ids": ids, "stage": stage}
 
@@ -301,15 +305,16 @@ def add(category: str, cards_path: Path) -> dict:
 
 def star(category: str, card_id: str, off: bool = False) -> dict:
     index_path = refstore.existing_category_dir(category) / "index.md"
-    fm, body, nl = _read(index_path)
-    lines = body.split("\n")
-    for i, line in enumerate(lines):
-        m = _CARD_RE.match(line.strip())
-        if m and m.group(2) == card_id:
-            rest = line.strip()[len("### "):].removeprefix("★ ")
-            lines[i] = f"### {rest}" if off else f"### ★ {rest}"
-            _write(index_path, fm, "\n".join(lines), nl)
-            return {"id": card_id, "starred": not off}
+    with refstore.INDEX_LOCK:
+        fm, body, nl = _read(index_path)
+        lines = body.split("\n")
+        for i, line in enumerate(lines):
+            m = _CARD_RE.match(line.strip())
+            if m and m.group(2) == card_id:
+                rest = line.strip()[len("### "):].removeprefix("★ ")
+                lines[i] = f"### {rest}" if off else f"### ★ {rest}"
+                _write(index_path, fm, "\n".join(lines), nl)
+                return {"id": card_id, "starred": not off}
     raise ScriptError("card_not_found", f"카드를 찾을 수 없습니다: {card_id}")
 
 
