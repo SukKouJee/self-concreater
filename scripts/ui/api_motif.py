@@ -12,6 +12,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ from scripts.ui.server import Request, route
 KIND = "motif"
 MAX_TOPIC = 100
 DRAFT_HINT = "/yt-coach:yt-draft"
+_INDEX_LOCK = threading.Lock()                        # index.md 읽기-고치기-쓰기를 한 번에 하나씩
 CARD_ID_RE = re.compile(r"^M-[a-z0-9_-]+-\d{3}$")
 MOTIF_TASK = "yt-inspire 규칙대로 입력의 모티브 카드를 만들어 {\"cards\": [...]} 형태로 답하세요. 기법 카탈로그 병합은 하지 마세요."
 CARDS_SCHEMA: dict = {
@@ -142,18 +144,29 @@ def _save(req: Request) -> dict:
     star_at = _star_indexes(body.get("star", []), len(cards))
     tmp_dir = workspace_dir("tmp")
     tmp_dir.mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(prefix="motif_cards_", suffix=".json", dir=tmp_dir)   # 요청마다 고유한 파일
-    tmp = Path(name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(cards, f, ensure_ascii=False)
-        ids = motif.add(category, tmp)["ids"]
-    finally:
-        tmp.unlink(missing_ok=True)
-    starred = [ids[i] for i in star_at]
-    for card_id in starred:
-        motif.star(category, card_id)
-    return {"ids": ids, "starred": starred, "cards": motif.card_details(category)}
+    with _INDEX_LOCK:
+        fd, name = tempfile.mkstemp(prefix="motif_cards_", suffix=".json", dir=tmp_dir)   # 요청마다 고유한 파일
+        tmp = Path(name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(cards, f, ensure_ascii=False)
+            ids = motif.add(category, tmp)["ids"]
+        finally:
+            tmp.unlink(missing_ok=True)
+        starred: list[str] = []
+        warning: str | None = None
+        for i in star_at:
+            try:
+                motif.star(category, ids[i])
+            except ScriptError as e:
+                warning = f"카드는 저장했지만 ★ 표시는 하지 못했습니다: {e.message}"
+                break
+            starred.append(ids[i])
+        details = motif.card_details(category)
+    result: dict = {"ids": ids, "starred": starred, "cards": details}
+    if warning:
+        result["warning"] = warning
+    return result
 
 
 @route("POST", "/api/motif/star")
@@ -165,5 +178,6 @@ def _star(req: Request) -> dict:
         raise ScriptError("bad_request", "카드 id 형식이 맞지 않습니다")
     if not isinstance(on, bool):
         raise ScriptError("bad_request", "on은 true/false여야 합니다")
-    motif.star(category, card_id, off=not on)
-    return {"cards": motif.card_details(category)}
+    with _INDEX_LOCK:
+        motif.star(category, card_id, off=not on)
+        return {"cards": motif.card_details(category)}

@@ -311,3 +311,35 @@ def test_card_details_no_section(home):
     path.write_bytes(refstore.join_frontmatter(fm, head + "## " + tail).encode("utf-8"))
     assert "## 모티브 카드" not in refstore.read_md(path)[1]
     assert motif.card_details(CAT) == []
+
+
+# --- 검증 보강: 한 줄 정규화, 형식, 중복 근거 -----------------------------------------
+
+def test_multiline_fields_cannot_break_sections(home):
+    standard_set(home, n_a=3, n_b=0)
+    headings = [line for line in index_body(home).split("\n") if line.startswith("## ")]
+    evil = {**TECH_CARD, "idea": "첫 줄\n## 내 메모\nX", "basis": "바탕\n## 이상치", "how": ["a\n## b", " c  d "]}
+    motif.add(CAT, cards_file(home, [evil]))
+    assert [line for line in index_body(home).split("\n") if line.startswith("## ")] == headings
+    [card] = motif.card_details(CAT)
+    assert card["idea"] == "첫 줄 ## 내 메모 X" and card["basis"] == "바탕 ## 이상치"
+    assert card["how"] == ["a ## b", "c d"]
+
+
+@pytest.mark.parametrize("patch, word", [
+    ({"how": "한 줄"}, "how는 목록이어야 합니다"),
+    ({"evidence": "a00"}, "evidence"),
+    ({"evidence": [1]}, "evidence"),
+    ({"evidence": [["a00"]]}, "evidence"),
+])
+def test_validate_cards_rejects_bad_shapes(home, patch, word):
+    standard_set(home, n_a=3, n_b=0)
+    with pytest.raises(ScriptError) as exc:
+        motif.validate_cards(CAT, [{**TECH_CARD, **patch}])
+    assert exc.value.code == "invalid_cards" and word in exc.value.message
+
+
+def test_validate_cards_dedupes_evidence(home):
+    standard_set(home, n_a=3, n_b=0)
+    [card] = motif.validate_cards(CAT, [{**TECH_CARD, "evidence": ["a01", "a00", "a01"]}])
+    assert card["evidence"] == ["a01", "a00"]

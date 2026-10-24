@@ -255,17 +255,22 @@ def validate_cards(category: str, cards: Any) -> list[dict]:
                 raise _invalid(f"{field}가 비어 있습니다")
         if not card.get("evidence"):
             raise _invalid("evidence(근거 영상)가 비어 있습니다")
-        unknown = [v for v in card["evidence"] if v not in titles]
+        if not isinstance(card["evidence"], list) or not all(isinstance(v, str) for v in card["evidence"]):
+            raise _invalid("evidence는 영상 id 문자열의 목록이어야 합니다")
+        evidence = list(dict.fromkeys(card["evidence"]))          # 중복 제거, 순서 유지
+        unknown = [v for v in evidence if v not in titles]
         if unknown:
             raise _invalid(f"이 카테고리의 ref 영상이 아닙니다: {', '.join(unknown)}")
+        if card.get("how") is not None and not isinstance(card["how"], list):
+            raise _invalid("how는 목록이어야 합니다")
         title = _norm(card["title"])
         if title in taken:
             raise _invalid(f"같은 제목의 카드가 이미 있습니다: {taken[title]}")
         taken[title] = "(이번 묶음)"
-        how = [str(h).strip() for h in card.get("how") or [] if str(h).strip()]
-        basis = str(card["basis"]).strip() if card.get("basis") else None
-        normalized.append({"type": card["type"], "title": title, "idea": str(card["idea"]).strip(), "how": how,
-                           "basis": basis or None, "evidence": list(card["evidence"])})
+        how = [line for h in card.get("how") or [] if (line := _norm(str(h)))]
+        basis = _norm(str(card["basis"])) if card.get("basis") else None
+        normalized.append({"type": card["type"], "title": title, "idea": _norm(str(card["idea"])), "how": how,
+                           "basis": basis or None, "evidence": evidence})
     return normalized
 
 

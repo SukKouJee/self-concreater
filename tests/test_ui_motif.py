@@ -227,3 +227,40 @@ def test_star_toggle(client, home):
     assert client.json("POST", "/api/motif/star", {"category": CAT, "id": cid, "on": "yes"})[1]["error"] == "bad_request"
     err = client.json("POST", "/api/motif/star", {"category": CAT, "id": "M-mukbang-009", "on": True})[1]
     assert err["error"] == "card_not_found"
+
+
+def test_concurrent_saves_of_same_card(client, home):
+    results = []
+    barrier = threading.Barrier(2)
+
+    def save():
+        barrier.wait()
+        results.append(client.json("POST", "/api/motif/save", {"category": CAT, "cards": CARDS[:1], "star": [0]}))
+
+    threads = [threading.Thread(target=save) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    codes = sorted(status for status, _ in results)
+    assert codes == [200, 400]
+    assert [b["error"] for s, b in results if s == 400] == ["invalid_cards"]
+    ids = [c["id"] for c in motif_cards(home)]
+    assert ids == ["M-mukbang-001"]
+
+
+def motif_cards(home):
+    from scripts import motif
+    return motif.card_details(CAT)
+
+
+def test_star_failure_after_add_returns_warning(client, home, monkeypatch):
+    from scripts import motif
+
+    def boom(*args, **kw):
+        raise ScriptError("card_not_found", "카드를 찾을 수 없습니다")
+
+    monkeypatch.setattr(motif, "star", boom)
+    status, body = client.json("POST", "/api/motif/save", {"category": CAT, "cards": CARDS[:1], "star": [0]})
+    assert status == 200 and body["ids"] == ["M-mukbang-001"] and body["starred"] == []
+    assert "★" in body["warning"] and len(body["cards"]) == 1
