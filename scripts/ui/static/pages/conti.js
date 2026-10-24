@@ -102,6 +102,7 @@ function freshState(el, params, ctx) {
 
 function stopPolling() {
   if (S && S.timer) { clearTimeout(S.timer); S.timer = null; }
+  if (S && S.fitTimer) { clearTimeout(S.fitTimer); S.fitTimer = null; }
 }
 
 function announce(text) {
@@ -462,6 +463,7 @@ async function loadEditor(keep = false) {
     if (mine.sel !== null && !data.cuts.some((c) => c.n === mine.sel)) mine.sel = null;
     if (!keep || !mine.nodes.board) renderEditor();
     else { renderHeader(); renderCutList(); renderPanel(); }
+    if (!mine.fitChecked) { mine.fitChecked = true; resumeFit(); }
   } catch (e) {
     if (!alive(mine) || e.error === "aborted") return;
     if (keep && mine.nodes.board) { mine.ctx.toast(e.message, "error"); return; }
@@ -527,8 +529,159 @@ function srtRow() {
   const line = h("button", { type: "button", class: "btn" }, "대사도 따로 받기");
   caption.addEventListener("click", () => exportSrt("caption", [caption, line], note));
   line.addEventListener("click", () => exportSrt("line", [caption, line], note));
-  return h("div", { class: "srt-row" }, h("div", { class: "btn-row" }, caption, line), note);
+  return h("div", { class: "srt-row" }, h("div", { class: "btn-row" }, caption, line), note, srtFitBox());
 }
+
+// ---- srt fit ----------------------------------------------------------------------
+// The edited-video path lives only in S (this screen, this visit): it is never stored anywhere.
+
+const FIT_HINT = "CapCut에서 컷 편집을 마친 영상을 자막 없이 내보낸 뒤, 그 파일 경로를 붙여 넣으세요 — 파일은 읽기만 합니다";
+
+function fitActive() {
+  return !!S.fitJob && ACTIVE.has(S.fitJob.status);
+}
+
+function fitSummary(preview) {
+  const r = preview.retime || {};
+  return `실제 컷 ${r.detected}개 · 자막 경계 ${r.snapped}/${r.inner}개를 컷에 맞춤 · 길이 비율 ${Number(r.scale).toFixed(2)}`;
+}
+
+// Everything the box shows comes from S.fit* so a header re-render (save, reload) rebuilds it unchanged.
+function srtFitBox() {
+  const busy = fitActive() || !!S.fitStarting;
+  const inputId = "srtfit-video";
+  const input = h("input", {
+    type: "text", id: inputId, class: "srtfit-input", value: S.fitVideo || "", autocomplete: "off", spellcheck: "false",
+    placeholder: "예: C:\\Users\\…\\Videos\\편집본.mp4", "aria-describedby": "srtfit-hint",
+  });
+  input.addEventListener("input", () => { S.fitVideo = input.value; });
+  const caption = h("button", { type: "button", class: "btn", disabled: busy }, "실제 컷에 맞춰 SRT 받기");
+  const line = h("button", { type: "button", class: "btn", disabled: busy }, "대사도 맞춰 받기");
+  caption.addEventListener("click", () => startFit("caption", input));
+  line.addEventListener("click", () => startFit("line", input));
+
+  const status = h("div", { class: "srtfit-status", role: "status", "aria-live": "polite" });
+  if (busy) {
+    const step = S.fitJob && S.fitJob.items && S.fitJob.items[0] && S.fitJob.items[0].step;
+    status.append(h("span", {}, h("span", { class: "spinner", "aria-hidden": "true" }),
+      step === "write" ? "SRT를 쓰는 중…" : "컷을 찾는 중…"));
+  } else if (S.fitDone) {
+    const d = S.fitDone;
+    if (!d.preview.url) {
+      status.append(h("p", { class: "muted srt-note" }, "내보낼 자막이 없습니다"));
+    } else {
+      const name = d.preview.path.split("/").pop();
+      status.append(h("p", { class: "srt-note" }, `${fitSummary(d.preview)} · `,
+        h("a", { class: "btn", href: d.preview.url, download: name }, `${name} 받기`)));
+    }
+    const warns = (d.preview.retime && d.preview.retime.warnings) || [];
+    if (warns.length) status.append(h("ul", { class: "warn-list" }, ...warns.map((w) => h("li", {}, w))));
+  }
+  const err = h("p", { class: "error field-error", role: "alert" }, S.fitError || "");
+  err.hidden = !S.fitError;
+
+  return h("div", { class: "srtfit" },
+    h("div", { class: "field" }, h("label", { for: inputId }, "편집한 영상 파일 경로"), input),
+    h("p", { class: "muted hint", id: "srtfit-hint" }, FIT_HINT),
+    h("div", { class: "btn-row" }, caption, line), err, status);
+}
+
+function refreshFit() {
+  const box = S.el.querySelector(".srtfit");
+  if (!box) return;
+  const hadFocus = box.contains(document.activeElement) && document.activeElement.tagName === "INPUT";
+  box.replaceWith(srtFitBox());
+  if (hadFocus) S.el.querySelector(".srtfit-input").focus();
+}
+
+function adoptFit(job) {
+  S.fitJob = job;
+  const item = job.items && job.items[0];
+  if (job.status === "done" && item && item.state === "done" && item.preview) {
+    S.fitDone = { preview: item.preview };
+    S.fitError = "";
+    const r = item.preview.retime || {};
+    announce(`자막 시간 맞추기가 끝났습니다. 컷 ${r.snapped ?? 0}/${r.inner ?? 0}개를 맞췄습니다`);
+  } else if (job.status === "failed" || job.status === "stopped") {
+    S.fitDone = null;
+    S.fitError = (item && item.message) || job.message || "시간 맞추기가 중단되었습니다";
+    announce(`자막 시간 맞추기 실패: ${S.fitError}`);
+  }
+}
+
+async function startFit(track, input) {
+  const mine = S;
+  if (mine.fitStarting || fitActive()) return;
+  const video = input.value.trim();
+  mine.fitVideo = input.value;
+  if (!video) {
+    mine.fitError = "편집한 영상 파일 경로를 입력하세요";
+    refreshFit();
+    S.el.querySelector(".srtfit-input").focus();
+    return;
+  }
+  mine.fitStarting = true;
+  mine.fitError = "";
+  mine.fitDone = null;
+  refreshFit();
+  try {
+    const data = await mine.ctx.api("POST", "/api/conti/srt-fit", { path: mine.data.path, track, video });
+    if (!alive(mine)) return;
+    mine.fitJob = data.job;
+    mine.fitErrors = 0;
+    adoptFit(mine.fitJob);
+    if (fitActive()) scheduleFitPoll();
+  } catch (e) {
+    if (!alive(mine) || e.error === "aborted") return;
+    mine.fitError = e.message || "시작하지 못했습니다";
+  } finally {
+    if (alive(mine)) { mine.fitStarting = false; refreshFit(); }
+  }
+}
+
+function scheduleFitPoll() {
+  if (S.fitTimer) clearTimeout(S.fitTimer);
+  const mine = S;
+  mine.fitTimer = setTimeout(async () => {
+    mine.fitTimer = null;
+    if (!alive(mine) || !mine.fitJob) return;
+    try {
+      const data = await mine.ctx.api("GET", `/api/jobs/${encodeURIComponent(mine.fitJob.id)}`);
+      if (!alive(mine)) return;
+      mine.fitErrors = 0;
+      adoptFit(data.job);
+      refreshFit();
+    } catch (e) {
+      if (!alive(mine) || e.error === "aborted") return;
+      if (e.error === "job_not_found" || e.status === 404) {
+        mine.fitJob = null;
+        mine.fitError = "작업을 찾을 수 없습니다. 서버가 다시 켜졌다면 다시 시도하세요";
+        refreshFit();
+        return;
+      }
+      mine.fitErrors = (mine.fitErrors || 0) + 1;
+    }
+    if (alive(mine) && fitActive()) scheduleFitPoll();
+  }, pollDelay(mine.fitErrors || 0));
+}
+
+// On entering the screen: bring back the progress of a fit job already running for this conti.
+// A finished result is not restored (no auto download, and the user asked for it in an earlier visit).
+async function resumeFit() {
+  const mine = S;
+  try {
+    const cur = await mine.ctx.api("GET", "/api/jobs/current?kind=srtfit");
+    if (!alive(mine) || mine.fitJob) return;
+    const job = cur.job;
+    const item = job && job.items && job.items[0];
+    if (!job || !item || item.id !== mine.data.path || !ACTIVE.has(job.status)) return;
+    mine.fitJob = job;
+    mine.fitErrors = 0;
+    refreshFit();
+    scheduleFitPoll();
+  } catch { /* no progress to restore */ }
+}
+// ---- end srt fit ----
 
 async function exportSrt(track, buttons, note) {
   const mine = S;

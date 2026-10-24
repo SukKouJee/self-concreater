@@ -224,3 +224,34 @@ def _srt(req: Request) -> dict:
     if not result["path"]:
         return result
     return {**result, "url": "/files/" + "/".join(quote(part) for part in result["path"].split("/"))}
+
+
+def _file_url(rel_path: str) -> str:
+    return "/files/" + "/".join(quote(part) for part in rel_path.split("/"))
+
+
+def srt_fit_target(path: Path, track: str, video: Path) -> Any:
+    def target(job: Job) -> None:
+        job.update(0, state="running", step="detect")
+        job.check_cancelled()
+        result = conti.export_srt(path, track, video, progress=lambda step: job.update(0, step=step))
+        preview = {**result, "url": _file_url(result["path"]) if result["path"] else None}
+        job.update(0, state="done", step="write", ask=None, preview=preview)
+        job.finish("done", {"count": result["count"], "snapped": result["retime"]["snapped"]})
+
+    return target
+
+
+@route("POST", "/api/conti/srt-fit")
+def _srt_fit(req: Request) -> dict:
+    body = req.json
+    path = _safe_path(body.get("path"), conti_file=True)
+    track = body.get("track", "caption")
+    if not isinstance(track, str) or track not in conti.SRT_TRACKS:
+        raise ScriptError("bad_request", "track은 caption 또는 line이어야 합니다")
+    if not conti._load_conti(path)["cuts"]:
+        raise ScriptError("bad_request", "콘티에 컷이 없습니다")
+    video = conti._clean_video_path(body.get("video"))       # 작업을 만들기 전에 영상 경로부터 확인
+    items = [new_item(_rel(path), title=path.name, step="detect")]
+    job = req.app.jobs.start("srtfit", srt_fit_target(path, track, video), items=items)
+    return {"job": job.snapshot()}

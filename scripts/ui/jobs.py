@@ -5,13 +5,13 @@
   - awaiting: 어떤 항목이 사용자 결정을 기다리는 중
   - stopped: 차단으로 남은 항목을 건너뛰었거나 `cancel()`/`shutdown()`으로 멈춤
   - failed: 작업 함수가 예상치 못한 오류로 끝남(진행 중 항목은 failed, 남은 항목은 skipped)
-- item.state: waiting → running → (awaiting → running)* → saved | skipped | failed
+- item.state: waiting → running → (awaiting → running)* → saved | done | skipped | failed (done: 확인이 필요 없는 작업의 정상 끝, 예: srtfit)
 
 동시성
 - 상태는 모두 `Job._lock` 아래에서 바뀐다. 바깥에는 `snapshot()`(깊은 복사)만 내준다.
 - 결정 대기: 작업 스레드가 `update(i, state="awaiting")` 뒤 `wait_decision(item_id)`로 Event를 기다리고,
   HTTP 스레드가 `decide(item_id, decision)`로 결정을 넣고 깨운다. Event는 먼저 오는 쪽이 만든다(경합 없음).
-- 같은 kind 중 `SINGLE_KINDS`(collect, typify, motif, draft, polish)는 진행 중(running/awaiting)인 작업이 하나뿐이다.
+- 같은 kind 중 `SINGLE_KINDS`(collect, typify, motif, draft, polish, srtfit)는 진행 중(running/awaiting)인 작업이 하나뿐이다.
 """
 from __future__ import annotations
 
@@ -33,6 +33,7 @@ SINGLE_KINDS = {
     "motif": "이미 카드를 뽑는 중입니다",
     "draft": "이미 기획안을 만드는 중입니다",
     "polish": "이미 다듬는 중입니다",
+    "srtfit": "이미 자막 시간을 맞추는 중입니다",
 }
 STOP_MESSAGE = "중단됨"
 

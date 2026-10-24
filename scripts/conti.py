@@ -25,6 +25,7 @@ import html
 import json
 import re
 import statistics
+from collections.abc import Callable
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -680,18 +681,67 @@ def _srt_text(text: Any) -> str:
     return "\n".join(lines).replace("-->", "→")
 
 
-def export_srt(conti: str | Path, track: str = "caption") -> dict:
-    """컷별 caption(또는 line)을 CapCut용 .srt로 내보낸다. 시간은 컷 sec의 ms 정수 누적이라 오차가 쌓이지 않는다."""
-    if track not in SRT_TRACKS:
-        raise ScriptError("bad_request", f"track은 caption 또는 line이어야 합니다: {track}")
-    path = safe_draft_path(_rel(_resolve(conti)), conti_file=True)   # drafts/ 안의 *-conti.md만(CLI도 API와 같은 규칙)
-    field, suffix = SRT_TRACKS[track]
-    fm = _load_conti(path)
+_THRESHOLDS = json.loads((TEMPLATES_DIR / "thresholds.json").read_text("utf-8"))
+SRT_FIT = _THRESHOLDS["srt"]
+VIDEO_EXTENSIONS = frozenset({".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi"})
+MIN_GAP_SEC = 0.01            # 맞출 컷이 없을 때 경계 사이 최소 간격
+
+
+def retime_boundaries(planned: list[float], actual_duration: float, cuts: list[float],
+                      snap_min: float, snap_ratio: float) -> dict:
+    """계획 경계(0 ~ 계획 총길이)를 실제 영상 길이로 늘이고, 가까운 실제 컷이 있으면 그 시각에 붙인다."""
+    if len(planned) < 2 or planned[-1] <= 0 or actual_duration <= 0:
+        raise ScriptError("bad_request", "계획 경계와 영상 길이가 필요합니다")
+    scale = actual_duration / planned[-1]
+    limit = actual_duration - MIN_GAP_SEC        # 끝 경계와 0.01초 이상 떨어진 컷만 맞춘다
+    boundaries = [0.0]
+    used: set[int] = set()
+    snapped = 0
+    for i in range(1, len(planned) - 1):
+        prev_mapped = boundaries[-1]
+        t = planned[i] * scale
+        tol = max(snap_min, snap_ratio * min(planned[i] - planned[i - 1], planned[i + 1] - planned[i]) * scale)
+        near = [(abs(c - t), c, k) for k, c in enumerate(cuts) if k not in used and prev_mapped < c <= limit and abs(c - t) <= tol]
+        if near:
+            _, chosen, k = min(near)            # 거리 같으면 시각이 앞선 컷
+            used.add(k)
+            snapped += 1
+            boundaries.append(chosen)
+        else:
+            boundaries.append(max(min(t, limit), prev_mapped + MIN_GAP_SEC))
+    boundaries.append(actual_duration)
+    return {"boundaries": boundaries, "scale": scale, "snapped": snapped,
+            "inner": len(planned) - 2, "detected": len(cuts)}
+
+
+def _clean_video_path(value: Any) -> Path:
+    """붙여넣기로 들어온 영상 경로(앞뒤 공백·따옴표)를 정리하고 파일인지 확인한다. 영상은 읽기만 한다."""
+    if not isinstance(value, (str, Path)):
+        raise ScriptError("bad_video", "영상 파일 경로가 필요합니다")
+    text = str(value).strip().strip("\"'").strip()
+    if not text or "\x00" in text:
+        raise ScriptError("bad_video", "영상 파일 경로가 필요합니다")
+    try:
+        path = _resolve(text)
+        is_file = path.is_file()
+        size = path.stat().st_size if is_file else 0
+    except (OSError, ValueError) as e:
+        raise ScriptError("bad_video", f"잘못된 영상 경로입니다: {text}") from e
+    if not is_file:
+        raise ScriptError("bad_video", f"영상 파일을 찾을 수 없습니다: {text}")
+    if path.suffix.lower() not in VIDEO_EXTENSIONS:
+        raise ScriptError("bad_video", f"영상 파일이 아닙니다(mp4, mov, m4v, mkv, webm, avi): {path.name}")
+    if size <= 0:
+        raise ScriptError("bad_video", f"비어 있는 파일입니다: {path.name}")
+    return path
+
+
+def _srt_blocks(cuts: list[dict], field: str, spans_ms: list[tuple[int, int]]) -> list[list[Any]]:
+    """컷별 [시작ms, 끝ms]에서 자막 블록을 만든다: 빈 컷은 건너뛰고, 시간이 이어지는 같은 자막은 합친다."""
     blocks: list[list[Any]] = []          # [start_ms, end_ms, text]
-    clock = 0
-    for cut in fm["cuts"]:
-        start, end = clock, clock + round(float(cut["sec"]) * 1000)
-        clock = end
+    for cut, (start, end) in zip(cuts, spans_ms):
+        if end <= start:
+            continue                      # 길이가 없는 구간은 자막으로 내지 않는다
         text = _srt_text(cut.get(field))
         if not text:
             continue
@@ -699,9 +749,69 @@ def export_srt(conti: str | Path, track: str = "caption") -> dict:
             blocks[-1][1] = end
         else:
             blocks.append([start, end, text])
-    result: dict[str, Any] = {"path": None, "track": track, "count": len(blocks), "duration_sec": clock / 1000}
+    return blocks
+
+
+def _planned_spans_ms(cuts: list[dict]) -> list[tuple[int, int]]:
+    spans, clock = [], 0
+    for cut in cuts:
+        end = clock + round(float(cut["sec"]) * 1000)
+        spans.append((clock, end))
+        clock = end
+    return spans
+
+
+def _retime_spans_ms(cuts: list[dict], video: str | Path | None, progress: Callable[[str], None] | None
+                     ) -> tuple[list[tuple[int, int]], dict]:
+    from scripts import cuts as cuts_mod        # cv2·scenedetect는 영상을 맞출 때만 불러온다
+
+    path = _clean_video_path(video)
+    if progress:
+        progress("detect")
+    found = cuts_mod.detect_cuts(path)
+    planned = [0.0]
+    for cut in cuts:
+        planned.append(planned[-1] + float(cut["sec"]))
+    fit = retime_boundaries(planned, found["duration_sec"], found["cuts"], SRT_FIT["snap_min_sec"], SRT_FIT["snap_ratio"])
+    ms = [round(b * 1000) for b in fit["boundaries"]]
+    warnings = []
+    if not found["cuts"]:
+        warnings.append("실제 컷을 찾지 못해 길이 비율로만 맞췄습니다")
+    scale_low, scale_high = SRT_FIT["scale_warn"]
+    if not scale_low <= fit["scale"] <= scale_high:
+        warnings.append(f"콘티 길이와 많이 다릅니다(실제 {found['duration_sec']:.1f}초 / 계획 {planned[-1]:.1f}초)"
+                        " — 다른 영상이 아닌지 확인하세요")
+    retime = {"video": path.name, "detected": fit["detected"], "snapped": fit["snapped"],
+              "inner": fit["inner"], "scale": round(fit["scale"], 4), "warnings": warnings}
+    return list(zip(ms, ms[1:])), retime
+
+
+def export_srt(conti: str | Path, track: str = "caption", video: str | Path | None = None,
+               progress: Callable[[str], None] | None = None) -> dict:
+    """컷별 caption(또는 line)을 CapCut용 .srt로 내보낸다.
+
+    video가 없으면 컷 sec의 ms 정수 누적(오차가 쌓이지 않음). video(자막 없는 편집본)가 있으면 그 영상의
+    실제 컷 시각에 맞춘다. 영상 파일은 읽기만 한다. progress는 "detect" → "write" 단계 알림용.
+    """
+    if track not in SRT_TRACKS:
+        raise ScriptError("bad_request", f"track은 caption 또는 line이어야 합니다: {track}")
+    path = safe_draft_path(_rel(_resolve(conti)), conti_file=True)   # drafts/ 안의 *-conti.md만(CLI도 API와 같은 규칙)
+    field, suffix = SRT_TRACKS[track]
+    fm = _load_conti(path)
+    retime: dict | None = None
+    if video is None:
+        spans = _planned_spans_ms(fm["cuts"])
+    else:
+        spans, retime = _retime_spans_ms(fm["cuts"], video, progress)
+    blocks = _srt_blocks(fm["cuts"], field, spans)
+    end_ms = spans[-1][1] if spans else 0
+    result: dict[str, Any] = {"path": None, "track": track, "count": len(blocks), "duration_sec": end_ms / 1000}
+    if retime is not None:
+        result["retime"] = retime
     if not blocks:
         return result
+    if progress:
+        progress("write")
     body = "".join(f"{i}\n{_srt_time(a)} --> {_srt_time(b)}\n{t}\n\n" for i, (a, b, t) in enumerate(blocks, 1))
     out = path.with_name(f"{path.stem[: -len(CONTI_SUFFIX)]}-{suffix}.srt")
     with out.open("w", encoding="utf-8", newline="") as f:
@@ -735,9 +845,10 @@ def main(argv: list[str]) -> Any:
     sr = sub.add_parser("srt")
     sr.add_argument("conti")
     sr.add_argument("--track", choices=sorted(SRT_TRACKS), default="caption")
+    sr.add_argument("--video", default=None)
     args = parser.parse_args(argv)
     if args.cmd == "srt":
-        return export_srt(args.conti, args.track)
+        return export_srt(args.conti, args.track, args.video)
     if args.cmd == "context":
         return context(args.draft)
     if args.cmd == "render":

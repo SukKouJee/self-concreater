@@ -104,6 +104,19 @@ def test_conti_page_contract_and_safety():
         assert banned not in text, banned
 
 
+def test_conti_srt_fit_contract_and_no_path_storage():
+    text = (STATIC_DIR / "pages" / "conti.js").read_text(encoding="utf-8")
+    for token in ["/api/conti/srt-fit", "kind=srtfit", "편집한 영상 파일 경로", "실제 컷에 맞춰 SRT 받기",
+                  "대사도 맞춰 받기", "컷을 찾는 중…", " 받기", "download"]:
+        assert token in text, token
+    # The personal video path must never be persisted: the srt-fit section may not touch any storage.
+    start = text.index("// ---- srt fit")
+    end = text.index("// ---- end srt fit")
+    section = text[start:end]
+    for banned in ["localStorage", "sessionStorage", "innerHTML", "confirm(", "alert(", "prompt(", "http://", "https://"]:
+        assert banned not in section, banned
+
+
 def test_conti_svg_sanitizer_strips_dangerous_parts():
     text = (STATIC_DIR / "pages" / "conti.js").read_text(encoding="utf-8")
     for token in ["foreignObject", "script", 'startsWith("on")', "importNode"]:

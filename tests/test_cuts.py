@@ -192,3 +192,60 @@ def test_force_reanalyzes_and_replaces_frames(home, fake_download):
 def test_main_parses_url(home, fake_download):
     out = cuts.main([f"https://youtube.com/shorts/{VID}"])
     assert out["id"] == VID
+
+
+# --- 컷 찾기(가벼운 버전) --------------------------------------------------------
+
+def test_detect_cuts_finds_inner_cuts_only(sample_video):
+    result = cuts.detect_cuts(sample_video)
+    assert result["duration_sec"] == pytest.approx(6.0, abs=0.1)
+    assert result["fps"] == pytest.approx(30.0, abs=0.1)
+    assert len(result["cuts"]) == 2
+    for found, expected in zip(result["cuts"], [2.0, 4.0]):
+        assert found == pytest.approx(expected, abs=0.15)
+    assert result["cuts"] == sorted(result["cuts"])
+    assert 0 < result["cuts"][0] and result["cuts"][-1] < result["duration_sec"]
+
+
+def test_detect_cuts_leaves_video_untouched(sample_video):
+    before = (sample_video.read_bytes(), sample_video.stat().st_mtime_ns)
+    cuts.detect_cuts(sample_video)
+    assert (sample_video.read_bytes(), sample_video.stat().st_mtime_ns) == before
+
+
+def test_detect_cuts_rejects_unreadable_file(tmp_path):
+    bad = tmp_path / "not-a-video.mp4"
+    bad.write_text("hello", encoding="utf-8")
+    with pytest.raises(ScriptError) as exc:
+        cuts.detect_cuts(bad)
+    assert exc.value.code == "bad_video"
+    with pytest.raises(ScriptError) as exc:
+        cuts.detect_cuts(tmp_path / "missing.mp4")
+    assert exc.value.code == "bad_video"
+
+
+class _NoFrameCount:
+    """CAP_PROP_FRAME_COUNT를 0으로 돌려주는 VideoCapture 래퍼(컨테이너에 프레임 수가 없는 영상 흉내)."""
+
+    def __init__(self, real):
+        self._real = real
+
+    def get(self, prop):
+        return 0 if prop == cv2.CAP_PROP_FRAME_COUNT else self._real.get(prop)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def test_detect_cuts_falls_back_when_frame_count_is_missing(sample_video, monkeypatch):
+    real = cv2.VideoCapture
+    monkeypatch.setattr(cuts.cv2, "VideoCapture", lambda *a, **k: _NoFrameCount(real(*a, **k)))
+    result = cuts.detect_cuts(sample_video)
+    assert result["duration_sec"] == pytest.approx(6.0, abs=0.1) and len(result["cuts"]) == 2
+
+
+def test_detect_cuts_with_korean_file_name(sample_video, tmp_path):
+    korean = tmp_path / "편집본.mp4"
+    shutil.copy(sample_video, korean)
+    result = cuts.detect_cuts(korean)
+    assert len(result["cuts"]) == 2 and result["duration_sec"] == pytest.approx(6.0, abs=0.1)
