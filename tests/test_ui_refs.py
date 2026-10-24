@@ -177,6 +177,17 @@ def test_non_finite_duration_pacing_camera_are_strict_json(client, home):  # noq
     assert d["video"]["camera"] == {"pan": 0.1}
 
 
+def test_huge_int_values_do_not_break_list(client, home):  # noqa: F811
+    path = video_path(home, "a00")
+    path.write_text(path.read_text(encoding="utf-8").replace("start: 3.0", "start: " + "9" * 400, 1), encoding="utf-8")
+    refstore.update_frontmatter(video_path(home, "a01"), {"duration_sec": 10 ** 400})
+    data = _strict_get(client, "/api/refs?category=mukbang")
+    vids = {v["id"]: v for v in data["videos"]}
+    assert "a00" not in vids and data["skipped"] == 1
+    assert vids["a01"]["duration_sec"] is None
+    assert get(client, "/api/refs/a00?category=mukbang", status=400)["error"] == "bad_md"
+
+
 def test_non_finite_scene_times_are_skipped(client, home):  # noqa: F811
     make_frames(home, "a00", n=2)
     cuts = home / "workspace" / "cuts" / "a00.json"

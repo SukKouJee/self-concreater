@@ -38,7 +38,10 @@ def _dict_or_none(value: Any) -> dict | None:
 
 def _finite(value: Any) -> float:
     """Number -> float, but NaN/inf (YAML `.nan`/`.inf`) are rejected so the response stays strict JSON."""
-    number = float(value or 0)
+    try:
+        number = float(value or 0)
+    except OverflowError as e:            # YAML 정수가 float 범위를 넘는 경우(예: 10**400)
+        raise ValueError("number out of range") from e
     if not math.isfinite(number):
         raise ValueError("non-finite number")
     return number
@@ -54,9 +57,12 @@ def _text(value: Any) -> str | None:
 
 
 def _duration(value: Any) -> float | int | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return value
+    try:
+        return value if math.isfinite(value) else None
+    except OverflowError:
+        return None
 
 
 def _json_safe(value: Any) -> Any:
