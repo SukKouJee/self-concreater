@@ -83,8 +83,9 @@ def _one_line(value: Any) -> str:
 
 
 def _escape_headings(text: str) -> str:
-    """대본 줄이 `#`으로 시작하면 앞에 백슬래시를 붙여 md 제목이 되지 않게 한다."""
-    return re.sub(r"^([ \t]*)#", r"\1\#", text, flags=re.MULTILINE)
+    """줄바꿈을 LF로 맞추고, 진짜 md 제목(`#`~`######` + 공백/줄끝)인 줄 앞에 백슬래시를 붙인다. `#해시태그`는 그대로."""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return re.sub(r"^([ \t]*)(#{1,6}(?=\s|$))", r"\1\\\2", text, flags=re.MULTILINE)
 
 
 def _finite(value: Any, name: str) -> float:
@@ -157,6 +158,9 @@ def validate(data: dict) -> dict:
         sections.append(s)
         prev = s["end"]
     out = {**data, "title": title, "sections": sections}
+    for key in ("topic", "source"):
+        if data.get(key) is not None:
+            out[key] = _one_line(data[key])
     if prep is not None:
         out["prep"] = [line for line in (_one_line(p) for p in prep) if line]
     return out

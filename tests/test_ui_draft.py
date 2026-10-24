@@ -147,7 +147,8 @@ def test_detail_body_and_bad_paths(client, home):
     assert body["target_sec"] == 60.0 and body["pacing"]["avg_cut_sec"] == 2.61
     assert [p["heading"] for p in body["body"]] == ["", "개요", "대본", "아키타입 비교", "준비물", "내 메모"]
     assert body["conti"] is None and body["html"] is None
-    for bad in ["../x.md", "drafts/x-conti.md", "refs/a.md", "drafts/x.txt"]:
+    for bad in ["../x.md", "drafts/x-conti.md", "refs/a.md", "drafts/x.txt",
+                r"drafts\..\x.md", str(home / "refs" / "a.md")]:
         assert client.json("GET", f"/api/draft?path={bad}")[1]["error"] == "bad_path", bad
     assert client.json("GET", "/api/draft")[1]["error"] == "bad_request"
     assert client.json("GET", "/api/draft?path=drafts/none.md")[1]["error"] == "draft_not_found"

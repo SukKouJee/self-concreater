@@ -200,7 +200,7 @@ def _run(req: Request) -> dict:
         raise ScriptError("bad_request", "source가 필요합니다")
     topic = _topic(body.get("topic"))
     target_sec = _target_sec(body.get("target_sec"))
-    context = draft.context(category, source, topic)      # 없는 출처는 작업 전에 source_not_found
+    context = draft.context(category, source, topic)      # 작업 전에 출처를 확인한다(없으면 source_not_found)
     claude_cli.find_claude()                              # claude가 없으면 작업을 만들지 않는다
     items = [new_item(category, title=context["source"]["title"], step="context")]
     job = req.app.jobs.start(KIND, run_target(category, source, topic, target_sec), items=items, category=category)

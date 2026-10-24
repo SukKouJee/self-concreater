@@ -213,3 +213,32 @@ def test_validate_single_lines_and_heading_escape(home):
 def test_cli_save_still_works(home):
     draft_file(home)
     assert draft.main(["save", CAT, "--draft", "workspace/tmp/draft.json"])["path"].startswith("drafts/")
+
+
+def test_hashtag_lines_kept_and_headings_round_trip(home):
+    from scripts import conti
+    data = json.loads(json.dumps(DRAFT))
+    data["archetype"] = None
+    data["sections"][0]["script"] = "#해시태그\n## 내 메모\n#### 넷\n#"
+    out = draft.save(CAT, draft_file(home, data))
+    _, body = refstore.read_md(home / out["path"])
+    assert [ln for ln in body.split("\n") if ln == "## 내 메모"] == ["## 내 메모"]
+    assert "\n#해시태그\n" in body and "\## 내 메모" in body
+    script = conti.parse_draft(home / out["path"])["sections"][0]["script"]
+    assert script == "#해시태그\n## 내 메모\n#### 넷\n#"
+
+
+def test_validate_folds_topic_and_source():
+    data = json.loads(json.dumps(DRAFT))
+    data["topic"] = "x\n## 내 메모\ny"
+    data["source"] = "a\r\nb"
+    out = draft.validate(data)
+    assert out["topic"] == "x ## 내 메모 y" and out["source"] == "a b"
+    data["topic"] = None
+    assert draft.validate(data)["topic"] is None
+
+
+def test_validate_normalizes_carriage_returns_in_script():
+    data = json.loads(json.dumps(DRAFT))
+    data["sections"][0]["script"] = "a\r## b\r\n## c"
+    assert draft.validate(data)["sections"][0]["script"] == "a\n\## b\n\## c"
