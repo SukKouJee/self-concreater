@@ -296,3 +296,22 @@ def test_srt_fit_job_fails_with_message_when_video_cannot_be_read(client, home, 
     assert status == 200
     job = wait_for(client, body["job"]["id"], lambda j: j["status"] != "running")
     assert job["status"] == "failed" and job["message"] and job["items"][0]["state"] == "failed"
+
+
+def test_srt_fit_rejects_non_video_and_empty_files_without_job(client, home, draft_md, tmp_path):
+    saved = saved_conti(home, draft_md)
+    (tmp_path / "notes.txt").write_text("x", encoding="utf-8")
+    (tmp_path / "empty.mp4").write_bytes(b"")
+    for name in ("notes.txt", "empty.mp4"):
+        status, body = client.json("POST", "/api/conti/srt-fit",
+                                   {"path": rel(home, saved), "video": str(tmp_path / name)})
+        assert status == 400 and body["error"] == "bad_video"
+    assert client.app.jobs.current("srtfit") is None
+
+
+def test_srt_fit_rejects_conti_without_cuts(client, home, draft_md, sample_video, monkeypatch):
+    saved = saved_conti(home, draft_md)
+    monkeypatch.setattr(conti, "_load_conti", lambda path: {"cuts": [], "script": []})
+    status, body = client.json("POST", "/api/conti/srt-fit", {"path": rel(home, saved), "video": str(sample_video)})
+    assert status == 400 and "콘티에 컷이 없습니다" in body["message"]
+    assert client.app.jobs.current("srtfit") is None

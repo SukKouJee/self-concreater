@@ -222,3 +222,30 @@ def test_detect_cuts_rejects_unreadable_file(tmp_path):
     with pytest.raises(ScriptError) as exc:
         cuts.detect_cuts(tmp_path / "missing.mp4")
     assert exc.value.code == "bad_video"
+
+
+class _NoFrameCount:
+    """CAP_PROP_FRAME_COUNT를 0으로 돌려주는 VideoCapture 래퍼(컨테이너에 프레임 수가 없는 영상 흉내)."""
+
+    def __init__(self, real):
+        self._real = real
+
+    def get(self, prop):
+        return 0 if prop == cv2.CAP_PROP_FRAME_COUNT else self._real.get(prop)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def test_detect_cuts_falls_back_when_frame_count_is_missing(sample_video, monkeypatch):
+    real = cv2.VideoCapture
+    monkeypatch.setattr(cuts.cv2, "VideoCapture", lambda *a, **k: _NoFrameCount(real(*a, **k)))
+    result = cuts.detect_cuts(sample_video)
+    assert result["duration_sec"] == pytest.approx(6.0, abs=0.1) and len(result["cuts"]) == 2
+
+
+def test_detect_cuts_with_korean_file_name(sample_video, tmp_path):
+    korean = tmp_path / "편집본.mp4"
+    shutil.copy(sample_video, korean)
+    result = cuts.detect_cuts(korean)
+    assert len(result["cuts"]) == 2 and result["duration_sec"] == pytest.approx(6.0, abs=0.1)

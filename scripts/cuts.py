@@ -205,7 +205,7 @@ def detect_cuts(path: Path) -> dict:
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     finally:
         cap.release()
-    if fps <= 0 or total <= 0:
+    if fps <= 0:
         raise ScriptError("bad_video", f"영상 길이를 읽을 수 없습니다: {Path(path).name}")
     try:
         scenes = detect(
@@ -215,8 +215,14 @@ def detect_cuts(path: Path) -> dict:
         )
     except (OSError, ValueError, RuntimeError, cv2.error) as e:
         raise ScriptError("bad_video", f"영상에서 컷을 찾지 못했습니다: {Path(path).name} ({e})") from e
+    if total > 0:
+        duration = total / fps
+    elif scenes:
+        duration = scenes[-1][1].frame_num / fps        # 컨테이너에 프레임 수가 없으면 장면 감지가 읽은 끝을 쓴다
+    else:
+        raise ScriptError("bad_video", f"영상 길이를 읽을 수 없습니다: {Path(path).name}")
     return {
-        "duration_sec": round(total / fps, 3),
+        "duration_sec": round(duration, 3),
         "fps": round(fps, 2),
         "cuts": [round(start.frame_num / fps, 3) for start, _ in scenes[1:]],
     }

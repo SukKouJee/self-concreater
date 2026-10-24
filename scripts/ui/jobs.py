@@ -5,7 +5,7 @@
   - awaiting: 어떤 항목이 사용자 결정을 기다리는 중
   - stopped: 차단으로 남은 항목을 건너뛰었거나 `cancel()`/`shutdown()`으로 멈춤
   - failed: 작업 함수가 예상치 못한 오류로 끝남(진행 중 항목은 failed, 남은 항목은 skipped)
-- item.state: waiting → running → (awaiting → running)* → saved | skipped | failed
+- item.state: waiting → running → (awaiting → running)* → saved | done | skipped | failed (done: 확인이 필요 없는 작업의 정상 끝, 예: srtfit)
 
 동시성
 - 상태는 모두 `Job._lock` 아래에서 바뀐다. 바깥에는 `snapshot()`(깊은 복사)만 내준다.

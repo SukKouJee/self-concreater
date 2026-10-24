@@ -683,7 +683,8 @@ def _srt_text(text: Any) -> str:
 
 _THRESHOLDS = json.loads((TEMPLATES_DIR / "thresholds.json").read_text("utf-8"))
 SRT_FIT = _THRESHOLDS["srt"]
-MIN_GAP_SEC = 0.01             # 맞출 컷이 없을 때 경계 사이 최소 간격
+VIDEO_EXTENSIONS = frozenset({".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi"})
+MIN_GAP_SEC = 0.01            # 맞출 컷이 없을 때 경계 사이 최소 간격
 
 
 def retime_boundaries(planned: list[float], actual_duration: float, cuts: list[float],
@@ -692,6 +693,7 @@ def retime_boundaries(planned: list[float], actual_duration: float, cuts: list[f
     if len(planned) < 2 or planned[-1] <= 0 or actual_duration <= 0:
         raise ScriptError("bad_request", "계획 경계와 영상 길이가 필요합니다")
     scale = actual_duration / planned[-1]
+    limit = actual_duration - MIN_GAP_SEC        # 끝 경계와 0.01초 이상 떨어진 컷만 맞춘다
     boundaries = [0.0]
     used: set[int] = set()
     snapped = 0
@@ -699,14 +701,14 @@ def retime_boundaries(planned: list[float], actual_duration: float, cuts: list[f
         prev_mapped = boundaries[-1]
         t = planned[i] * scale
         tol = max(snap_min, snap_ratio * min(planned[i] - planned[i - 1], planned[i + 1] - planned[i]) * scale)
-        near = [(abs(c - t), c, k) for k, c in enumerate(cuts) if k not in used and c > prev_mapped and abs(c - t) <= tol]
+        near = [(abs(c - t), c, k) for k, c in enumerate(cuts) if k not in used and prev_mapped < c <= limit and abs(c - t) <= tol]
         if near:
             _, chosen, k = min(near)            # 거리 같으면 시각이 앞선 컷
             used.add(k)
             snapped += 1
             boundaries.append(chosen)
         else:
-            boundaries.append(max(t, prev_mapped + MIN_GAP_SEC))
+            boundaries.append(max(min(t, limit), prev_mapped + MIN_GAP_SEC))
     boundaries.append(actual_duration)
     return {"boundaries": boundaries, "scale": scale, "snapped": snapped,
             "inner": len(planned) - 2, "detected": len(cuts)}
@@ -722,10 +724,15 @@ def _clean_video_path(value: Any) -> Path:
     try:
         path = _resolve(text)
         is_file = path.is_file()
+        size = path.stat().st_size if is_file else 0
     except (OSError, ValueError) as e:
         raise ScriptError("bad_video", f"잘못된 영상 경로입니다: {text}") from e
     if not is_file:
         raise ScriptError("bad_video", f"영상 파일을 찾을 수 없습니다: {text}")
+    if path.suffix.lower() not in VIDEO_EXTENSIONS:
+        raise ScriptError("bad_video", f"영상 파일이 아닙니다(mp4, mov, m4v, mkv, webm, avi): {path.name}")
+    if size <= 0:
+        raise ScriptError("bad_video", f"비어 있는 파일입니다: {path.name}")
     return path
 
 
@@ -733,6 +740,8 @@ def _srt_blocks(cuts: list[dict], field: str, spans_ms: list[tuple[int, int]]) -
     """컷별 [시작ms, 끝ms]에서 자막 블록을 만든다: 빈 컷은 건너뛰고, 시간이 이어지는 같은 자막은 합친다."""
     blocks: list[list[Any]] = []          # [start_ms, end_ms, text]
     for cut, (start, end) in zip(cuts, spans_ms):
+        if end <= start:
+            continue                      # 길이가 없는 구간은 자막으로 내지 않는다
         text = _srt_text(cut.get(field))
         if not text:
             continue

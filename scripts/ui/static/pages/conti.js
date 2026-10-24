@@ -600,9 +600,12 @@ function adoptFit(job) {
   if (job.status === "done" && item && item.state === "done" && item.preview) {
     S.fitDone = { preview: item.preview };
     S.fitError = "";
+    const r = item.preview.retime || {};
+    announce(`자막 시간 맞추기가 끝났습니다. 컷 ${r.snapped ?? 0}/${r.inner ?? 0}개를 맞췄습니다`);
   } else if (job.status === "failed" || job.status === "stopped") {
     S.fitDone = null;
     S.fitError = (item && item.message) || job.message || "시간 맞추기가 중단되었습니다";
+    announce(`자막 시간 맞추기 실패: ${S.fitError}`);
   }
 }
 

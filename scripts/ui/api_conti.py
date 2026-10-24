@@ -249,6 +249,8 @@ def _srt_fit(req: Request) -> dict:
     track = body.get("track", "caption")
     if not isinstance(track, str) or track not in conti.SRT_TRACKS:
         raise ScriptError("bad_request", "track은 caption 또는 line이어야 합니다")
+    if not conti._load_conti(path)["cuts"]:
+        raise ScriptError("bad_request", "콘티에 컷이 없습니다")
     video = conti._clean_video_path(body.get("video"))       # 작업을 만들기 전에 영상 경로부터 확인
     items = [new_item(_rel(path), title=path.name, step="detect")]
     job = req.app.jobs.start("srtfit", srt_fit_target(path, track, video), items=items)

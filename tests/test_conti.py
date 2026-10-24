@@ -639,3 +639,32 @@ def test_export_srt_with_video_scale_warning_bounds(saved, monkeypatch, sample_v
     monkeypatch.setattr(cuts, "detect_cuts", lambda path: {"duration_sec": actual, "fps": 30.0, "cuts": [actual / 2]})
     warnings = conti.export_srt(saved, video=sample_video)["retime"]["warnings"]
     assert any("많이 다릅니다" in w for w in warnings) is warns
+
+
+# --- 검증·경계 보강 -------------------------------------------------------------------------
+
+def test_clean_video_path_requires_video_extension_and_content(tmp_path):
+    (tmp_path / "a.txt").write_text("x", encoding="utf-8")
+    (tmp_path / "empty.mp4").write_bytes(b"")
+    (tmp_path / "ok.MOV").write_bytes(b"x")
+    for name in ("a.txt", "empty.mp4"):
+        with pytest.raises(ScriptError) as e:
+            conti._clean_video_path(str(tmp_path / name))
+        assert e.value.code == "bad_video"
+    assert conti._clean_video_path(str(tmp_path / "ok.MOV")).name == "ok.MOV"      # 대소문자 무시
+
+
+def test_retime_never_snaps_to_a_cut_at_the_very_end():
+    out = conti.retime_boundaries([0, 1, 2, 3], 3.0, [1.0, 2.9996], 1.5, 0.0)
+    b = out["boundaries"]
+    assert all(y - x >= 0.01 for x, y in zip(b, b[1:])) and b[-1] == 3.0
+
+
+def test_retime_fallback_is_clamped_below_the_end():
+    b = conti.retime_boundaries([0, 1, 1.001, 2], 2.0, [], 0.4, 0.0)["boundaries"]
+    assert b[-1] == 2.0 and all(x < y for x, y in zip(b, b[1:])) and b[-2] <= 2.0 - 0.01
+
+
+def test_srt_blocks_skip_zero_length_spans():
+    blocks = conti._srt_blocks([{"caption": "A"}, {"caption": "B"}], "caption", [(0, 1000), (1000, 1000)])
+    assert [(a, b, t) for a, b, t in blocks] == [(0, 1000, "A")]
