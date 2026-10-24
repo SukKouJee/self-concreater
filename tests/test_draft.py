@@ -330,10 +330,52 @@ def test_save_without_library_source_has_no_template_line(home):
     assert "- 틀:" not in (home / out["path"]).read_text("utf-8")
 
 
-def test_save_library_source_that_vanished_writes_nothing(home, monkeypatch):
+def test_save_uses_template_value_without_calling_library(home, monkeypatch):
+    from scripts import library
+
+    def boom(*a, **kw):
+        raise AssertionError("library must not be consulted")
+
+    monkeypatch.setattr(library, "get", boom)
+    data = {**DRAFT, "source": "library:alice-20261024-bbbbbb", "archetype": None,
+            "template": {"author": " Alice ", "title": "여행   브이로그 3분"}}
+    out = draft.save(CAT, draft_file(home, data))
+    fm, body = refstore.read_md(home / out["path"])
+    assert fm["source"] == "library:alice-20261024-bbbbbb"
+    assert "- 틀: Alice의 여행 브이로그 3분" in body
+
+
+def test_save_succeeds_when_library_disconnected_or_template_deleted(home, monkeypatch):
+    from tests import library_fixtures as lf
+    lf.install(monkeypatch, connected=False)
+    data = {**DRAFT, "source": "library:nobody-20261024-ffffff", "archetype": None}
+    out = draft.save(CAT, draft_file(home, data))
+    fm, body = refstore.read_md(home / out["path"])
+    assert fm["source"] == "library:nobody-20261024-ffffff" and fm["category"] == CAT
+    assert "- 틀: 지인 틀(nobody-20261024-ffffff)" in body
+
+
+def test_save_without_template_falls_back_to_library_lookup(home, monkeypatch):
     from tests import library_fixtures as lf
     lf.install(monkeypatch)
+    out = draft.save(CAT, draft_file(home, {**DRAFT, "source": f"library:{lf.TEMPLATE_ID}", "archetype": None}))
+    assert "- 틀: Alice의 여행 브이로그 3분" in (home / out["path"]).read_text("utf-8")
+
+
+@pytest.mark.parametrize("template", ["Alice", {"author": "Alice"}, {"author": "", "title": "t"}])
+def test_validate_rejects_malformed_template(template):
     with pytest.raises(ScriptError) as exc:
-        draft.save(CAT, draft_file(home, {**DRAFT, "source": "library:nobody-20261024-ffffff"}))
+        draft.validate({**DRAFT, "template": template})
+    assert exc.value.code == "invalid_draft"
+
+
+def test_validate_truncates_template_fields():
+    out = draft.validate({**DRAFT, "template": {"author": "a" * 100, "title": "t" * 300}})["template"]
+    assert len(out["author"]) == 40 and len(out["title"]) == 100
+
+
+@pytest.mark.parametrize("source", ["library:../../profile", "library:nobody-20261024-ffffff"])
+def test_context_library_source_without_fakes_is_library_item_missing(home, source):
+    with pytest.raises(ScriptError) as exc:
+        draft.context(CAT, source)
     assert exc.value.code == "library_item_missing"
-    assert not (home / "drafts").exists() or not list((home / "drafts").glob("*.md"))

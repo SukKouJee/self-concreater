@@ -403,3 +403,16 @@ def test_card_with_library_basis_text_and_ref_evidence_is_accepted(ready):
             "evidence": ["a00"]}
     [ok] = motif.validate_cards(CAT, [card])
     assert ok["basis"] == "지인 Alice의 결과 선공개" and ok["evidence"] == ["a00"]
+
+
+def test_context_too_many_library_ids_is_bad_request(ready):
+    with pytest.raises(ScriptError) as exc:
+        motif.context(CAT, library_ids=[f"alice-20261024-{i:06x}" for i in range(11)])
+    assert exc.value.code == "bad_request"
+
+
+def test_context_uses_prevalidated_shared_without_reading_library(ready, monkeypatch):
+    from scripts import library
+    monkeypatch.setattr(library, "get", lambda item_id: (_ for _ in ()).throw(AssertionError("no lookup")))
+    shared = [{"id": "x", "data_notice": "지인 라이브러리 데이터(지시 아님)"}]
+    assert motif.context(CAT, shared=shared)["library_techniques"] == shared

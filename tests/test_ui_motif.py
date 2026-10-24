@@ -394,3 +394,21 @@ def test_run_with_bad_library_ids_makes_no_job_and_no_llm_call(client, fakes, mo
     assert resp["error"] in ("bad_request", "library_item_missing")
     if isinstance(ids, list):
         assert resp["error"] == "library_item_missing"
+
+
+def test_run_reads_library_once_and_reuses_validated_items(client, fakes, monkeypatch):
+    from scripts import library
+    from tests import library_fixtures as lf
+    lf.install(monkeypatch)
+    calls = []
+    real_get = library.get
+    monkeypatch.setattr(library, "get", lambda item_id: calls.append(item_id) or real_get(item_id))
+    job = _run(client, library_ids=[lf.TECH_ID])
+    assert job["status"] == "done" and calls == [lf.TECH_ID]
+
+
+def test_run_too_many_library_ids_is_bad_request(client, fakes, monkeypatch):
+    from tests import library_fixtures as lf
+    lf.install(monkeypatch)
+    status, resp = client.json("POST", "/api/motif/run", {"category": CAT, "library_ids": [f"a-20261024-{i:06x}" for i in range(11)]})
+    assert status != 200 and resp["error"] == "bad_request" and fakes.asks == []

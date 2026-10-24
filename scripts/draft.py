@@ -22,7 +22,7 @@ from typing import Any
 
 from scripts import motif, refstore
 from scripts.features import SHOT_SIZES
-from scripts.common import ArgParser, ScriptError, run, work_root
+from scripts.common import DATA_NOTICE, ArgParser, ScriptError, run, work_root
 from scripts.videomd import BODY_SUBS, HOOK_TYPES, LABELS, NARRATIVE_TYPES, fmt_time, title_patterns
 
 _ARCHETYPE_RE = re.compile(r"^A\d+$")
@@ -63,16 +63,15 @@ def context(category: str, source: str, topic: str | None = None) -> dict:
 
     if source.startswith(LIBRARY_PREFIX):
         # 틀은 어느 카테고리 것이든 뼈대로만 쓴다. 기획안은 항상 내 카테고리(category)에 만든다.
-        from scripts import library
-
         item = _library_template(source)
         fm = item["frontmatter"]
         src = {
-            "kind": "library_template", "id": source, "title": item["title"], "data_notice": library.DATA_NOTICE,
+            "kind": "library_template", "id": source, "title": item["title"], "data_notice": DATA_NOTICE,
             "author": item["author"], "template_category": item["category"], "note": item.get("note"),
             "worked": item["worked"], "target_sec": item["target_sec"], "hook_type": item["hook_type"],
             "narrative_type": item["narrative_type"], "sections": fm.get("sections"), "pacing": fm.get("pacing"),
             "shot_mix": fm.get("shot_mix"), "text": item["body"][:LIBRARY_BODY_LIMIT],
+            "template": {"author": item["author"], "title": item["title"]},   # save에 그대로 복사한다(라이브러리 없이 저장)
         }
     elif _ARCHETYPE_RE.match(source):
         arc = next((a for a in archetypes if a["id"] == source), None)
@@ -127,6 +126,19 @@ def _finite(value: Any, name: str) -> float:
     if not math.isfinite(number):
         raise _invalid(f"{name}은(는) 유한한 숫자여야 합니다")
     return number
+
+
+TEMPLATE_LIMITS = {"author": 40, "title": 100}
+
+
+def _clean_template(value: Any) -> dict:
+    """지인 틀 표시용 {author, title}: 한 줄로 접고 길이를 자른다. 모양이 틀리면 invalid_draft."""
+    if not isinstance(value, dict):
+        raise _invalid("template은 {author, title} 객체여야 합니다")
+    out = {k: _one_line(value.get(k) or "")[:n] for k, n in TEMPLATE_LIMITS.items()}
+    if not all(out.values()):
+        raise _invalid("template의 author와 title이 필요합니다")
+    return out
 
 
 def validate(data: dict) -> dict:
@@ -192,6 +204,8 @@ def validate(data: dict) -> dict:
     for key in ("topic", "source"):
         if data.get(key) is not None:
             out[key] = _one_line(data[key])
+    if data.get("template") is not None:
+        out["template"] = _clean_template(data["template"])
     if prep is not None:
         out["prep"] = [line for line in (_one_line(p) for p in prep) if line]
     return out
@@ -238,8 +252,8 @@ def _pct(x: float) -> str:
     return f"{round(x * 100)}%"
 
 
-def render(data: dict, pacing: dict, comp: dict | None, template: dict | None = None) -> str:
-    origin = [f"- 틀: {_one_line(template['author'])}의 {_one_line(template['title'])}"] if template else []
+def render(data: dict, pacing: dict, comp: dict | None, template_line: str | None = None) -> str:
+    origin = [f"- 틀: {template_line}"] if template_line else []
     out = [f"# {data['title']}", "", "## 개요",
            f"- 주제: {data.get('topic') or '-'}",
            f"- 출처: {data.get('source') or '-'}" + (f" · 아키타입 {comp['archetype']} {comp['name']}" if comp else ""),
@@ -278,6 +292,18 @@ def find_archetype(category: str, archetype_id: Any) -> dict | None:
     return next((a for a in archetypes if a["id"] == archetype_id), None)
 
 
+def _template_line(data: dict) -> str:
+    """개요의 "틀:" 줄. 저장은 라이브러리에 의존하지 않는다: draft JSON의 template -> 조회 -> 대체 문구 순."""
+    tpl = data.get("template")
+    if not tpl:
+        try:
+            item = _library_template(data["source"])
+            tpl = {"author": _one_line(item["author"]), "title": _one_line(item["title"])}
+        except ScriptError:
+            return f"지인 틀({data['source'][len(LIBRARY_PREFIX):]})"       # 연결이 끊겼거나 삭제됨: 저장은 막지 않는다
+    return f"{tpl['author']}의 {tpl['title']}"
+
+
 def save(category: str, draft_path: Path) -> dict:
     refstore.existing_category_dir(category)
     try:
@@ -289,7 +315,7 @@ def save(category: str, draft_path: Path) -> dict:
     pacing = planned_pacing(data["sections"])
     comp = compare(data["sections"], archetype)
     source = data.get("source")
-    template = _library_template(source) if isinstance(source, str) and source.startswith(LIBRARY_PREFIX) else None
+    template_line = _template_line(data) if isinstance(source, str) and source.startswith(LIBRARY_PREFIX) else None
 
     today = date.today().isoformat()
     drafts = work_root() / "drafts"
@@ -305,7 +331,7 @@ def save(category: str, draft_path: Path) -> dict:
         "title_pattern": title_patterns(data["title"]), "pacing": pacing,
         "status": "script" if data.get("script_only") else "draft", "schema_version": 1,
     }
-    content = refstore.join_frontmatter(fm, render(data, pacing, comp, template)).encode("utf-8")
+    content = refstore.join_frontmatter(fm, render(data, pacing, comp, template_line)).encode("utf-8")
     path, i = drafts / f"{base}.md", 2
     while True:
         try:

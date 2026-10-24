@@ -333,6 +333,7 @@ def test_sources_include_library_group_only_when_connected(client, monkeypatch):
     assert group["label"] == "지인 틀"
     assert [t["id"] for t in group["items"]] == [lf.TEMPLATE_ID]
     assert group["items"][0]["author"] == "Alice" and "note" not in group["items"][0]
+    assert group["items"][0]["source"] == f"library:{lf.TEMPLATE_ID}"
 
 
 def test_sources_omit_library_group_when_not_connected(client, monkeypatch):
@@ -342,11 +343,12 @@ def test_sources_omit_library_group_when_not_connected(client, monkeypatch):
     assert status == 200 and "library_templates" not in body
 
 
-def test_sources_survive_library_errors(client, monkeypatch):
+@pytest.mark.parametrize("error", [ScriptError("library_busy", "다른 작업 중입니다"), OSError("읽기 실패")])
+def test_sources_survive_library_errors(client, monkeypatch, error):
     from scripts import library
 
     def boom():
-        raise ScriptError("library_busy", "다른 작업 중입니다")
+        raise error
 
     monkeypatch.setattr(library, "status", boom)
     status, body = client.json("GET", f"/api/draft/sources?category={CAT}")
@@ -369,3 +371,19 @@ def test_run_with_missing_library_template_makes_no_job(client, fakes, monkeypat
     lf.install(monkeypatch)
     status, resp = client.json("POST", "/api/draft/run", {"category": CAT, "source": "library:nobody-20261024-ffffff"})
     assert status != 200 and resp["error"] == "library_item_missing" and fakes.asks == []
+
+
+def test_save_after_library_gone_uses_template_from_preview_job(client, home, fakes, monkeypatch):
+    from tests import library_fixtures as lf
+    lf.install(monkeypatch)
+    source = f"library:{lf.TEMPLATE_ID}"
+    fakes.data = {**copy.deepcopy(DRAFT), "source": source}
+    job = _run(client, source=source)
+    preview = job["items"][0]["preview"]
+    assert preview["source"]["template"] == {"author": "Alice", "title": "여행 브이로그 3분"}
+    lf.install(monkeypatch, connected=False)                       # 미리보기 뒤에 라이브러리가 사라졌다
+    sent = {**preview["draft"], "template": {"author": "위조", "title": "위조"}}
+    status, resp = client.json("POST", "/api/draft/save", {"category": CAT, "draft": sent, "job_id": job["id"]})
+    assert status == 200, resp
+    body = (home / resp["path"]).read_text("utf-8")
+    assert "- 틀: Alice의 여행 브이로그 3분" in body and "위조" not in body

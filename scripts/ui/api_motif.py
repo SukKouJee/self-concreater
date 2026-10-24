@@ -103,11 +103,11 @@ def _status(req: Request) -> dict:
 
 # ---- 실행(작업) -------------------------------------------------------------------------
 
-def run_target(category: str, topic: str | None, library_ids: list[str] | None = None) -> Any:
+def run_target(category: str, topic: str | None, shared: list[dict] | None = None) -> Any:
     def target(job: Job) -> None:
         job.update(0, state="running", step="context")
         job.check_cancelled()
-        payload = motif.context(category, topic, library_ids)
+        payload = motif.context(category, topic, shared=shared or [])
         if payload["stage"] == 3 and payload["typify"] is None:
             payload["allowed_types"] = ["technique", "angle"]
         allowed = payload["allowed_types"]
@@ -134,10 +134,10 @@ def _run(req: Request) -> dict:
     library_ids = _library_ids(req.json.get("library_ids"))
     if refstore.count(category)["ref"] == 0:
         raise ScriptError("no_refs", "먼저 레퍼런스를 넣어 주세요")
-    motif.library_techniques(library_ids)      # 없는·틀인 지인 id는 작업을 만들기 전에 library_item_missing
+    shared = motif.library_techniques(library_ids)      # 없는·틀인 지인 id는 작업을 만들기 전에 library_item_missing
     llm.check()                          # claude가 없으면 작업을 만들지 않는다
     items = [new_item(category, title=category, step="context")]
-    job = req.app.jobs.start(KIND, run_target(category, topic, library_ids), items=items, category=category)
+    job = req.app.jobs.start(KIND, run_target(category, topic, shared), items=items, category=category)
     return {"job": job.snapshot()}
 
 

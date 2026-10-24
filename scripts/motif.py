@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from scripts import features, refstore
-from scripts.common import ArgParser, ScriptError, run, work_root, workspace_dir
+from scripts.common import DATA_NOTICE, ArgParser, ScriptError, run, work_root, workspace_dir
 
 TYPES = ["flow", "technique", "angle", "combo"]
 TYPE_KO = {"flow": "흐름", "technique": "기법", "angle": "각도", "combo": "조합"}
@@ -189,11 +189,11 @@ def library_techniques(library_ids: list[str] | None) -> list[dict]:
     없거나 읽을 수 없는 id, 기법이 아닌 항목(틀 등)은 library_item_missing — LLM 호출 전에 막는다."""
     if not library_ids:
         return []
-    from scripts import library                      # library가 motif를 import하므로 지연 import
-
     ids = list(dict.fromkeys(library_ids))
     if len(ids) > MAX_LIBRARY_TECHNIQUES:
-        raise ScriptError("library_item_missing", f"지인 기법은 한 번에 {MAX_LIBRARY_TECHNIQUES}개까지 고를 수 있습니다")
+        raise ScriptError("bad_request", f"지인 기법은 한 번에 {MAX_LIBRARY_TECHNIQUES}개까지 고를 수 있습니다")
+    from scripts import library                      # library가 motif를 import하므로 지연 import
+
     out = []
     for item_id in ids:
         try:
@@ -204,15 +204,18 @@ def library_techniques(library_ids: list[str] | None) -> list[dict]:
         if item["kind"] != "technique":
             raise ScriptError("library_item_missing", f"기법이 아닌 항목입니다(틀은 모티브 재료로 쓸 수 없습니다): {item_id}")
         out.append({
-            "data_notice": library.DATA_NOTICE, "id": item["id"], "author": item["author"],
+            "data_notice": DATA_NOTICE, "id": item["id"], "author": item["author"],
             "technique_kind": item["technique_kind"], "name": item["name"], "note": item.get("note"),
             "worked": item["worked"], "description": item["body"][:LIBRARY_BODY_LIMIT],
         })
     return out
 
 
-def context(category: str, topic: str | None = None, library_ids: list[str] | None = None) -> dict:
-    shared = library_techniques(library_ids)         # 파일을 읽기 전에 먼저 검증
+def context(category: str, topic: str | None = None, library_ids: list[str] | None = None,
+            shared: list[dict] | None = None) -> dict:
+    """shared: 이미 `library_techniques`로 검증한 지인 기법(있으면 library_ids 대신 그대로 쓴다)."""
+    if shared is None:
+        shared = library_techniques(library_ids)     # 파일을 읽기 전에 먼저 검증
     cat = refstore.existing_category_dir(category)
     index_fm, index, _ = _read(cat / "index.md")
     _, tech_body, _ = _read(cat / "techniques.md")

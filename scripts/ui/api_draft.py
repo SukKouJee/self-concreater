@@ -111,10 +111,10 @@ def _library_templates() -> list[dict] | None:
         if not library.status().get("connected"):
             return None
         found = library.search(kind="template")
-    except ScriptError:
+    except (ScriptError, OSError):
         return None                       # 출처 목록은 라이브러리 때문에 실패하지 않는다
     keys = ("id", "title", "author", "category", "target_sec", "hook_type", "narrative_type", "worked")
-    return [{k: t.get(k) for k in keys} for t in found["items"]]
+    return [{**{k: t.get(k) for k in keys}, "source": f"{draft.LIBRARY_PREFIX}{t['id']}"} for t in found["items"]]
 
 
 @route("GET", "/api/draft/sources")
@@ -241,6 +241,21 @@ def _run(req: Request) -> dict:
 
 # ---- 저장 -------------------------------------------------------------------------------
 
+def _job_template(req: Request, job_id: Any, category: str, source: Any) -> dict | None:
+    """미리보기 작업이 들고 있는 지인 틀 표시값. 저장이 라이브러리에 기대지 않게 서버가 작업에서 복사한다."""
+    if not isinstance(job_id, str) or not isinstance(source, str) or not source.startswith(draft.LIBRARY_PREFIX):
+        return None
+    try:
+        job = req.app.jobs.get(job_id)
+        preview = job.item(0).get("preview") or {}
+    except ScriptError:
+        return None
+    src = preview.get("source") or {}
+    if job.kind != KIND or job.category != category or src.get("id") != source:
+        return None
+    return src.get("template")
+
+
 def _mark_saved(req: Request, job_id: Any, category: str) -> None:
     """미리보기 항목이 아직 저장 대기면 저장됨으로 바꾼다. 없는 작업·다른 종류는 무시."""
     if not isinstance(job_id, str):
@@ -257,7 +272,12 @@ def _mark_saved(req: Request, job_id: Any, category: str) -> None:
 def _save(req: Request) -> dict:
     body = req.json
     category = _category(body.get("category"))
-    data = draft.validate(body.get("draft"))
+    raw = body.get("draft")
+    if isinstance(raw, dict):
+        template = _job_template(req, body.get("job_id"), category, raw.get("source"))
+        if template:
+            raw = {**raw, "template": template}       # 클라이언트 값보다 작업에 저장된 값을 쓴다
+    data = draft.validate(raw)
     tmp_dir = workspace_dir("tmp")
     tmp_dir.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix="draft_ui_", suffix=".json", dir=tmp_dir)   # 요청마다 고유한 파일
