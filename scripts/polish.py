@@ -369,7 +369,7 @@ def _hook_heading(lines: list[str]) -> int | None:
 
 def _escape_script(script: str) -> str:
     """제목처럼 보이는 줄(`#`)과 표처럼 보이는 줄(`|`) 앞에 백슬래시를 붙인다. 읽을 때(conti.parse_draft)는 되돌린다."""
-    return re.sub(r"^\|", lambda m: "\\|",_escape_headings(script), flags=re.MULTILINE)
+    return re.sub(r"^\|", lambda m: "\\|", _escape_headings(script), flags=re.MULTILINE)
 
 
 def _hook_end(lines: list[str], heading: int) -> int:
@@ -402,12 +402,15 @@ def _swap_hook(lines: list[str], heading: int, script: str) -> tuple[list[str], 
 
 
 def _set_overview_hook(lines: list[str], hook_type: str) -> list[str]:
-    """`## 개요`의 첫 `- 훅: X` 줄의 X만 바꾼다(` · 서사: …`는 그대로)."""
-    out, done = [], False
-    for line in lines:
-        if not done and line.startswith("- 훅: "):
-            line, done = re.sub(r"^(- 훅: )\S+", lambda m: m.group(1) + hook_type, line), True
-        out.append(line)
+    """`## 개요` 구간 안의 첫 `- 훅: X` 줄의 X만 바꾼다(` · 서사: …`는 그대로). 구간 밖(내 메모 등)은 건드리지 않는다."""
+    span = _find_section(lines, "## 개요")
+    if span is None:
+        return lines
+    out = list(lines)
+    for i in range(span[0] + 1, span[1]):
+        if out[i].startswith("- 훅: "):
+            out[i] = re.sub(r"^(- 훅: )\S+", lambda m: m.group(1) + hook_type, out[i])
+            break
     return out
 
 
@@ -484,7 +487,7 @@ def apply(draft: str | Path, choice: dict, expected_hash: str) -> dict:
                 if pick["hook_type"] and pick["hook_type"] != old_type:
                     fm["hook_type"] = pick["hook_type"]
                     lines = _set_overview_hook(lines, pick["hook_type"])
-                    entry.append(f"  - 이전 훅 유형: {old_type}")
+                    entry.append(f"  - 이전 훅 유형: {old_type or '없음'}")
                 if old_hook:
                     entry += ["  - 이전 훅 대본:", *(f"    > {line}" for line in old_hook.split("\n"))]
 

@@ -384,6 +384,18 @@ def test_apply_syncs_hook_type(draft_md, home):
     assert body_of(draft_md).count("- 훅:") == 1
 
 
+def test_apply_hook_type_never_touches_memo(draft_md, home):
+    # 개요에 '- 훅:' 줄이 없어도 내 메모의 같은 모양 줄은 바꾸지 않는다
+    text = draft_md.read_text(encoding="utf-8").replace("- 훅: question · 서사: list\n", "")
+    text = text.replace("## 내 메모\n", "## 내 메모\n- 훅: 내가 적어 둔 메모\n")
+    draft_md.write_text(text, encoding="utf-8")
+    rel = draft_md.relative_to(home).as_posix()
+    polish.apply(rel, choice(hook_type="shock_line"), sha(draft_md))
+    body = body_of(draft_md)
+    assert "- 훅: 내가 적어 둔 메모" in body
+    assert conti.refstore.read_md(draft_md)[0]["hook_type"] == "shock_line"
+
+
 def test_apply_hook_type_defaults_to_formula(draft_md, home):
     rel = draft_md.relative_to(home).as_posix()
     polish.apply(rel, choice(hook_formula="the-teardown"), sha(draft_md))          # situation
