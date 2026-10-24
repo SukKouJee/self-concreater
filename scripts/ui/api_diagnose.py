@@ -13,6 +13,7 @@ import json
 import os
 import re
 import tempfile
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -35,7 +36,9 @@ NOTES_SCHEMA: dict = {
     "required": ["summary", "gaps", "actions"],
 }
 AXIS_KO = {"structure": "구조", "hook": "훅", "narrative": "서사", "title": "제목", "pacing": "컷 속도", "shots": "샷"}
-NAME_RE = re.compile(r"^[A-Za-z0-9가-힣_.\-]{1,120}$")
+UNSAFE_NAME_CHARS = frozenset('<>:"/|?*' + chr(92))      # Windows 파일 이름에 못 쓰는 문자(+ 제어 문자는 따로 본다)
+MAX_NAME = 120
+WRITE_LOCK = threading.Lock()                     # 진단 기록(mine/*.md)의 읽고-고쳐-쓰기를 한 번에 하나씩
 MAX_KEY = 120
 RECORD_FIELDS = ("target", "date", "nearest", "proximity", "gaps", "intentional", "preliminary")
 
@@ -73,7 +76,9 @@ def _target_path(category: str, value: Any) -> Path:
 
 
 def _name(value: Any) -> str:
-    if not isinstance(value, str) or not NAME_RE.fullmatch(value) or value.startswith(".") or ".." in value:
+    """파일 이름으로 안전한지만 본다(save가 만드는 이름 — 유니코드·공백·괄호 — 은 허용)."""
+    if (not isinstance(value, str) or not 1 <= len(value) <= MAX_NAME or any(ord(c) < 32 or c in UNSAFE_NAME_CHARS for c in value)
+            or value.startswith(".") or ".." in value or value.endswith((".", " "))):
         raise ScriptError("bad_request", "진단 이름이 올바르지 않습니다")
     return value
 
@@ -129,7 +134,7 @@ def _targets(req: Request) -> dict:
     for path in sorted(folder.glob("*.md")) if folder.is_dir() else []:
         fm = _read(path)
         if fm is not None and fm.get("role") == "mine":
-            videos.append(_entry(category, root / path.relative_to(root), fm, str(fm.get("id") or path.stem)))
+            videos.append(_entry(category, path, fm, str(fm.get("id") or path.stem)))
     folder = root / "drafts"
     for path in sorted(folder.glob("*.md")) if folder.is_dir() else []:
         fm = _read(path)
@@ -214,7 +219,14 @@ def _save(req: Request) -> dict:
     body = req.json
     category = _category(body.get("category"))
     path = _target_path(category, body.get("target"))
-    result = _compare(category, path)                 # 저장 직전의 갭으로 검증한다(그 사이 의도한 차이가 바뀔 수 있다)
+    # similarity.save도 compare를 한 번 더 한다. 여기서 먼저 비교하는 것은 저장 직전의 갭으로 notes를 검증해
+    # 모양·누락 오류를 400으로 알리고 tmp 파일을 만들지 않기 위해서다(의도한 차이가 그 사이 바뀔 수 있다).
+    with WRITE_LOCK:
+        return _save_locked(req, body, category, path)
+
+
+def _save_locked(req: Request, body: dict, category: str, path: Path) -> dict:
+    result = _compare(category, path)
     notes = similarity.validate_notes(result, body.get("notes"))
     tmp_dir = workspace_dir("tmp")
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -244,8 +256,15 @@ def _intentional(req: Request) -> dict:
         raise ScriptError("bad_request", "on은 true/false여야 합니다")
     record = _record(category, name)                  # 없는 기록·다른 카테고리는 diagnosis_not_found
     target = record["fm"]["target"]
-    result = similarity.intentional(category, name, key, off=not on)
-    return {**result, "compare": _compare(category, _target_path(category, target))}
+    with WRITE_LOCK:
+        previous = list(refstore.read_md(similarity._diag_path(name))[0].get("intentional") or [])
+        result = similarity.intentional(category, name, key, off=not on)
+        try:
+            compare = _compare(category, _target_path(category, target))
+        except ScriptError:
+            refstore.update_frontmatter(similarity._diag_path(name), {"intentional": previous})   # 되돌린다
+            raise
+    return {**result, "compare": compare}
 
 
 @route("GET", "/api/diagnose/record")

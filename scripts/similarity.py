@@ -41,8 +41,11 @@ def _load_typify(category: str) -> dict:
     path = workspace_dir("typify", f"{category}.json")
     if not path.exists():
         raise ScriptError("no_typify_result", f"유형화 결과가 없습니다. 먼저 /yt-typify {category}")
-    result = json.loads(path.read_text("utf-8"))
-    if not result.get("archetypes"):
+    try:
+        result = json.loads(path.read_text("utf-8"))
+    except (OSError, ValueError) as e:                # 깨진 JSON은 유형화 결과가 없는 것으로 본다
+        raise ScriptError("no_typify_result", f"유형화 결과를 읽을 수 없습니다. 다시 /yt-typify {category}") from e
+    if not isinstance(result, dict) or not result.get("archetypes"):
         raise ScriptError("no_archetype", "비교할 아키타입이 없습니다(구조가 비슷한 ref 묶음이 아직 없음).")
     return result
 
@@ -208,7 +211,10 @@ def validate_notes(result: dict, notes: Any) -> dict:
     summary, gap_notes, raw_actions = notes.get("summary"), notes.get("gaps"), notes.get("actions")
     gap_notes = {} if gap_notes is None else gap_notes
     raw_actions = [] if raw_actions is None else raw_actions
-    if (summary is not None and not isinstance(summary, str)) or not isinstance(gap_notes, dict)             or not isinstance(raw_actions, list) or not all(isinstance(a, str) for a in raw_actions)             or not all(isinstance(v, str) for v in gap_notes.values()):
+    summary_ok = summary is None or isinstance(summary, str)
+    gaps_ok = isinstance(gap_notes, dict) and all(isinstance(v, str) for v in gap_notes.values())
+    actions_ok = isinstance(raw_actions, list) and all(isinstance(a, str) for a in raw_actions)
+    if not (summary_ok and gaps_ok and actions_ok):
         raise bad_shape
     clean_summary = " ".join((summary or "").split())
     missing = [g["key"] for g in result["gaps"] if not gap_notes.get(g["key"], "").strip()]
@@ -258,7 +264,7 @@ def save(category: str, target_path: Path, notes_path: Path) -> dict:
         lines += ["## 의도한 차이", *[f"- {k}" for k in result["intentional"]], ""]
     lines += ["## 내 메모", ""]
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(refstore.join_frontmatter(fm, "\n".join(lines) + _memo(path)).encode("utf-8"))
+    refstore.write_atomic(path, refstore.join_frontmatter(fm, "\n".join(lines) + _memo(path)).encode("utf-8"))
     Path(notes_path).unlink(missing_ok=True)
     return {"status": "saved", "path": path.relative_to(work_root()).as_posix(),
             "nearest": fm["nearest"], "proximity": prox, "gaps": fm["gaps"]}

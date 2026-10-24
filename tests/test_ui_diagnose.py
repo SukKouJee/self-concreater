@@ -367,3 +367,75 @@ def test_targets_preliminary_when_typify_not_formal(client, home):
     data = json.loads(path.read_text("utf-8"))
     path.write_text(json.dumps({**data, "status": "preliminary"}), encoding="utf-8")
     assert client.json("GET", f"/api/diagnose/targets?category={CAT}")[1]["preliminary"] is True
+
+
+# ---- fix round 1 ---------------------------------------------------------------------
+
+@pytest.mark.parametrize("stem", ["2026-10-24-café-먹방", "2026-10-24-日本語", "내 기획안 (최종) v2", "a.b"])
+def test_record_round_trips_real_names(client, home, stem):
+    draft = make_draft(home, UNLIKE, hook="shock_line")
+    renamed = draft.with_name(f"{stem}.md")
+    draft.rename(renamed)
+    rel = _rel(home, renamed)
+    assert _save(client, rel)[0] == 200
+    status, body = client.json("GET", f"/api/diagnose/record?category={CAT}&name={quote(stem)}")
+    assert status == 200 and body["name"] == stem
+    status, body = client.json("POST", "/api/diagnose/intentional",
+                               {"category": CAT, "name": stem, "key": "hook", "on": True})
+    assert status == 200 and body["intentional"] == ["hook"]
+
+
+@pytest.mark.parametrize("name", ["a:b", "a<b", "a>b", 'a"b', "a|b", "a?b", "a*b", "a\x01b", "x.", "x ", ".hidden"])
+def test_record_rejects_unsafe_names(client, home, name):
+    status, body = client.json("GET", f"/api/diagnose/record?category={CAT}&name={quote(name)}")
+    assert status == 400 and body["error"] == "bad_request"
+
+
+def test_intentional_rolls_back_when_compare_fails(client, home):
+    draft = make_draft(home, UNLIKE, hook="shock_line")
+    _save(client, _rel(home, draft))
+    draft.unlink()
+    status, body = client.json("POST", "/api/diagnose/intentional",
+                               {"category": CAT, "name": draft.stem, "key": "hook", "on": True})
+    assert status == 400 and body["error"] == "target_not_found"
+    assert refstore.read_md(home / "mine" / f"{draft.stem}.md")[0]["intentional"] == []
+
+
+def test_broken_typify_json_is_no_typify_result(client, home):
+    draft = make_draft(home, LIKE_A1)
+    (home / "workspace" / "typify" / f"{CAT}.json").write_text("{oops", encoding="utf-8")
+    body = client.json("POST", "/api/diagnose/compare", {"category": CAT, "target": _rel(home, draft)})[1]
+    assert body["error"] == "no_typify_result"
+    assert client.json("GET", f"/api/diagnose/targets?category={CAT}")[1]["has_typify"] is False
+
+
+def test_concurrent_intentional_toggles_keep_both(client, home):
+    draft = make_draft(home, UNLIKE, hook="shock_line")
+    _save(client, _rel(home, draft))
+    barrier = threading.Barrier(2)
+    results = []
+
+    def toggle(key):
+        barrier.wait()
+        results.append(client.json("POST", "/api/diagnose/intentional",
+                                   {"category": CAT, "name": draft.stem, "key": key, "on": True})[0])
+
+    threads = [threading.Thread(target=toggle, args=(k,)) for k in ("hook", "narrative")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(15)
+    assert results == [200, 200]
+    assert sorted(refstore.read_md(home / "mine" / f"{draft.stem}.md")[0]["intentional"]) == ["hook", "narrative"]
+
+
+def test_save_and_update_frontmatter_use_atomic_write(home, monkeypatch):
+    calls = []
+    real = refstore.write_atomic
+    monkeypatch.setattr(refstore, "write_atomic", lambda p, d: (calls.append(p.name), real(p, d))[1])
+    draft = make_draft(home, UNLIKE, hook="shock_line")
+    gaps = similarity.compare(CAT, draft)["gaps"]
+    notes = _json(home, "n2.json", {"summary": "s", "gaps": {g["key"]: "x" for g in gaps}, "actions": ["a"]})
+    similarity.save(CAT, draft, notes)
+    similarity.intentional(CAT, draft.stem, "hook")
+    assert calls.count(f"{draft.stem}.md") == 2
