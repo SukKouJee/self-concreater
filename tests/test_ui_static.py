@@ -443,3 +443,11 @@ def test_diagnose_page_served(client):
     assert status == 200
     assert "javascript" in headers["Content-Type"]
     assert "/api/diagnose/targets" in raw.decode("utf-8")
+
+
+def test_diagnose_fix_round_contract():
+    js = (STATIC_DIR / "pages" / "diagnose.js").read_text(encoding="utf-8")
+    for token in ["일부러 다르게 한 거예요: ${name}", "갭이 바뀌었습니다 — 설명 다시 받기 후 저장하세요",
+                  "저장된 설명이 지금 갭과 다릅니다 — 설명 다시 받기", "다시 비교", "일부러 다르게 한 갭",
+                  "dropTitle", "aria-disabled", "cmpSeq", "watchOtherJob", "compareNow(true)"]:
+        assert token in js, token

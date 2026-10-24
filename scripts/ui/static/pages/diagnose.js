@@ -75,7 +75,7 @@ let S = null;
 function freshState(el, ctx, category, path) {
   return {
     el, ctx, category, path, targets: null, entry: null, record: null, intentional: [], gapInfo: new Map(),
-    compare: null, comparing: false, compareError: null, recordError: null, toggleBusy: new Set(),
+    compare: null, compareBusy: 0, cmpSeq: 0, compareSoft: false, compareError: null, mismatchText: "", staleText: "", otherTimer: null, recordError: null, toggleBusy: new Set(),
     job: null, jobId: null, otherJob: null, preview: null, edits: null, confirmRerun: false, confirmDiscard: false,
     running: false, runError: null, saving: false, saveError: null,
     timer: null, pollErrors: 0, runSig: null, alertSig: null, nodes: {},
@@ -88,6 +88,7 @@ function alive(mine) {
 
 function stopPolling() {
   if (S && S.timer) { clearTimeout(S.timer); S.timer = null; }
+  if (S && S.otherTimer) { clearTimeout(S.otherTimer); S.otherTimer = null; }
 }
 
 function ignorable(e) {
@@ -123,6 +124,8 @@ async function load() {
     pickJob(mine, cur && cur.job);
     renderDetail();
     if (isActive(mine.job)) schedulePoll();
+    if (mine.otherJob) watchOtherJob();
+    if (canCompare()) compareNow(true);           // free (no Claude): shows the current gaps right away
   } catch (e) {
     if (!alive(mine) || ignorable(e)) return;
     loadError(e);
@@ -160,6 +163,29 @@ function pickJob(mine, job) {
     adoptJob(mine, job);          // shown once, then not again
     markHandled(job.id);
   }
+}
+
+// Another target's explain job blocks a new run; re-check until it ends so the button comes back.
+function watchOtherJob() {
+  const mine = S;
+  if (mine.otherTimer) clearTimeout(mine.otherTimer);
+  mine.otherTimer = setTimeout(async () => {
+    mine.otherTimer = null;
+    if (!alive(mine) || !mine.otherJob) return;
+    try {
+      const cur = await mine.ctx.api("GET", "/api/jobs/current?kind=diagnose");
+      if (!alive(mine)) return;
+      const job = cur && cur.job;
+      if (!job || job.id !== mine.otherJob.id || !isActive(job)) {
+        mine.otherJob = null;
+        renderRunBox();
+        return;
+      }
+    } catch (e) {
+      if (!alive(mine) || ignorable(e)) return;
+    }
+    if (alive(mine) && mine.otherJob) watchOtherJob();
+  }, POLL_MS * 3);
 }
 
 function loadError(e) {
@@ -304,16 +330,16 @@ function renderRunBox() {
   const active = isActive(job);
   const failed = !!job && (job.status === "failed" || job.status === "stopped");
   const item0 = job && job.items && job.items[0];
-  const sig = JSON.stringify([active, failed, S.running, S.comparing, S.runError, S.confirmRerun, !!S.record, S.saving,
+  const sig = JSON.stringify([active, failed, S.running, S.compareBusy > 0, !!S.compare, S.runError, S.confirmRerun, !!S.record, S.saving,
     item0 && item0.step, item0 && item0.message, job && job.message, !!S.otherJob, canCompare()]);
   if (sig === S.runSig && box.childNodes.length) return;
   S.runSig = sig;
   const busy = S.running || active || S.saving;
-  const compareBtn = h("button", { type: "button", class: "btn", disabled: !canCompare() || S.comparing || busy }, "비교하기");
+  const compareBtn = h("button", { type: "button", class: "btn", disabled: !canCompare() || S.compareBusy > 0 || busy }, S.compare ? "다시 비교" : "비교하기");
   const explainBtn = h("button", {
     type: "button", class: "btn btn-primary", disabled: !canCompare() || busy || !!S.otherJob,
   }, S.record ? "설명 다시 받기" : "설명 받기");
-  compareBtn.addEventListener("click", compareNow);
+  compareBtn.addEventListener("click", () => compareNow(false));
   explainBtn.addEventListener("click", requestExplain);
   const kids = [
     h("div", { class: "btn-row" }, compareBtn, explainBtn,
@@ -322,7 +348,7 @@ function renderRunBox() {
   if (!canCompare()) kids.push(noArchetypeNote());
   if (S.otherJob) {
     const other = S.otherJob.items[0];
-    kids.push(h("p", { class: "muted hint" }, "다른 대상의 설명을 만드는 중입니다 ",
+    kids.push(h("p", { class: "muted hint", role: "status" }, "다른 대상의 설명을 만드는 중입니다 ",
       h("a", { href: detailHref(other.id) }, other.title || "그 대상으로 가기")));
   }
   if (S.confirmRerun) kids.push(rerunConfirm());
@@ -387,6 +413,15 @@ async function startExplain() {
   } catch (e) {
     if (!alive(mine) || ignorable(e)) return;
     mine.runError = e.message || "설명을 만들지 못했습니다";
+    if (e.error === "job_running") {
+      try {
+        const cur = await mine.ctx.api("GET", "/api/jobs/current?kind=diagnose");
+        if (alive(mine) && cur && cur.job && isActive(cur.job) && cur.job.items[0].id !== mine.path) {
+          mine.otherJob = cur.job;
+          watchOtherJob();
+        }
+      } catch { /* the error above is enough */ }
+    }
   } finally {
     if (alive(mine)) { mine.running = false; renderRunBox(); if (!mine.runError) focusStatus(); }
   }
@@ -439,28 +474,32 @@ function setCompare(mine, result) {
   rememberGaps(mine, result);
 }
 
-async function compareNow() {
+// `silent`: automatic compare on open. No focus move, failures are plain text (not an alert).
+// Responses are applied newest-request-first (cmpSeq), so an older one never overwrites a newer one.
+async function compareNow(silent) {
   const mine = S;
-  if (mine.comparing) return;
-  mine.comparing = true;
+  const seq = ++mine.cmpSeq;
+  mine.compareBusy += 1;
   mine.compareError = null;
   renderRunBox();
   renderCompare();
+  let applied = false;
   try {
     const res = await mine.ctx.api("POST", "/api/diagnose/compare", { category: mine.category, target: mine.path });
     if (!alive(mine)) return;
-    setCompare(mine, res);
+    if (seq === mine.cmpSeq) { setCompare(mine, res); applied = true; }
   } catch (e) {
     if (!alive(mine) || ignorable(e)) return;
-    mine.compareError = e.message || "비교하지 못했습니다";
+    if (seq === mine.cmpSeq) { mine.compareError = e.message || "비교하지 못했습니다"; mine.compareSoft = !!silent; }
   } finally {
     if (alive(mine)) {
-      mine.comparing = false;
+      mine.compareBusy -= 1;
       renderRunBox();
       renderCompare();
       renderRecord();
+      updateActions();
       const head = mine.nodes.compare && mine.nodes.compare.querySelector("h2");
-      if (head && mine.compare) { head.setAttribute("tabindex", "-1"); head.focus({ preventScroll: true }); }
+      if (!silent && applied && head) { head.setAttribute("tabindex", "-1"); head.focus({ preventScroll: true }); }
     }
   }
 }
@@ -493,11 +532,15 @@ function renderCompare() {
   const box = S.nodes.compare;
   if (!box) return;
   const c = S.compare;
-  if (!c && !S.compareError && !S.comparing) { box.hidden = true; fill(box); return; }
+  if (!c && !S.compareError && !S.compareBusy) { box.hidden = true; fill(box); return; }
   box.hidden = false;
   const kids = [h("h2", {}, "비교 결과")];
-  if (S.comparing) kids.push(h("p", { class: "muted", role: "status" }, "비교하는 중…"));
-  if (S.compareError) kids.push(h("p", { class: "error", role: "alert" }, S.compareError));
+  if (S.compareBusy && !c) kids.push(h("p", { class: "muted" }, "비교하는 중…"));
+  if (S.compareError) {
+    kids.push(S.compareSoft
+      ? h("p", { class: "muted" }, `자동 비교를 하지 못했습니다. ${S.compareError}`)
+      : h("p", { class: "error", role: "alert" }, S.compareError));
+  }
   if (c) {
     const axisKo = c.axis_ko || AXIS_KO;
     if (c.preliminary) kids.push(h("p", { class: "warn-text" }, "예비 진단 — 레퍼런스가 10개 미만이라 참고용입니다"));
@@ -528,25 +571,38 @@ function recordMismatch() {
   return !sameSet(saved, (S.compare.gaps || []).map((g) => g.key));
 }
 
+// Once a compare is known it is the source of truth; intentional gaps are not part of compare.gaps, so they are added.
 function gapKeys() {
-  const saved = (S.record && Array.isArray(S.record.fm.gaps)) ? S.record.fm.gaps : [];
-  const current = S.compare ? S.compare.gaps.map((g) => g.key) : [];
-  return [...new Set([...saved, ...S.intentional, ...current])];
+  const base = S.compare ? S.compare.gaps.map((g) => g.key)
+    : ((S.record && Array.isArray(S.record.fm.gaps)) ? S.record.fm.gaps : []);
+  return [...new Set([...base, ...S.intentional])];
+}
+
+// A persistent node: its text changes only when the message changes, so it is not announced again on every re-render.
+function mismatchNode() {
+  if (!S.nodes.mismatch) { S.nodes.mismatch = h("p", { class: "warn-text", role: "status" }); S.mismatchText = ""; }
+  const text = recordMismatch() ? "저장된 설명이 지금 갭과 다릅니다 — 설명 다시 받기" : "";
+  if (text !== S.mismatchText) { S.mismatchText = text; S.nodes.mismatch.textContent = text; }
+  S.nodes.mismatch.hidden = !text;
+  return S.nodes.mismatch;
 }
 
 function toggleRow(key) {
   const on = S.intentional.includes(key);
   const info = S.gapInfo.get(key);
   const axisKo = S.compare && S.compare.axis_ko;
+  const name = gapName(key, axisKo);
   const btn = h("button", {
     type: "button", class: "btn diag-toggle", "aria-pressed": String(on), "data-gap-key": key,
-    disabled: S.toggleBusy.has(key),
+    "aria-label": `일부러 다르게 한 거예요: ${name}`, "aria-disabled": S.toggleBusy.has(key) ? "true" : false,
   }, "일부러 다르게 한 거예요");
   btn.addEventListener("click", () => toggleIntentional(key));
+  // Intentional gaps are not in compare.gaps, so they have no current numbers.
+  const detail = on ? "일부러 다르게 한 갭" : (info ? gapNumbers(info) : "");
   return h("li", { class: "diag-gap-row" },
     h("div", { class: "diag-gap-text" },
-      h("strong", {}, gapName(key, axisKo)),
-      info ? h("span", { class: "muted small" }, ` — ${gapNumbers(info)}`) : null),
+      h("strong", {}, name),
+      detail ? h("span", { class: "muted small" }, ` — ${detail}`) : null),
     btn);
 }
 
@@ -557,6 +613,7 @@ async function toggleIntentional(key) {
   mine.toggleBusy.add(key);
   mine.recordError = null;
   mine.intentional = on ? [...mine.intentional, key] : mine.intentional.filter((k) => k !== key);
+  const seq = ++mine.cmpSeq;                    // a newer compare (button or toggle) wins over this response's compare
   renderRecord(key);
   try {
     const res = await mine.ctx.api("POST", "/api/diagnose/intentional",
@@ -565,7 +622,7 @@ async function toggleIntentional(key) {
     mine.toggleBusy.delete(key);
     // With other toggles in flight the local list is newer than this response.
     if (!mine.toggleBusy.size && Array.isArray(res.intentional)) mine.intentional = res.intentional.slice();
-    if (res.compare) setCompare(mine, res.compare);
+    if (res.compare && seq === mine.cmpSeq) setCompare(mine, res.compare);
   } catch (e) {
     if (!alive(mine) || ignorable(e)) return;
     mine.toggleBusy.delete(key);
@@ -578,6 +635,7 @@ async function toggleIntentional(key) {
       mine.toggleBusy.delete(key);
       renderRecord(key);
       renderCompare();
+      updateActions();
     }
   }
 }
@@ -596,19 +654,19 @@ function renderRecord(focusKey) {
       fm.preliminary ? " · 예비 진단(레퍼런스 10개 미만)" : ""),
   ];
   const parts = Array.isArray(rec.body) ? rec.body : [];
+  const pageTitle = `진단: ${S.entry.title}`;
   for (const p of parts) {
+    if (p.heading === "의도한 차이") continue;     // the toggle list below is the source of truth
     kids.push(h("div", { class: "card diag-md" },
       p.heading ? h("h3", {}, p.heading) : null,
-      h("div", { class: "md" }, renderMarkdown(p.text || ""))));
+      h("div", { class: "md" }, renderMarkdown(p.text || "", { dropTitle: pageTitle }))));
   }
   const keys = gapKeys();
   const toggles = [h("h3", { id: "diag-toggle-title" }, "갭 표시")];
-  toggles.push(h("p", { class: "muted small" }, "일부러 다르게 만든 갭은 이후 진단에서 빠집니다. 누르면 바로 저장됩니다."));
+  toggles.push(h("p", { class: "muted small" }, "일부러 다르게 만든 갭은 이후 진단에서 빠집니다. 누르면 바로 저장되고, 표시는 이 목록이 기준입니다."));
   if (keys.length) toggles.push(h("ul", { class: "diag-gap-list", "aria-labelledby": "diag-toggle-title" }, ...keys.map(toggleRow)));
   else toggles.push(h("p", { class: "muted" }, "표시할 갭이 없습니다"));
-  if (recordMismatch()) {
-    toggles.push(h("p", { class: "warn-text", role: "status" }, "설명이 지금 갭과 맞지 않습니다 — 설명 다시 받기"));
-  }
+  toggles.push(mismatchNode());
   if (S.recordError) toggles.push(h("p", { class: "error", role: "alert" }, S.recordError));
   kids.push(h("div", { class: "card" }, ...toggles));
   fill(box, ...kids);
@@ -620,7 +678,16 @@ function renderRecord(focusKey) {
 
 // ---- preview (editable notes) -------------------------------------------------
 
+// The open preview was written for a gap set that no longer matches the current compare (after a toggle).
+function previewStale() {
+  if (!S.preview || !S.compare) return false;
+  return !sameSet(S.preview.result.gaps.map((g) => g.key), S.compare.gaps.map((g) => g.key));
+}
+
+const STALE_TEXT = "갭이 바뀌었습니다 — 설명 다시 받기 후 저장하세요";
+
 function saveBlocker() {
+  if (previewStale()) return STALE_TEXT;
   const e = S.edits;
   if (!e.summary.trim()) return "요약이 비어 있습니다";
   const axisKo = S.preview.result.axis_ko;
@@ -662,6 +729,8 @@ function renderPreview() {
   S.nodes.saveBtn.addEventListener("click", save);
   S.nodes.discardBtn.addEventListener("click", askDiscard);
   S.nodes.hint = h("p", { class: "muted hint", id: "diag-save-hint" });
+  S.nodes.stale = h("p", { class: "warn-text", role: "status" });
+  S.staleText = "";
   S.nodes.alerts = h("div", { class: "preview-alerts" });
   S.alertSig = null;
   fill(box, h("div", { class: "card preview-card" },
@@ -670,6 +739,7 @@ function renderPreview() {
     h("div", { class: "field" }, h("label", { for: "diag-summary" }, "요약"), summary),
     ...gapFields,
     h("fieldset", { class: "field diag-action-set" }, h("legend", {}, `다음 행동 (1~${MAX_ACTIONS}개)`), S.nodes.actionList),
+    S.nodes.stale,
     h("div", { class: "btn-row" }, S.nodes.saveBtn, S.nodes.discardBtn), S.nodes.hint, S.nodes.alerts));
   renderActions();
   updateActions();
@@ -708,7 +778,13 @@ function updateActions() {
   const reason = saveBlocker();
   S.nodes.saveBtn.disabled = S.saving || !!reason;
   S.nodes.discardBtn.disabled = S.saving;
-  S.nodes.hint.textContent = reason;
+  S.nodes.hint.textContent = reason === STALE_TEXT ? "" : reason;
+  const stale = previewStale() ? STALE_TEXT : "";
+  if (S.nodes.stale && stale !== S.staleText) {       // announced once per change
+    S.staleText = stale;
+    S.nodes.stale.textContent = stale;
+    S.nodes.stale.hidden = !stale;
+  }
 }
 
 // Alerts live in their own node and are rebuilt only when their content changes (no re-announcing on keystrokes).
@@ -756,7 +832,6 @@ async function save() {
     mine.job = null;
     mine.jobId = null;
     mine.saving = false;
-    mine.compare = null;
     renderRunBox();
     renderCompare();
     renderRecord();
