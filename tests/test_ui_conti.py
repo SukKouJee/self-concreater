@@ -315,3 +315,139 @@ def test_srt_fit_rejects_conti_without_cuts(client, home, draft_md, sample_video
     status, body = client.json("POST", "/api/conti/srt-fit", {"path": rel(home, saved), "video": str(sample_video)})
     assert status == 400 and "콘티에 컷이 없습니다" in body["message"]
     assert client.app.jobs.current("srtfit") is None
+
+
+# --- caption-video ------------------------------------------------------------------------
+
+def _fake_render(monkeypatch, **extra):
+    from scripts import captions
+    calls = []
+
+    def render(conti_path, video=None, track="caption", progress=None, cancel=None, timeout=900):
+        calls.append({"conti": str(conti_path), "video": video, "track": track})
+        if progress:
+            progress(2, 4)
+        if extra.get("wait"):
+            extra["wait"].wait(5)
+        if cancel is not None and cancel():
+            raise captions.RenderCancelled()
+        return {"path": "drafts/x-captions.mp4", "count": 3, "duration_sec": 8.0, "width": 1080, "height": 1920}
+
+    monkeypatch.setattr(captions, "check_setup", lambda: {"ready": True})
+    monkeypatch.setattr(captions, "render", render)
+    return calls
+
+
+def test_captions_check_reports_ready_and_missing(client, monkeypatch):
+    from scripts import captions
+    monkeypatch.setattr(captions, "check_setup", lambda: {"ready": True})
+    assert client.json("GET", "/api/captions/check") == (200, {"ready": True})
+
+    def missing():
+        raise ScriptError("remotion_missing", captions.MISSING_MESSAGE)
+
+    monkeypatch.setattr(captions, "check_setup", missing)
+    status, body = client.json("GET", "/api/captions/check")
+    assert status == 200 and body["ready"] is False and "ytc captions setup" in body["message"]
+
+
+def test_caption_video_job_done_has_preview_url(client, home, draft_md, monkeypatch):
+    calls = _fake_render(monkeypatch)
+    saved = saved_conti(home, draft_md)
+    status, body = client.json("POST", "/api/conti/caption-video", {"path": rel(home, saved)})
+    assert status == 200 and body["job"]["kind"] == "caption_video"
+    assert body["job"]["items"][0]["id"] == rel(home, saved) and body["job"]["items"][0]["step"] == "render"
+    job = wait_for(client, body["job"]["id"], lambda j: j["status"] != "running")
+    item = job["items"][0]
+    assert job["status"] == "done" and item["state"] == "done" and item["ask"] is None
+    assert item["preview"]["url"] == "/files/drafts/x-captions.mp4" and item["preview"]["count"] == 3
+    assert calls == [{"conti": str(saved), "video": None, "track": "caption"}]
+
+
+def test_caption_video_progress_message_and_video_passed(client, home, draft_md, sample_video, monkeypatch):
+    import threading
+    gate = threading.Event()
+    calls = _fake_render(monkeypatch, wait=gate)
+    saved = saved_conti(home, draft_md)
+    status, body = client.json("POST", "/api/conti/caption-video",
+                               {"path": rel(home, saved), "video": str(sample_video)})
+    assert status == 200
+    job = wait_for(client, body["job"]["id"], lambda j: j["items"][0]["message"] == "2/4 프레임")
+    assert job["status"] == "running" and job["items"][0]["state"] == "running"
+    gate.set()
+    wait_for(client, body["job"]["id"], lambda j: j["status"] == "done")
+    assert calls[0]["video"] == sample_video
+
+
+def test_caption_video_rejects_before_creating_job(client, home, draft_md, tmp_path, monkeypatch):
+    from scripts import captions
+    saved = saved_conti(home, draft_md)
+    req = {"path": rel(home, saved)}
+
+    def missing():
+        raise ScriptError("remotion_missing", captions.MISSING_MESSAGE)
+
+    monkeypatch.setattr(captions, "check_setup", missing)
+    status, body = client.json("POST", "/api/conti/caption-video", req)
+    assert status == 400 and body["error"] == "remotion_missing"
+
+    _fake_render(monkeypatch)
+    status, body = client.json("POST", "/api/conti/caption-video", {**req, "video": str(tmp_path / "nope.mp4")})
+    assert status == 400 and body["error"] == "bad_video"
+    status, body = client.json("POST", "/api/conti/caption-video", {**req, "track": "sfx"})
+    assert status == 400 and body["error"] == "bad_request"
+    status, body = client.json("POST", "/api/conti/caption-video", {"path": rel(home, draft_md)})
+    assert status == 400 and body["error"] == "bad_path"
+    assert client.app.jobs.current("caption_video") is None
+
+
+def test_caption_video_rejects_conti_without_captions(client, home, draft_md, monkeypatch):
+    from tests.test_conti import with_cuts
+    _fake_render(monkeypatch)
+    data = with_cuts(c0={"caption": ""}, c2={"caption": ""}, c3={"caption": ""})
+    path = home / conti.save(draft_md, conti_file(home, data))["path"]
+    status, body = client.json("POST", "/api/conti/caption-video", {"path": rel(home, path)})
+    assert status == 400 and body["error"] == "no_captions" and body["message"] == "내보낼 자막이 없습니다"
+    assert client.app.jobs.current("caption_video") is None
+
+
+def test_caption_video_rejects_second_run_while_running(client, home, draft_md, monkeypatch):
+    import threading
+    gate = threading.Event()
+    _fake_render(monkeypatch, wait=gate)
+    saved = saved_conti(home, draft_md)
+    req = {"path": rel(home, saved)}
+    status, first = client.json("POST", "/api/conti/caption-video", req)
+    assert status == 200
+    status, again = client.json("POST", "/api/conti/caption-video", req)
+    assert status == 400 and again["error"] == "job_running" and "자막 영상" in again["message"]
+    gate.set()
+    wait_for(client, first["job"]["id"], lambda j: j["status"] == "done")
+
+
+def test_caption_video_cancel_reaches_render(client, home, draft_md, monkeypatch):
+    import threading
+    gate = threading.Event()
+    _fake_render(monkeypatch, wait=gate)
+    saved = saved_conti(home, draft_md)
+    status, body = client.json("POST", "/api/conti/caption-video", {"path": rel(home, saved)})
+    job = client.app.jobs.get(body["job"]["id"])
+    wait_for(client, job.id, lambda j: j["items"][0]["message"] == "2/4 프레임")
+    job.cancel()
+    gate.set()
+    final = wait_for(client, job.id, lambda j: j["status"] != "running")
+    assert final["status"] == "stopped" and final["items"][0]["state"] == "skipped"
+
+
+def test_caption_video_render_failure_fails_job_with_message(client, home, draft_md, monkeypatch):
+    from scripts import captions
+    monkeypatch.setattr(captions, "check_setup", lambda: {"ready": True})
+
+    def boom(*a, **k):
+        raise ScriptError("render_failed", "자막 영상을 만들지 못했습니다: boom")
+
+    monkeypatch.setattr(captions, "render", boom)
+    saved = saved_conti(home, draft_md)
+    status, body = client.json("POST", "/api/conti/caption-video", {"path": rel(home, saved)})
+    job = wait_for(client, body["job"]["id"], lambda j: j["status"] != "running")
+    assert job["status"] == "failed" and "boom" in job["message"] and job["items"][0]["state"] == "failed"

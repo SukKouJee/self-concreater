@@ -786,6 +786,31 @@ def _retime_spans_ms(cuts: list[dict], video: str | Path | None, progress: Calla
     return list(zip(ms, ms[1:])), retime
 
 
+def caption_blocks(conti: str | Path, track: str = "caption", video: str | Path | None = None,
+                   progress: Callable[[str], None] | None = None) -> dict:
+    """콘티의 자막(또는 대사) 블록과 시간을 계산한다. export_srt와 자막 영상 렌더가 같은 계산을 쓴다.
+
+    video가 없으면 컷 sec의 ms 정수 누적, 있으면 그 영상의 실제 컷에 맞춘 시간. 영상 파일은 읽기만 한다.
+    돌려주는 값: path(콘티 Path), fm(콘티 프런트매터), blocks([[시작ms, 끝ms, 텍스트]]), duration_ms,
+    retime(맞춤 요약 또는 None), video(정리된 영상 Path 또는 None).
+    """
+    if track not in SRT_TRACKS:
+        raise ScriptError("bad_request", f"track은 caption 또는 line이어야 합니다: {track}")
+    path = safe_draft_path(_rel(_resolve(conti)), conti_file=True)   # drafts/ 안의 *-conti.md만(CLI도 API와 같은 규칙)
+    field, _ = SRT_TRACKS[track]
+    fm = _load_conti(path)
+    retime: dict | None = None
+    video_path: Path | None = None
+    if video is None:
+        spans = _planned_spans_ms(fm["cuts"])
+    else:
+        spans, retime = _retime_spans_ms(fm["cuts"], video, progress)
+        video_path = _clean_video_path(video)
+    blocks = _srt_blocks(fm["cuts"], field, spans)
+    return {"path": path, "fm": fm, "blocks": blocks, "duration_ms": spans[-1][1] if spans else 0,
+            "retime": retime, "video": video_path}
+
+
 def export_srt(conti: str | Path, track: str = "caption", video: str | Path | None = None,
                progress: Callable[[str], None] | None = None) -> dict:
     """컷별 caption(또는 line)을 CapCut용 .srt로 내보낸다.
@@ -793,19 +818,11 @@ def export_srt(conti: str | Path, track: str = "caption", video: str | Path | No
     video가 없으면 컷 sec의 ms 정수 누적(오차가 쌓이지 않음). video(자막 없는 편집본)가 있으면 그 영상의
     실제 컷 시각에 맞춘다. 영상 파일은 읽기만 한다. progress는 "detect" → "write" 단계 알림용.
     """
-    if track not in SRT_TRACKS:
-        raise ScriptError("bad_request", f"track은 caption 또는 line이어야 합니다: {track}")
-    path = safe_draft_path(_rel(_resolve(conti)), conti_file=True)   # drafts/ 안의 *-conti.md만(CLI도 API와 같은 규칙)
-    field, suffix = SRT_TRACKS[track]
-    fm = _load_conti(path)
-    retime: dict | None = None
-    if video is None:
-        spans = _planned_spans_ms(fm["cuts"])
-    else:
-        spans, retime = _retime_spans_ms(fm["cuts"], video, progress)
-    blocks = _srt_blocks(fm["cuts"], field, spans)
-    end_ms = spans[-1][1] if spans else 0
-    result: dict[str, Any] = {"path": None, "track": track, "count": len(blocks), "duration_sec": end_ms / 1000}
+    calc = caption_blocks(conti, track, video, progress)
+    path, blocks, retime = calc["path"], calc["blocks"], calc["retime"]
+    suffix = SRT_TRACKS[track][1]
+    result: dict[str, Any] = {"path": None, "track": track, "count": len(blocks),
+                              "duration_sec": calc["duration_ms"] / 1000}
     if retime is not None:
         result["retime"] = retime
     if not blocks:
