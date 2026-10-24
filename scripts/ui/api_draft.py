@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -111,8 +112,9 @@ def _library_templates() -> list[dict] | None:
         if not library.status().get("connected"):
             return None
         found = library.search(kind="template")
-    except (ScriptError, OSError):
-        return None                       # 출처 목록은 라이브러리 때문에 실패하지 않는다
+    except Exception as e:  # noqa: BLE001 - 지인 파일이 무엇이든 출처 목록은 라이브러리 때문에 실패하지 않는다
+        print(f"[draft] 라이브러리 틀 목록을 읽지 못했습니다: {type(e).__name__}", file=sys.stderr)
+        return None
     keys = ("id", "title", "author", "category", "target_sec", "hook_type", "narrative_type", "worked")
     return [{**{k: t.get(k) for k in keys}, "source": f"{draft.LIBRARY_PREFIX}{t['id']}"} for t in found["items"]]
 
@@ -213,8 +215,18 @@ def run_target(category: str, source: str, topic: str | None, target_sec: float 
             payload["target_sec"] = target_sec
         job.update(0, step="claude")
         job.check_cancelled()
+        server_template = (payload.get("source") or {}).get("template")      # 틀 표시값은 서버 소유: Claude에게 보이지도 맡기지도 않는다
+        shown = {**payload, "source": {k: v for k, v in payload["source"].items() if k != "template"}}
+
+        def validate(data: Any) -> dict:
+            if isinstance(data, dict):
+                data = {k: v for k, v in data.items() if k != "template"}      # Claude가 낸 template은 버린다
+                if server_template:
+                    data["template"] = server_template
+            return _validate_with_shots(data)
+
         _, valid = llm.ask_validated(
-            _rules(), payload=payload, task=DRAFT_TASK, schema=DRAFT_SCHEMA, validate=_validate_with_shots,
+            _rules(), payload=shown, task=DRAFT_TASK, schema=DRAFT_SCHEMA, validate=validate,
         )
         valid = {k: v for k, v in valid.items() if k != "script_only"}   # the UI never saves script-only drafts
         pacing = draft.planned_pacing(valid["sections"])

@@ -398,3 +398,36 @@ def test_save_without_job_drops_client_template(client, home, monkeypatch):
     assert status == 200, resp
     body = (home / resp["path"]).read_text("utf-8")
     assert "위조" not in body and "- 틀: 지인 틀(nobody-20261024-ffffff)" in body
+
+
+# ---- template은 서버 소유 -----------------------------------------------------------------
+
+SERVER_TEMPLATE = {"author": "Alice", "title": "여행 브이로그 3분"}
+
+
+@pytest.mark.parametrize("claude_value", ["지수", None, {"author": "위조", "title": "위조"}, ["x"], "__omit__"])
+def test_library_run_ignores_claudes_template_and_uses_the_servers(client, home, fakes, monkeypatch, claude_value):
+    from tests import library_fixtures as lf
+    lf.install(monkeypatch)
+    source = f"library:{lf.TEMPLATE_ID}"
+    fakes.data = {**copy.deepcopy(DRAFT), "source": source}
+    if claude_value != "__omit__":
+        fakes.data["template"] = claude_value
+    job = _run(client, source=source)
+    assert job["status"] == "done", job
+    preview = job["items"][0]["preview"]
+    assert preview["draft"]["template"] == SERVER_TEMPLATE
+    [(_, payload, _, _)] = fakes.asks
+    assert "template" not in payload["source"]                  # Claude는 이 필드를 보지도 쓰지도 않는다
+    lf.install(monkeypatch, connected=False)
+    status, resp = client.json("POST", "/api/draft/save", {"category": CAT, "draft": preview["draft"], "job_id": job["id"]})
+    assert status == 200, resp
+    assert "- 틀: Alice의 여행 브이로그 3분" in (home / resp["path"]).read_text("utf-8")
+
+
+def test_sources_survive_any_library_failure_including_recursion(client, monkeypatch):
+    from scripts import library
+    monkeypatch.setattr(library, "status", lambda: {"connected": True})
+    monkeypatch.setattr(library, "search", lambda **kw: (_ for _ in ()).throw(RecursionError()))
+    status, body = client.json("GET", f"/api/draft/sources?category={CAT}")
+    assert status == 200 and "library_templates" not in body and "cards" in body
