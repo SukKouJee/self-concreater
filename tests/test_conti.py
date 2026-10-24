@@ -630,3 +630,12 @@ def test_export_srt_rejects_missing_or_unreadable_video(saved, home, tmp_path):
 def test_main_srt_with_video(saved, home, sample_video):
     out = conti.main(["srt", saved.relative_to(home).as_posix(), "--video", str(sample_video)])
     assert out["retime"]["video"] == "sample.mp4"
+
+
+@pytest.mark.parametrize("actual,warns", [(3.0, False), (2.99, True), (12.0, False), (12.01, True)])
+def test_export_srt_with_video_scale_warning_bounds(saved, monkeypatch, sample_video, actual, warns):
+    from scripts import cuts
+    _srt_cuts(monkeypatch, [_cut(3, "A"), _cut(3, "B")])          # 계획 6초
+    monkeypatch.setattr(cuts, "detect_cuts", lambda path: {"duration_sec": actual, "fps": 30.0, "cuts": [actual / 2]})
+    warnings = conti.export_srt(saved, video=sample_video)["retime"]["warnings"]
+    assert any("많이 다릅니다" in w for w in warnings) is warns

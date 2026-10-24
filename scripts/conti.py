@@ -682,7 +682,7 @@ def _srt_text(text: Any) -> str:
 
 
 _THRESHOLDS = json.loads((TEMPLATES_DIR / "thresholds.json").read_text("utf-8"))
-RETIME = _THRESHOLDS["retime"]
+SRT_FIT = _THRESHOLDS["srt"]
 MIN_GAP_SEC = 0.01             # 맞출 컷이 없을 때 경계 사이 최소 간격
 
 
@@ -763,12 +763,13 @@ def _retime_spans_ms(cuts: list[dict], video: str | Path | None, progress: Calla
     planned = [0.0]
     for cut in cuts:
         planned.append(planned[-1] + float(cut["sec"]))
-    fit = retime_boundaries(planned, found["duration_sec"], found["cuts"], RETIME["snap_min_sec"], RETIME["snap_ratio"])
+    fit = retime_boundaries(planned, found["duration_sec"], found["cuts"], SRT_FIT["snap_min_sec"], SRT_FIT["snap_ratio"])
     ms = [round(b * 1000) for b in fit["boundaries"]]
     warnings = []
     if not found["cuts"]:
         warnings.append("실제 컷을 찾지 못해 길이 비율로만 맞췄습니다")
-    if not RETIME["scale_min"] <= fit["scale"] <= RETIME["scale_max"]:
+    scale_low, scale_high = SRT_FIT["scale_warn"]
+    if not scale_low <= fit["scale"] <= scale_high:
         warnings.append(f"콘티 길이와 많이 다릅니다(실제 {found['duration_sec']:.1f}초 / 계획 {planned[-1]:.1f}초)"
                         " — 다른 영상이 아닌지 확인하세요")
     retime = {"video": path.name, "detected": fit["detected"], "snapped": fit["snapped"],

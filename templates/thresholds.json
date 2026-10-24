@@ -23,11 +23,10 @@
     "threshold": 15.0,
     "min_scene_frames": 12
   },
-  "retime": {
+  "srt": {
     "snap_min_sec": 0.4,
     "snap_ratio": 0.35,
-    "scale_min": 0.6,
-    "scale_max": 1.6
+    "scale_warn": [0.5, 2.0]
   },
   "single_type_spread": {
     "structure": 0.08,
