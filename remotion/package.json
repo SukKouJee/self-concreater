@@ -4,6 +4,9 @@
   "private": true,
   "description": "Animated caption video (chroma green background) for yt-coach",
   "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "@remotion/cli": "4.0.538",
     "react": "19.2.0",

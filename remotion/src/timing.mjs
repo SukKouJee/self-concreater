@@ -14,7 +14,7 @@ export function toFrames(sec, fps) {
 export function captionFrames(captions, fps) {
   const items = captions
     .map((c) => ({ from: toFrames(c.start, fps), end: toFrames(c.end, fps), text: c.text }))
-    .filter((c) => c.end > c.from)
+    .filter((c) => c.end > c.from && typeof c.text === "string" && c.text.trim() !== "")
     .sort((a, b) => a.from - b.from);
   const result = [];
   for (let i = 0; i < items.length; i += 1) {

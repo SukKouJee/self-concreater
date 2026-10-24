@@ -41,6 +41,11 @@ def test_caption_frames_drops_zero_length():
     assert r == [{"from": 90, "duration": 30, "text": "ok"}]
 
 
+def test_caption_frames_drops_empty_text():
+    r = run_js('m.captionFrames([{start: 0, end: 1, text: ""}, {start: 1, end: 2, text: "   "}, {start: 2, end: 3, text: "ok"}], 30)')
+    assert r == [{"from": 60, "duration": 30, "text": "ok"}]
+
+
 def test_caption_frames_drops_fully_covered():
     # second starts at same frame as first -> first has zero length after trim
     r = run_js('m.captionFrames([{start: 1, end: 2, text: "a"}, {start: 1, end: 3, text: "b"}], 30)')
