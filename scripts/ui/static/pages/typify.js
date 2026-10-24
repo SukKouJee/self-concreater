@@ -20,6 +20,8 @@ const CHANGED_TEXT = "미리보기를 만든 뒤 유형화가 다시 실행되�
 // ---- helpers ------------------------------------------------------------------
 
 const isActive = (job) => !!job && ACTIVE.has(job.status);
+// Labels may carry a qualifier ("body/story"); colors use the base label.
+const baseLabel = (label) => String(label).split("/")[0].trim();
 const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
 const refHref = (id) => `#/refs/${encodeURIComponent(id)}`;
 
@@ -97,9 +99,14 @@ async function load() {
     mine.data = data;
     const job = cur.job;
     // The latest typify job may belong to another category.
-    // Old failures are not shown again; only a running job or an open preview is restored.
-    if (job && job.category === cat && !isHandled(job.id) && (isActive(job) || (job.status === "done" && previewOf(job)))) {
-      adoptJob(mine, job);
+    // A running job or an open preview is restored; a failure that happened meanwhile is shown once.
+    if (job && job.category === cat && !isHandled(job.id)) {
+      if (isActive(job) || (job.status === "done" && previewOf(job))) {
+        adoptJob(mine, job);
+      } else if (job.status === "failed" || job.status === "stopped") {
+        adoptJob(mine, job);          // shown once, then not again
+        markHandled(job.id);
+      }
     }
     render();
     if (isActive(mine.job)) schedulePoll();
@@ -145,8 +152,29 @@ function initNotes(mine, preview) {
   const carry = mine.carry;
   mine.carry = null;
   if (carry) {
-    for (const axis of Object.keys(axes)) if (carry.axes[axis]) axes[axis] = carry.axes[axis];
-    for (const id of Object.keys(names)) if (carry.names[id]) names[id] = carry.names[id];
+    // A rationale is reused only when the axis verdict is unchanged.
+    for (const axis of Object.keys(axes)) {
+      const old = carry.axes[axis];
+      const res = preview.result.axes[axis];
+      if (old && res && res.verdict === old.verdict) axes[axis] = old.text;
+    }
+    // A name follows its group, not its position: best member overlap (Jaccard >= 0.5), each old name used once.
+    const pairs = [];
+    for (const a of preview.result.archetypes) {
+      for (const [oldId, old] of Object.entries(carry.names)) {
+        const score = jaccard(a.members || [], old.members);
+        if (score >= 0.5) pairs.push({ id: a.id, oldId, score, text: old.text });
+      }
+    }
+    pairs.sort((x, y) => y.score - x.score);
+    const usedNew = new Set();
+    const usedOld = new Set();
+    for (const m of pairs) {
+      if (usedNew.has(m.id) || usedOld.has(m.oldId)) continue;
+      usedNew.add(m.id);
+      usedOld.add(m.oldId);
+      names[m.id] = m.text;
+    }
   }
   mine.notes = { axes, names };
   mine.confirmRerun = false;
@@ -158,15 +186,32 @@ function initNotes(mine, preview) {
 
 // ---- run + polling ------------------------------------------------------------
 
-// Non-empty notes the user changed compared with what Claude proposed.
+function jaccard(a, b) {
+  const x = new Set(a);
+  const y = new Set(b);
+  let both = 0;
+  for (const v of x) if (y.has(v)) both += 1;
+  const union = x.size + y.size - both;
+  return union ? both / union : 0;
+}
+
+// Non-empty notes the user changed compared with what Claude proposed, with what they belong to
+// (axis verdict, archetype members) so they are reused only for the same thing.
 function editedNotes() {
   const out = { axes: {}, names: {} };
-  for (const [k, v] of Object.entries(S.notes.axes)) if (v.trim() && v !== S.orig.axes[k]) out.axes[k] = v;
-  for (const [k, v] of Object.entries(S.notes.names)) if (v.trim() && v !== S.orig.names[k]) out.names[k] = v;
+  const result = S.preview.result;
+  for (const [k, v] of Object.entries(S.notes.axes)) {
+    if (v.trim() && v !== S.orig.axes[k] && result.axes[k]) out.axes[k] = { text: v, verdict: result.axes[k].verdict };
+  }
+  for (const a of result.archetypes) {
+    const v = S.notes.names[a.id] || "";
+    if (v.trim() && v !== S.orig.names[a.id]) out.names[a.id] = { text: v, members: a.members || [] };
+  }
   return out;
 }
 
 const hasEdits = () => {
+  if (!S.preview) return false;
   const e = editedNotes();
   return Object.keys(e.axes).length + Object.keys(e.names).length > 0;
 };
@@ -356,7 +401,7 @@ function render() {
     fill(S.el, ...kids);
     return;
   }
-  S.nodes.run = h("div", { class: "job-box" });
+  S.nodes.run = h("div", { class: "job-box typify-run" });
   kids.push(S.nodes.run);
   S.nodes.body = h("div", { class: "typify-body" });
   kids.push(S.nodes.body);
@@ -405,7 +450,7 @@ function renderRunBox() {
   }
   if (failed) {
     const item = job.items && job.items[0];
-    kids.push(h("p", { class: "error", role: "alert" }, (item && item.message) || job.message || "유형화를 하지 못했습니다"));
+    kids.push(h("p", { class: "error", role: "alert" }, `${(item && item.message) || job.message || "유형화를 하지 못했습니다"} 저장된 결과는 그대로입니다.`));
   }
   if (S.runError) kids.push(h("p", { class: "error", role: "alert" }, S.runError));
   fill(box, ...kids);
@@ -421,7 +466,11 @@ function renderBody() {
     return;
   }
   if (S.data.applied) { fill(body, ...appliedView(S.data.applied)); return; }
-  fill(body, isActive(S.job) ? null : h("p", { class: "muted" }, "아직 유형화한 결과가 없습니다. 실행 버튼을 누르면 미리보기가 나옵니다."));
+  if (isActive(S.job)) { fill(body); return; }
+  const text = S.data.typified_at
+    ? "이전 저장 결과는 index.md에 있습니다 — 다시 실행하면 이 화면에서 볼 수 있어요"
+    : "아직 유형화한 결과가 없습니다. 실행 버튼을 누르면 미리보기가 나옵니다.";
+  fill(body, h("p", { class: "muted" }, text));
 }
 
 function axisRows(axes, editable) {
@@ -461,7 +510,7 @@ function skeletonChips(skeleton) {
   const list = h("ol", { class: "skeleton", "aria-label": `골격: ${labels.join(" → ")}` });
   labels.forEach((label, i) => {
     list.append(h("li", { class: "skel-chip" },
-      h("span", { class: `lb-dot lb-${label}`, "aria-hidden": "true" }), label,
+      h("span", { class: `lb-dot lb-${baseLabel(label)}`, "aria-hidden": "true" }), label,
       i < labels.length - 1 ? h("span", { class: "skel-arrow", "aria-hidden": "true" }, "→") : null));
   });
   return list;
@@ -474,7 +523,7 @@ function ratioBand(ratio) {
   const text = entries.map(([k, v]) => `${k} ${Math.round((v / total) * 100)}%`).join(" · ");
   const band = h("div", { class: "sec-band", role: "img", "aria-label": `평균 비율: ${text}` });
   for (const [label, v] of entries) {
-    const seg = h("span", { class: `lb-${label}`, title: `${label} ${Math.round((v / total) * 100)}%` });
+    const seg = h("span", { class: `lb-${baseLabel(label)}`, title: `${label} ${Math.round((v / total) * 100)}%` });
     seg.style.width = `${(v / total) * 100}%`;
     band.append(seg);
   }
@@ -500,7 +549,7 @@ function archetypeCard(a, titles, editable) {
 
   if (editable) {
     const inputId = `arch-name-${a.id}`;
-    const input = h("input", { id: inputId, type: "text", required: true, "aria-label": "아키타입 이름", "data-arch": a.id });
+    const input = h("input", { id: inputId, type: "text", required: true, "aria-label": `${a.id} 아키타입 이름`, "data-arch": a.id });
     input.value = nameValue;
     input.addEventListener("input", () => {
       S.notes.names[a.id] = input.value;
@@ -508,7 +557,7 @@ function archetypeCard(a, titles, editable) {
       if (a.prev_name && a.prev_name === input.value) head.append(h("span", { class: "badge" }, "이전 이름 그대로"));
       updateActions();
     });
-    card.append(h("div", { class: "field" }, h("label", { for: inputId }, "아키타입 이름"), input));
+    card.append(h("div", { class: "field" }, h("label", { for: inputId }, `${a.id} 아키타입 이름`), input));
   } else {
     card.append(h("p", { class: "arch-name" }, nameValue));
   }
@@ -538,12 +587,17 @@ function titleMap(result, known) {
   return titles;
 }
 
+function outlierAxes(o) {
+  const names = (o.axes || []).map((axis) => AXIS_NAMES[axis] || axis);
+  return names.length ? names.join("·") : "일부 축";
+}
+
 function outlierList(outliers, titles) {
   if (!outliers || !outliers.length) return null;
   return h("section", { class: "typify-sec", "aria-labelledby": "typify-outliers" },
     h("h2", { id: "typify-outliers" }, "이상치"),
     h("ul", { class: "outlier-list" },
-      ...outliers.map((o) => h("li", {}, refLink(o.id, titles), h("span", { class: "muted" }, " — 구조·컷 속도에서 혼자 떨어짐")))));
+      ...outliers.map((o) => h("li", {}, refLink(o.id, titles), h("span", { class: "muted" }, ` — ${outlierAxes(o)}에서 혼자 떨어짐`)))));
 }
 
 function archetypeSection(list, titles, editable) {
@@ -617,7 +671,7 @@ function renderAlerts() {
     yes.addEventListener("click", discard);
     no.addEventListener("click", () => { S.confirmDiscard = false; renderAlerts(); S.nodes.discardBtn.focus(); });
     kids.push(h("div", { class: "inline-confirm", role: "alert" },
-      h("p", { class: "warn-text" }, "미리보기를 버립니다. 고친 내용은 사라지고 저장된 결과가 그대로 남습니다."),
+      h("p", { class: "warn-text" }, "미리보기를 버립니다. 고친 내용은 사라집니다. 저장된 결과는 그대로입니다."),
       h("div", { class: "btn-row" }, yes, no)));
   }
   if (S.changed) {

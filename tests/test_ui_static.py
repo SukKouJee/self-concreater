@@ -268,8 +268,9 @@ def test_typify_page_served(client):
 
 def test_typify_verdict_labels_match_server_and_edits_survive_rerun():
     js = (STATIC_DIR / "pages" / "typify.js").read_text(encoding="utf-8")
-    for label in ['typable: "유형 있음"', 'weak: "약한 경향"', 'untypable: "유형 없음"', 'insufficient: "데이터 부족"']:
-        assert label in js, label
+    from scripts.cluster import VERDICT_KO
+    for key, label in VERDICT_KO.items():
+        assert f'{key}: "{label}"' in js, key
     for token in ["carry", "editedNotes", "renderAlerts", "data-discard-yes", "data-rerun-yes", "S.preview.titles", "applied.titles"]:
         assert token in js, token
     assert "confirm(" not in js.replace("inline-confirm", "").replace("renderConfirm", "")
