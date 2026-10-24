@@ -287,3 +287,15 @@ def test_post_labels_requires_hash(client, home):  # noqa: F811
 def test_post_labels_bad_id_and_category(client, home):  # noqa: F811
     assert post(client, "/api/refs/a.b/labels?category=mukbang", {"hash": "x"}, 400)["error"] == "bad_request"
     assert post(client, "/api/refs/a00/labels?category=nope", {"hash": "x"}, 400)["error"] == "category_not_found"
+
+
+def test_post_labels_returns_null_video_when_summary_fails(client, home, monkeypatch):  # noqa: F811
+    from scripts.ui import api_refs
+    d = get(client, "/api/refs/a00?category=mukbang")
+
+    def boom(*a, **k):
+        raise ValueError("boom")
+
+    monkeypatch.setattr(api_refs, "_summary", boom)
+    r = post(client, "/api/refs/a00/labels?category=mukbang", {"hash": d["hash"], "hook_type": "question"})
+    assert r["video"] is None and r["changed"] == ["hook_type"]

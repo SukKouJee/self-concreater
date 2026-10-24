@@ -398,9 +398,12 @@ def _bad_labels(message: str) -> ScriptError:
 
 
 def _relabeled_sections(old: Any, edits: Any) -> list[dict]:
-    """기존 섹션 dict를 복사해 label/sub만 교체한다(시간 등 다른 키 보존, body가 아니면 sub 삭제)."""
-    if not isinstance(old, list) or not all(isinstance(s, dict) for s in old):
-        raise _bad_labels("영상 md의 섹션이 올바르지 않습니다")
+    """기존 섹션 dict를 복사해 label/sub만 교체한다(시간 등 다른 키 보존, body가 아니면 sub 삭제).
+
+    요청이 전체 상태다: body 항목에서 sub를 생략하면 기존 sub가 지워진다.
+    """
+    if not isinstance(old, list) or not all(isinstance(s, dict) and "label" in s for s in old):
+        raise ScriptError("bad_md", "영상 md의 섹션(sections)이 올바르지 않아 라벨을 고칠 수 없습니다")
     if not isinstance(edits, list) or len(edits) != len(old):
         raise _bad_labels(f"sections는 기존과 같은 길이({len(old)})의 목록이어야 합니다")
     out = []
@@ -461,7 +464,10 @@ def relabel(video_id: str, category: str, changes: dict, expected_hash: str) -> 
         except (ValueError, OSError):
             cuts = None                     # 깨진 컷 json이면 pacing은 그대로 둔다
         if _valid_cuts(cuts):
-            updates["pacing"] = pacing(updates["sections"], cuts)
+            try:
+                updates["pacing"] = pacing(updates["sections"], cuts)
+            except (KeyError, TypeError, ValueError) as e:
+                raise ScriptError("bad_md", "섹션 시작/끝 또는 컷 값이 숫자가 아니어서 pacing을 다시 계산할 수 없습니다") from e
     updates["reviewed"] = True
     if _file_hash(path) != expected_hash:   # 쓰기 직전 재확인(경쟁 구간 축소)
         raise _stale()

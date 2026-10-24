@@ -155,3 +155,63 @@ def test_cli_relabel(home, tmp_path):  # noqa: F811
     f.write_text(json.dumps({"narrative_type": "list"}), encoding="utf-8")
     result = videomd.main(["relabel", "a00", "--category", CAT, "--changes", str(f), "--hash", sha(vpath(home))])
     assert result["changed"] == ["narrative_type"]
+
+
+def test_relabel_bad_md_when_section_time_not_numeric_and_cuts_exist(home):  # noqa: F811
+    path = vpath(home)
+    fm, _ = refstore.read_md(path)
+    sections = [dict(s) for s in fm["sections"]]
+    sections[1]["start"] = "x"
+    refstore.update_frontmatter(path, {"sections": sections})
+    _write_cuts(home, json.dumps({"cuts": [10, 20, 55], "avg_cut_sec": 15}))
+    before = path.read_bytes()
+    with pytest.raises(ScriptError) as e:
+        videomd.relabel("a00", CAT, OUTRO, sha(path))
+    assert e.value.code == "bad_md"
+    assert path.read_bytes() == before
+
+
+def test_relabel_bad_md_when_cuts_items_not_numeric(home):  # noqa: F811
+    _write_cuts(home, json.dumps({"cuts": ["a", None], "avg_cut_sec": 15}))
+    path = vpath(home)
+    before = path.read_bytes()
+    with pytest.raises(ScriptError) as e:
+        videomd.relabel("a00", CAT, OUTRO, sha(path))
+    assert e.value.code == "bad_md"
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("bad", ["notalist", [1, 2, 3], [{"start": 0}, {"label": "body"}, {"label": "cta"}]])
+def test_relabel_bad_md_when_stored_sections_malformed(home, bad):  # noqa: F811
+    path = vpath(home)
+    refstore.update_frontmatter(path, {"sections": bad})
+    before = path.read_bytes()
+    with pytest.raises(ScriptError) as e:
+        videomd.relabel("a00", CAT, {"sections": GOOD}, sha(path))
+    assert e.value.code == "bad_md"
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("changes", [
+    _with(0, label=None),
+    {"hook_type": None},
+    {"narrative_type": None},
+])
+def test_relabel_rejects_none_values(home, changes):  # noqa: F811
+    path = vpath(home)
+    with pytest.raises(ScriptError) as e:
+        videomd.relabel("a00", CAT, changes, sha(path))
+    assert e.value.code == "invalid_labels"
+
+
+def test_relabel_ignores_extra_keys_in_section_items(home):  # noqa: F811
+    path = vpath(home)
+    videomd.relabel("a00", CAT, _with(2, label="outro", start=999), sha(path))
+    fm, _ = refstore.read_md(path)
+    assert fm["sections"][2]["label"] == "outro" and fm["sections"][2]["start"] == 52.0
+
+
+def test_relabel_omitted_sub_clears_existing_sub(home):  # noqa: F811
+    path = vpath(home)
+    videomd.relabel("a00", CAT, {"sections": [{"label": "hook"}, {"label": "body"}, {"label": "cta"}]}, sha(path))
+    assert "sub" not in refstore.read_md(path)[0]["sections"][1]

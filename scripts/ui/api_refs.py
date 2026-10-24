@@ -227,5 +227,9 @@ def _labels(req: Request, video_id: str) -> dict:
     changes = {k: body[k] for k in ("sections", "hook_type", "narrative_type") if k in body}
     result = videomd.relabel(video_id, category, changes, expected)
     path = videomd.video_md_path(video_id, category)
-    fm, _ = refstore.read_md(path)
-    return {**result, "video": _summary(path, fm, _scene_frames(video_id))}
+    try:
+        fm, _ = refstore.read_md(path)
+        video: dict | None = _summary(path, fm, _scene_frames(video_id))
+    except (ScriptError, ValueError, TypeError, AttributeError, OSError):
+        video = None                      # 저장은 끝났다. 화면은 상세를 다시 불러온다
+    return {**result, "video": video}
