@@ -812,6 +812,16 @@ def _present(data: dict[str, Any]) -> dict[str, Any]:
             "markdown": _render_body(data), "duplicate": (_ledger_ids(data["key"]) or [None])[-1]}
 
 
+def present_preview(preview_id: str) -> dict[str, Any]:
+    """저장된 미리보기를 화면용으로 돌려준다. 기획안 틀이면 고칠 값(섹션 요약·샷 리듬)도 함께."""
+    data = load_preview(preview_id)
+    out = _present(data)
+    if data["kind"] == "template":
+        out["summaries"] = list(data["body"].get("summaries") or [])
+        out["rhythms"] = list(data["body"].get("rhythms") or [])
+    return out
+
+
 def preview_technique(category: str, kind: str, name: str, desc: str | None = None) -> dict[str, Any]:
     if kind not in TECHNIQUE_KINDS:
         raise _fail("invalid_kind", f"기법 종류는 {', '.join(TECHNIQUE_KINDS)} 중 하나여야 합니다: {kind!r}")
