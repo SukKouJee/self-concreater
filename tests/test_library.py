@@ -1120,3 +1120,87 @@ def test_ssh_config_cache_is_per_working_directory(monkeypatch, tmp_path):
     library._git(["fetch"], two)                       # two에는 없다 -> 한 번 조회한 one의 결과를 쓰면 안 된다
     fetch = next(c for c in calls if "fetch" in c["cmd"])
     assert fetch["env"]["GIT_SSH_COMMAND"] == "ssh -o BatchMode=yes"
+
+
+# --- 수정 라운드 3 ------------------------------------------------------------------------------
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 전용 API")
+def test_windows_pid_check_declares_ctypes_signatures():
+    k32 = library._win_kernel32()
+    assert k32.OpenProcess.argtypes is not None and len(k32.OpenProcess.argtypes) == 3
+    assert k32.OpenProcess.restype is not None
+    assert k32.GetExitCodeProcess.argtypes is not None and k32.CloseHandle.argtypes is not None
+    assert library._pid_alive(os.getppid()) and not library._pid_alive(dead_pid())
+
+
+def test_dirty_tracked_file_survives_leftover_reset(pair, monkeypatch):
+    a, b = pair
+    share_technique()
+    leave_unpushed_yt_coach_commit(monkeypatch, b)
+    root_b = b / "workspace" / "library"
+    readme = root_b / "README.md"
+    assert library._is_tracked(root_b, "README.md")
+    readme.write_text("사용자가 고친 README\n", encoding="utf-8")
+    library.pull()
+    assert git(root_b, "rev-list", "--count", "origin/main..HEAD").strip() == "0"
+    assert readme.read_text("utf-8") == "사용자가 고친 README\n"
+
+
+def test_reset_that_would_lose_user_edits_is_refused_with_warning(pair, monkeypatch):
+    a, b = pair
+    share_technique()
+    leave_unpushed_yt_coach_commit(monkeypatch, b)
+    root_b = b / "workspace" / "library"
+    item = next(root_b.glob("techniques/*/bob-*.md"))
+    item.write_text(item.read_text("utf-8") + "사용자 수정\n", encoding="utf-8")
+    out = library.pull()
+    assert "겹쳐 정리하지 못했습니다" in out["warning"]
+    assert git(root_b, "rev-list", "--count", "origin/main..HEAD").strip() == "1"
+    assert item.read_text("utf-8").endswith("사용자 수정\n")
+
+
+@pytest.mark.parametrize("content", ["99999999999999999999", "abc", "0", "", "-5", "２３"])
+def test_unusable_pid_in_lock_falls_back_to_age_only(pair, content):
+    a, _ = pair
+    lock = a / "workspace" / "library.lock"
+    lock.write_text(content, encoding="utf-8")
+    assert library._lock_is_stale(lock) is False
+    with pytest.raises(ScriptError) as e:
+        with library._exclusive():
+            pass
+    assert e.value.code == "library_busy" and lock.exists()
+    old = time.time() - 11 * 60
+    os.utime(lock, (old, old))
+    with library._exclusive():                       # 오래되면 PID가 엉망이어도 치운다
+        pass
+
+
+def test_pid_alive_rejects_out_of_range_pids():
+    for bad in (0, -1, 2**31, 2**40):
+        with pytest.raises(ValueError):
+            library._pid_alive(bad)
+
+
+def test_failed_link_back_reports_busy_and_keeps_the_live_lock(pair, monkeypatch):
+    a, _ = pair
+    lock = a / "workspace" / "library.lock"
+    lock.write_text(str(os.getppid()), encoding="ascii")
+    answers = iter([True, False])                      # 처음엔 낡았다고 봤지만, 옮기고 보니 살아 있는 잠금
+    monkeypatch.setattr(library, "_lock_is_stale", lambda path: next(answers))
+    monkeypatch.setattr(library.os, "link", lambda src, dst: (_ for _ in ()).throw(OSError("no hardlinks")))
+    with pytest.raises(ScriptError) as e:
+        with library._exclusive():
+            pass
+    assert e.value.code == "library_busy"
+    assert lock.read_text("ascii") == str(os.getppid())          # 살아 있는 잠금을 잃지 않았다
+    assert not list((a / "workspace").glob("library.lock.stale-*"))
+
+
+def test_connect_on_existing_clone_warns_when_cleanup_cannot_fetch(pair, monkeypatch, tmp_path, remote):
+    a, b = pair
+    share_technique()
+    leave_unpushed_yt_coach_commit(monkeypatch, b)
+    gone = tmp_path / "gone.git"
+    remote.rename(gone)
+    out = library.connect(str(remote), "Bob")
+    assert out["status"] == "already_connected" and "정리를 하지 못했습니다" in out["warning"]

@@ -19,6 +19,7 @@
 """
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import os
@@ -253,28 +254,54 @@ def _recover(root: Path) -> str | None:
     if not ahead:
         return None
     if all(email.endswith(YTC_EMAIL_SUFFIX) for email in ahead):
-        _git(["reset", "--hard", ref], root, check=False)
+        # --keep: 사용자가 고친(커밋 안 한) 추적 파일을 지우지 않는다. 겹쳐서 거절하면 강제하지 않고 알린다
+        if _git(["reset", "--keep", ref], root, check=False).returncode != 0:
+            return ("올라가지 않은 yt-coach 커밋이 남아 있으나, 라이브러리 폴더의 로컬 수정과 겹쳐 정리하지 못했습니다. "
+                    "수정한 파일을 되돌리거나 커밋한 뒤 다시 시도하세요.")
         return None
     return "라이브러리 폴더에 올라가지 않은 로컬 커밋이 있습니다(yt-coach가 만든 것이 아니라 그대로 두었습니다). 직접 확인하세요."
 
 
+_WIN_KERNEL32: Any = None
+_PID_MAX = 2**31
+_ERROR_INVALID_PARAMETER = 87
+_STILL_ACTIVE = 259
+
+
+def _win_kernel32() -> Any:
+    global _WIN_KERNEL32
+    if _WIN_KERNEL32 is None:
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)                  # type: ignore[attr-defined]
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k32.GetExitCodeProcess.restype = wintypes.BOOL
+        k32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        k32.CloseHandle.restype = wintypes.BOOL
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        _WIN_KERNEL32 = k32
+    return _WIN_KERNEL32
+
+
 def _pid_alive(pid: int) -> bool:
-    """프로세스가 살아 있는지만 본다(어떤 프로세스도 끄지 않는다)."""
+    """프로세스가 살아 있는지만 본다(어떤 프로세스도 끄지 않는다). 범위 밖 PID는 ValueError."""
+    if not 0 < pid < _PID_MAX:
+        raise ValueError(f"pid out of range: {pid}")
     if pid == os.getpid():
         return True
     if os.name == "nt":
-        import ctypes
-        kernel32 = ctypes.windll.kernel32                                    # type: ignore[attr-defined]
-        handle = kernel32.OpenProcess(0x1000, False, pid)                    # PROCESS_QUERY_LIMITED_INFORMATION
+        from ctypes import wintypes
+        k32 = _win_kernel32()
+        handle = k32.OpenProcess(0x1000, False, pid)                         # PROCESS_QUERY_LIMITED_INFORMATION
         if not handle:
-            return ctypes.GetLastError() != 87                               # 87 = 없는 PID. 그 밖(접근 거부 등)은 살아 있다고 본다
+            return bool(ctypes.get_last_error() != _ERROR_INVALID_PARAMETER)   # 없는 PID가 아니면(접근 거부 등) 살아 있다고 본다
         try:
-            code = ctypes.c_ulong()
-            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            code = wintypes.DWORD()
+            if not k32.GetExitCodeProcess(handle, ctypes.byref(code)):
                 return True
-            return code.value == 259                                         # STILL_ACTIVE
+            return bool(code.value == _STILL_ACTIVE)
         finally:
-            kernel32.CloseHandle(handle)
+            k32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -293,7 +320,12 @@ def _lock_is_stale(path: Path) -> bool:
         return True
     except (OSError, UnicodeDecodeError):
         return False
-    return text.isdigit() and not _pid_alive(int(text))
+    if not (text.isascii() and text.isdigit()):
+        return False                       # 읽을 수 없는 PID: 시간 기준만 쓴다(위에서 아직 낡지 않음)
+    try:
+        return not _pid_alive(int(text))
+    except (OverflowError, ValueError, ctypes.ArgumentError, OSError):
+        return False
 
 
 def _take_lock(path: Path, busy: ScriptError) -> int:
@@ -313,7 +345,11 @@ def _take_lock(path: Path, busy: ScriptError) -> int:
                 try:
                     os.link(grave, path)
                 except OSError:
-                    pass
+                    if not path.exists():            # 되돌리지 못했다: 살아 있는 잠금을 잃지 않게 이름만 되돌린다
+                        try:
+                            os.replace(grave, path)
+                        except OSError:
+                            pass
                 grave.unlink(missing_ok=True)
                 raise busy from None
             grave.unlink(missing_ok=True)
@@ -391,8 +427,12 @@ def connect(remote: str, author: str) -> dict[str, Any]:
 def _connect_locked(remote: str, name: str) -> dict[str, Any]:
     root = clone_dir()
     existing = _read_config()
+    warning: str | None = None
     if (root / ".git").exists():
-        _recover(root)
+        try:
+            warning = _recover(root)
+        except ScriptError as e:             # 이미 연결된 clone은 정리하지 못해도 연결 확인은 계속한다
+            warning = f"이전 작업 정리를 하지 못했습니다: {e.message}"
         current = _git(["remote", "get-url", "origin"], root, what="원격 주소 확인").stdout.strip()
         if _norm_remote(current) != _norm_remote(remote):
             raise _fail("remote_mismatch", f"이미 다른 저장소({mask_credentials(current)})가 연결돼 있습니다. 바꾸려면 "
@@ -410,8 +450,11 @@ def _connect_locked(remote: str, name: str) -> dict[str, Any]:
     readme = root / "README.md"
     if not readme.exists():
         refstore.write_atomic(readme, README_TEXT.encode("utf-8"))   # 커밋하지 않는다: 첫 공유 때 함께 올라간다
-    return {"status": status, "remote": mask_credentials(remote), "author": name, "slug": author_slug(name),
-            "empty": _head(root) is None}
+    out: dict[str, Any] = {"status": status, "remote": mask_credentials(remote), "author": name,
+                           "slug": author_slug(name), "empty": _head(root) is None}
+    if warning:
+        out["warning"] = warning
+    return out
 
 
 def status() -> dict[str, Any]:
