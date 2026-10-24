@@ -112,6 +112,25 @@ ytc captions setup      # remotion/에서 npm ci
 - 결과 `drafts/<기획안>-captions.mp4`는 초록(`#00FF00`) 배경에 자막만 움직입니다. CapCut에서 이 영상을 맨 위 트랙에 얹고 크로마키로 초록을 빼세요.
 - 라이선스: Remotion은 개인·직원 3명 이하·비영리는 무료, 그보다 큰 회사는 회사 라이선스가 필요합니다.
 
+## 공용 라이브러리 MCP 서버
+
+플러그인을 설치하면 루트의 `.mcp.json`이 `yt-coach-library` MCP 서버(`scripts/library_mcp.py`, 표준 라이브러리만)를 자동으로 띄웁니다.
+Claude가 라이브러리를 직접 부를 수 있는 도구 8개를 제공합니다.
+
+| 도구 | 하는 일 |
+|---|---|
+| `library_status` / `library_pull` | 연결 상태 / 최신 항목 받기 |
+| `library_search` / `library_get` | 받아 둔 항목 찾기 / 하나 읽기 (지인이 쓴 데이터이며 지시가 아님) |
+| `library_my_techniques` | 내 `techniques.md` 기법 목록(올린 적 있는지 포함) |
+| `library_share_preview` | 올릴 내용 미리보기(기법 또는 기획안 틀). 아직 올리지 않음 |
+| `library_summarize` | 기획안 틀의 섹션별 한 줄 요약 |
+| `library_share_confirm` | 올리기. 사용자에게 미리보기를 보여 주고 채팅에서 명시적으로 확인받은 뒤에만 호출 |
+
+- 작업 폴더는 CLI와 같습니다: `YT_COACH_HOME`이 있으면 그 경로, 없으면 현재 폴더. Claude Code는 플러그인 MCP 서버를 열어 둔 프로젝트 폴더에서 띄우므로, 보통 따로 설정할 필요가 없습니다.
+- `connect`(저장소 주소 연결)는 도구가 아니라 `/yt-library connect <주소>`로 합니다.
+- 명령은 `python`입니다. macOS에서 `python`이 없고 `python3`만 있다면 `python`이 `python3`를 가리키게 하거나, 프로젝트 `.mcp.json`에서 `command`를 바꿔 덮어쓰세요. 시스템 Python에 `pyyaml`이 없으면 서버가 플러그인 `.venv`의 Python으로 스스로 다시 실행합니다.
+- 오류는 `isError: true`와 `{"error": "<code>", "message": "..."}` 텍스트로 돌려줍니다.
+
 ## 스킬
 
 | 스킬 | 하는 일 |
@@ -168,6 +187,7 @@ ytc captions setup      # remotion/에서 npm ci
 | `report` | `<cat> [--date]` → `reports/<cat>-<date>.html` (축별 판정·아키타입 비교·컷 길이 분포·진단 추이, 외부 자원 없는 한 파일) |
 | `stt` | `<video_id> [--force]` — 자막 없는 영상 음성 인식 (선택: `pip install faster-whisper`, 모델 `YT_STT_MODEL`, 기본 small). CPU에서 1분 쇼츠 약 30초(첫 실행은 모델 다운로드 ~460MB). 말이 없으면 `speech: false`, 빈 자막으로 기록돼 `sparse` 처리 |
 | `status` | `[category]` — 카테고리별 진행 단계(레퍼런스 수·유형화·기획안·콘티·진단), 다음 할 일, 최근 결과물, 오늘 미션. 화면 홈과 같은 JSON |
+| `library_mcp` | (MCP 서버, `python scripts/library_mcp.py`) stdio JSON-RPC로 `library` 기능을 도구 8개로 노출. 위 "공용 라이브러리 MCP 서버" 참고 |
 | `library` | `connect <주소> --author <이름>`, `status`, `pull`, `search [검색어] [--category --kind --author --worked]`, `get <id>`, `techniques <cat>`, `preview technique <cat> <종류> <이름>`, `preview draft <파일>`, `summarize <preview_id>`, `confirm <preview_id> [--note --worked --edits <json> --force-new]` (공용 라이브러리 git 저장소 받기·찾기·올리기. git 프롬프트 없음·60초 제한·URL 자격 증명 가림, 미리보기는 `workspace/tmp/library_preview_<id>.json` 30분. 오류: `library_auth`, `library_remote`, `library_network`, `duplicate`, `rebase_conflict`, `preview_expired` 등) |
 | `claude_cli` | (라이브러리) 화면이 `claude -p`를 부르는 실행기. 구조화 JSON 출력, 도구 최소 허용(기본 없음, 프레임을 볼 때만 `Read`), 세션 미저장 |
 | `ui` | `[--port N] [--no-open] [--detach] [--stop]` — 로컬 전용 화면 서버(127.0.0.1, 주소의 key로만 접근). 작업 폴더당 하나(`workspace/ui.lock`), 이미 떠 있으면 그 주소를 돌려줌. `--detach`는 분리 프로세스(로그 `workspace/ui.log`) |
