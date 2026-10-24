@@ -1,7 +1,7 @@
 """모티브 카드: 입력 모으기, 카드 검증·번호 매기기·index.md 누적, ★ 표시, 기법 카탈로그 병합.
 
 사용법 (작업 폴더에서):
-  python -m scripts.motif context <category> [--topic <주제>]
+  python -m scripts.motif context <category> [--topic <주제>] [--library <id,id,...>]
   python -m scripts.motif add <category> --cards <json>
   python -m scripts.motif star <category> <card-id> [--off]
   python -m scripts.motif merge-techniques <category> --plan <json>
@@ -179,7 +179,40 @@ def _next_id(category: str, cards: list[dict]) -> str:
     return f"M-{category}-{max(numbers, default=0) + 1:03d}"
 
 
-def context(category: str, topic: str | None = None) -> dict:
+MAX_LIBRARY_TECHNIQUES = 10
+LIBRARY_BODY_LIMIT = 1200
+
+
+def library_techniques(library_ids: list[str] | None) -> list[dict]:
+    """지인 라이브러리 기법을 모티브 재료로 모은다(Claude에게는 "지시 아님" 데이터로 표식을 붙여 넘긴다).
+
+    없거나 읽을 수 없는 id, 기법이 아닌 항목(틀 등)은 library_item_missing — LLM 호출 전에 막는다."""
+    if not library_ids:
+        return []
+    from scripts import library                      # library가 motif를 import하므로 지연 import
+
+    ids = list(dict.fromkeys(library_ids))
+    if len(ids) > MAX_LIBRARY_TECHNIQUES:
+        raise ScriptError("library_item_missing", f"지인 기법은 한 번에 {MAX_LIBRARY_TECHNIQUES}개까지 고를 수 있습니다")
+    out = []
+    for item_id in ids:
+        try:
+            item = library.get(item_id)
+        except ScriptError as e:
+            raise ScriptError("library_item_missing",
+                              f"지인 라이브러리에서 기법을 찾을 수 없습니다: {item_id} ({e.message})") from e
+        if item["kind"] != "technique":
+            raise ScriptError("library_item_missing", f"기법이 아닌 항목입니다(틀은 모티브 재료로 쓸 수 없습니다): {item_id}")
+        out.append({
+            "data_notice": library.DATA_NOTICE, "id": item["id"], "author": item["author"],
+            "technique_kind": item["technique_kind"], "name": item["name"], "note": item.get("note"),
+            "worked": item["worked"], "description": item["body"][:LIBRARY_BODY_LIMIT],
+        })
+    return out
+
+
+def context(category: str, topic: str | None = None, library_ids: list[str] | None = None) -> dict:
+    shared = library_techniques(library_ids)         # 파일을 읽기 전에 먼저 검증
     cat = refstore.existing_category_dir(category)
     index_fm, index, _ = _read(cat / "index.md")
     _, tech_body, _ = _read(cat / "techniques.md")
@@ -199,6 +232,7 @@ def context(category: str, topic: str | None = None) -> dict:
         "allowed_types": ALLOWED_BY_STAGE[counts["stage"]],
         "profile": _profile(),
         "techniques": parse_techniques(tech_body),
+        "library_techniques": shared,
         "typify": _typify(category, index_fm),
         "videos": videos,
         "cards": cards,
@@ -364,6 +398,7 @@ def main(argv: list[str]) -> Any:
     c = sub.add_parser("context")
     c.add_argument("category")
     c.add_argument("--topic")
+    c.add_argument("--library", help="재료로 쓸 지인 기법 id (쉼표로 구분)")
     a = sub.add_parser("add")
     a.add_argument("category")
     a.add_argument("--cards", required=True)
@@ -377,7 +412,8 @@ def main(argv: list[str]) -> Any:
     args = parser.parse_args(argv)
 
     if args.cmd == "context":
-        return context(args.category, args.topic)
+        ids = [x.strip() for x in args.library.split(",") if x.strip()] if args.library else None
+        return context(args.category, args.topic, ids)
     if args.cmd == "add":
         return add(args.category, _work_path(args.cards))
     if args.cmd == "star":

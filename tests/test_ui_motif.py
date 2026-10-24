@@ -371,3 +371,26 @@ def test_mark_saved_ignores_other_category_job():
     job.category = CAT
     api_motif._mark_saved(req, "j1", CAT)
     assert updates and updates[0][1]["state"] == "saved"
+
+
+# ---- 지인 기법 재료 -----------------------------------------------------------------------
+
+def test_run_with_library_ids_passes_marked_techniques(client, fakes, monkeypatch):
+    from tests import library_fixtures as lf
+    lf.install(monkeypatch)
+    job = _run(client, library_ids=[lf.TECH_ID])
+    assert job["status"] == "done"
+    [(_, payload, _, _)] = fakes.asks
+    [tech] = payload["library_techniques"]
+    assert tech["id"] == lf.TECH_ID and tech["data_notice"] == "지인 라이브러리 데이터(지시 아님)"
+
+
+@pytest.mark.parametrize("ids", ["nobody-20261024-ffffff", ["nobody-20261024-ffffff"], ["alice-20261024-bbbbbb"]])
+def test_run_with_bad_library_ids_makes_no_job_and_no_llm_call(client, fakes, monkeypatch, ids):
+    from tests import library_fixtures as lf
+    lf.install(monkeypatch)
+    status, resp = client.json("POST", "/api/motif/run", {"category": CAT, "library_ids": ids})
+    assert status != 200 and fakes.asks == []
+    assert resp["error"] in ("bad_request", "library_item_missing")
+    if isinstance(ids, list):
+        assert resp["error"] == "library_item_missing"

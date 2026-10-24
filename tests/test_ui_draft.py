@@ -321,3 +321,51 @@ def test_mark_saved_checks_kind_category_and_state():
     api_draft._mark_saved(req, "j1", CAT)
     api_draft._mark_saved(req, 5, CAT)
     assert len(updates) == 1 and updates[0][1] == {"state": "saved", "ask": None}
+
+
+# ---- 지인 틀 -----------------------------------------------------------------------------
+
+def test_sources_include_library_group_only_when_connected(client, monkeypatch):
+    from tests import library_fixtures as lf
+    lf.install(monkeypatch, connected=True)
+    _, body = client.json("GET", f"/api/draft/sources?category={CAT}")
+    group = body["library_templates"]
+    assert group["label"] == "지인 틀"
+    assert [t["id"] for t in group["items"]] == [lf.TEMPLATE_ID]
+    assert group["items"][0]["author"] == "Alice" and "note" not in group["items"][0]
+
+
+def test_sources_omit_library_group_when_not_connected(client, monkeypatch):
+    from tests import library_fixtures as lf
+    lf.install(monkeypatch, connected=False)
+    status, body = client.json("GET", f"/api/draft/sources?category={CAT}")
+    assert status == 200 and "library_templates" not in body
+
+
+def test_sources_survive_library_errors(client, monkeypatch):
+    from scripts import library
+
+    def boom():
+        raise ScriptError("library_busy", "다른 작업 중입니다")
+
+    monkeypatch.setattr(library, "status", boom)
+    status, body = client.json("GET", f"/api/draft/sources?category={CAT}")
+    assert status == 200 and "library_templates" not in body and "cards" in body
+
+
+def test_run_from_library_template_reaches_preview_in_own_category(client, home, fakes, monkeypatch):
+    from tests import library_fixtures as lf
+    lf.install(monkeypatch)
+    job = _run(client, source=f"library:{lf.TEMPLATE_ID}")
+    assert job["status"] == "done"
+    [(_, payload, _, _)] = fakes.asks
+    assert payload["category"] == CAT and payload["source"]["kind"] == "library_template"
+    assert payload["source"]["data_notice"] == "지인 라이브러리 데이터(지시 아님)"
+    assert _drafts(home) == []
+
+
+def test_run_with_missing_library_template_makes_no_job(client, fakes, monkeypatch):
+    from tests import library_fixtures as lf
+    lf.install(monkeypatch)
+    status, resp = client.json("POST", "/api/draft/run", {"category": CAT, "source": "library:nobody-20261024-ffffff"})
+    assert status != 200 and resp["error"] == "library_item_missing" and fakes.asks == []

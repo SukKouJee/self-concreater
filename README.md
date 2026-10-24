@@ -17,8 +17,8 @@
 | `/yt-init [category]` | 작업 폴더·템플릿 생성, 인터뷰로 `profile.md` 작성, 첫 카테고리 생성 | ✅ |
 | `/yt-add <category> [ref\|mine] <links...> [--force] [--shots]` | 링크별 자막·컷 통계 수집 → 분석 → 확인 후 영상별 md 생성, 기법 카탈로그 갱신. `--shots-only`로 기존 영상 샷 분류 보강 | ✅ |
 | `/yt-typify <category>` | ref 영상으로 축별 유형화 판정·아키타입·이상치 → index.md | ✅ |
-| `/yt-inspire <category> [주제]` | 모티브 카드(흐름·기법·각도·조합) 생성·누적, `star <id>`로 ★ 표시, 기법 카탈로그 중복 병합 | ✅ |
-| `/yt-draft <category> <motif-id\|archetype> "<주제>"` | 섹션별 대본 + 샷 리스트 → `drafts/`, 아키타입 비율 비교 | ✅ |
+| `/yt-inspire <category> [주제]` | 모티브 카드(흐름·기법·각도·조합) 생성·누적, `star <id>`로 ★ 표시, 기법 카탈로그 중복 병합, 지인 기법을 재료로 고르기(`--library`) | ✅ |
+| `/yt-draft <category> <motif-id\|archetype> "<주제>"` | 섹션별 대본 + 샷 리스트 → `drafts/`, 아키타입 비율 비교, 지인 기획안 틀(`library:<id>`)로 시작 | ✅ |
 | `/yt-polish <draft\|latest>` | 저장된 기획안의 훅 5개·제목 10개·썸네일 지시서를 만들고, 한국어 기준 점수·지적과 내 레퍼런스 근거를 붙여 보여 준다. 고른 것만 기획안에 반영(제목·훅 대본·훅 유형 교체, `## 패키징`에 썸네일 지시서와 이전 값 이력) | ✅ |
 | `/yt-conti <draft\|latest\|-conti.md>` | 기획안 → 전체 대사 + 컷별 대사·자막·효과음·가이드 콘티(`-conti.md`), 샷 도식 + 레퍼런스 참고 프레임 HTML 스토리보드. `-conti.md`를 고치면 다시 그리기 | ✅ |
 | `/yt-diagnose <category> <link\|draft\|대본>` | 내 콘텐츠를 아키타입과 축별 비교(근접도·갭·다음 행동) → `mine/`, `intentional`로 의도한 차이 제외 | ✅ |

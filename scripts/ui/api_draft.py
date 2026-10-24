@@ -14,7 +14,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from scripts import claude_cli, conti, draft, llm, motif, refstore
+from scripts import claude_cli, conti, draft, library, llm, motif, refstore
 from scripts.common import ScriptError, work_root, workspace_dir
 from scripts.ui.api_conti import CONTI_SUFFIX, _rel, _safe_path
 from scripts.ui.api_refs import _body_parts
@@ -105,6 +105,18 @@ def _conti_links(path: Path) -> tuple[str | None, str | None]:
 
 # ---- 출처 -------------------------------------------------------------------------------
 
+def _library_templates() -> list[dict] | None:
+    """연결된 라이브러리의 지인 틀 묶음. 연결 전이거나 라이브러리 조회가 실패하면 None(묶음을 뺀다)."""
+    try:
+        if not library.status().get("connected"):
+            return None
+        found = library.search(kind="template")
+    except ScriptError:
+        return None                       # 출처 목록은 라이브러리 때문에 실패하지 않는다
+    keys = ("id", "title", "author", "category", "target_sec", "hook_type", "narrative_type", "worked")
+    return [{k: t.get(k) for k in keys} for t in found["items"]]
+
+
 @route("GET", "/api/draft/sources")
 def _sources(req: Request) -> dict:
     category = _category(req.query.get("category"))
@@ -117,12 +129,16 @@ def _sources(req: Request) -> dict:
     typify = motif._typify(category, index_fm)
     archetypes = [{"id": a["id"], "name": a.get("name"), "size": a.get("size"), "skeleton": a.get("skeleton"),
                    "mean_duration": a.get("mean_duration")} for a in (typify or {}).get("archetypes") or []]
-    return {
+    out = {
         "stars": [brief(c) for c in details if c["starred"]],
         "cards": [brief(c) for c in details if not c["starred"]],
         "archetypes": archetypes,
         "has_typify": motif.typify_path(category).exists(),
     }
+    templates = _library_templates()
+    if templates is not None:
+        out["library_templates"] = {"label": "지인 틀", "items": templates}
+    return out
 
 
 # ---- 목록 · 상세(읽기 전용) --------------------------------------------------------------

@@ -15,7 +15,7 @@ argument-hint: '<category> [주제] | <category> star <card-id>'
 ## 1. 입력 모으기
 
 - 첫 단어 = category(없으면 `ytc refstore categories`로 고르게 한다). 나머지 = 주제(선택).
-- `ytc motif context <category> [--topic "<주제>"]`
+- `ytc motif context <category> [--topic "<주제>"] [--library <지인 기법 id,...>]` — 지인 기법을 재료로 쓰려면 MCP `library_search`로 찾아 사용자에게 보여 주고 고른 id만 `--library`로 넘긴다(실행마다 고른다, 저장하지 않음. 규칙 8절).
 - ref가 0개면 "먼저 /yt-coach:yt-add 로 레퍼런스를 넣어 주세요"라고 하고 끝낸다.
 - `profile`이 null이면 "프로필이 없어 일반적인 카드가 됩니다. /yt-coach:yt-init을 권합니다"라고 한 줄 알리고 계속한다.
 - 3단계인데 `typify`가 null이면 "/yt-coach:yt-typify를 먼저 하면 흐름·조합 카드가 나옵니다"라고 알리고, 이번에는 기법·각도 카드만 만든다.

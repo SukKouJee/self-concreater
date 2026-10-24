@@ -26,6 +26,8 @@ from scripts.common import ArgParser, ScriptError, run, work_root
 from scripts.videomd import BODY_SUBS, HOOK_TYPES, LABELS, NARRATIVE_TYPES, fmt_time, title_patterns
 
 _ARCHETYPE_RE = re.compile(r"^A\d+$")
+LIBRARY_PREFIX = "library:"
+LIBRARY_BODY_LIMIT = 3000
 
 
 # --- context ----------------------------------------------------------------------
@@ -39,13 +41,40 @@ def _block(body: str, heading_re: str) -> str | None:
     return "\n".join(lines[start:end]).strip()
 
 
+def _library_template(source: str) -> dict:
+    """`library:<id>` 출처의 지인 틀을 읽는다. 없거나 틀이 아니면 library_item_missing."""
+    from scripts import library                      # library가 motif·conti를 import하므로 지연 import
+
+    item_id = source[len(LIBRARY_PREFIX):]
+    try:
+        item = library.get(item_id)
+    except ScriptError as e:
+        raise ScriptError("library_item_missing", f"지인 라이브러리에서 틀을 찾을 수 없습니다: {item_id} ({e.message})") from e
+    if item["kind"] != "template":
+        raise ScriptError("library_item_missing", f"기획안 틀이 아닌 항목입니다: {item_id}")
+    return item
+
+
 def context(category: str, source: str, topic: str | None = None) -> dict:
     cat = refstore.existing_category_dir(category)
     index_fm, index_body = refstore.read_md(cat / "index.md")
     typify = motif._typify(category, index_fm)
     archetypes = (typify or {}).get("archetypes") or []
 
-    if _ARCHETYPE_RE.match(source):
+    if source.startswith(LIBRARY_PREFIX):
+        # 틀은 어느 카테고리 것이든 뼈대로만 쓴다. 기획안은 항상 내 카테고리(category)에 만든다.
+        from scripts import library
+
+        item = _library_template(source)
+        fm = item["frontmatter"]
+        src = {
+            "kind": "library_template", "id": source, "title": item["title"], "data_notice": library.DATA_NOTICE,
+            "author": item["author"], "template_category": item["category"], "note": item.get("note"),
+            "worked": item["worked"], "target_sec": item["target_sec"], "hook_type": item["hook_type"],
+            "narrative_type": item["narrative_type"], "sections": fm.get("sections"), "pacing": fm.get("pacing"),
+            "shot_mix": fm.get("shot_mix"), "text": item["body"][:LIBRARY_BODY_LIMIT],
+        }
+    elif _ARCHETYPE_RE.match(source):
         arc = next((a for a in archetypes if a["id"] == source), None)
         text = _block(index_body, rf"^### {source}\. ")
         if not arc or not text:
@@ -209,10 +238,12 @@ def _pct(x: float) -> str:
     return f"{round(x * 100)}%"
 
 
-def render(data: dict, pacing: dict, comp: dict | None) -> str:
+def render(data: dict, pacing: dict, comp: dict | None, template: dict | None = None) -> str:
+    origin = [f"- 틀: {_one_line(template['author'])}의 {_one_line(template['title'])}"] if template else []
     out = [f"# {data['title']}", "", "## 개요",
            f"- 주제: {data.get('topic') or '-'}",
            f"- 출처: {data.get('source') or '-'}" + (f" · 아키타입 {comp['archetype']} {comp['name']}" if comp else ""),
+           *origin,
            f"- 길이: {fmt_time(data['sections'][-1]['end'])} · " + (
                f"계획 컷 {sum(len(s['shots']) for s in data['sections'])}개 (평균 {pacing['avg_cut_sec']}초)"
                if pacing["avg_cut_sec"] else "대본만 (샷 리스트 없음)"),
@@ -257,6 +288,8 @@ def save(category: str, draft_path: Path) -> dict:
     archetype = find_archetype(category, data.get("archetype"))
     pacing = planned_pacing(data["sections"])
     comp = compare(data["sections"], archetype)
+    source = data.get("source")
+    template = _library_template(source) if isinstance(source, str) and source.startswith(LIBRARY_PREFIX) else None
 
     today = date.today().isoformat()
     drafts = work_root() / "drafts"
@@ -272,7 +305,7 @@ def save(category: str, draft_path: Path) -> dict:
         "title_pattern": title_patterns(data["title"]), "pacing": pacing,
         "status": "script" if data.get("script_only") else "draft", "schema_version": 1,
     }
-    content = refstore.join_frontmatter(fm, render(data, pacing, comp)).encode("utf-8")
+    content = refstore.join_frontmatter(fm, render(data, pacing, comp, template)).encode("utf-8")
     path, i = drafts / f"{base}.md", 2
     while True:
         try:

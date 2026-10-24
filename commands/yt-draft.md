@@ -10,7 +10,7 @@ argument-hint: '<category> <motif-id|archetype> "<주제>"'
 
 ## 1. 인자
 
-- `<category> <source> "<주제>"`. source는 모티브 카드 id(`M-mukbang-003`) 또는 아키타입 id(`A1`).
+- `<category> <source> "<주제>"`. source는 모티브 카드 id(`M-mukbang-003`), 아키타입 id(`A1`), 또는 지인 기획안 틀 `library:<id>`(규칙 6절. 기획안은 항상 내 카테고리에 저장).
 - source가 없으면 index.md의 ★ 카드를 먼저 제안하고(`ytc motif context <category>`의 cards에서 starred), 없으면 아키타입 목록을 보여 주고 고르게 한다.
 - 주제가 없으면 카드의 주제 또는 profile의 관심 주제에서 하나 제안한다.
 

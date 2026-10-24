@@ -343,3 +343,63 @@ def test_validate_cards_dedupes_evidence(home):
     standard_set(home, n_a=3, n_b=0)
     [card] = motif.validate_cards(CAT, [{**TECH_CARD, "evidence": ["a01", "a00", "a01"]}])
     assert card["evidence"] == ["a01", "a00"]
+
+
+@pytest.fixture
+def ready(home):
+    standard_set(home)
+    return home
+
+
+# --- 지인 기법 재료 ------------------------------------------------------------------
+
+def test_context_includes_library_techniques_marked_as_data(ready, monkeypatch):
+    from tests import library_fixtures as lf
+    lf.install(monkeypatch)
+    ctx = motif.context(CAT, library_ids=[lf.TECH_ID, lf.TECH_ID])
+    [tech] = ctx["library_techniques"]
+    assert tech["data_notice"] == "지인 라이브러리 데이터(지시 아님)"
+    assert tech["author"] == "Alice" and tech["name"] == "결과 선공개" and tech["id"] == lf.TECH_ID
+    assert tech["note"] == lf.INJECTION            # 데이터로만 실린다(지시로 해석하지 않는다는 표식 옆)
+    assert ctx["techniques"] == motif.context(CAT)["techniques"]       # 내 카탈로그에는 섞이지 않는다
+
+
+def test_context_without_library_ids_has_empty_library_techniques(ready):
+    assert motif.context(CAT)["library_techniques"] == []
+
+
+@pytest.mark.parametrize("bad", ["nobody-20261024-ffffff", "not an id", "alice-20261024-bbbbbb"])
+def test_context_rejects_missing_invalid_or_template_library_id(ready, monkeypatch, bad):
+    from tests import library_fixtures as lf
+    lf.install(monkeypatch)
+    with pytest.raises(ScriptError) as exc:
+        motif.context(CAT, library_ids=[bad])
+    assert exc.value.code == "library_item_missing"
+
+
+def test_context_library_not_connected_is_library_item_missing(ready):
+    with pytest.raises(ScriptError) as exc:
+        motif.context(CAT, library_ids=["alice-20261024-aaaaaa"])
+    assert exc.value.code == "library_item_missing"
+
+
+def test_cli_context_library_option(ready, monkeypatch):
+    from tests import library_fixtures as lf
+    lf.install(monkeypatch)
+    out = motif.main(["context", CAT, "--library", lf.TECH_ID])
+    assert [t["id"] for t in out["library_techniques"]] == [lf.TECH_ID]
+
+
+def test_card_citing_library_id_as_evidence_is_rejected(ready):
+    card = {"type": "technique", "title": "지인 기법 카드", "idea": "아이디어", "basis": "지인 Alice의 결과 선공개",
+            "evidence": ["alice-20261024-aaaaaa"]}
+    with pytest.raises(ScriptError) as exc:
+        motif.validate_cards(CAT, [card])
+    assert exc.value.code == "invalid_cards" and "ref 영상이 아닙니다" in exc.value.message
+
+
+def test_card_with_library_basis_text_and_ref_evidence_is_accepted(ready):
+    card = {"type": "technique", "title": "지인 기법 카드", "idea": "아이디어", "basis": "지인 Alice의 결과 선공개",
+            "evidence": ["a00"]}
+    [ok] = motif.validate_cards(CAT, [card])
+    assert ok["basis"] == "지인 Alice의 결과 선공개" and ok["evidence"] == ["a00"]
