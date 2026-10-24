@@ -363,7 +363,8 @@ def validate_notes(result: dict, notes: dict) -> tuple[dict, dict]:
     items = [] if notes.get("archetypes") is None else notes["archetypes"]
     if not isinstance(axis_notes, dict) or not isinstance(items, list) or not all(isinstance(a, dict) and "id" in a for a in items):
         raise bad_shape
-    if not all(isinstance(a.get("name", ""), str) or a.get("name") is None for a in items)             or not all(isinstance(v, str) for v in axis_notes.values()):
+    if (not all(isinstance(a.get("name", ""), str) or a.get("name") is None for a in items)
+            or not all(isinstance(v, str) for v in axis_notes.values())):
         raise bad_shape
     names = {str(a["id"]): (a.get("name") or "").strip() for a in items}
     missing = [a for a, res in result["axes"].items()
