@@ -113,6 +113,7 @@ def test_ask_delegates_to_claude_cli_and_files_enable_read_tool(home, monkeypatc
     cmd, kw = calls[0]
     assert cmd[cmd.index("--tools") + 1] == "Read"
     assert "workspace/frames/a.jpg" in kw["input"]
+    assert "규칙이 요구할 때만 Read 도구로 여세요." in kw["input"]
 
 
 def test_ask_without_files_keeps_tools_off_and_prompt_unchanged(home, monkeypatch):
@@ -256,10 +257,11 @@ def test_anthropic_request_shape_with_schema_and_files(home, api):
     assert body["model"] == "claude-sonnet-5-5" and body["max_tokens"] == 8000
     assert body["system"] == "규칙본문"
     assert body["tools"] == [{"name": "respond", "description": body["tools"][0]["description"], "input_schema": schema}]
-    assert body["tool_choice"] == {"type": "tool", "name": "respond"}
+    assert body["tool_choice"] == {"type": "auto"}
     content = body["messages"][0]["content"]
     assert body["messages"][0]["role"] == "user"
     assert "할일ABC" in content[0]["text"] and '"k"' in content[0]["text"]
+    assert content[0]["text"].endswith("반드시 respond 도구 하나로만 답하세요.")
     image = next(b for b in content if b["type"] == "image")
     assert image["source"]["type"] == "base64" and image["source"]["media_type"] == "image/png"
     assert image["source"]["data"] == "iVBORy1ieXRlcw=="
@@ -305,14 +307,19 @@ def test_anthropic_limits_images_to_20_and_skips_over_5mb(home, api, monkeypatch
     monkeypatch.setattr(llm_anthropic, "MAX_IMAGE_BYTES", 0)   # 모든 이미지가 한도 초과 -> 건너뜀
     fake = api(_text_reply("{}"))
     llm.ask([], {}, "t", files=[big])
-    assert not [b for b in fake.body["messages"][0]["content"] if b["type"] == "image"]
+    content = fake.body["messages"][0]["content"]
+    assert not [b for b in content if b["type"] == "image"]
+    assert {"type": "text", "text": "[건너뜀: big.jpg — 크기/개수 한도 초과, 내용을 추측하지 마세요]"} in content
 
     monkeypatch.setattr(llm_anthropic, "MAX_IMAGE_BYTES", 5 * 1024 * 1024)
     fake = api(_text_reply("{}"))
     llm.ask([], {}, "t", files=files)
     images = [b for b in fake.body["messages"][0]["content"] if b["type"] == "image"]
-    names = [b["text"] for b in fake.body["messages"][0]["content"] if b["type"] == "text"][1:]
+    texts = [b["text"] for b in fake.body["messages"][0]["content"] if b["type"] == "text"]
+    names = [t for t in texts if t.startswith("[이미지:")]
     assert len(images) == 20 and names[0] == "[이미지: 00.jpg]" and names[-1] == "[이미지: 19.jpg]"
+    skipped = [t for t in texts if t.startswith("[건너뜀:")]
+    assert skipped == [f"[건너뜀: {i:02d}.jpg — 크기/개수 한도 초과, 내용을 추측하지 마세요]" for i in (20, 21, 22)]
 
 
 @pytest.mark.parametrize("status", [401, 403])
@@ -383,3 +390,27 @@ def test_anthropic_ask_validated_retry_path_runs_through_engine(api, monkeypatch
     _, value = llm.ask_validated([], {}, "T", _validator, schema={"type": "object"})
     assert value == "good" and len(calls) == 2
     assert "고쳐야 함" in calls[1]["messages"][0]["content"][0]["text"]
+
+
+def test_anthropic_schema_falls_back_to_text_json_when_no_tool_use(api):
+    api(_text_reply('{"answer": 3}'))
+    assert llm.ask([], {}, "t", schema={"type": "object"}) == {"answer": 3}
+
+
+def test_anthropic_schema_prefers_tool_use_over_text(api):
+    api(FakeResponse({"content": [
+        {"type": "text", "text": '{"answer": 1}'},
+        {"type": "tool_use", "name": "respond", "input": {"answer": 2}},
+    ]}))
+    assert llm.ask([], {}, "t", schema={"type": "object"}) == {"answer": 2}
+
+
+@pytest.mark.parametrize("stop,fragment", [
+    ("max_tokens", "llm.max_tokens를 늘리세요"),
+    ("refusal", "모델이 요청을 거절했습니다"),
+])
+def test_anthropic_stop_reason_is_llm_failed(api, stop, fragment):
+    api(FakeResponse({"stop_reason": stop, "content": [{"type": "tool_use", "name": "respond", "input": {"a": 1}}]}))
+    with pytest.raises(ScriptError) as e:
+        llm.ask([], {}, "t", schema={"type": "object"})
+    assert e.value.code == "llm_failed" and fragment in e.value.message

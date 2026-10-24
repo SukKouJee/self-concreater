@@ -162,7 +162,7 @@ schema_version: 1
 - 화면·라이브러리에서 Claude를 부르는 모든 곳(레퍼런스 분석·샷 분류·콘티·대사 대안·유형화·모티브·기획안·다듬기·진단·미션·회고·라이브러리 요약)을 **엔진 계층 `scripts/llm.py` 하나**로 모은다: `check()`, `ask(rules, payload, task, *, schema=None, files=None, timeout=600)`, `ask_validated(...)`(1회 재시도 규칙 그대로).
 - 엔진은 작업 폴더 `yt-coach.json`의 `{"llm": {"engine": "claude-cli" | "anthropic-api", "model": "<선택>", "max_tokens": <선택>}}`로 고른다. 파일이 없으면 `claude-cli`(지금 동작 그대로). 환경 변수 `YTC_LLM_ENGINE`이 있으면 우선.
 - `claude-cli` 엔진 = 지금의 `scripts/claude_cli.py`(격리 플래그·structured output·오류 코드 그대로). `files`가 있으면 `--tools Read`를 켜고 경로를 payload에 둔다(지금과 같음).
-- `anthropic-api` 엔진 = Anthropic Messages API를 **표준 라이브러리 HTTP**(`urllib`)로 호출. 키는 `ANTHROPIC_API_KEY` 환경 변수에서만(파일·로그·오류 메시지에 남기지 않음). 규칙(SKILL.md)은 system, payload·task는 user. `schema`가 있으면 그 스키마를 입력으로 하는 도구 하나를 강제 호출(tool_choice)해 JSON을 받는다. `files`의 이미지(jpg/png/webp/gif, 최대 20장, 각 5MB 이하)는 base64 image 블록, 텍스트(md/txt)는 text 블록으로 함께 보낸다. 기본 모델은 설정 값, 없으면 `claude-sonnet-5-5`. 오류 코드: 키 없음 `llm_not_configured`, 인증 실패 `llm_auth`, 그 밖 `llm_failed`(HTTP 상태·짧은 이유, 키 없음).
+- `anthropic-api` 엔진 = Anthropic Messages API를 **표준 라이브러리 HTTP**(`urllib`)로 호출. 키는 `ANTHROPIC_API_KEY` 환경 변수에서만(파일·로그·오류 메시지에 남기지 않음). 규칙(SKILL.md)은 system, payload·task는 user. `schema`가 있으면 그 스키마를 입력으로 하는 도구 하나(`respond`)를 `tool_choice` auto + "respond 도구로만 답하라" 지시로 받고, tool_use가 없으면 텍스트 JSON을 파싱한다. `files`의 이미지(jpg/png/webp/gif, 최대 20장, 각 5MB 이하)는 base64 image 블록, 텍스트(md/txt)는 text 블록으로 함께 보낸다. 기본 모델은 설정 값, 없으면 `claude-sonnet-5-5`. 오류 코드: 키 없음 `llm_not_configured`, 인증 실패 `llm_auth`, 그 밖 `llm_failed`(HTTP 상태·짧은 이유, 키 없음).
 - 새 엔진(다른 회사 API 등)은 같은 인터페이스의 엔진 하나를 더하는 것으로 끝나게 한다(엔진 등록 표).
 - 터미널 커맨드(Claude Code 안에서 대화로 도는 흐름)는 이 계층과 무관 — 그대로 Claude Code가 해석한다.
 

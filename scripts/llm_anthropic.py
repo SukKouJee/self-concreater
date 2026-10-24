@@ -24,6 +24,7 @@ TOOL_NAME = "respond"
 MAX_IMAGES = 20
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 MAX_TEXT_CHARS = 200_000
+RESPOND_INSTRUCTION = "반드시 respond 도구 하나로만 답하세요."
 IMAGE_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp", ".gif": "image/gif"}
 TEXT_SUFFIXES = {".md", ".txt"}
 
@@ -39,6 +40,10 @@ def check() -> None:
     _api_key()
 
 
+def _skipped(path: Path) -> dict[str, Any]:
+    return {"type": "text", "text": f"[건너뜀: {path.name} — 크기/개수 한도 초과, 내용을 추측하지 마세요]"}
+
+
 def _file_blocks(files: list[Path] | None) -> list[dict[str, Any]]:
     blocks: list[dict[str, Any]] = []
     images = 0
@@ -47,9 +52,11 @@ def _file_blocks(files: list[Path] | None) -> list[dict[str, Any]]:
         suffix = path.suffix.lower()
         if suffix in IMAGE_TYPES:
             if images >= MAX_IMAGES:
+                blocks.append(_skipped(path))
                 continue
             try:
                 if path.stat().st_size > MAX_IMAGE_BYTES:
+                    blocks.append(_skipped(path))
                     continue
                 data = base64.b64encode(path.read_bytes()).decode("ascii")
             except OSError as e:
@@ -71,8 +78,7 @@ def _build_body(
 ) -> dict[str, Any]:
     system = "\n\n".join(Path(p).read_text(encoding="utf-8") for p in rules)
     text = f"## 입력\n```json\n{json.dumps(payload, ensure_ascii=False, indent=2)}\n```\n\n## 할 일\n{task}"
-    if schema is None:
-        text += "\n\n출력은 JSON 하나만."
+    text += f"\n\n{RESPOND_INSTRUCTION}" if schema is not None else "\n\n출력은 JSON 하나만."
     body: dict[str, Any] = {
         "model": options.get("model") or DEFAULT_MODEL,
         "max_tokens": options.get("max_tokens") or DEFAULT_MAX_TOKENS,
@@ -82,7 +88,7 @@ def _build_body(
         body["system"] = system
     if schema is not None:
         body["tools"] = [{"name": TOOL_NAME, "description": "Return the result as structured JSON.", "input_schema": schema}]
-        body["tool_choice"] = {"type": "tool", "name": TOOL_NAME}
+        body["tool_choice"] = {"type": "auto"}
     return body
 
 
@@ -108,11 +114,16 @@ def _extract(response: Any, schema: dict | None) -> dict:
     content = response.get("content") if isinstance(response, dict) else None
     if not isinstance(content, list):
         raise ScriptError("llm_failed", "Anthropic API 응답 형식이 올바르지 않습니다")
+    stop = response.get("stop_reason")
+    if stop == "max_tokens":
+        raise ScriptError("llm_failed", "응답이 max_tokens에서 잘렸습니다. yt-coach.json의 llm.max_tokens를 늘리세요")
+    if stop == "refusal":
+        raise ScriptError("llm_failed", "모델이 요청을 거절했습니다")
     if schema is not None:
         for block in content:
             if isinstance(block, dict) and block.get("type") == "tool_use" and isinstance(block.get("input"), dict):
                 return block["input"]
-        raise ScriptError("llm_failed", "Anthropic API 응답에 구조화된 결과(tool_use)가 없습니다")
+        # tool_choice가 auto라 모델이 텍스트로 답할 수 있다: 텍스트 JSON으로 대체
     text = "".join(b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text")
     try:
         return _parse_result_text(text)

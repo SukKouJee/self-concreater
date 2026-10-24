@@ -399,7 +399,7 @@ def test_shots_option_runs_after_save(client, fakes, tmp_path):
     vid, labels = fakes.applied[0]
     assert vid == A and labels[0]["size"] == "바스트"
     rules, _, _, kw = fakes.asks[-1]
-    assert rules == [claude_cli.SKILLS_DIR / "yt-shots" / "SKILL.md"] 
+    assert rules == [claude_cli.SKILLS_DIR / "yt-shots" / "SKILL.md"]
     assert kw["files"] == [tmp_path / f"workspace/frames/{A}/scene001_0.5s.jpg"]
     assert not (tmp_path / "workspace" / "tmp" / f"shots_{A}.json").exists()
 
@@ -614,3 +614,40 @@ def test_unknown_action_never_writes(client, fakes):
     job = wait_for(client, job["id"], finished)
     assert job["items"][0]["state"] == "failed"
     assert fakes.writes == []
+
+
+def _scenes(n):
+    return {"cuts": [], "duration_sec": 60,
+            "scenes": [{"start": i, "end": i + 1, "frame": f"workspace/frames/{A}/s{i:02d}.jpg"} for i in range(n)]}
+
+
+def test_analyze_attaches_only_examples_when_speech_is_enough(client, fakes, monkeypatch, tmp_path):
+    monkeypatch.setattr(videomd, "load_cuts", lambda vid: _scenes(12))
+    job = start_add(client, [url(A)])
+    wait_for(client, job["id"], item_state(0, "awaiting"))
+    assert fakes.analyze_asks()[0][3]["files"] == [tmp_path / "refs/ref_food/videos/ex.md"]
+    assert api_add.SCREEN_HINT not in fakes.analyze_asks()[0][2]
+
+
+def test_analyze_attaches_at_most_8_frames_with_first_and_last_when_screen(client, fakes, monkeypatch, tmp_path):
+    monkeypatch.setattr(videomd, "load_cuts", lambda vid: _scenes(30))
+    fakes.fetch_errors[A] = ScriptError("no_transcript", "자막이 없습니다", id=A, title="무자막")
+    job = start_add(client, [url(A)])
+    wait_for(client, job["id"], item_state(0, "awaiting"))
+    decide(client, job["id"], A, action="screen")
+    wait_for(client, job["id"], lambda j: j["items"][0]["preview"] is not None)
+    files = fakes.analyze_asks()[0][3]["files"]
+    frames = [f for f in files if f.suffix == ".jpg"]
+    assert len(frames) == 8
+    assert frames[0] == tmp_path / f"workspace/frames/{A}/s00.jpg" and frames[-1] == tmp_path / f"workspace/frames/{A}/s29.jpg"
+    assert files[-1] == tmp_path / "refs/ref_food/videos/ex.md"
+
+
+def test_analyze_attaches_frames_when_context_is_sparse(client, fakes, monkeypatch, tmp_path):
+    monkeypatch.setattr(videomd, "load_cuts", lambda vid: _scenes(3))
+    monkeypatch.setattr(videomd, "context", lambda vid, cat: {**fakes.context(vid, cat), "sparse": True})
+    job = start_add(client, [url(A)])
+    wait_for(client, job["id"], item_state(0, "awaiting"))
+    files = fakes.analyze_asks()[0][3]["files"]
+    assert [f.name for f in files if f.suffix == ".jpg"] == ["s00.jpg", "s01.jpg", "s02.jpg"]
+    assert api_add.SCREEN_HINT in fakes.analyze_asks()[0][2]

@@ -59,7 +59,7 @@ def _build_prompt(rules: list[Path], payload: dict, task: str, files: list[Path]
     parts = [
         *rule_texts,
         f"## 입력\n```json\n{body}\n```",
-        f"## 읽을 파일\n아래 파일을 Read 도구로 열어 보세요.\n{listing}",
+        f"## 읽을 파일\n규칙이 요구할 때만 Read 도구로 여세요.\n{listing}",
         f"## 할 일\n{task}\n\n출력은 JSON 하나만.",
     ]
     return "\n\n".join(parts)

@@ -34,7 +34,7 @@ FEEDBACK_KIND = "mission_feedback"
 MISSION_TASK = "yt-mission 규칙 1~4절대로 입력에 맞는 오늘의 미션 JSON 하나를 만드세요."
 SWAP_TASK_SUFFIX = " 오늘 미션과 다른 재료·종류로 만드세요."
 FEEDBACK_TASK = ("yt-mission 규칙 5절대로 제출물에 2~4문장 피드백(잘된 점 1개 → 다음에 바꿀 점 1개)을 쓰세요. "
-                 "파일이 있으면 Read로 보세요. 난이도는 입력 difficulty로 이미 받았으니 묻거나 다시 적지 마세요.")
+                 "파일이 있으면(첨부되었거나 Read로 열 수 있는 파일) 보세요. 난이도는 입력 difficulty로 이미 받았으니 묻거나 다시 적지 마세요.")
 MISSION_SCHEMA: dict = {
     "type": "object",
     "properties": {
