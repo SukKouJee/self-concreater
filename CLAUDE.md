@@ -25,6 +25,7 @@
 - Python 3.11+. 의존성은 `requirements.txt`. ffmpeg는 선택(현재 코드는 쓰지 않음: 컷은 OpenCV, STT는 PyAV).
 - 로컬 실행 전제. 자막 차단 시 `YT_PROXY` 안내.
 - 테스트: `pytest tests/`. 실제 링크는 `tests/fixtures/links.txt`.
+- 프로세스를 이미지 이름으로 일괄 종료하지 않는다(`taskkill /IM python.exe`, `Stop-Process -Name python`, `pkill python`, `node.exe` 포함 금지). 사용자의 UI 서버와 다른 프로그램까지 죽인다. UI 서버는 `ytc ui --stop`, 남은 프로세스는 직접 띄운 PID나 그 포트를 쓰는 PID만 끈다.
 
 ## 작업 방식
 - 스킬 프롬프트와 사용자 대면 문구는 한국어. 출력 포맷은 스킬 안에 고정 예시로 둔다.
