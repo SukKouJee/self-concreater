@@ -11,6 +11,8 @@ const MAX_TOPIC = 100;
 const TYPE_KO = { flow: "흐름", combo: "조합", technique: "기법", angle: "각도" };
 const FILTER_ORDER = ["flow", "combo", "technique", "angle"];
 const STEP_TEXT = { context: "자료 모으는 중", claude: "Claude가 카드 만드는 중" };
+const LIB_IDS_KEY = "ytc.motif.library_ids";      // set by the library screen ("모티브 재료로 쓰기"); chosen per run, not saved
+const MAX_LIB = 10;
 const CATALOG_HINT = "기법 카탈로그 정리(같은 기법 합치기)는 터미널 /yt-coach:yt-inspire 에서 할 수 있어요";
 
 // ---- helpers ------------------------------------------------------------------
@@ -36,6 +38,34 @@ function markHandled(jobId) {
 
 const isHandled = (jobId) => readHandled().includes(jobId);
 
+function readLibIds() {
+  try {
+    const v = JSON.parse(sessionStorage.getItem(LIB_IDS_KEY) || "[]");
+    return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
+  } catch { return []; }
+}
+
+function writeLibIds(ids) {
+  try {
+    if (ids.length) sessionStorage.setItem(LIB_IDS_KEY, JSON.stringify(ids));
+    else sessionStorage.removeItem(LIB_IDS_KEY);
+  } catch { /* storage unavailable: the choice only lives on this screen */ }
+}
+
+// Friend techniques for the chooser. null when the library is not connected (or cannot be read): no chooser then.
+async function loadLibrary(mine) {
+  try {
+    const st = await mine.ctx.api("GET", "/api/library/status");
+    if (!st.connected) return null;
+    const res = await mine.ctx.api("GET", "/api/library/items?kind=technique");
+    const items = res.items || [];
+    const have = new Set(items.map((it) => it.id));
+    return { items, selected: new Set(readLibIds().filter((id) => have.has(id)).slice(0, MAX_LIB)) };
+  } catch {
+    return null;
+  }
+}
+
 function previewOf(job) {
   const item = job && job.items && job.items[0];
   return item && item.state === "awaiting" && item.preview && Array.isArray(item.preview.cards) && item.preview.cards.length
@@ -49,7 +79,7 @@ let S = null;
 // Each category change builds a fresh state, so late async work of the old one sees S !== mine and stops.
 function freshState(el, ctx, category) {
   return {
-    el, ctx, category, data: null, cards: [], job: null, jobId: null, preview: null, edits: [],
+    el, ctx, category, data: null, cards: [], lib: null, job: null, jobId: null, preview: null, edits: [],
     topic: "", filter: "all", starBusy: new Set(), pinned: new Set(), saveWarning: null, warnShown: false,
     timer: null, pollErrors: 0, running: false, saving: false,
     runError: null, saveError: null, listError: null, confirmRerun: false, confirmDiscard: false,
@@ -85,11 +115,13 @@ async function load() {
   }
   fill(mine.el, h("h1", {}, "모티브"), h("p", { class: "muted", role: "status" }, "불러오는 중…"));
   try {
-    const [data, cur] = await Promise.all([
+    const [data, cur, lib] = await Promise.all([
       mine.ctx.api("GET", `/api/motif?category=${encodeURIComponent(cat)}`),
       mine.ctx.api("GET", "/api/jobs/current?kind=motif"),
+      loadLibrary(mine),
     ]);
     if (!alive(mine)) return;
+    mine.lib = lib;
     mine.data = data;
     mine.cards = data.cards || [];
     const job = cur.job;
@@ -191,8 +223,11 @@ async function startRun() {
     const body = { category: mine.category };
     const topic = mine.topic.trim();
     if (topic) body.topic = topic;
+    const libIds = mine.lib ? [...mine.lib.selected] : [];
+    if (libIds.length) body.library_ids = libIds;
     const res = await mine.ctx.api("POST", "/api/motif/run", body);
     if (!alive(mine)) return;
+    if (libIds.length) { mine.lib.selected.clear(); writeLibIds([]); }       // chosen per run, not kept
     if (mine.jobId) markHandled(mine.jobId);
     mine.job = res.job;
     mine.preview = null;
@@ -383,6 +418,7 @@ function render() {
   for (const n of notes) kids.push(h("p", { class: "muted hint" }, n));
   kids.push(h("p", { class: "muted small" }, CATALOG_HINT));
 
+  S.nodes.lib = h("div", { class: "lib-choose" });
   S.nodes.body = h("div", { class: "motif-body" });
   S.nodes.list = h("section", { class: "motif-sec", "aria-labelledby": "motif-list-title" });
   if (d.ref > 0) {            // without ref there is nothing to run: no empty section
@@ -405,7 +441,7 @@ function renderRunBox() {
   const active = isActive(job);
   const failed = !!job && (job.status === "failed" || job.status === "stopped");
   const item0 = job && job.items && job.items[0];
-  const sig = JSON.stringify([active, failed, S.running, S.runError, S.confirmRerun, d.ref,
+  const sig = JSON.stringify([active, failed, S.running, S.saving, S.runError, S.confirmRerun, d.ref,
     item0 && item0.step, item0 && item0.message, job && job.message, !!S.preview]);
   if (sig === S.runSig && box.childNodes.length) return;
   S.runSig = sig;
@@ -420,6 +456,7 @@ function renderRunBox() {
   btn.addEventListener("click", () => requestRerun("run"));
   const kids = [
     h("div", { class: "field" }, h("label", { for: "motif-topic" }, "주제(선택)"), topic),
+    S.nodes.lib,
     h("div", { class: "btn-row" }, btn, h("span", { class: "muted small" }, "Claude를 한 번 부릅니다(수십 초)")),
   ];
   if (S.confirmRerun === "run") kids.push(rerunConfirm("run"));
@@ -437,7 +474,45 @@ function renderRunBox() {
   // Keep a half-typed topic and focus when only the status changed.
   const hadFocus = document.activeElement && document.activeElement.id === "motif-topic";
   fill(box, ...kids);
+  renderLibChoose();
   if (hadFocus && !busy) topic.focus();
+}
+
+// "지인 기법" chooser: only when the shared library is connected. The choice is sent as library_ids with the next run.
+function renderLibChoose(focusId) {
+  const box = S.nodes.lib;
+  if (!box) return;
+  const lib = S.lib;
+  if (!lib) { fill(box); return; }
+  const busy = S.running || isActive(S.job) || S.saving;
+  if (!lib.items.length) {
+    fill(box, h("p", { class: "muted small" }, "지인 기법: 받은 기법이 아직 없습니다. ", h("a", { href: "#/library" }, "공용 라이브러리에서 받기")));
+    return;
+  }
+  const n = lib.selected.size;
+  const rows = lib.items.map((it) => {
+    const checked = lib.selected.has(it.id);
+    const cb = h("input", {
+      type: "checkbox", checked, disabled: busy || (!checked && n >= MAX_LIB), "data-lib-id": it.id,
+      "aria-label": `${it.name} · ${it.author}`,
+    });
+    cb.addEventListener("change", () => {
+      if (cb.checked) lib.selected.add(it.id); else lib.selected.delete(it.id);
+      writeLibIds([...lib.selected]);
+      renderLibChoose(it.id);
+    });
+    const kind = it.technique_kind ? `[${it.technique_kind}] ` : "";
+    return h("label", { class: "check lib-choice" }, cb,
+      h("span", {}, `${kind}${it.name}`, " ", h("span", { class: "muted small" }, `${it.author}${it.category ? ` · ${it.category}` : ""}`)));
+  });
+  fill(box, h("fieldset", { class: "field lib-choose-set" },
+    h("legend", {}, `지인 기법(선택) ${n ? `· ${n}개 고름` : ""}`.trim()),
+    h("p", { class: "muted hint" }, `공용 라이브러리에서 받은 지인 기법을 재료로 더합니다(최대 ${MAX_LIB}개). 카드의 근거는 여전히 내 레퍼런스 영상입니다.`),
+    h("div", { class: "lib-choose-list" }, ...rows)));
+  if (focusId) {
+    const el = box.querySelector(`[data-lib-id="${CSS.escape(focusId)}"]`);
+    if (el) el.focus({ preventScroll: true });
+  }
 }
 
 function renderBody() {

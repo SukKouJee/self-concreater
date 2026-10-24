@@ -3,7 +3,7 @@ import re
 from scripts.ui.server import STATIC_DIR
 from tests.test_ui_server import client, no_browser  # noqa: F401  (fixture 재사용)
 
-MENU_NAMES = ["홈", "레퍼런스 추가", "레퍼런스 목록", "유형화", "리포트", "모티브", "기획안", "콘티", "진단", "미션"]
+MENU_NAMES = ["홈", "레퍼런스 추가", "레퍼런스 목록", "공용 라이브러리", "유형화", "리포트", "모티브", "기획안", "콘티", "진단", "미션"]
 # yt-draft is no longer a terminal-only item: the draft screen is a live route.
 # diagnose is live too: its terminal command no longer appears in the menu definition.
 # mission and report are live too: no menu item shows a terminal command any more.
@@ -528,3 +528,59 @@ def test_conti_caption_video_contract():
     section = text[text.index("// ---- caption video"):text.index("// ---- end caption video")]
     for banned in ["localStorage", "sessionStorage", "innerHTML", "confirm(", "alert(", "prompt(", "http://", "https://"]:
         assert banned not in section, banned
+
+
+# ---- 공용 라이브러리 화면 -----------------------------------------------------------------
+
+def test_library_menu_route_and_page_served(client):
+    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert 'route: "#/library"' in app and 'case "library"' in app
+    status, headers, raw = client.call("GET", "/static/pages/library.js")
+    assert status == 200 and "javascript" in headers["Content-Type"]
+    assert "/api/library/status" in raw.decode("utf-8")
+
+
+def test_library_page_contract_and_safety():
+    js = (STATIC_DIR / "pages" / "library.js").read_text(encoding="utf-8")
+    for token in ["export async function mount", "export function unmount", "export function onCategory",
+                  "isCurrent()", "ctx.api(", "renderMarkdown", "clearTimeout", "encodeURIComponent",
+                  "/api/library/connect", "/api/library/pull", "/api/library/items", "/api/library/preview",
+                  "/api/library/summarize", "/api/library/confirm", "/api/library/discard",
+                  "/api/jobs/current?kind=library_summary", "ytc.library.handled", "ytc.motif.library_ids",
+                  "GitHub 저장소 주소 (git@… 또는 깃허브 주소)", "모티브 재료로 쓰기", "이 틀로 기획안 만들기",
+                  "섹션 요약 받기", "내가 올림", "잘 먹힘", "올리기 확인", "그래도 새로 올리기", "이미 올린 항목입니다",
+                  "push_unknown", "role: \"tablist\"", "aria-selected"]:
+        assert token in js, token
+    for banned in ["innerHTML", "insertAdjacentHTML", "outerHTML", "window.confirm", "confirm(", "alert(", "prompt(",
+                   "http://", "https://", "eval(", "new Function"]:
+        assert banned not in js, banned
+
+
+def test_library_upload_only_runs_from_a_click_on_the_confirm_buttons():
+    js = (STATIC_DIR / "pages" / "library.js").read_text(encoding="utf-8")
+    assert js.count("/api/library/confirm") == 1                       # one place sends the upload
+    calls = [ln for ln in js.splitlines() if re.search(r"(?<![A-Za-z])upload\(", ln) and "async function upload" not in ln]
+    assert calls, "upload must be reachable"
+    for ln in calls:
+        assert 'addEventListener("click"' in ln, ln                   # never from mount, polling or a timer
+    assert "askUpload" in js and "data-upload-yes" in js and "data-dup-yes" in js
+
+
+def test_motif_page_has_library_chooser_that_sends_library_ids():
+    js = (STATIC_DIR / "pages" / "motif.js").read_text(encoding="utf-8")
+    for token in ["ytc.motif.library_ids", "/api/library/status", "/api/library/items?kind=technique",
+                  "library_ids", "지인 기법", "sessionStorage"]:
+        assert token in js, token
+    assert "if (!st.connected) return null" in js                      # no chooser unless the library is connected
+
+
+def test_draft_page_has_friend_template_optgroup():
+    js = (STATIC_DIR / "pages" / "draft.js").read_text(encoding="utf-8")
+    for token in ["library_templates", "optgroup", "지인 틀", "x.source"]:
+        assert token in js, token
+
+
+def test_api_error_carries_response_body():
+    js = (STATIC_DIR / "api.js").read_text(encoding="utf-8")
+    assert "data," in js                                               # library screen reads shared_id / push_unknown
+

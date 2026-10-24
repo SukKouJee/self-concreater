@@ -19,6 +19,7 @@ const MENU = [
     items: [
       { name: "레퍼런스 추가", route: "#/add" },
       { name: "레퍼런스 목록", route: "#/refs" },
+      { name: "공용 라이브러리", route: "#/library" },
     ],
   },
   {
@@ -252,6 +253,7 @@ function parseHash() {
   const tail = rest.join("/");
   switch (head) {
     case "add": return { page: "add", params: {} };
+    case "library": return { page: "library", params: {} };
     case "typify": return { page: "typify", params: {} };
     case "motif": return { page: "motif", params: {} };
     case "mission": return { page: "mission", params: {} };

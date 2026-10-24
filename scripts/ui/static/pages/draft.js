@@ -209,9 +209,15 @@ async function loadNew(mine, cat) {
   }
 }
 
+function libraryItems(src) {
+  const group = src && src.library_templates;
+  return group && Array.isArray(group.items) ? group.items : [];
+}
+
 function sourceIds(src) {
   const ids = new Set();
   for (const list of [src.stars, src.cards, src.archetypes]) for (const x of list || []) ids.add(x.id);
+  for (const x of libraryItems(src)) ids.add(x.source);          // friend templates are chosen by "library:<id>"
   return ids;
 }
 
@@ -330,6 +336,10 @@ function renderView(mine, d) {
 // ---- new: run box -------------------------------------------------------------
 
 function sourceLabel(x) {
+  if (x.source !== undefined) {                                 // friend template (shared library)
+    const by = x.author ? ` · ${x.author}` : "";
+    return `${x.title}${by}${x.category ? ` · ${x.category}` : ""}`;
+  }
   if (x.name !== undefined) {                                   // archetype
     const dur = num(x.mean_duration) > 0 ? ` · 평균 ${fmtTime(x.mean_duration)}` : "";
     return `${x.id}${x.name ? ` ${x.name}` : ""}${dur}`;
@@ -344,6 +354,11 @@ function sourceSelect(disabled) {
   for (const [label, list] of groups) {
     if (!list || !list.length) continue;
     sel.append(h("optgroup", { label }, ...list.map((x) => h("option", { value: x.id }, sourceLabel(x)))));
+  }
+  const lib = libraryItems(S.sources);
+  if (lib.length) {
+    const label = (S.sources.library_templates && S.sources.library_templates.label) || "지인 틀";
+    sel.append(h("optgroup", { label }, ...lib.map((x) => h("option", { value: x.source }, sourceLabel(x)))));
   }
   sel.value = S.source;
   sel.addEventListener("change", () => { S.source = sel.value; S.sourceNote = null; updateRunControls(); });
