@@ -280,6 +280,31 @@ def context(draft: str | Path) -> dict:
     }
 
 
+def relint(draft: str | Path, hook_script: Any = None, title: Any = None, thumb_words: Any = None) -> dict:
+    """고친 값만 다시 점검한다(Claude 호출 없음). 훅 구간 길이와 말속도는 기획안에서 구한다. 준 값에 대한 결과만 돌려준다."""
+    for name, value, kind in (("hook_script", hook_script, str), ("title", title, str)):
+        if value is not None and not isinstance(value, kind):
+            raise ScriptError("bad_request", f"{name}은(는) 문자열이어야 합니다")
+    if thumb_words is not None and (not isinstance(thumb_words, list) or not all(isinstance(w, str) for w in thumb_words)):
+        raise ScriptError("bad_request", "thumb_words는 문자열 목록이어야 합니다")
+    path = _draft_path(str(draft))
+    d = conti.parse_draft(path)
+    out: dict = {}
+    clean_title = None if title is None else _one_line(title)
+    words = None if thumb_words is None else [w for w in (_one_line(x) for x in thumb_words) if w]
+    if hook_script is not None:
+        hook = next((s for s in d["sections"] if s["label"] == "hook"), None)
+        hook_sec = (hook["end"] - hook["start"]) if hook else None
+        lines = [line.rstrip() for line in hook_script.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+        cps = conti.speech_rate(d["fm"].get("category"))["cps"]
+        out["hook"] = score_hook("\n".join(line for line in lines if line.strip()), hook_sec, cps)
+    if clean_title is not None:
+        out["title"] = lint_title(clean_title, words)
+    if words is not None:
+        out["thumbnail"] = lint_thumbnail(words, clean_title or "")
+    return out
+
+
 # --- evaluate --------------------------------------------------------------------------
 
 def _text(value: Any, name: str) -> str:
@@ -382,11 +407,6 @@ def _hook_heading(lines: list[str]) -> int | None:
     return None
 
 
-def _escape_script(script: str) -> str:
-    """제목처럼 보이는 줄(`#`)과 표처럼 보이는 줄(`|`) 앞에 백슬래시를 붙인다. 읽을 때(conti.parse_draft)는 되돌린다."""
-    return re.sub(r"^\|", lambda m: "\\|", _escape_headings(script), flags=re.MULTILINE)
-
-
 def _hook_end(lines: list[str], heading: int) -> int:
     return next((i for i in range(heading + 1, len(lines)) if lines[i].startswith(("|", "### ", "## "))), len(lines))
 
@@ -403,11 +423,15 @@ def _text_after_table(lines: list[str], heading: int) -> bool:
     return False
 
 
+def _rstrip_lines(text: str) -> str:
+    return "\n".join(line.rstrip() for line in text.split("\n"))
+
+
 def _swap_hook(lines: list[str], heading: int, script: str) -> tuple[list[str], str]:
     """훅 제목 다음의 대본 문단(샷 표 `|` 줄 또는 다음 `###`/`##` 전까지)만 바꾼다. (새 줄들, 이전 대본)."""
     end = _hook_end(lines, heading)
     region = lines[heading + 1:end]
-    new = [line.rstrip() for line in _escape_script(script).strip("\n").split("\n")]
+    new = [line.rstrip() for line in _escape_headings(script).strip("\n").split("\n")]
     lead = next((i for i, line in enumerate(region) if line.strip()), len(region))
     if lead == len(region):         # 비어 있던 문단: 제목 바로 뒤에 넣고 한 줄 띄운다
         return lines[:heading + 1] + new + [""] + lines[end:], ""
@@ -437,16 +461,18 @@ def _find_section(lines: list[str], heading: str) -> tuple[int, int] | None:
     return start, end
 
 
-def _sub_blocks(section: list[str]) -> dict[str, list[str]]:
-    blocks: dict[str, list[str]] = {}
-    current = None
+def _split_packaging(section: list[str]) -> tuple[list[str], list[tuple[str, list[str]]]]:
+    """`## 패키징` 본문을 첫 `###` 앞 글(서문)과 `###` 블록들(순서 유지)로 나눈다. 앞뒤 빈 줄은 뗀다."""
+    preamble: list[str] = []
+    blocks: list[tuple[str, list[str]]] = []
     for line in section:
         if line.startswith("### "):
-            current = line[4:].strip()
-            blocks[current] = []
-        elif current is not None:
-            blocks[current].append(line)
-    return {k: _trim_blank(v) for k, v in blocks.items()}
+            blocks.append((line[4:].strip(), []))
+        elif blocks:
+            blocks[-1][1].append(line)
+        else:
+            preamble.append(line)
+    return _trim_blank(preamble), [(name, _trim_blank(body)) for name, body in blocks]
 
 
 def _trim_blank(lines: list[str]) -> list[str]:
@@ -456,19 +482,37 @@ def _trim_blank(lines: list[str]) -> list[str]:
 
 
 def _packaging(existing: list[str], pick: dict, history: list[str]) -> list[str]:
-    old = _sub_blocks(existing)
+    """썸네일 지시서·훅 공식만 새로 쓰고 이력에 덧붙인다. 서문과 모르는 `###` 블록은 사용자 것이라 그대로 둔다."""
+    preamble, old = _split_packaging(existing)
     thumb = pick["thumbnail"]
-    out = [PACKAGING, "", "### 썸네일 지시서", f"- 문구: {' / '.join(thumb['words'])}", f"- 표정: {thumb['expression']}",
-           f"- 구도: {thumb['framing']}", f"- 배경·대비: {thumb['background']}"]
+    thumb_block = [f"- 문구: {' / '.join(thumb['words'])}", f"- 표정: {thumb['expression']}",
+                   f"- 구도: {thumb['framing']}", f"- 배경·대비: {thumb['background']}"]
     formula = _formula_ids().get(pick["hook_formula"] or "")
-    if formula:
-        out += ["", "### 훅 공식", f"- {formula['id']} {formula['name']} ({formula['hook_type']}) — {formula['shape']}"]
-    elif old.get("훅 공식"):
-        out += ["", "### 훅 공식", *old["훅 공식"]]
-    log = [*old.get("이력", []), *history]
-    if log:
-        out += ["", "### 이력", *log]
-    return out + [""]
+    formula_block = ([f"- {formula['id']} {formula['name']} ({formula['hook_type']}) — {formula['shape']}"]
+                     if formula else None)
+    blocks: list[tuple[str, list[str]]] = []
+    seen: set[str] = set()
+    for name, body in old:
+        if name not in seen and name == "썸네일 지시서":
+            body = thumb_block
+        elif name not in seen and name == "훅 공식" and formula_block is not None:
+            body = formula_block
+        elif name not in seen and name == "이력":
+            body = [*body, *history]
+        seen.add(name)
+        blocks.append((name, body))
+    if "썸네일 지시서" not in seen:
+        blocks.insert(0, ("썸네일 지시서", thumb_block))
+    if "훅 공식" not in seen and formula_block is not None:
+        blocks.insert(1 + next((i for i, (n, _) in enumerate(blocks) if n == "썸네일 지시서"), -1), ("훅 공식", formula_block))
+    if "이력" not in seen and history:
+        blocks.append(("이력", history))
+    out = [PACKAGING, ""]
+    if preamble:
+        out += [*preamble, ""]
+    for name, body in blocks:
+        out += [f"### {name}", *body, ""]
+    return out
 
 
 def apply(draft: str | Path, choice: dict, expected_hash: str) -> dict:
@@ -496,7 +540,7 @@ def apply(draft: str | Path, choice: dict, expected_hash: str) -> dict:
             if _text_after_table(lines, heading):
                 warnings.append("훅 샷 표 아래에 대본이 아닌 글이 있습니다. 대본 교체로는 바뀌지 않으니 직접 확인해 주세요")
             lines, old_hook = _swap_hook(lines, heading, pick["hook_script"])
-            if old_hook != _escape_script(pick["hook_script"]).strip("\n"):
+            if _rstrip_lines(old_hook) != _rstrip_lines(_escape_headings(pick["hook_script"]).strip("\n")):
                 changed.append("hook")
                 old_type = fm.get("hook_type")
                 if pick["hook_type"] and pick["hook_type"] != old_type:
@@ -510,7 +554,7 @@ def apply(draft: str | Path, choice: dict, expected_hash: str) -> dict:
     if pick["title"] != old_title:
         changed.insert(0, "title")
         entry.insert(0, f"  - 이전 제목: {old_title}")
-    fm["title"], fm["title_pattern"] = pick["title"], title_patterns(pick["title"])
+        fm["title"], fm["title_pattern"] = pick["title"], title_patterns(pick["title"])
     h1 = next((i for i, line in enumerate(lines) if line.startswith("# ")), None)
     if h1 is None:
         lines[:0] = [f"# {pick['title']}", ""]

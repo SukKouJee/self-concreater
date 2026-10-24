@@ -83,9 +83,10 @@ def _one_line(value: Any) -> str:
 
 
 def _escape_headings(text: str) -> str:
-    """줄바꿈을 LF로 맞추고, 진짜 md 제목(`#`~`######` + 공백/줄끝)인 줄 앞에 백슬래시를 붙인다. `#해시태그`는 그대로."""
+    """줄바꿈을 LF로 맞추고, 진짜 md 제목(`#`~`######` + 공백/줄끝)이나 표처럼 보이는 줄(`|`) 앞에 백슬래시를 붙인다.
+    `#해시태그`는 그대로. 읽을 때(conti.parse_draft)는 이 백슬래시를 되돌린다."""
     text = text.replace("\r\n", "\n").replace("\r", "\n")
-    return re.sub(r"^([ \t]*)(#{1,6}(?=\s|$))", r"\1\\\2", text, flags=re.MULTILINE)
+    return re.sub(r"^([ \t]*)(#{1,6}(?=\s|$)|\|)", r"\1\\\2", text, flags=re.MULTILINE)
 
 
 def _finite(value: Any, name: str) -> float:

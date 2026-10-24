@@ -530,3 +530,73 @@ def test_score_hook_mixed_uses_larger_of_speak_and_read():
     assert caption_heavy["need_sec"] == caption_heavy["read_sec"] == pytest.approx(3.0)
     assert caption_heavy["fits"] is False
     assert polish.score_hook("말: 가나\n자막: " + "가" * 36, None, 7.0)["fits"] is True
+
+
+# --- final fix pass ----------------------------------------------------------------
+
+def test_relint_scores_edits_without_claude(draft_md, home):
+    rel = draft_md.relative_to(home).as_posix()
+    out = polish.relint(rel, hook_script="말: " + "가" * 40, title="라면 도전", thumb_words=["라면", "끝판왕"])
+    assert set(out) == {"hook", "title", "thumbnail"}
+    assert out["hook"]["fits"] is False and out["hook"]["speak_sec"] > 2     # 훅 구간 2초
+    assert out["title"]["overlap"] if "overlap" in out["title"] else "라면" in " ".join(out["title"]["issues"])
+    assert out["thumbnail"]["overlap"] == ["라면"]
+    assert set(polish.relint(rel, title="제목 3개")) == {"title"}
+    assert set(polish.relint(rel, thumb_words=["가"])) == {"thumbnail"}
+    assert set(polish.relint(rel, hook_script="")) == {"hook"}
+
+
+@pytest.mark.parametrize("kw", [{"hook_script": 3}, {"title": ["x"]}, {"thumb_words": "x"}, {"thumb_words": [1]}])
+def test_relint_rejects_bad_types(draft_md, home, kw):
+    with pytest.raises(ScriptError) as e:
+        polish.relint(draft_md.relative_to(home).as_posix(), **kw)
+    assert e.value.code == "bad_request"
+
+
+def test_apply_same_title_keeps_hand_corrected_title_pattern(draft_md, home):
+    rel = draft_md.relative_to(home).as_posix()
+    first = polish.apply(rel, choice(), sha(draft_md))
+    text = draft_md.read_bytes().decode("utf-8")
+    edited = text.replace("title_pattern: [number]", "title_pattern: [curiosity]", 1)
+    assert edited != text
+    draft_md.write_bytes(edited.encode("utf-8"))
+    polish.apply(rel, choice(), sha(draft_md))
+    fm, _ = conti.refstore.split_frontmatter(draft_md.read_bytes().decode("utf-8"))
+    assert fm["title_pattern"] == ["curiosity"] and first["hash"] != sha(draft_md)
+
+
+def test_apply_preserves_user_packaging_text_and_unknown_blocks(draft_md, home):
+    rel = draft_md.relative_to(home).as_posix()
+    first = polish.apply(rel, choice(), sha(draft_md))
+    text = draft_md.read_bytes().decode("utf-8")
+    text = text.replace("## 패키징\n", "## 패키징\n\n내가 쓴 서문 메모\n", 1)
+    text = text.replace("### 이력", "### 내 아이디어\n- 노란 자막 시도\n\n### 이력", 1) if "### 이력" in text \
+        else text.replace("\n## 내 메모", "\n### 내 아이디어\n- 노란 자막 시도\n\n## 내 메모", 1)
+    draft_md.write_bytes(text.encode("utf-8"))
+    polish.apply(rel, choice(title="두 번째 제목 7개"), sha(draft_md))
+    polish.apply(rel, choice(title="세 번째 제목 8개"), sha(draft_md))
+    body = body_of(draft_md)
+    pack = body[body.index("## 패키징"):body.index("## 내 메모")]
+    assert pack.count("내가 쓴 서문 메모") == 1 and pack.count("### 내 아이디어") == 1 and "- 노란 자막 시도" in pack
+    assert pack.index("서문") < pack.index("### 썸네일 지시서") < pack.index("### 내 아이디어") or \
+        pack.index("서문") < pack.index("### 내 아이디어")
+    assert pack.count("### 썸네일 지시서") == 1 and pack.count("### 이력") == 1 and first["hash"]
+
+
+def test_apply_ignores_trailing_spaces_in_old_hook(draft_md, home):
+    rel = draft_md.relative_to(home).as_posix()
+    text = draft_md.read_bytes().decode("utf-8")
+    assert "자막: 4단계 다 먹을 수 있을까?\n" in text
+    draft_md.write_bytes(text.replace("자막: 4단계 다 먹을 수 있을까?\n", "자막: 4단계 다 먹을 수 있을까?   \n", 1).encode("utf-8"))
+    result = polish.apply(rel, choice(title="컵라면 4단계 | 도전", hook_script="자막: 4단계 다 먹을 수 있을까?"), sha(draft_md))
+    assert "hook" not in result["changed"] and "title" not in result["changed"]
+    assert "이전 훅 대본" not in body_of(draft_md)
+
+
+def test_apply_bom_round_trip(draft_md, home):
+    rel = draft_md.relative_to(home).as_posix()
+    draft_md.write_bytes(b"\xef\xbb\xbf" + draft_md.read_bytes())
+    polish.apply(rel, choice(), sha(draft_md))
+    raw = draft_md.read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf") and not raw.startswith(b"\xef\xbb\xbf\xef\xbb\xbf")
+    assert conti.parse_draft(draft_md)["title"] == "컵라면 4단계 전부 먹어 봤다"

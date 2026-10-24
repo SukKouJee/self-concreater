@@ -118,6 +118,7 @@ const ignorable = (e) => !e || e.error === "aborted";
 function stopPolling() {
   if (S && S.timer) { clearTimeout(S.timer); S.timer = null; }
   if (S && S.pl.timer) { clearTimeout(S.pl.timer); S.pl.timer = null; }
+  if (S && S.pl.lintTimer) { clearTimeout(S.pl.lintTimer); S.pl.lintTimer = null; }
 }
 
 function focusStatus() {
@@ -850,13 +851,14 @@ function discard() {
 
 // ---- polish: 훅·제목·썸네일 다듬기 (상세 화면) ------------------------------------
 // 작업(kind=polish)은 후보와 점수·지적·근거를 만들어 미리보기까지만 간다. 기획안 파일은 저장을 누른 뒤에만 바뀐다.
-// 미리보기는 서버가 계산한 값이 기준이다. 고친 글은 저장할 때 서버가 다시 검사한다.
+// 미리보기는 서버가 계산한 값이 기준이다. 고른 후보를 고치거나 다른 후보를 고르면 /api/polish/lint로 점수를 다시 계산한다(Claude 호출 없음).
 
 const POLISH_STEP_TEXT = { context: "기획안 읽는 중", claude: "Claude가 후보 만드는 중" };
 const THUMB_SLOTS = 3;
 const MAX_HOOK_SCRIPT = 600;
 const MAX_POLISH_TITLE = 120;
 const MAX_THUMB_TEXT = 200;
+const RELINT_DELAY = 400;
 const round1 = (x) => Math.round(x * 10) / 10;
 
 function freshPolish() {
@@ -864,6 +866,7 @@ function freshPolish() {
     job: null, jobId: null, result: null, context: null, edit: null, dirty: false,
     running: false, saving: false, runError: null, saveError: null, conflict: false, refreshed: false,
     confirmRerun: false, confirmClose: false, timer: null, pollErrors: 0, barSig: null, alertSig: null,
+    lintTimer: null, lintSeq: { hook: 0, tt: 0 }, lintPending: new Set(), lintFailed: false, thumbIssuesNode: null,
     nodes: {}, pv: {},
   };
 }
@@ -1025,6 +1028,7 @@ async function startPolish() {
   pl.confirmClose = false;
   pl.barSig = null;
   pl.alertSig = null;
+  updatePolishActions(mine);
   renderPolishBar(mine);
   renderPolishAlerts(mine);
   try {
@@ -1118,65 +1122,144 @@ function polishGroup(legendText, cards, picked, note) {
   return h("fieldset", { class: "pol-group" }, h("legend", {}, legendText), note, ...cards.map((c) => c.root));
 }
 
+function hookTimingText(lint, hookSec) {
+  const parts = [];
+  if (hookSec !== null) parts.push(`훅 구간 ${hookSec}초`);
+  if (num(lint.speak_sec) > 0) parts.push(`말하면 약 ${round1(num(lint.speak_sec))}초`);
+  if (num(lint.read_sec) > 0) parts.push(`자막 읽기 약 ${round1(num(lint.read_sec))}초`);
+  return parts.join(" · ") + (hookSec === null ? " (기획안에 훅 구간이 없습니다)" : "");
+}
+
+function hookSecOf(pl) {
+  const hook = pl.context.hook;
+  return hook ? round2(num(hook.end) - num(hook.start)) : null;
+}
+
+function paintHookCard(card, lint, hookSec) {
+  card.score.textContent = `점수 ${num(lint.score)}`;
+  card.timing.className = lint.fits === false ? "warn-text small" : "muted small";
+  card.timing.textContent = hookTimingText(lint, hookSec);
+  fill(card.issues, issueList(lint.issues));
+}
+
 function hookCards(pl) {
-  const { result, context: c, edit: e } = pl;
-  const hookSec = c.hook ? round2(num(c.hook.end) - num(c.hook.start)) : null;
+  const { result, edit: e } = pl;
+  const hookSec = hookSecOf(pl);
   const cards = result.hooks.map((cand, i) => {
     const rank = i + 1;
-    const lint = cand.lint || {};
     const radio = h("input", { type: "radio", name: "polish-hook", value: String(i) });
     const field = h("textarea", { rows: "4", maxlength: String(MAX_HOOK_SCRIPT), "aria-label": `${rank}위 훅 대본` });
     field.value = e.hooks[i];
-    field.addEventListener("input", () => { e.hooks[i] = field.value; pl.dirty = true; updatePolishActions(S); });
-    const timingParts = [];
-    if (hookSec !== null) timingParts.push(`훅 구간 ${hookSec}초`);
-    if (num(lint.speak_sec) > 0) timingParts.push(`말하면 약 ${round1(num(lint.speak_sec))}초`);
-    if (num(lint.read_sec) > 0) timingParts.push(`자막 읽기 약 ${round1(num(lint.read_sec))}초`);
-    const timing = timingParts.join(" · ") + (hookSec === null ? " (기획안에 훅 구간이 없습니다)" : "");
+    field.addEventListener("input", () => {
+      e.hooks[i] = field.value; pl.dirty = true; updatePolishActions(S); scheduleRelint(S, "hook");
+    });
+    const score = h("span", { class: "badge pol-score" });
+    const timing = h("p", {});
+    const issues = h("div", {});
     const root = h("div", { class: "pol-cand" },
-      h("label", { class: "pol-pick" }, radio, h("span", {}, `${rank}위 · ${cand.formula_name || cand.formula}`),
-        h("span", { class: "badge pol-score" }, `점수 ${num(lint.score)}`)),
-      field,
-      h("p", { class: lint.fits === false ? "warn-text small" : "muted small" }, timing),
-      issueList(lint.issues),
+      h("label", { class: "pol-pick" }, radio, h("span", {}, `${rank}위 · ${cand.formula_name || cand.formula}`), score),
+      field, timing, issues,
       cand.evidence ? h("p", { class: "muted small" }, String(cand.evidence)) : null);
-    return { root, field, radio };
+    const card = { root, field, radio, score, timing, issues };
+    paintHookCard(card, cand.lint || {}, hookSec);
+    return card;
   });
   cards.forEach((card, i) => card.radio.addEventListener("change", () => {
-    if (card.radio.checked) { e.hook = i; syncPicked(cards, i); }
+    if (card.radio.checked) { e.hook = i; syncPicked(cards, i); scheduleRelint(S, "hook"); }
   }));
   return cards;
+}
+
+function cutBadges(lint) {
+  const badges = [lint.mobile_cut ? h("span", { class: "badge pol-cut" }, "모바일 잘림") : null,
+    lint.desktop_cut ? h("span", { class: "badge pol-cut" }, "데스크톱 잘림") : null];
+  if (!lint.mobile_cut && !lint.desktop_cut) badges.push(h("span", { class: "badge" }, "잘림 없음"));
+  return badges;
+}
+
+function paintTitleCard(card, lint) {
+  card.score.textContent = `점수 ${num(lint.score)}`;
+  fill(card.cuts, ...cutBadges(lint));
+  fill(card.issues, issueList(lint.issues));
 }
 
 function titleCards(pl) {
   const { result, edit: e } = pl;
   const cards = result.titles.map((cand, i) => {
     const rank = i + 1;
-    const lint = cand.lint || {};
     const radio = h("input", { type: "radio", name: "polish-title", value: String(i) });
     const field = h("input", { type: "text", maxlength: String(MAX_POLISH_TITLE), "aria-label": `${rank}위 제목` });
     field.value = e.titles[i];
-    field.addEventListener("input", () => { e.titles[i] = field.value; pl.dirty = true; updatePolishActions(S); });
-    const cuts = [lint.mobile_cut ? h("span", { class: "badge pol-cut" }, "모바일 잘림") : null,
-      lint.desktop_cut ? h("span", { class: "badge pol-cut" }, "데스크톱 잘림") : null];
-    if (!lint.mobile_cut && !lint.desktop_cut) cuts.push(h("span", { class: "badge" }, "잘림 없음"));
+    field.addEventListener("input", () => {
+      e.titles[i] = field.value; pl.dirty = true; updatePolishActions(S); scheduleRelint(S, "tt");
+    });
+    const score = h("span", { class: "badge pol-score" });
+    const cuts = h("span", {});
+    const issues = h("div", {});
     const root = h("div", { class: "pol-cand" },
-      h("label", { class: "pol-pick" }, radio, h("span", {}, `${rank}위`),
-        h("span", { class: "badge pol-score" }, `점수 ${num(lint.score)}`), ...cuts),
-      field,
-      issueList(lint.issues),
+      h("label", { class: "pol-pick" }, radio, h("span", {}, `${rank}위`), score, cuts),
+      field, issues,
       cand.evidence ? h("p", { class: "muted small" }, String(cand.evidence)) : null);
-    return { root, field, radio };
+    const card = { root, field, radio, score, cuts, issues };
+    paintTitleCard(card, cand.lint || {});
+    return card;
   });
   cards.forEach((card, i) => card.radio.addEventListener("change", () => {
-    if (card.radio.checked) { e.title = i; syncPicked(cards, i); }
+    if (card.radio.checked) { e.title = i; syncPicked(cards, i); scheduleRelint(S, "tt"); }
   }));
   return cards;
+}
+
+// ---- polish: re-lint edits (no Claude) ---------------------------------------------
+// Edits to the picked hook / title / thumbnail words, and a changed pick, are re-scored by the server after a short pause.
+// Each key keeps a sequence number so a slow, older answer never overwrites a newer one.
+
+function scheduleRelint(mine, key) {
+  const pl = mine && mine.pl;
+  if (!pl || !pl.result || !pl.edit) return;
+  pl.lintPending.add(key);
+  if (pl.lintTimer) clearTimeout(pl.lintTimer);
+  pl.lintTimer = setTimeout(() => { pl.lintTimer = null; runRelint(mine, pl); }, RELINT_DELAY);
+}
+
+async function runRelint(mine, pl) {
+  if (!alive(mine) || mine.pl !== pl || !pl.result || !pl.edit || !pl.lintPending.size) return;
+  const keys = new Set(pl.lintPending);
+  pl.lintPending.clear();
+  const e = pl.edit;
+  const body = { draft: mine.detail.path };
+  if (keys.has("hook")) body.hook_script = e.hooks[e.hook];
+  if (keys.has("tt")) {
+    body.title = e.titles[e.title];
+    body.thumb_words = e.words.map((w) => w.trim()).filter(Boolean);
+  }
+  const stamps = {};
+  for (const k of keys) stamps[k] = ++pl.lintSeq[k];
+  const pv = pl.pv;
+  const picked = { hook: e.hook, title: e.title };
+  try {
+    const res = await mine.ctx.api("POST", "/api/polish/lint", body);
+    if (!alive(mine) || mine.pl !== pl || pl.pv !== pv) return;
+    if (res.hook && stamps.hook === pl.lintSeq.hook && pv.hooks[picked.hook]) {
+      paintHookCard(pv.hooks[picked.hook], res.hook, hookSecOf(pl));
+    }
+    if (stamps.tt === pl.lintSeq.tt) {
+      if (res.title && pv.titles[picked.title]) paintTitleCard(pv.titles[picked.title], res.title);
+      if (res.thumbnail && pv.thumbIssues) fill(pv.thumbIssues, issueList(res.thumbnail.issues));
+    }
+    pl.lintFailed = false;
+  } catch (err) {
+    if (!alive(mine) || mine.pl !== pl || pl.pv !== pv || ignorable(err)) return;
+    pl.lintFailed = true;
+  }
+  if (pv.lintNote) pv.lintNote.textContent = pl.lintFailed ? "점수를 다시 계산하지 못했습니다" : "";
 }
 
 function thumbnailView(pl) {
   const e = pl.edit;
   const touch = () => { pl.dirty = true; updatePolishActions(S); };
+  const issues = h("div", {}, issueList(pl.result.thumbnail.lint && pl.result.thumbnail.lint.issues));
+  pl.thumbIssuesNode = issues;
   const lintOver = !!(pl.result.thumbnail.lint && pl.result.thumbnail.lint.over_limit);
   const note = h("p", { class: "warn-text small pol-words-note", id: "polish-words-note" });
   let edited = false;
@@ -1189,7 +1272,7 @@ function thumbnailView(pl) {
   const words = e.words.map((w, i) => {
     const input = h("input", { type: "text", maxlength: "40", "aria-label": `썸네일 문구 ${i + 1}`, "aria-describedby": "polish-words-note" });
     input.value = w;
-    input.addEventListener("input", () => { e.words[i] = input.value; edited = true; syncNote(); touch(); });
+    input.addEventListener("input", () => { e.words[i] = input.value; edited = true; syncNote(); touch(); scheduleRelint(S, "tt"); });
     return input;
   });
   syncNote();
@@ -1206,7 +1289,7 @@ function thumbnailView(pl) {
     area("expression", "표정", "polish-expression"),
     area("framing", "구도", "polish-framing"),
     area("background", "배경", "polish-background"),
-    issueList(pl.result.thumbnail.lint && pl.result.thumbnail.lint.issues));
+    issues);
 }
 
 function nowView(c) {
@@ -1223,7 +1306,7 @@ function polishPreview(mine) {
   const c = pl.context;
   const hooks = hookCards(pl);
   const titles = titleCards(pl);
-  const pv = { hooks, titles };
+  const pv = { hooks, titles, lintNote: h("p", { class: "muted small", id: "polish-lint-note" }) };
   pl.pv = pv;
   pv.heading = h("h2", { id: "polish-preview-title", tabindex: "-1" }, "훅·제목·썸네일 후보");
   pv.saveBtn = h("button", { type: "button", class: "btn btn-primary", "aria-describedby": "polish-save-hint" },
@@ -1236,6 +1319,8 @@ function polishPreview(mine) {
   pv.hint = h("p", { class: "muted hint", id: "polish-save-hint" });
   pv.alerts = h("div", { class: "preview-alerts" });
   pl.alertSig = null;
+  const thumbView = thumbnailView(pl);
+  pv.thumbIssues = pl.thumbIssuesNode;
   return h("section", { class: "motif-sec pol-preview", "aria-labelledby": "polish-preview-title" },
     pv.heading,
     h("p", { class: "muted small" }, "저장하기 전에는 기획안 파일이 바뀌지 않습니다. 후보는 점수 순서이고, 고른 것만 고칠 수 있습니다."),
@@ -1244,9 +1329,9 @@ function polishPreview(mine) {
       ? h("p", { class: "hint", role: "note" }, "저장해도 콘티는 이전 훅 그대로입니다. 콘티 화면에서 다시 만들면 반영됩니다")
       : null,
     polishGroup("훅", hooks, pl.edit.hook),
-    polishGroup("제목", titles, pl.edit.title,
-      h("p", { class: "muted small" }, "고친 제목은 저장 때 다시 검사합니다")),
-    thumbnailView(pl),
+    polishGroup("제목", titles, pl.edit.title, null),
+    thumbView,
+    pv.lintNote,
     h("div", { class: "preview-actions" },
       h("div", { class: "btn-row" }, pv.saveBtn, pv.rerunBtn, pv.closeBtn), pv.hint, pv.alerts));
 }
@@ -1259,6 +1344,10 @@ function renderPolishBody(mine) {
   fill(box, polishPreview(mine));
   updatePolishActions(mine);
   renderPolishAlerts(mine);
+  if (pl.dirty) {                    // a rebuilt preview shows the server's first scores: re-score the edits
+    scheduleRelint(mine, "hook");
+    scheduleRelint(mine, "tt");
+  }
 }
 
 // Why save is disabled (empty string when it can be used).

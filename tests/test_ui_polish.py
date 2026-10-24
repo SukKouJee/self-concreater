@@ -221,3 +221,30 @@ def test_schema_bounds_match_polish_rules():
     assert (props["titles"]["minItems"], props["titles"]["maxItems"]) == polish.TITLE_COUNT
     ids = [h["id"] for h in polish._hooks_file()["hooks"]]
     assert props["hooks"]["items"]["properties"]["formula"]["enum"] == ids
+
+
+def test_lint_scores_edits_and_never_calls_claude(client, draft_md, home, fakes):
+    path = _rel(draft_md, home)
+    before = draft_md.read_bytes()
+    status, body = client.json("POST", "/api/polish/lint", {
+        "draft": path, "hook_script": "말: 안녕하세요 3단계", "title": "라면 3단계", "thumb_words": ["라면"]})
+    assert status == 200, body
+    assert set(body) == {"hook", "title", "thumbnail"} and body["hook"]["opens_with_greeting"] is True
+    assert body["thumbnail"]["overlap"] == ["라면"] and body["title"]["has_number"] is True
+    status, body = client.json("POST", "/api/polish/lint", {"draft": path, "title": "제목"})
+    assert status == 200 and set(body) == {"title"}
+    assert fakes.asks == [] and draft_md.read_bytes() == before
+
+
+@pytest.mark.parametrize("payload", [{"draft": "../x.md", "title": "a"}, {"draft": None}, {"title": "a"}])
+def test_lint_rejects_bad_requests(client, draft_md, home, payload):
+    status, body = client.json("POST", "/api/polish/lint", payload)
+    assert status == 400 and body["error"]
+
+
+def test_polish_schema_pins_hook_type_and_thumbnail_words():
+    from scripts.ui import api_polish
+    from scripts.videomd import HOOK_TYPES
+    props = api_polish.POLISH_SCHEMA["properties"]
+    assert props["hooks"]["items"]["properties"]["hook_type"]["enum"] == list(HOOK_TYPES)
+    assert props["thumbnail"]["properties"]["words"]["minItems"] == 1
