@@ -153,3 +153,27 @@ def test_text_on_danger_and_ok_meets_contrast_in_both_schemes():
         rule = re.search(rf"^{re.escape(selector)}\s*\{{([^}}]*)\}}", css, re.M).group(1)
         assert "color: var(--on-danger)" in rule, selector
     assert "color: var(--on-ok)" in re.search(r"\.step-done \.step-dot\s*\{([^}]*)\}", css).group(1)
+
+
+def test_refs_menu_is_live_route():
+    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert 'route: "#/refs"' in app
+    assert 'soon: "list"' not in app
+    assert 'case "refs"' in app
+
+
+def test_refs_page_contract_and_safety():
+    js = (STATIC_DIR / "pages" / "refs.js").read_text(encoding="utf-8")
+    for token in ["export async function mount", "export function unmount", "export function onCategory",
+                  "isCurrent()", "signal", "/api/refs", "레퍼런스 추가로 가기", "경로 복사",
+                  "최근 추가순", "길이순", "제목순", "noopener", "lb-"]:
+        assert token in js, token
+    for bad in ["innerHTML", "insertAdjacentHTML", "outerHTML"]:
+        assert bad not in js, bad
+
+
+def test_refs_page_served(client):
+    status, headers, raw = client.call("GET", "/static/pages/refs.js")
+    assert status == 200
+    assert "javascript" in headers["Content-Type"]
+    assert "/api/refs" in raw.decode("utf-8")
