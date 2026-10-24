@@ -225,7 +225,7 @@ def build(category: str, date: str | None = None) -> dict:
             f"<body><main>{''.join(out)}</main></body></html>")
     path = work_root() / "reports" / f"{category}-{day}.html"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(page, encoding="utf-8")
+    refstore.write_atomic(path, page.encode("utf-8"))
     return {"status": "built", "path": path.relative_to(work_root()).as_posix(), "abs_path": str(path)}
 
 

@@ -85,3 +85,20 @@ def test_report_unknown_category(home):
 
 def test_main(home):
     assert report.main([CAT, "--date", "2026-10-20"])["path"].endswith(".html")
+
+
+def test_rebuild_same_day_replaces_file_without_tmp(home):
+    first = report.build(CAT, date="2026-10-20")
+    path = home / first["path"]
+    path.write_text("old", encoding="utf-8")
+    again = report.build(CAT, date="2026-10-20")
+    assert again["path"] == first["path"] and path.read_text("utf-8").startswith("<!doctype html>")
+    assert list((home / "reports").glob("*.tmp")) == []
+
+
+def test_report_written_through_write_atomic(home, monkeypatch):
+    calls = []
+    real = refstore.write_atomic
+    monkeypatch.setattr(refstore, "write_atomic", lambda p, d: (calls.append(p.name), real(p, d))[1])
+    report.build(CAT, date="2026-10-20")
+    assert calls == [f"{CAT}-2026-10-20.html"]

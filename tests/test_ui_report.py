@@ -354,3 +354,21 @@ def test_apply_escapes_heading_lines(client, home):
     _ok(client, "POST", "/api/review/apply", {"week": WEEK, "sections": {"약점": "- a\n## 강점\n가짜"}})
     body = (home / "profile.md").read_text("utf-8").replace("\r\n", "\n")
     assert body.count("\n## 강점") == 1
+
+
+def test_apply_reports_recorded_true_when_review_exists(client, home):
+    _ok(client, "POST", "/api/review/save", {"week": WEEK, "review": GOOD})
+    assert _ok(client, "POST", "/api/review/apply", {"week": WEEK, "sections": {"강점": "- 편집"}})["recorded"] is True
+
+
+def test_apply_reports_recorded_false_without_review(client):
+    assert _ok(client, "POST", "/api/review/apply", {"week": WEEK, "sections": {"강점": "- 편집"}})["recorded"] is False
+
+
+def test_apply_recorded_false_when_review_frontmatter_is_broken(client, home):
+    _review_file(home).parent.mkdir(parents=True)
+    _review_file(home).write_text("no frontmatter here\n", encoding="utf-8")
+    out = _ok(client, "POST", "/api/review/apply", {"week": WEEK, "sections": {"강점": "- 편집"}})
+    assert out["recorded"] is False and out["sections"] == ["강점"]
+    assert out["profile"]["sections"]["강점"] == "- 편집"
+    assert _review_file(home).read_text("utf-8") == "no frontmatter here\n"

@@ -225,10 +225,16 @@ def _apply(req: Request) -> dict:
             result = mission.profile_update(tmp)
         finally:
             tmp.unlink(missing_ok=True)
+        recorded = False
         path = _review_path(week)
         if path.exists():                             # 회고가 아직 저장 전이면 기록할 곳이 없다
-            previous = refstore.read_md(path)[0].get("approved")
-            done = list(previous) if isinstance(previous, list) else []
-            approved = done + [name for name in result["sections"] if name not in done]
-            refstore.update_frontmatter(path, {"approved": approved})
-        return {"updated": result["updated"], "sections": result["sections"], "profile": _profile_view()}
+            try:
+                previous = refstore.read_md(path)[0].get("approved")
+                done = list(previous) if isinstance(previous, list) else []
+                approved = done + [name for name in result["sections"] if name not in done]
+                refstore.update_frontmatter(path, {"approved": approved})
+                recorded = True
+            except ScriptError:
+                pass                                  # 프로필은 이미 바뀌었다: 기록 실패는 recorded=false로 알린다
+        return {"updated": result["updated"], "sections": result["sections"], "recorded": recorded,
+                "profile": _profile_view()}
