@@ -143,9 +143,8 @@ def _sources(req: Request) -> dict:
 
 # ---- 목록 · 상세(읽기 전용) --------------------------------------------------------------
 
-@route("GET", "/api/draft/list")
-def _list(req: Request) -> dict:
-    category = _category(req.query.get("category"))
+def list_drafts(category: str) -> dict:
+    """카테고리의 저장된 기획안 목록(경로는 작업 폴더 기준 상대 경로)."""
     out = []
     folder = work_root() / "drafts"
     for path in sorted(folder.glob("*.md")) if folder.is_dir() else []:
@@ -165,6 +164,11 @@ def _list(req: Request) -> dict:
         })
     out.sort(key=lambda d: (d["date"], d["path"]), reverse=True)
     return {"drafts": out}
+
+
+@route("GET", "/api/draft/list")
+def _list(req: Request) -> dict:
+    return list_drafts(_category(req.query.get("category")))
 
 
 def _hook_of(path: Path) -> dict | None:

@@ -67,7 +67,7 @@ function freshShare() {
     mode: "technique", mine: null, mineLoading: false, mineError: null, choice: null,
     phase: "pick", preview: null, previewBusy: false, title: "", sections: [], note: "", worked: false,
     askUpload: false, uploading: false, error: null, dup: null, result: null, lastBlock: "",
-    job: null, timer: null, pollErrors: 0, askSummarize: false, summarizing: false, summaryError: null,
+    job: null, timer: null, pollErrors: 0, mineSeq: 0, askSummarize: false, summarizing: false, summaryError: null,
   };
 }
 
@@ -328,7 +328,9 @@ function renderTabs() {
       let next = null;
       if (ev.key === "ArrowRight") next = TABS[(i + 1) % TABS.length][0];
       else if (ev.key === "ArrowLeft") next = TABS[(i + TABS.length - 1) % TABS.length][0];
-      if (next) { ev.preventDefault(); selectTab(next); const nb = box.querySelector(`[data-tab="${next}"]`); if (nb) nb.focus(); }
+      else if (ev.key === "Home") next = TABS[0][0];
+      else if (ev.key === "End") next = TABS[TABS.length - 1][0];
+      if (next) { ev.preventDefault(); selectTab(next); }
     });
     return b;
   });
@@ -341,6 +343,9 @@ function selectTab(key) {
   S.tab = key;
   renderTabs();
   renderPanel();
+  // renderTabs rebuilt the buttons: keep keyboard focus on the tab that is now selected
+  const btn = S.nodes.tabs && S.nodes.tabs.querySelector(`[data-tab="${key}"]`);
+  if (btn) btn.focus();
 }
 
 function renderPanel() {
@@ -390,8 +395,9 @@ function renderBrowse(tab) {
     selectField("lib-author-f", "작성자", authors, S.filter.author, (v) => { S.filter.author = v; renderList(tab); }),
     h("label", { class: "check lib-worked", for: "lib-worked" }, worked, "잘 먹힘만"));
   S.nodes.pickBar = h("div", { class: "lib-pickbar" });
-  S.nodes.list = h("div", { class: "lib-list", "aria-live": "polite" });
-  fill(S.nodes.panel, bar, S.nodes.pickBar, S.nodes.list);
+  S.nodes.count = h("p", { class: "muted small lib-count", "aria-live": "polite" });
+  S.nodes.list = h("div", { class: "lib-list" });
+  fill(S.nodes.panel, bar, S.nodes.pickBar, S.nodes.count, S.nodes.list);
   renderList(tab);
 }
 
@@ -426,6 +432,7 @@ function renderList(tab, focusId) {
   const total = countOf(kind);
   const shown = S.items.filter((it) => matches(it, kind));
   const kids = [];
+  if (S.nodes.count) S.nodes.count.textContent = total && shown.length ? `${shown.length}개` : "";
   if (!total) {
     kids.push(h("p", { class: "muted" }, kind === "technique"
       ? "받은 기법이 없습니다. 위의 받기를 눌러 보세요. 아직 아무도 올리지 않았다면 공유하기 탭에서 내 기법을 올릴 수 있습니다."
@@ -433,7 +440,6 @@ function renderList(tab, focusId) {
   } else if (!shown.length) {
     kids.push(h("p", { class: "muted" }, "조건에 맞는 항목이 없습니다"));
   } else {
-    kids.push(h("p", { class: "muted small" }, `${shown.length}개`));
     kids.push(h("div", { class: "motif-grid" }, ...shown.map(itemCard)));
   }
   fill(box, ...kids);
@@ -507,11 +513,11 @@ async function toggleDetail(it, toggle, region) {
   mine.details.set(it.id, cur);
   toggle.setAttribute("aria-expanded", String(cur.open));
   toggle.textContent = cur.open ? "접기" : "자세히";
-  if (!cur.open) { fillDetail(region, it.id); return; }
-  if (cur.data) { fillDetail(region, it.id); return; }
+  const refill = () => { const r = document.getElementById(`lib-detail-${it.id}`); if (r) fillDetail(r, it.id); };
+  if (!cur.open || cur.data) { refill(); return; }
   cur.loading = true;
   cur.error = null;
-  fillDetail(region, it.id);
+  refill();
   try {
     cur.data = await mine.ctx.api("GET", `/api/library/items/${encodeURIComponent(it.id)}`);
   } catch (e) {
@@ -520,7 +526,7 @@ async function toggleDetail(it, toggle, region) {
   } finally {
     cur.loading = false;
   }
-  if (alive(mine)) fillDetail(region, it.id);
+  if (alive(mine)) refill();          // the card may have been re-rendered meanwhile: look the region up again
 }
 
 // ---- share: pick --------------------------------------------------------------
@@ -564,6 +570,7 @@ async function loadMine() {
     fill(mine.nodes.pickBody, h("p", { class: "muted" }, "카테고리가 없습니다. 홈에서 먼저 카테고리를 만드세요."));
     return;
   }
+  const seq = ++sh.mineSeq;                    // a newer load (mode or category change) makes this one stale
   sh.mineLoading = true;
   sh.mineError = null;
   renderPickBody();
@@ -573,13 +580,13 @@ async function loadMine() {
       ? `/api/library/my/techniques?category=${encodeURIComponent(cat)}`
       : `/api/library/my/drafts?category=${encodeURIComponent(cat)}`;
     const res = await mine.ctx.api("GET", url);
-    if (!alive(mine) || sh.mode !== mode || sh.phase !== "pick") return;
+    if (!alive(mine) || seq !== sh.mineSeq || sh.phase !== "pick") return;
     sh.mine = mode === "technique" ? res.techniques || [] : res.drafts || [];
   } catch (e) {
-    if (!alive(mine) || ignorable(e) || sh.mode !== mode) return;
+    if (!alive(mine) || ignorable(e) || seq !== sh.mineSeq) return;
     sh.mineError = e.message || "목록을 불러오지 못했습니다";
   } finally {
-    if (alive(mine)) { sh.mineLoading = false; if (sh.phase === "pick" && sh.mode === mode) renderPickBody(); }
+    if (alive(mine) && seq === sh.mineSeq) { sh.mineLoading = false; if (sh.phase === "pick") renderPickBody(); }
   }
 }
 
@@ -796,14 +803,19 @@ function renderSummaryBox() {
   if (!box) return;
   const sh = S.sh;
   const kids = [];
-  const btn = h("button", { type: "button", class: "btn", disabled: sh.summarizing || sh.uploading || sh.askSummarize }, "섹션 요약 받기");
+  const btn = h("button", { type: "button", class: "btn", "data-summarize-btn": "", disabled: sh.summarizing || sh.uploading || sh.askSummarize }, "섹션 요약 받기");
   btn.addEventListener("click", requestSummarize);
   kids.push(h("div", { class: "btn-row" }, btn));
   if (sh.askSummarize) {
     const yes = h("button", { type: "button", class: "btn btn-danger", "data-summarize-yes": "" }, "요약 받기");
     const no = h("button", { type: "button", class: "btn" }, "취소");
     yes.addEventListener("click", startSummarize);
-    no.addEventListener("click", () => { sh.askSummarize = false; renderEditActions(); btn.focus(); });
+    no.addEventListener("click", () => {
+      sh.askSummarize = false;
+      renderEditActions();                                            // rebuilds the button: focus the current one
+      const cur = S.nodes.summaryBox && S.nodes.summaryBox.querySelector("[data-summarize-btn]");
+      if (cur) cur.focus();
+    });
     kids.push(h("div", { class: "inline-confirm", role: "alert" },
       h("p", { class: "warn-text" }, "지금 쓴 섹션 요약이 Claude의 요약으로 바뀝니다."),
       h("div", { class: "btn-row" }, yes, no)));
@@ -814,6 +826,7 @@ function renderSummaryBox() {
   }
   if (sh.summaryError) kids.push(h("p", { class: "error", role: "alert" }, sh.summaryError));
   fill(box, ...kids);
+  for (const input of S.nodes.panel.querySelectorAll("[data-summary]")) input.disabled = sh.summarizing;   // Claude is about to overwrite them
   const yes = box.querySelector("[data-summarize-yes]");
   if (yes && sh.askSummarize && document.activeElement && document.activeElement.tagName === "BODY") yes.focus();
 }
@@ -1093,6 +1106,7 @@ export function onCategory() {
   if (S.tab === "share" && S.sh.phase === "pick") {
     S.sh.mine = null;
     S.sh.choice = null;
+    S.sh.mineSeq += 1;                  // drop a response still in flight for the old category
     renderShare();
   }
 }

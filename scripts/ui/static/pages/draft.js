@@ -188,7 +188,9 @@ async function loadNew(mine, cat) {
     mine.sources = src;
     const ids = sourceIds(src);
     if (mine.wantSource && !ids.has(mine.wantSource)) {
-      mine.sourceNote = `고른 출처(${mine.wantSource})를 찾을 수 없어 목록에서 다시 골라야 합니다`;
+      mine.sourceNote = mine.wantSource.startsWith("library:")
+        ? { lib: src.library_templates ? "missing" : "disconnected" }        // no group = library not connected
+        : `고른 출처(${mine.wantSource})를 찾을 수 없어 목록에서 다시 골라야 합니다`;
       mine.source = "";
     }
     const job = cur.job;
@@ -212,6 +214,20 @@ async function loadNew(mine, cat) {
 function libraryItems(src) {
   const group = src && src.library_templates;
   return group && Array.isArray(group.items) ? group.items : [];
+}
+
+// Note about a chosen source that cannot be used. Friend templates (library:<id>) get a specific reason and a link.
+function sourceNoteNode() {
+  const n = S.sourceNote;
+  if (!n) return null;
+  if (typeof n === "string") return h("p", { class: "muted small", role: "status" }, n);
+  if (n.lib === "disconnected") {
+    return h("p", { class: "muted small", role: "status" },
+      "공용 라이브러리가 연결되지 않아 지인 틀을 쓸 수 없습니다. ",
+      h("a", { href: "#/library" }, "공용 라이브러리 화면"), "에서 연결한 뒤 다시 여세요");
+  }
+  return h("p", { class: "muted small", role: "status" },
+    "이 지인 틀을 찾을 수 없습니다. ", h("a", { href: "#/library" }, "공용 라이브러리"), "에서 '받기'를 해 보세요");
 }
 
 function sourceIds(src) {
@@ -485,7 +501,7 @@ function renderRunBox() {
   S.nodes.runHint = h("span", { class: "muted small", id: "draft-run-hint" });
   const kids = [
     h("div", { class: "field" }, h("label", { for: "draft-source" }, "출처"), sourceSelect(busy)),
-    S.sourceNote ? h("p", { class: "muted small", role: "status" }, S.sourceNote) : null,
+    sourceNoteNode(),
     h("div", { class: "field" }, h("label", { for: "draft-topic" }, "주제(선택)"), topic),
     h("div", { class: "field" }, h("label", { for: "draft-target" }, `목표 길이 초(선택, ${MIN_TARGET}~${MAX_TARGET})`), target),
     h("div", { class: "btn-row" }, S.nodes.runBtn, S.nodes.runHint, h("span", { class: "muted small" }, "Claude를 한 번 부릅니다(수십 초)")),
@@ -558,6 +574,7 @@ function renderNew() {
   const src = S.sources;
   const any = sourceIds(src).size > 0;
   if (!any) {
+    kids.push(sourceNoteNode());
     kids.push(h("p", { class: "muted hint" }, "고를 수 있는 출처가 없습니다. ",
       h("a", { href: "#/motif" }, "모티브에서 카드 만들기"), " 또는 ", h("a", { href: "#/typify" }, "유형화로 아키타입 만들기")));
   } else {

@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from typing import Any, Callable
 
-from scripts import library, llm
+from scripts import library, llm, refstore
 from scripts.common import ScriptError, work_root
 from scripts.ui import api_draft
 from scripts.ui.api_conti import _rel, _safe_path
@@ -24,8 +24,13 @@ KIND = "library_summary"
 BUSY_CODE = "library_busy"
 PATH_MASK = "<작업 폴더>"
 _LOCAL_REMOTE_RE = re.compile(r"^(?:[A-Za-z]:[\\/]|[\\/]|file:|\.{1,2}[\\/])")
-# 남은 절대 경로(윈도 드라이브, 앞이 잘린 역슬래시 경로, 유닉스 절대 경로). URL의 /경로는 앞 글자가 단어·`:`·`/`라서 걸리지 않는다
-_ABS_PATH_RE = re.compile(r"[A-Za-z]:[\\/][^\s'\")]*|(?<![\w:/.])\\[^\s'\")]+|(?<![\w:/.])/[^\s'\")]+")
+# 남은 절대 경로만 가린다: 윈도 드라이브 경로, 앞이 잘린 역슬래시 경로(두 칸 이상), 유닉스의 홈·임시·마운트 아래 경로.
+# `refs/heads/main`이나 URL의 /경로는 걸리지 않는다.
+_ABS_PATH_RE = re.compile(
+    r"(?<![\w])[A-Za-z]:(?:\\|/(?!/))[^\s'\")]*"
+    r"|(?<![\w:/.])\\[^\s'\")\\]+\\[^\s'\")]*"
+    r"|(?<![\w:/.])/(?:home|Users|tmp|var|mnt|root)(?:/[^\s'\")]*)?"
+)
 PATH_ANY = "<경로>"
 
 
@@ -64,6 +69,9 @@ def _clean(result: dict[str, Any]) -> dict[str, Any]:
 def _respond(fn: Callable[[], dict[str, Any]]) -> dict[str, Any] | tuple[int, dict[str, Any]]:
     try:
         return _clean(fn())
+    except OSError as e:               # 파일 권한·디스크 오류: 경로 없이 한국어로
+        reason = _scrub(e.strerror or type(e).__name__)
+        raise ScriptError("library_io", f"라이브러리 파일을 읽거나 쓰지 못했습니다({reason}). 권한과 디스크 공간을 확인하세요.") from e
     except ScriptError as e:
         details = {k: _scrub(v) for k, v in e.details.items()}
         if e.code == BUSY_CODE:
@@ -99,13 +107,7 @@ def _query_flag(value: str | None) -> bool | None:
 
 
 def _present(preview_id: str) -> dict[str, Any]:
-    """미리보기를 화면 모양으로 돌려준다. 기획안 틀이면 섹션 요약·샷 리듬(고칠 값)도 함께."""
-    data = library.load_preview(preview_id)
-    out = library._present(data)       # noqa: SLF001 - 같은 패키지의 표시 함수를 그대로 쓴다
-    if data["kind"] == "template":
-        out["summaries"] = list(data["body"].get("summaries") or [])
-        out["rhythms"] = list(data["body"].get("rhythms") or [])
-    return out
+    return library.present_preview(preview_id)
 
 
 # ---- 상태 · 연결 · 받기 -------------------------------------------------------------------
@@ -152,8 +154,9 @@ def _my_techniques(req: Request) -> dict:
 
 @route("GET", "/api/library/my/drafts")
 def _my_drafts(req: Request) -> dict:
-    _str(req.query, "category")
-    return api_draft._list(req)         # noqa: SLF001 - 기획안 목록(상대 경로 drafts/…)을 그대로 쓴다
+    category = _str(req.query, "category") or ""
+    refstore.existing_category_dir(category)              # 없는 카테고리는 category_not_found
+    return api_draft.list_drafts(category)
 
 
 # ---- 미리보기 -----------------------------------------------------------------------------
@@ -211,13 +214,17 @@ def summary_target(preview_id: str) -> Any:
 @route("POST", "/api/library/summarize")
 def _summarize(req: Request) -> dict:
     preview_id = _str(req.json, "preview_id") or ""
-    data = library.load_preview(preview_id)              # 없거나 만료된 미리보기는 작업을 만들기 전에 알린다
-    if data["kind"] != "template":
-        raise ScriptError("invalid_preview", "기획안 틀 미리보기만 요약할 수 있습니다")
-    llm.check()                                          # claude가 없으면 작업을 만들지 않는다
-    items = [new_item(preview_id, title=str(data["fm"].get("title") or ""), step="claude")]
-    job = req.app.jobs.start(KIND, summary_target(preview_id), items=items, category=data["category"])
-    return {"job": job.snapshot()}
+
+    def start() -> dict[str, Any]:
+        data = library.load_preview(preview_id)          # 없거나 만료된 미리보기는 작업을 만들기 전에 알린다
+        if data["kind"] != "template":
+            raise ScriptError("invalid_preview", "기획안 틀 미리보기만 요약할 수 있습니다")
+        llm.check()                                      # claude가 없으면 작업을 만들지 않는다
+        items = [new_item(preview_id, title=str(data["fm"].get("title") or ""), step="claude")]
+        job = req.app.jobs.start(KIND, summary_target(preview_id), items=items, category=data["category"])
+        return {"job": job.snapshot()}
+
+    return _respond(start)
 
 
 # ---- 올리기 -------------------------------------------------------------------------------

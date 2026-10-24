@@ -318,3 +318,53 @@ def test_summary_job_failure_is_reported(client, remote, home, monkeypatch):
     job = wait_for(client, resp["job"]["id"], lambda j: j["status"] in ("done", "failed"))
     assert job["status"] == "failed" and "섹션 요약" in job["message"]
     assert client.json("GET", f"/api/library/preview/{pv['preview_id']}")[0] == 200     # 미리보기는 남아 다시 시도할 수 있다
+
+
+# ---- 보강 라운드 ------------------------------------------------------------------------------
+
+def test_oserror_in_confirm_is_library_io_without_paths(client, home, monkeypatch):
+    def denied(*a, **k):
+        raise PermissionError(13, "denied", str(home / "x"))
+
+    monkeypatch.setattr(library, "confirm", denied)
+    status, resp = client.json("POST", "/api/library/confirm", {"preview_id": "0123456789ab"})
+    text = json.dumps(resp, ensure_ascii=False)
+    assert status == 400 and resp["error"] == "library_io" and "라이브러리" in resp["message"]
+    assert str(home) not in text and home.as_posix() not in text
+
+
+def test_oserror_before_summarize_job_is_library_io(client, home, monkeypatch):
+    def denied(*a, **k):
+        raise PermissionError(13, "denied", str(home / "x"))
+
+    monkeypatch.setattr(library, "load_preview", denied)
+    status, resp = client.json("POST", "/api/library/summarize", {"preview_id": "0123456789ab"})
+    assert status == 400 and resp["error"] == "library_io" and str(home) not in json.dumps(resp, ensure_ascii=False)
+
+
+def test_confirm_library_busy_is_409(client, monkeypatch):
+    def busy(*a, **k):
+        raise ScriptError("library_busy", "다른 사람이 동시에 올렸습니다. 잠시 뒤 다시 올리세요")
+
+    monkeypatch.setattr(library, "confirm", busy)
+    status, resp = client.json("POST", "/api/library/confirm", {"preview_id": "0123456789ab"})
+    assert status == 409 and resp["error"] == "library_busy"
+
+
+def test_scrub_masks_real_paths_only(home):
+    from scripts.ui import api_library
+    assert api_library._scrub("fatal: refs/heads/main 없음") == "fatal: refs/heads/main 없음"
+    assert api_library._scrub("origin/main..HEAD, a/tmp/b") == "origin/main..HEAD, a/tmp/b"
+    assert "github.com/x/y.git" in api_library._scrub("clone https://github.com/x/y.git 실패")
+    assert api_library._scrub(r"열기 실패 C:\Users\kim\secret\a.md 끝") == "열기 실패 <경로> 끝"
+    assert api_library._scrub("열기 실패 /home/kim/a.md 끝") == "열기 실패 <경로> 끝"
+    assert api_library._scrub("열기 실패 /tmp/x 끝") == "열기 실패 <경로> 끝"
+    assert api_library._scrub(f"{home} 아래") == "<작업 폴더> 아래"
+
+
+def test_draft_sources_library_group_follows_connection(client, remote):
+    status, body = client.json("GET", f"/api/draft/sources?category={CAT}")
+    assert status == 200 and "library_templates" not in body            # 연결 전
+    connect(client, remote)
+    status, body = client.json("GET", f"/api/draft/sources?category={CAT}")
+    assert status == 200 and body["library_templates"] == {"label": "지인 틀", "items": []}

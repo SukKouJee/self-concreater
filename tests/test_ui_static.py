@@ -584,3 +584,25 @@ def test_api_error_carries_response_body():
     js = (STATIC_DIR / "api.js").read_text(encoding="utf-8")
     assert "data," in js                                               # library screen reads shared_id / push_unknown
 
+
+
+def test_api_error_object_includes_response_body_and_library_reads_it():
+    api = (STATIC_DIR / "api.js").read_text(encoding="utf-8")
+    assert re.search(r"const err = \{\s*status: res\.status,.*?\n\s+data,", api, re.S)
+    lib = (STATIC_DIR / "pages" / "library.js").read_text(encoding="utf-8")
+    assert "e.data || {}" in lib and "data.push_unknown" in lib
+
+
+def test_library_review_fixes_present():
+    lib = (STATIC_DIR / "pages" / "library.js").read_text(encoding="utf-8")
+    for token in ['ev.key === "Home"', 'ev.key === "End"', "mineSeq", "data-summarize-btn", "data-summary",
+                  "getElementById(`lib-detail-"]:
+        assert token in lib, token
+    assert '"lib-list", "aria-live"' not in lib                         # live region is the count paragraph only
+    select = lib[lib.index("function selectTab"):lib.index("function renderPanel")]
+    assert ".focus()" in select                                          # focus follows the rebuilt tab
+    draft = (STATIC_DIR / "pages" / "draft.js").read_text(encoding="utf-8")
+    for token in ["공용 라이브러리가 연결되지 않아 지인 틀을 쓸 수 없습니다", "이 지인 틀을 찾을 수 없습니다", "#/library"]:
+        assert token in draft, token
+    render_new = draft[draft.index("function renderNew"):draft.index("function renderBody")]
+    assert render_new.index("sourceNoteNode()") < render_new.index("고를 수 있는 출처가 없습니다")   # note also when !any
