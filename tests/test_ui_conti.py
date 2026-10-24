@@ -8,6 +8,7 @@ from scripts import claude_cli, conti
 from scripts.common import ScriptError
 from scripts.ui import api_conti
 from tests.test_conti import CONTI, DRAFT, conti_file, draft_md, home, pin_frame  # noqa: F401 - fixtures
+from tests.test_cuts import sample_video  # noqa: F401 - fixture
 from tests.test_ui_add import wait_for
 from tests.test_ui_server import Client, _start, _stop, no_browser  # noqa: F401 - fixture
 
@@ -235,3 +236,63 @@ def test_srt_export_rejects_bad_input(client, home, draft_md):
     assert status == 400 and body["error"] == "bad_request"
     status, body = client.json("POST", "/api/conti/srt", {"path": rel(home, draft_md)})
     assert body["error"] == "bad_path"
+
+
+# --- srt-fit ------------------------------------------------------------------------------
+
+def test_srt_fit_job_writes_srt_with_preview_url(client, home, draft_md, sample_video):
+    saved = saved_conti(home, draft_md)
+    before = (sample_video.read_bytes(), sample_video.stat().st_mtime_ns)
+    status, body = client.json("POST", "/api/conti/srt-fit", {"path": rel(home, saved), "video": str(sample_video)})
+    assert status == 200 and body["job"]["kind"] == "srtfit"
+    assert body["job"]["items"][0]["id"] == rel(home, saved)
+    job = wait_for(client, body["job"]["id"], lambda j: j["status"] != "running")
+    item = job["items"][0]
+    assert job["status"] == "done" and item["state"] == "done" and item["ask"] is None
+    preview = item["preview"]
+    assert preview["url"] == "/files/" + quote(preview["path"]) and preview["retime"]["video"] == "sample.mp4"
+    assert (home / preview["path"]).read_bytes().decode("utf-8").startswith("1\r\n00:00:00,000")
+    assert (sample_video.read_bytes(), sample_video.stat().st_mtime_ns) == before
+
+
+def test_srt_fit_rejects_bad_input_without_job(client, home, draft_md, tmp_path):
+    saved = saved_conti(home, draft_md)
+    for video in (str(tmp_path / "nope.mp4"), "", None, 3):
+        status, body = client.json("POST", "/api/conti/srt-fit", {"path": rel(home, saved), "video": video})
+        assert status == 400 and body["error"] == "bad_video"
+    status, body = client.json("POST", "/api/conti/srt-fit", {"path": rel(home, draft_md), "video": "x"})
+    assert status == 400 and body["error"] == "bad_path"
+    status, body = client.json("POST", "/api/conti/srt-fit",
+                               {"path": rel(home, saved), "video": str(tmp_path), "track": "sfx"})
+    assert status == 400 and body["error"] == "bad_request"
+    assert client.app.jobs.current("srtfit") is None
+
+
+def test_srt_fit_rejects_second_run_while_running(client, home, draft_md, sample_video, monkeypatch):
+    import threading
+    gate = threading.Event()
+    real = conti.export_srt
+
+    def slow(*args, **kwargs):
+        gate.wait(5)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(conti, "export_srt", slow)
+    saved = saved_conti(home, draft_md)
+    req = {"path": rel(home, saved), "video": str(sample_video)}
+    status, first = client.json("POST", "/api/conti/srt-fit", req)
+    assert status == 200
+    status, again = client.json("POST", "/api/conti/srt-fit", req)
+    assert status == 400 and again["error"] == "job_running" and "자막 시간" in again["message"]
+    gate.set()
+    wait_for(client, first["job"]["id"], lambda j: j["status"] == "done")
+
+
+def test_srt_fit_job_fails_with_message_when_video_cannot_be_read(client, home, draft_md, tmp_path):
+    saved = saved_conti(home, draft_md)
+    broken = tmp_path / "broken.mp4"
+    broken.write_text("not a video", encoding="utf-8")
+    status, body = client.json("POST", "/api/conti/srt-fit", {"path": rel(home, saved), "video": str(broken)})
+    assert status == 200
+    job = wait_for(client, body["job"]["id"], lambda j: j["status"] != "running")
+    assert job["status"] == "failed" and job["message"] and job["items"][0]["state"] == "failed"

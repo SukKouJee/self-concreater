@@ -193,6 +193,35 @@ def analyze_video(path: Path, frames_dir: Path) -> dict:
     return {"duration_sec": round(bounds[-1][1] / fps, 2), "fps": round(fps, 2), "scenes": scenes}
 
 
+def detect_cuts(path: Path) -> dict:
+    """영상의 내부 컷 시각만 가볍게 찾는다(프레임 저장·카메라 분석 없음). 영상 파일은 읽기만 한다."""
+    from scenedetect import ContentDetector, detect
+
+    cap = cv2.VideoCapture(str(path))
+    try:
+        if not cap.isOpened():
+            raise ScriptError("bad_video", f"영상을 열 수 없습니다: {Path(path).name}")
+        fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    finally:
+        cap.release()
+    if fps <= 0 or total <= 0:
+        raise ScriptError("bad_video", f"영상 길이를 읽을 수 없습니다: {Path(path).name}")
+    try:
+        scenes = detect(
+            str(path),
+            ContentDetector(threshold=SCENE_THRESHOLD, min_scene_len=MIN_SCENE_FRAMES),
+            start_in_scene=True,
+        )
+    except (OSError, ValueError, RuntimeError, cv2.error) as e:
+        raise ScriptError("bad_video", f"영상에서 컷을 찾지 못했습니다: {Path(path).name} ({e})") from e
+    return {
+        "duration_sec": round(total / fps, 3),
+        "fps": round(fps, 2),
+        "cuts": [round(start.frame_num / fps, 3) for start, _ in scenes[1:]],
+    }
+
+
 def summarize_camera(scenes: list[dict]) -> dict:
     total = sum(s["end"] - s["start"] for s in scenes) or 1
     return {

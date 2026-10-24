@@ -4,6 +4,7 @@ import pytest
 
 from scripts import conti, draft, fetch, refstore
 from scripts.common import ScriptError
+from tests.test_cuts import sample_video  # noqa: F401 - fixture
 from tests.typify_fixtures import CAT, standard_set
 
 DRAFT = {
@@ -508,3 +509,124 @@ def test_export_srt_rejects_conti_outside_drafts(home, draft_md):
     with pytest.raises(ScriptError) as e:
         conti.export_srt(out)
     assert e.value.code == "bad_path" and not list(out.parent.glob("*.srt"))
+
+
+# --- SRT 시간 맞추기(편집한 영상의 컷) -----------------------------------------------------
+
+def _retime(planned, duration, cuts, snap_min=0.5, snap_ratio=0.0):
+    return conti.retime_boundaries(planned, duration, cuts, snap_min, snap_ratio)
+
+
+def test_retime_snaps_all_when_cut_counts_match():
+    out = _retime([0, 2, 4, 6], 6.4, [2.2, 4.1])
+    assert out["boundaries"] == [0, 2.2, 4.1, 6.4]
+    assert (out["snapped"], out["inner"], out["detected"]) == (2, 2, 2)
+    assert out["scale"] == pytest.approx(6.4 / 6)
+
+
+def test_retime_ignores_extra_cuts():
+    out = _retime([0, 2, 4], 4.0, [0.9, 2.1, 3.0])
+    assert out["boundaries"] == [0, 2.1, 4.0] and out["snapped"] == 1 and out["detected"] == 3
+
+
+def test_retime_scales_unmatched_boundaries_when_cuts_are_fewer():
+    out = _retime([0, 2, 4, 6], 12.0, [4.1])
+    assert out["snapped"] == 1 and out["inner"] == 2
+    # t=4.0 -> 4.1에 맞고, 다음 t=8.0은 맞출 컷이 없어 비례값
+    assert out["boundaries"] == [0, 4.1, pytest.approx(8.0), 12.0]
+
+
+def test_retime_without_cuts_uses_ratio_only():
+    out = _retime([0, 2, 6], 3.0, [])
+    assert out["boundaries"] == [0, 1.0, 3.0] and out["snapped"] == 0 and out["detected"] == 0
+
+
+def test_retime_is_strictly_increasing_and_never_reuses_a_cut():
+    out = _retime([0, 1, 2, 3, 4], 4.0, [1.4, 1.5], snap_min=1.0)
+    b = out["boundaries"]
+    assert all(x < y for x, y in zip(b, b[1:])) and b[-1] == 4.0
+    assert out["snapped"] == 2 and 1.4 in b and 1.5 in b       # 1.4, 1.5가 각각 한 번씩만 쓰인다
+
+
+def test_retime_stays_increasing_when_scaled_value_is_behind_snapped_cut():
+    b = _retime([0, 1, 2, 3], 3.0, [1.4], snap_min=0.5)["boundaries"]
+    assert b[1] == 1.4 and b[2] > b[1] and b[-1] == 3.0
+
+
+def test_retime_tolerance_boundary_is_inclusive():
+    assert _retime([0, 2, 4], 4.0, [2.5])["snapped"] == 1       # |c-t| == snap_min
+    assert _retime([0, 2, 4], 4.0, [2.51])["snapped"] == 0
+    out = conti.retime_boundaries([0, 2, 4], 4.0, [2.9], 0.1, 0.5)   # tol = 0.5 * 2 = 1.0 -> 0.9 안
+    assert out["snapped"] == 1 and out["boundaries"][1] == 2.9
+
+
+def test_retime_prefers_earlier_cut_on_tie():
+    assert _retime([0, 2, 4], 4.0, [1.75, 2.25], snap_min=0.25)["boundaries"][1] == 1.75
+
+
+def _srt_times(raw):
+    out = []
+    for block in raw.decode("utf-8").strip().split("\r\n\r\n"):
+        a, b = block.split("\r\n")[1].split(" --> ")
+        out.append(tuple(
+            (int(h) * 3600 + int(m) * 60 + int(s)) + int(ms) / 1000
+            for h, m, s, ms in (x.replace(",", ":").split(":") for x in (a, b))))
+    return out
+
+
+def test_export_srt_with_video_fits_blocks_to_real_cuts(saved, home, monkeypatch, sample_video):
+    _srt_cuts(monkeypatch, [_cut(1.8, "A"), _cut(2.3, "B"), _cut(1.9, "C")])
+    before = (sample_video.read_bytes(), sample_video.stat().st_mtime_ns)
+    out = conti.export_srt(saved, video=sample_video)
+    assert (sample_video.read_bytes(), sample_video.stat().st_mtime_ns) == before
+    times = _srt_times((home / out["path"]).read_bytes())
+    assert times[0][0] == 0 and times[2][1] == pytest.approx(6.0, abs=0.1)
+    assert times[0][1] == pytest.approx(2.0, abs=0.15) and times[1][1] == pytest.approx(4.0, abs=0.15)
+    assert times[0][1] == times[1][0] and times[1][1] == times[2][0]
+    assert out["duration_sec"] == pytest.approx(6.0, abs=0.1)
+    retime = out["retime"]
+    assert retime["video"] == "sample.mp4" and (retime["detected"], retime["snapped"], retime["inner"]) == (2, 2, 2)
+    assert retime["warnings"] == []
+
+
+def test_export_srt_with_video_accepts_quoted_path_and_keeps_empty_cut_rules(saved, home, monkeypatch, sample_video):
+    _srt_cuts(monkeypatch, [_cut(2, "A"), _cut(2, "A"), _cut(2, "")])
+    out = conti.export_srt(saved, video=f'  "{sample_video}" ')
+    assert out["count"] == 1                                   # 이어지는 같은 자막은 합쳐지고 빈 컷은 건너뜀
+    start, end = _srt_times((home / out["path"]).read_bytes())[0]
+    assert start == 0 and end == pytest.approx(4.0, abs=0.15)
+
+
+def test_export_srt_with_video_warns_on_big_length_gap(saved, monkeypatch, sample_video):
+    _srt_cuts(monkeypatch, [_cut(30, "A"), _cut(30, "B")])
+    warnings = conti.export_srt(saved, video=sample_video)["retime"]["warnings"]
+    assert any("많이 다릅니다" in w and "6.0초" in w and "60.0초" in w for w in warnings)
+
+
+def test_export_srt_with_video_warns_when_no_cut_found(saved, monkeypatch, sample_video):
+    from scripts import cuts
+    _srt_cuts(monkeypatch, [_cut(3, "A"), _cut(3, "B")])
+    monkeypatch.setattr(cuts, "detect_cuts", lambda path: {"duration_sec": 6.0, "fps": 30.0, "cuts": []})
+    out = conti.export_srt(saved, video=sample_video)
+    assert out["retime"]["warnings"] == ["실제 컷을 찾지 못해 길이 비율로만 맞췄습니다"]
+    assert out["retime"]["snapped"] == 0
+
+
+@pytest.mark.parametrize("value", ["", "   ", '""', 5])
+def test_export_srt_rejects_empty_video_value(saved, value):
+    with pytest.raises(ScriptError) as e:
+        conti.export_srt(saved, video=value)
+    assert e.value.code == "bad_video"
+
+
+def test_export_srt_rejects_missing_or_unreadable_video(saved, home, tmp_path):
+    for target in (tmp_path / "missing.mp4", tmp_path):
+        with pytest.raises(ScriptError) as e:
+            conti.export_srt(saved, video=target)
+        assert e.value.code == "bad_video"
+    assert not list((home / "drafts").glob("*.srt"))
+
+
+def test_main_srt_with_video(saved, home, sample_video):
+    out = conti.main(["srt", saved.relative_to(home).as_posix(), "--video", str(sample_video)])
+    assert out["retime"]["video"] == "sample.mp4"

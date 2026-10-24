@@ -23,6 +23,12 @@
     "threshold": 15.0,
     "min_scene_frames": 12
   },
+  "retime": {
+    "snap_min_sec": 0.4,
+    "snap_ratio": 0.35,
+    "scale_min": 0.6,
+    "scale_max": 1.6
+  },
   "single_type_spread": {
     "structure": 0.08,
     "pacing": 0.15,

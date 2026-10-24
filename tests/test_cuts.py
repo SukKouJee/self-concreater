@@ -192,3 +192,33 @@ def test_force_reanalyzes_and_replaces_frames(home, fake_download):
 def test_main_parses_url(home, fake_download):
     out = cuts.main([f"https://youtube.com/shorts/{VID}"])
     assert out["id"] == VID
+
+
+# --- 컷 찾기(가벼운 버전) --------------------------------------------------------
+
+def test_detect_cuts_finds_inner_cuts_only(sample_video):
+    result = cuts.detect_cuts(sample_video)
+    assert result["duration_sec"] == pytest.approx(6.0, abs=0.1)
+    assert result["fps"] == pytest.approx(30.0, abs=0.1)
+    assert len(result["cuts"]) == 2
+    for found, expected in zip(result["cuts"], [2.0, 4.0]):
+        assert found == pytest.approx(expected, abs=0.15)
+    assert result["cuts"] == sorted(result["cuts"])
+    assert 0 < result["cuts"][0] and result["cuts"][-1] < result["duration_sec"]
+
+
+def test_detect_cuts_leaves_video_untouched(sample_video):
+    before = (sample_video.read_bytes(), sample_video.stat().st_mtime_ns)
+    cuts.detect_cuts(sample_video)
+    assert (sample_video.read_bytes(), sample_video.stat().st_mtime_ns) == before
+
+
+def test_detect_cuts_rejects_unreadable_file(tmp_path):
+    bad = tmp_path / "not-a-video.mp4"
+    bad.write_text("hello", encoding="utf-8")
+    with pytest.raises(ScriptError) as exc:
+        cuts.detect_cuts(bad)
+    assert exc.value.code == "bad_video"
+    with pytest.raises(ScriptError) as exc:
+        cuts.detect_cuts(tmp_path / "missing.mp4")
+    assert exc.value.code == "bad_video"
