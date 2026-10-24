@@ -177,3 +177,10 @@ def test_refs_page_served(client):
     assert status == 200
     assert "javascript" in headers["Content-Type"]
     assert "/api/refs" in raw.decode("utf-8")
+
+
+def test_refs_card_focus_ring_is_not_clipped():
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    assert ".ref-card:focus-within" in css
+    js = (STATIC_DIR / "pages" / "refs.js").read_text(encoding="utf-8")
+    assert 'role: "list"' in js and "COUNT_DEBOUNCE_MS" in js and "marginLeft" in js

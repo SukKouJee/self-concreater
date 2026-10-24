@@ -5,6 +5,7 @@
 // 파일을 쓰지 않는다. 모든 비동기 뒤에는 ctx.isCurrent()로 화면이 아직 이 페이지인지 확인한다.
 import { h, filesUrl } from "/static/dom.js";
 
+const COUNT_DEBOUNCE_MS = 300;
 const ROLE_TEXT = { ref: "레퍼런스", mine: "내 영상" };
 const FILTERS = [
   { key: "ref", label: "레퍼런스" },
@@ -57,12 +58,18 @@ function sectionBand(sections, duration) {
     class: "sec-band", role: "img",
     "aria-label": `섹션 흐름: ${segs.map((s) => s.label).join(" → ")}`,
   });
+  // Position by start: a gap before a section becomes a left margin; overlaps are clamped to the previous end.
+  let cursor = 0;
   for (const s of segs) {
-    const width = Math.max(0, Math.min(100, ((num(s.end) - num(s.start)) / total) * 100));
+    const from = Math.max(num(s.start), cursor);
+    const gap = Math.min(100, (Math.max(0, from - cursor) / total) * 100);
+    const width = Math.max(0, Math.min(100, ((num(s.end) - from) / total) * 100));
     const text = `${s.label} ${fmtRange(s)}`;
     const seg = h("span", { class: `lb-${s.label}`, title: text, "aria-label": text });
     seg.style.width = `${width}%`;
+    if (gap > 0) seg.style.marginLeft = `${gap}%`;
     band.append(seg);
+    cursor = Math.max(cursor, num(s.end));
   }
   return band;
 }
@@ -71,8 +78,20 @@ function sectionBand(sections, duration) {
 
 let S = null;
 
+// Filter / search / sort survive unmount (list -> detail -> list) and reset only when the category changes.
+const VIEW = { category: null, role: "ref", query: "", sort: "added" };
+
+function syncView(category) {
+  if (VIEW.category === category) return;
+  VIEW.category = category;
+  VIEW.role = "ref";
+  VIEW.query = "";
+  VIEW.sort = "added";
+}
+
 function freshState(el, params, ctx) {
-  return { el, params, ctx, seq: 0, videos: [], skipped: 0, role: "ref", query: "", sort: "added", nodes: {} };
+  syncView(ctx.category);
+  return { el, params, ctx, seq: 0, videos: [], skipped: 0, nodes: {}, countTimer: null };
 }
 
 function loading(title) {
@@ -122,15 +141,15 @@ function countText() {
 }
 
 function visibleVideos() {
-  const q = S.query.trim().toLowerCase();
+  const q = VIEW.query.trim().toLowerCase();
   const list = S.videos.filter((v) => {
-    if (S.role !== "all" && v.role !== S.role) return false;
+    if (VIEW.role !== "all" && v.role !== VIEW.role) return false;
     if (!q) return true;
     return `${v.title || ""} ${v.channel || ""}`.toLowerCase().includes(q);
   });
   const byTitle = (a, b) => displayTitle(a).localeCompare(displayTitle(b), "ko");
-  if (S.sort === "length") list.sort((a, b) => num(b.duration_sec) - num(a.duration_sec) || byTitle(a, b));
-  else if (S.sort === "title") list.sort(byTitle);
+  if (VIEW.sort === "length") list.sort((a, b) => num(b.duration_sec) - num(a.duration_sec) || byTitle(a, b));
+  else if (VIEW.sort === "title") list.sort(byTitle);
   else list.sort((a, b) => String(b.added || "").localeCompare(String(a.added || "")) || byTitle(a, b));
   return list;
 }
@@ -162,23 +181,23 @@ function toolbar() {
   const group = h("div", { class: "ref-filters", role: "group", "aria-label": "역할 필터" });
   for (const f of FILTERS) {
     const btn = h("button", {
-      type: "button", class: "btn", "aria-pressed": String(S.role === f.key), "data-role": f.key,
+      type: "button", class: "btn", "aria-pressed": String(VIEW.role === f.key), "data-role": f.key,
     }, f.label);
     btn.addEventListener("click", () => {
-      S.role = f.key;
-      for (const b of group.querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.role === S.role));
+      VIEW.role = f.key;
+      for (const b of group.querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.role === VIEW.role));
       renderCards();
     });
     group.append(btn);
   }
 
   const search = h("input", { type: "search", id: "ref-search", autocomplete: "off" });
-  search.value = S.query;
-  search.addEventListener("input", () => { S.query = search.value; renderCards(); });
+  search.value = VIEW.query;
+  search.addEventListener("input", () => { VIEW.query = search.value; renderCards(); });
 
   const sort = h("select", { id: "ref-sort" }, ...SORTS.map((o) => h("option", { value: o.key }, o.label)));
-  sort.value = S.sort;
-  sort.addEventListener("change", () => { S.sort = sort.value; renderCards(); });
+  sort.value = VIEW.sort;
+  sort.addEventListener("change", () => { VIEW.sort = sort.value; renderCards(); });
 
   bar.append(group,
     h("div", { class: "field ref-search" }, h("label", { for: "ref-search" }, "제목·채널 검색"), search),
@@ -190,7 +209,12 @@ function renderCards() {
   const list = visibleVideos();
   S.nodes.grid.replaceChildren(...list.map(videoCard));
   S.nodes.empty.hidden = list.length > 0;
-  S.nodes.result.textContent = `${list.length}개 표시`;
+  // The live region is updated after typing pauses so screen readers don't announce every keystroke.
+  const mine = S;
+  clearTimeout(mine.countTimer);
+  mine.countTimer = setTimeout(() => {
+    if (alive(mine)) mine.nodes.result.textContent = `${list.length}개 표시`;
+  }, COUNT_DEBOUNCE_MS);
 }
 
 function thumb(v) {
@@ -283,7 +307,7 @@ function framesBlock(frames) {
     block.append(h("p", { class: "muted" }, "저장된 프레임이 없습니다"));
     return block;
   }
-  const strip = h("ul", { class: "frame-strip", tabindex: "0", "aria-label": "장면 프레임 (가로 스크롤)" });
+  const strip = h("ul", { class: "frame-strip", role: "list", tabindex: "0", "aria-label": "장면 프레임 (가로 스크롤)" });
   for (const f of frames) {
     const cap = f.section ? `${fmtTime(f.start)} · ${f.section}` : fmtTime(f.start);
     strip.append(h("li", {}, h("figure", {},
@@ -317,6 +341,7 @@ export async function mount(el, params, ctx) {
 }
 
 export function unmount() {
+  if (S) clearTimeout(S.countTimer);
   S = null;
 }
 
@@ -327,6 +352,7 @@ export function onCategory() {
     location.hash = "#/refs";   // hashchange remounts the list page
     return;
   }
+  syncView(S.ctx.category);
   S.videos = [];
   loadList();
 }
