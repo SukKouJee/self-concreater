@@ -1,0 +1,13 @@
+{
+  "name": "yt-coach-captions",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Animated caption video (chroma green background) for yt-coach",
+  "type": "module",
+  "dependencies": {
+    "@remotion/cli": "4.0.538",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "remotion": "4.0.538"
+  }
+}
