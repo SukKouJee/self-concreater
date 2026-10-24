@@ -38,3 +38,15 @@ conti JSON을 `workspace/tmp/conti.json`에 Write로 쓰고 `ytc conti save <dra
 고치고 싶으면 -conti.md의 script·cuts를 직접 수정하고 /yt-coach:yt-conti <그 파일> 로 다시 그리세요.
 ```
 - 결과의 `abs_html` 경로를 함께 보여 준다.
+
+## 5. 자막 SRT 내보내기
+
+사용자가 CapCut에 자막을 넣고 싶다고 하면(저장 직후 안내해도 좋다) 저장된 `-conti.md`로 실행한다.
+
+```
+python -m scripts.conti srt <conti.md> [--track caption|line]
+```
+- 기본은 컷별 `caption` → `drafts/<기획안>-captions.srt`. `--track line`이면 컷별 대사 → `-lines.srt`.
+- 시간은 콘티 컷 길이(`sec`)를 이어 붙인 값이라 실제 편집과 어긋날 수 있다. CapCut PC의 캡션 → 자막 불러오기에서 파일을 고른 뒤 자막 칸을 끌어 맞추도록 안내한다.
+- 비어 있는 컷은 건너뛰고, 같은 자막이 이어지면 하나로 합친다. 자막이 하나도 없으면 파일을 만들지 않는다(`path: null`).
+- 콘티 md·html은 바꾸지 않는다. SRT는 매번 콘티에서 다시 만드는 파일이라 같은 이름이 있으면 덮어쓴다(손으로 고친 SRT는 다른 이름으로 저장하라고 안내).

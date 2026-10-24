@@ -214,3 +214,24 @@ def test_cut_requires_hash(client, home, draft_md, hash_body):
     status, resp = client.json("POST", "/api/conti/cut", body)
     assert status == 400 and resp["error"] == "bad_request" and "hash" in resp["message"]
     assert src.read_bytes() == before
+
+
+def test_srt_export_returns_url_and_downloads(client, home, draft_md):
+    saved = saved_conti(home, draft_md)
+    status, body = client.json("POST", "/api/conti/srt", {"path": rel(home, saved)})
+    assert status == 200 and body["count"] == 3 and body["track"] == "caption"
+    assert body["url"] == "/files/" + quote(body["path"])        # 한글 파일 이름도 그대로 쓸 수 있게 인코딩
+    status, headers, raw = client.call("GET", body["url"])
+    assert status == 200
+    assert raw == (home / body["path"]).read_bytes() and raw.decode("utf-8").startswith("1\r\n00:00:00,000")
+    assert "charset=utf-8" in headers["Content-Type"].lower()
+    status, body = client.json("POST", "/api/conti/srt", {"path": rel(home, saved), "track": "line"})
+    assert status == 200 and body["path"].endswith("-lines.srt")
+
+
+def test_srt_export_rejects_bad_input(client, home, draft_md):
+    saved = saved_conti(home, draft_md)
+    status, body = client.json("POST", "/api/conti/srt", {"path": rel(home, saved), "track": "sfx"})
+    assert status == 400 and body["error"] == "bad_request"
+    status, body = client.json("POST", "/api/conti/srt", {"path": rel(home, draft_md)})
+    assert body["error"] == "bad_path"

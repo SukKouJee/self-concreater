@@ -509,7 +509,7 @@ function renderHeader() {
   if (fm.category) meta.append(h("span", { class: "tag" }, fm.category));
   const actions = h("div", { class: "btn-row" });
   if (d.html) actions.append(h("a", { class: "btn", href: filesUrl(d.html), target: "_blank", rel: "noopener" }, "스토리보드 HTML"));
-  head.replaceChildren(h("div", { class: "conti-title" }, h("h1", {}, fm.title || d.path), actions), meta);
+  head.replaceChildren(h("div", { class: "conti-title" }, h("h1", {}, fm.title || d.path), actions), meta, srtRow());
   const warns = d.warnings || [];
   if (warns.length) {
     head.append(h("details", { class: "warn-box" },
@@ -517,6 +517,46 @@ function renderHeader() {
       h("ul", { class: "warn-list" }, ...warns.map((w) => h("li", {}, w.message)))));
   }
   renderConflict();
+}
+
+const SRT_HINT = "CapCut PC: 캡션 → 자막 불러오기에서 이 파일을 고르세요. 콘티 시간 기준이라 실제 편집과 어긋나면 자막 칸을 끌어 맞추세요";
+
+function srtRow() {
+  const note = h("p", { class: "muted srt-note", role: "status", "aria-live": "polite" }, S.srtMsg || "");
+  const caption = h("button", { type: "button", class: "btn" }, "CapCut용 자막(SRT) 받기");
+  const line = h("button", { type: "button", class: "btn" }, "대사도 따로 받기");
+  caption.addEventListener("click", () => exportSrt("caption", [caption, line], note));
+  line.addEventListener("click", () => exportSrt("line", [caption, line], note));
+  return h("div", { class: "srt-row" }, h("div", { class: "btn-row" }, caption, line), note);
+}
+
+async function exportSrt(track, buttons, note) {
+  const mine = S;
+  if (mine.exporting) return;
+  mine.exporting = true;
+  for (const b of buttons) b.disabled = true;
+  try {
+    const res = await mine.ctx.api("POST", "/api/conti/srt", { path: mine.data.path, track });
+    if (!alive(mine)) return;
+    if (!res.path) {
+      mine.srtMsg = "내보낼 자막이 없습니다";
+    } else {
+      // Relies on the browser's transient user activation from the click (it survives the short fetch above).
+      const a = h("a", { href: filesUrl(res.path), download: res.path.split("/").pop() });
+      a.hidden = true;
+      document.body.append(a);
+      a.click();
+      a.remove();
+      mine.srtMsg = `${res.path.split("/").pop()} (${res.count}개) · ${SRT_HINT}`;
+    }
+    note.textContent = mine.srtMsg;
+  } catch (e) {
+    if (!alive(mine) || e.error === "aborted") return;
+    mine.ctx.toast(e.message, "error");
+  } finally {
+    mine.exporting = false;
+    for (const b of buttons) b.disabled = false;
+  }
 }
 
 function renderConflict() {

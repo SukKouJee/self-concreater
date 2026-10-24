@@ -661,6 +661,55 @@ def cut_context(conti: str | Path, n: int) -> dict:
             "narrative_type": draft_fm.get("narrative_type"), "title": fm.get("title"), "profile": motif._profile()}
 
 
+SRT_TRACKS = {"caption": ("caption", "captions"), "line": ("line", "lines")}
+
+
+def _srt_time(ms: int) -> str:
+    h, rest = divmod(ms, 3_600_000)
+    m, rest = divmod(rest, 60_000)
+    sec, milli = divmod(rest, 1000)
+    return f"{h:02d}:{m:02d}:{sec:02d},{milli:03d}"
+
+
+def _srt_text(text: Any) -> str:
+    """앞뒤 공백·빈 줄을 정리하고 최대 2줄로 맞춘다(셋째 줄부터는 둘째 줄 끝에 이어 붙인다)."""
+    lines = [ln.strip() for ln in str(text or "").replace("\r", "\n").split("\n")]
+    lines = [ln for ln in lines if ln]
+    if len(lines) > 2:
+        lines = [lines[0], " ".join(lines[1:])]
+    return "\n".join(lines).replace("-->", "→")
+
+
+def export_srt(conti: str | Path, track: str = "caption") -> dict:
+    """컷별 caption(또는 line)을 CapCut용 .srt로 내보낸다. 시간은 컷 sec의 ms 정수 누적이라 오차가 쌓이지 않는다."""
+    if track not in SRT_TRACKS:
+        raise ScriptError("bad_request", f"track은 caption 또는 line이어야 합니다: {track}")
+    path = safe_draft_path(_rel(_resolve(conti)), conti_file=True)   # drafts/ 안의 *-conti.md만(CLI도 API와 같은 규칙)
+    field, suffix = SRT_TRACKS[track]
+    fm = _load_conti(path)
+    blocks: list[list[Any]] = []          # [start_ms, end_ms, text]
+    clock = 0
+    for cut in fm["cuts"]:
+        start, end = clock, clock + round(float(cut["sec"]) * 1000)
+        clock = end
+        text = _srt_text(cut.get(field))
+        if not text:
+            continue
+        if blocks and blocks[-1][2] == text and blocks[-1][1] == start:
+            blocks[-1][1] = end
+        else:
+            blocks.append([start, end, text])
+    result: dict[str, Any] = {"path": None, "track": track, "count": len(blocks), "duration_sec": clock / 1000}
+    if not blocks:
+        return result
+    body = "".join(f"{i}\n{_srt_time(a)} --> {_srt_time(b)}\n{t}\n\n" for i, (a, b, t) in enumerate(blocks, 1))
+    out = path.with_name(f"{path.stem[: -len(CONTI_SUFFIX)]}-{suffix}.srt")
+    with out.open("w", encoding="utf-8", newline="") as f:
+        f.write(body.replace("\n", "\r\n"))
+    result["path"] = _rel(out)
+    return result
+
+
 def main(argv: list[str]) -> Any:
     parser = ArgParser(prog="python -m scripts.conti")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -683,7 +732,12 @@ def main(argv: list[str]) -> Any:
     cc = sub.add_parser("cut-context")
     cc.add_argument("conti")
     cc.add_argument("--cut", type=int, required=True)
+    sr = sub.add_parser("srt")
+    sr.add_argument("conti")
+    sr.add_argument("--track", choices=sorted(SRT_TRACKS), default="caption")
     args = parser.parse_args(argv)
+    if args.cmd == "srt":
+        return export_srt(args.conti, args.track)
     if args.cmd == "context":
         return context(args.draft)
     if args.cmd == "render":

@@ -177,6 +177,8 @@ code { background: var(--grid); padding: 1px 6px; border-radius: 4px; }
 .check { font-weight: 400 !important; color: var(--ink); display: flex; gap: var(--sp-2); align-items: flex-start; font-size: 14px; min-height: 28px; cursor: pointer; }
 .check input { margin-top: 4px; width: 16px; height: 16px; accent-color: var(--accent); }
 .btn-row { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; }
+.srt-row { margin-top: var(--sp-2); }
+.srt-note { margin: var(--sp-2) 0 0; }
 .hint { font-size: 13px; margin: 0; }
 
 .job-title { display: flex; align-items: baseline; gap: var(--sp-3); flex-wrap: wrap; margin-bottom: var(--sp-3); }
