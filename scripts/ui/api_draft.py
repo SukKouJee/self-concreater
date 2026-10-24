@@ -274,9 +274,10 @@ def _save(req: Request) -> dict:
     category = _category(body.get("category"))
     raw = body.get("draft")
     if isinstance(raw, dict):
+        raw = {k: v for k, v in raw.items() if k != "template"}      # 클라이언트가 보낸 template은 믿지 않는다
         template = _job_template(req, body.get("job_id"), category, raw.get("source"))
-        if template:
-            raw = {**raw, "template": template}       # 클라이언트 값보다 작업에 저장된 값을 쓴다
+        if isinstance(template, dict):
+            raw["template"] = template                # 작업에 저장된 값만 되돌려 넣는다
     data = draft.validate(raw)
     tmp_dir = workspace_dir("tmp")
     tmp_dir.mkdir(parents=True, exist_ok=True)

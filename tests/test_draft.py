@@ -379,3 +379,15 @@ def test_context_library_source_without_fakes_is_library_item_missing(home, sour
     with pytest.raises(ScriptError) as exc:
         draft.context(CAT, source)
     assert exc.value.code == "library_item_missing"
+
+
+def test_save_falls_back_when_library_lookup_raises_oserror(home, monkeypatch):
+    from scripts import library
+
+    def broken(item_id):
+        raise OSError("clone 폴더를 읽을 수 없습니다")
+
+    monkeypatch.setattr(library, "get", broken)
+    data = {**DRAFT, "source": "library:alice-20261024-bbbbbb", "archetype": None}
+    out = draft.save(CAT, draft_file(home, data))
+    assert "- 틀: 지인 틀(alice-20261024-bbbbbb)" in (home / out["path"]).read_text("utf-8")

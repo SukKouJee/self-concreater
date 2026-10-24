@@ -387,3 +387,14 @@ def test_save_after_library_gone_uses_template_from_preview_job(client, home, fa
     assert status == 200, resp
     body = (home / resp["path"]).read_text("utf-8")
     assert "- 틀: Alice의 여행 브이로그 3분" in body and "위조" not in body
+
+
+def test_save_without_job_drops_client_template(client, home, monkeypatch):
+    from tests import library_fixtures as lf
+    lf.install(monkeypatch, connected=False)
+    data = {**copy.deepcopy(DRAFT), "source": "library:nobody-20261024-ffffff",
+            "template": {"author": "위조", "title": "위조"}}
+    status, resp = client.json("POST", "/api/draft/save", {"category": CAT, "draft": data})
+    assert status == 200, resp
+    body = (home / resp["path"]).read_text("utf-8")
+    assert "위조" not in body and "- 틀: 지인 틀(nobody-20261024-ffffff)" in body

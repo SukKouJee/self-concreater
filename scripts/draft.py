@@ -299,7 +299,7 @@ def _template_line(data: dict) -> str:
         try:
             item = _library_template(data["source"])
             tpl = {"author": _one_line(item["author"]), "title": _one_line(item["title"])}
-        except ScriptError:
+        except (ScriptError, OSError):
             return f"지인 틀({data['source'][len(LIBRARY_PREFIX):]})"       # 연결이 끊겼거나 삭제됨: 저장은 막지 않는다
     return f"{tpl['author']}의 {tpl['title']}"
 
