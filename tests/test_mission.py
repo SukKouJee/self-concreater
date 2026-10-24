@@ -330,3 +330,32 @@ def test_context_skips_record_with_broken_frontmatter(home):
     mission.save(mission_json(home), date="2026-10-21")
     (home / "missions" / "2026-10-20.md").write_text("---\n: [oops\n---\nx", encoding="utf-8")
     assert [m["date"] for m in mission.context(date="2026-10-22")["history"]] == ["2026-10-21"]
+
+
+# --- fix round 1 ---------------------------------------------------------------------
+
+def _real_sections(home, day):
+    _, body = refstore.read_md(home / "missions" / f"{day}.md")
+    return [line for line in body.replace("\r\n", "\n").split("\n") if line.startswith("## ")]
+
+
+def test_refstore_escape_headings_exists():
+    assert refstore.escape_headings("a\n## b\n#태그") == "a\n\## b\n#태그"
+
+
+def test_submit_escapes_feedback_headings_across_resubmit(home):
+    mission.save(mission_json(home), date="2026-10-20")
+    for _ in range(2):
+        mission.submit("", "right", "좋았다\n## 가짜\n내용", date="2026-10-20", note="n")
+        assert _real_sections(home, "2026-10-20") == ["## 미션", "## 제출", "## 피드백"]
+    _, body = refstore.read_md(home / "missions" / "2026-10-20.md")
+    assert "\## 가짜" in body
+
+
+def test_submit_folds_file_name_and_clears_skip_reason(home):
+    mission.save(mission_json(home), date="2026-10-20")
+    mission.skip("야근", date="2026-10-20")
+    mission.submit("a\nb.png", "right", "f", date="2026-10-20", note="n")
+    fm, _ = refstore.read_md(home / "missions" / "2026-10-20.md")
+    assert fm["skip_reason"] is None and fm["status"] == "submitted"
+    assert "- 파일: a b.png" in _submission(home, "2026-10-20")

@@ -66,16 +66,29 @@ def _rules() -> list[Path]:
 
 # ---- 입력 검증 --------------------------------------------------------------------------
 
+def _server_today() -> Date:
+    return Date.fromisoformat(mission._today(None))
+
+
 def _day(value: Any, *, required: bool = True) -> str:
+    """서버 로컬 오늘 ±1일만 받는다(자정을 넘긴 화면은 허용, 임의의 날짜에 파일을 만들지 못하게)."""
     if value is None and not required:
-        return mission._today(None)
+        return _server_today().isoformat()
     if not isinstance(value, str) or not DATE_RE.fullmatch(value):
         raise ScriptError("bad_request", "날짜는 YYYY-MM-DD 형식이어야 합니다")
     try:
-        Date.fromisoformat(value)
+        parsed = Date.fromisoformat(value)
     except ValueError as e:
         raise ScriptError("bad_request", "없는 날짜입니다") from e
+    if abs((parsed - _server_today()).days) > 1:
+        raise ScriptError("bad_request", "오늘 날짜의 미션만 다룰 수 있습니다. 화면을 새로고침해 주세요")
     return value
+
+
+def _refuse_replacing_completed(day: str) -> None:
+    path = mission._mission_path(day)
+    if path.exists() and refstore.read_md(path)[0].get("status") == "submitted":
+        raise ScriptError("already_submitted", "이미 완료한 미션은 바꿀 수 없습니다")
 
 
 def _flag(value: Any, name: str) -> bool:
@@ -105,8 +118,10 @@ def _bad_file(message: str) -> ScriptError:
     return ScriptError("bad_file", message)
 
 
-def _user_file(value: Any) -> Path | None:
-    """제출 파일 경로를 검사한다(없음/폴더/허용 밖 확장자/10MB 초과는 bad_file). 빈 값이면 파일 없음."""
+def _user_file(value: Any) -> tuple[Path, str] | None:
+    """제출 파일 경로를 검사해 (실제 경로, 사용자가 적은 파일 이름)을 돌려준다.
+
+    없음/폴더/허용 밖 확장자/10MB 초과는 bad_file. 빈 값이면 파일 없음. 확장자·크기는 심볼릭 링크를 푼 실제 대상으로 본다."""
     if value is None:
         return None
     if not isinstance(value, str):
@@ -115,9 +130,10 @@ def _user_file(value: Any) -> Path | None:
     if not text:
         return None
     try:
-        path = Path(text).expanduser()
-        if not path.is_absolute():
-            path = work_root() / path
+        given = Path(text).expanduser()
+        if not given.is_absolute():
+            given = work_root() / given
+        path = given.resolve(strict=True)
         info = path.stat()
         is_file = path.is_file()
     except (OSError, ValueError) as e:
@@ -128,7 +144,7 @@ def _user_file(value: Any) -> Path | None:
         raise _bad_file("이미지(png·jpg·jpeg·webp·gif)나 텍스트(txt·md) 파일만 낼 수 있습니다. 영상은 설명으로 적어 주세요")
     if info.st_size > MAX_FILE_BYTES:
         raise _bad_file("파일이 너무 큽니다(10MB까지)")
-    return path
+    return path, given.name
 
 
 def _require(day: str) -> Path:
@@ -210,7 +226,9 @@ def _draft(req: Request) -> dict:
     day = _day(req.json.get("date"), required=False)
     replace = _flag(req.json.get("replace"), "replace")
     claude_cli.find_claude()                          # claude가 없으면 작업을 만들지 않는다
-    if not replace and mission._mission_path(day).exists():
+    if replace:
+        _refuse_replacing_completed(day)
+    elif mission._mission_path(day).exists():
         raise ScriptError("mission_exists", f"{day} 미션이 이미 있습니다. 저장된 미션을 다시 불러와 주세요")
     items = [new_item(day, title=day, step="context")]
     job = req.app.jobs.start(KIND, run_draft(day, replace), items=items)
@@ -243,6 +261,8 @@ def _save(req: Request) -> dict:
     tmp_dir = workspace_dir("tmp")
     tmp_dir.mkdir(parents=True, exist_ok=True)
     with WRITE_LOCK:
+        if replace:
+            _refuse_replacing_completed(day)
         fd, name = tempfile.mkstemp(prefix="mission_", suffix=".json", dir=tmp_dir)   # 요청마다 고유한 파일
         tmp = Path(name)
         try:
@@ -283,18 +303,18 @@ def _validate_feedback(data: Any) -> str:
     return text.strip()
 
 
-def run_feedback(day: str, note: str, difficulty: str, src: Path | None) -> Any:
+def run_feedback(day: str, note: str, difficulty: str, picked: tuple[Path, str] | None) -> Any:
     def target(job: Job) -> None:
         tmp: Path | None = None
         try:
-            job.update(0, state="running", step="copy" if src else "claude")
+            job.update(0, state="running", step="copy" if picked else "claude")
             job.check_cancelled()
             current = _today_view(day)
             if current is None:
                 raise ScriptError("no_mission", f"{day} 미션이 없습니다")
             payload: dict[str, Any] = {"mission": current, "note": note, "difficulty": difficulty}
-            if src is not None:
-                tmp = _copy_temp(src)
+            if picked is not None:
+                tmp = _copy_temp(picked[0])
                 payload["file"] = tmp.relative_to(work_root()).as_posix()
                 job.update(0, step="claude")
                 job.check_cancelled()
@@ -303,7 +323,7 @@ def run_feedback(day: str, note: str, difficulty: str, src: Path | None) -> Any:
                 schema=FEEDBACK_SCHEMA, tools=["Read"] if tmp else None,
             )
             job.update(0, state="awaiting", step="preview", ask="save", preview={
-                "feedback": feedback, "note": note, "difficulty": difficulty, "file_name": src.name if src else None,
+                "feedback": feedback, "note": note, "difficulty": difficulty, "file_name": picked[1] if picked else None,
             })
             job.finish("done", {"date": day})
         finally:
@@ -320,10 +340,10 @@ def _feedback(req: Request) -> dict:
     note = _text(body.get("note"), "한 일", MAX_NOTE)
     difficulty = _difficulty(body.get("difficulty"))
     _require(day)
-    src = _user_file(body.get("file"))                # 작업을 만들기 전에 거른다(임시 복사도 아직 없다)
+    picked = _user_file(body.get("file"))                # 작업을 만들기 전에 거른다(임시 복사도 아직 없다)
     claude_cli.find_claude()                          # claude가 없으면 작업을 만들지 않는다
-    items = [new_item(day, title=day, step="copy" if src else "claude")]
-    job = req.app.jobs.start(FEEDBACK_KIND, run_feedback(day, note, difficulty, src), items=items)
+    items = [new_item(day, title=day, step="copy" if picked else "claude")]
+    job = req.app.jobs.start(FEEDBACK_KIND, run_feedback(day, note, difficulty, picked), items=items)
     return {"job": job.snapshot()}
 
 
@@ -350,7 +370,7 @@ def _submit(req: Request) -> dict:
 def _skip(req: Request) -> dict:
     body = req.json
     day = _day(body.get("date"))
-    reason = _text(body.get("reason"), "사유", MAX_REASON)
+    reason = " ".join(_text(body.get("reason"), "사유", MAX_REASON).split())
     with WRITE_LOCK:
         path = _require(day)
         if refstore.read_md(path)[0].get("status") == "submitted":

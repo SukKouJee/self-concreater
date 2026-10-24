@@ -240,12 +240,12 @@ def submit(file: str, difficulty: str, feedback: str, date: str | None = None, n
         raise ScriptError("usage", f"difficulty는 {', '.join(DIFFICULTIES)} 중 하나입니다")
     path = _require_mission(day)
     fm, body = refstore.read_md(path)
-    name = (Path(file.replace(chr(92), "/")).name or file) if file else ""
+    name = _line((Path(file.replace(chr(92), "/")).name or file) if file else "")
     lines = [*([f"- 한 일: {_line(note)}"] if _line(note) else []),
              *([f"- 파일: {name}"] if name else []), f"- 난이도: {difficulty}"]
     body = refstore.replace_section(body, "## 제출", "\n".join(lines))
-    body = refstore.replace_section(body, "## 피드백", feedback.strip())
-    fm.update({"status": "submitted", "difficulty": difficulty})
+    body = refstore.replace_section(body, "## 피드백", refstore.escape_headings(feedback.strip()))
+    fm.update({"status": "submitted", "difficulty": difficulty, "skip_reason": None})
     refstore.write_atomic(path, refstore.join_frontmatter(fm, body).encode("utf-8"))
     return {"status": "submitted", "date": day, "difficulty": difficulty}
 
@@ -253,7 +253,7 @@ def submit(file: str, difficulty: str, feedback: str, date: str | None = None, n
 def skip(reason: str, date: str | None = None) -> dict:
     day = _today(date)
     path = _require_mission(day)
-    refstore.update_frontmatter(path, {"status": "skipped", "skip_reason": reason.strip() or None})
+    refstore.update_frontmatter(path, {"status": "skipped", "skip_reason": _line(reason) or None})
     return {"status": "skipped", "date": day}
 
 

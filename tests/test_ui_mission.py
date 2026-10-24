@@ -7,6 +7,7 @@ import pytest
 
 from scripts import claude_cli, mission, refstore
 from scripts.common import ScriptError
+from scripts.ui import api_mission
 from tests.test_mission import PROFILE
 from tests.test_ui_add import wait_for
 from tests.test_ui_server import Client, _start, _stop, no_browser  # noqa: F401 - fixture
@@ -41,6 +42,11 @@ class FakeAsk:
         if reply is not None:
             return reply
         return {"feedback": FEEDBACK} if "mission" in payload else dict(GOOD)
+
+
+@pytest.fixture(autouse=True)
+def fixed_today(monkeypatch):
+    monkeypatch.setattr(api_mission, "_server_today", lambda: Date.fromisoformat(DAY))
 
 
 @pytest.fixture
@@ -128,7 +134,7 @@ def test_get_with_mission_has_record_and_body(client, home):
 
 
 def test_get_defaults_to_local_today(client):
-    assert client.json("GET", "/api/mission")[1]["date"] == Date.today().isoformat()
+    assert client.json("GET", "/api/mission")[1]["date"] == DAY
 
 
 def test_get_history_is_past_14_days_oldest_first_with_gaps(client, home):
@@ -536,3 +542,65 @@ def test_skip_does_not_overwrite_completed_mission(client, home):
     _submit(client)
     assert _err(client, "POST", "/api/mission/skip", {"date": DAY, "reason": "a"}) == "already_submitted"
     assert refstore.read_md(home / "missions" / f"{DAY}.md")[0]["status"] == "submitted"
+
+
+# ---- fix round 1 ---------------------------------------------------------------------
+
+def test_save_replace_refuses_completed_mission(client, home):
+    _put(home)
+    _submit(client)
+    assert _err(client, "POST", "/api/mission/save", {"date": DAY, "mission": dict(GOOD) | {"title": "새"}, "replace": True}) == "already_submitted"
+    assert GOOD["title"] in _record_text(home) and _tmp(home, "mission_*") == []
+
+
+def test_draft_replace_refuses_completed_mission_before_work(client, home, fake_ask):
+    _put(home)
+    _submit(client)
+    assert _err(client, "POST", "/api/mission/draft", {"date": DAY, "replace": True}) == "already_submitted"
+    assert fake_ask.calls == [] and client.app.jobs.current("mission") is None
+
+
+def test_save_replace_allowed_for_skipped_mission(client, home):
+    _put(home)
+    client.json("POST", "/api/mission/skip", {"date": DAY, "reason": "a"})
+    assert _save(client, GOOD | {"title": "새"}, replace=True)[0] == 200
+
+
+def test_submit_with_heading_in_feedback_keeps_sections(client, home):
+    _put(home)
+    _submit(client, feedback="좋았다\n## 가짜\n내용")
+    _submit(client, feedback="좋았다\n## 가짜\n내용")
+    assert [l for l in _record_text(home).split("\n") if l.startswith("## ")] == ["## 미션", "## 제출", "## 피드백"]
+
+
+def test_skip_reason_is_folded_to_one_line(client, home):
+    _put(home)
+    status, body = client.json("POST", "/api/mission/skip", {"date": DAY, "reason": "시간\n## 부족"})
+    assert status == 200 and body["today"]["skip_reason"] == "시간 ## 부족"
+
+
+def test_feedback_uppercase_extension_keeps_original_name(client, home):
+    _put(home)
+    job = _feedback(client, file=str(_user_file(home, "SHOT.PNG")))
+    assert job["items"][0]["preview"]["file_name"] == "SHOT.PNG"
+
+
+def test_feedback_symlink_checks_target_extension(client, home):
+    _put(home)
+    target = _user_file(home, "secret.pem", b"k")
+    link = target.parent / "innocent.png"
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink not permitted")
+    status, resp = client.json("POST", "/api/mission/feedback",
+                               {"date": DAY, "note": "n", "difficulty": "right", "file": str(link)})
+    assert (status, resp["error"]) == (400, "bad_file")
+
+
+def test_date_only_server_today_plus_minus_one(client):
+    for day in ("2026-10-21", "2026-10-22", "2026-10-23"):
+        assert client.json("GET", f"/api/mission?date={day}")[0] == 200
+    for day in ("2026-10-20", "2026-10-24"):
+        assert _err(client, "GET", f"/api/mission?date={day}") == "bad_request"
+    assert _err(client, "POST", "/api/mission/skip", {"date": "2026-10-24", "reason": "a"}) == "bad_request"
