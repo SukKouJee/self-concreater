@@ -12,10 +12,10 @@ const AXIS_NAMES = {
   structure: "구조", hook: "훅", narrative: "서사", title: "제목", pacing: "컷 속도", shots: "샷",
 };
 const VERDICT_TEXT = {
-  typable: "뚜렷한 유형", weak: "약한 경향", untypable: "유형 없음", insufficient: "데이터 부족",
+  typable: "유형 있음", weak: "약한 경향", untypable: "유형 없음", insufficient: "데이터 부족",
 };
 const STEP_TEXT = { cluster: "계산 중", claude: "Claude 해석 중" };
-const CHANGED_TEXT = "미리보기를 만든 뒤 유형화가 다시 실행되었습니다. 다시 실행해 주세요. 입력해 둔 내용은 남아 있습니다.";
+const CHANGED_TEXT = "미리보기를 만든 뒤 유형화가 다시 실행되었습니다. 다시 실행해 주세요. 고친 근거·이름은 같은 축·아키타입이 있으면 다시 실행한 미리보기에도 유지됩니다.";
 
 // ---- helpers ------------------------------------------------------------------
 
@@ -60,8 +60,9 @@ function freshState(el, ctx, category) {
   return {
     el, ctx, category, data: null, job: null, preview: null, jobId: null,
     timer: null, pollErrors: 0, running: false, saving: false,
-    runError: null, changed: false, saveError: null,
-    notes: { axes: {}, names: {} }, nodes: {},
+    runError: null, changed: false, saveError: null, confirmRerun: false, confirmDiscard: false,
+    notes: { axes: {}, names: {} }, orig: { axes: {}, names: {} }, carry: null,
+    runSig: null, alertSig: null, nodes: {},
   };
 }
 
@@ -96,7 +97,10 @@ async function load() {
     mine.data = data;
     const job = cur.job;
     // The latest typify job may belong to another category.
-    if (job && job.category === cat && !isHandled(job.id)) adoptJob(mine, job);
+    // Old failures are not shown again; only a running job or an open preview is restored.
+    if (job && job.category === cat && !isHandled(job.id) && (isActive(job) || (job.status === "done" && previewOf(job)))) {
+      adoptJob(mine, job);
+    }
     render();
     if (isActive(mine.job)) schedulePoll();
   } catch (e) {
@@ -136,7 +140,17 @@ function initNotes(mine, preview) {
   for (const [axis, text] of Object.entries(given.axes || {})) axes[axis] = String(text || "");
   const names = {};
   for (const a of given.archetypes || []) if (a && a.id) names[a.id] = String(a.name || "");
+  mine.orig = { axes: { ...axes }, names: { ...names } };
+  // Edits made before "다시 실행" survive for axes / archetype ids that still exist.
+  const carry = mine.carry;
+  mine.carry = null;
+  if (carry) {
+    for (const axis of Object.keys(axes)) if (carry.axes[axis]) axes[axis] = carry.axes[axis];
+    for (const id of Object.keys(names)) if (carry.names[id]) names[id] = carry.names[id];
+  }
   mine.notes = { axes, names };
+  mine.confirmRerun = false;
+  mine.confirmDiscard = false;
   mine.runError = null;
   mine.changed = false;
   mine.saveError = null;
@@ -144,13 +158,42 @@ function initNotes(mine, preview) {
 
 // ---- run + polling ------------------------------------------------------------
 
+// Non-empty notes the user changed compared with what Claude proposed.
+function editedNotes() {
+  const out = { axes: {}, names: {} };
+  for (const [k, v] of Object.entries(S.notes.axes)) if (v.trim() && v !== S.orig.axes[k]) out.axes[k] = v;
+  for (const [k, v] of Object.entries(S.notes.names)) if (v.trim() && v !== S.orig.names[k]) out.names[k] = v;
+  return out;
+}
+
+const hasEdits = () => {
+  const e = editedNotes();
+  return Object.keys(e.axes).length + Object.keys(e.names).length > 0;
+};
+
+// "다시 실행" button of the run box: with unsaved edits in an open preview it asks inline first.
+function requestRerun() {
+  if (S.preview && hasEdits() && !S.confirmRerun) {
+    S.confirmRerun = true;
+    renderRunBox();
+    const yes = S.nodes.run.querySelector("[data-rerun-yes]");
+    if (yes) yes.focus();
+    return;
+  }
+  startRun();
+}
+
 async function startRun() {
   const mine = S;
   if (mine.running || isActive(mine.job)) return;
   mine.running = true;
   mine.runError = null;
   mine.changed = false;
-  render();
+  mine.confirmRerun = false;
+  mine.carry = mine.preview ? editedNotes() : mine.carry;
+  mine.alertSig = null;
+  renderRunBox();
+  renderAlerts();
   try {
     const res = await mine.ctx.api("POST", "/api/typify/run", { category: mine.category });
     if (!alive(mine)) return;
@@ -162,6 +205,7 @@ async function startRun() {
   } catch (e) {
     if (!alive(mine) || ignorable(e)) return;
     mine.runError = e.message || "유형화를 시작하지 못했습니다";
+    mine.carry = null;
   } finally {
     if (alive(mine)) { mine.running = false; render(); focusStatus(); }
   }
@@ -185,6 +229,7 @@ function schedulePoll() {
       const wasActive = isActive(mine.job);
       adoptJob(mine, data.job);
       if (wasActive && !isActive(mine.job)) {
+        if (mine.job.status === "failed" || mine.job.status === "stopped") markHandled(mine.job.id);
         render();
         focusStatus();
       } else {
@@ -234,7 +279,8 @@ async function save() {
   mine.saving = true;
   mine.saveError = null;
   mine.changed = false;
-  renderPreviewActions();
+  updateActions();
+  renderAlerts();
   try {
     await mine.ctx.api("POST", "/api/typify/save", {
       category: mine.category, run_at: mine.preview.result.run_at, notes: currentNotes(),
@@ -257,7 +303,8 @@ async function save() {
     else if (e.error === "invalid_notes") mine.saveError = `근거 또는 이름이 올바르지 않아 저장하지 않았습니다. ${e.message || ""}`.trim();
     else mine.saveError = e.message || "저장하지 못했습니다";
     mine.saving = false;
-    renderPreviewActions();
+    updateActions();
+    renderAlerts();
   }
 }
 
@@ -267,6 +314,14 @@ async function reloadStatus(mine) {
   } catch (e) {
     if (alive(mine) && !ignorable(e)) mine.ctx.toast(e.message, "error");
   }
+}
+
+function askDiscard() {
+  if (S.saving) return;
+  S.confirmDiscard = true;
+  renderAlerts();
+  const yes = S.nodes.alerts && S.nodes.alerts.querySelector("[data-discard-yes]");
+  if (yes) yes.focus();
 }
 
 function discard() {
@@ -320,10 +375,24 @@ function renderRunBox() {
   const failed = !!job && (job.status === "failed" || job.status === "stopped");
   const hasSaved = !!d.applied;
   const label = hasSaved || S.preview ? "다시 실행" : "유형화 실행";
+  const item0 = job && job.items && job.items[0];
+  const sig = JSON.stringify([label, active, failed, S.running, S.runError, S.confirmRerun, d.stage,
+    item0 && item0.step, item0 && item0.message, job && job.message]);
+  if (sig === S.runSig && box.childNodes.length) return;
+  S.runSig = sig;
   const btn = h("button", { type: "button", class: "btn btn-primary", disabled: S.running || active }, label);
-  btn.addEventListener("click", startRun);
+  btn.addEventListener("click", requestRerun);
   const kids = [h("div", { class: "btn-row" }, btn,
     h("span", { class: "muted small" }, "Claude를 한 번 부릅니다(수십 초)"))];
+  if (S.confirmRerun) {
+    const yes = h("button", { type: "button", class: "btn btn-danger", "data-rerun-yes": "" }, "다시 실행");
+    const no = h("button", { type: "button", class: "btn" }, "취소");
+    yes.addEventListener("click", startRun);
+    no.addEventListener("click", () => { S.confirmRerun = false; renderRunBox(); S.nodes.run.querySelector("button").focus(); });
+    kids.push(h("div", { class: "inline-confirm", role: "alert" },
+      h("p", { class: "warn-text" }, "고친 내용은 같은 축·아키타입이 있으면 유지됩니다. 새 미리보기가 나오면 다시 확인하세요."),
+      h("div", { class: "btn-row" }, yes, no)));
+  }
   if (d.stage === "preliminary") {
     kids.push(h("p", { class: "muted hint" }, "예비 관찰입니다. 10개부터 정식 판정이 나옵니다"));
   }
@@ -345,7 +414,12 @@ function renderRunBox() {
 function renderBody() {
   const body = S.nodes.body;
   if (!body) return;
-  if (S.preview) { fill(body, ...previewView()); return; }
+  if (S.preview) {
+    fill(body, ...previewView());
+    updateActions();
+    renderAlerts();
+    return;
+  }
   if (S.data.applied) { fill(body, ...appliedView(S.data.applied)); return; }
   fill(body, isActive(S.job) ? null : h("p", { class: "muted" }, "아직 유형화한 결과가 없습니다. 실행 버튼을 누르면 미리보기가 나옵니다."));
 }
@@ -432,7 +506,7 @@ function archetypeCard(a, titles, editable) {
       S.notes.names[a.id] = input.value;
       head.querySelector(".badge")?.remove();
       if (a.prev_name && a.prev_name === input.value) head.append(h("span", { class: "badge" }, "이전 이름 그대로"));
-      renderPreviewActions();
+      updateActions();
     });
     card.append(h("div", { class: "field" }, h("label", { for: inputId }, "아키타입 이름"), input));
   } else {
@@ -454,12 +528,13 @@ function archetypeCard(a, titles, editable) {
   return card;
 }
 
-function titleMap(result) {
+function titleMap(result, known) {
   const titles = new Map();
   for (const a of result.archetypes || []) {
     if (a.representative && a.representative.id && a.representative.title) titles.set(a.representative.id, a.representative.title);
   }
   for (const o of result.outliers || []) if (o.id && o.title) titles.set(o.id, o.title);
+  for (const [id, title] of Object.entries(known || {})) if (title) titles.set(id, title);
   return titles;
 }
 
@@ -483,7 +558,7 @@ function archetypeSection(list, titles, editable) {
 }
 
 function appliedView(applied) {
-  const titles = titleMap(applied);
+  const titles = titleMap(applied, applied.titles);
   return [
     h("p", { class: "muted small" }, `저장된 결과 · ${String(applied.applied_at || "").slice(0, 10)} 저장`),
     h("section", { class: "typify-sec", "aria-labelledby": "typify-axes" },
@@ -495,34 +570,55 @@ function appliedView(applied) {
 
 function previewView() {
   const result = S.preview.result;
-  const titles = titleMap(result);
-  S.nodes.actions = h("div", { class: "preview-actions" });
-  const view = [
+  const titles = titleMap(result, S.preview.titles);
+  const saveBtn = h("button", { type: "button", class: "btn btn-primary", "aria-describedby": "typify-save-hint" }, "저장");
+  const discardBtn = h("button", { type: "button", class: "btn" }, "버리기");
+  saveBtn.addEventListener("click", save);
+  discardBtn.addEventListener("click", askDiscard);
+  S.nodes.saveBtn = saveBtn;
+  S.nodes.discardBtn = discardBtn;
+  S.nodes.hint = h("p", { class: "muted hint", id: "typify-save-hint" });
+  S.nodes.alerts = h("div", { class: "preview-alerts" });
+  S.alertSig = null;
+  return [
     h("p", { class: "muted small" }, "미리보기 · 저장하기 전에는 파일이 바뀌지 않습니다. 근거와 이름은 고칠 수 있습니다."),
+    h("p", { class: "muted small" }, "다른 화면으로 가면 고친 내용은 사라집니다"),
     h("p", { class: "muted hint" }, "판정이 이상해 보이면 ",
       h("a", { href: "#/refs" }, "레퍼런스 목록"), "에서 영상 라벨을 고친 뒤 다시 실행하세요"),
     h("section", { class: "typify-sec", "aria-labelledby": "typify-axes" },
       h("h2", { id: "typify-axes" }, "축별 판정"), axisRows(result.axes, true)),
     archetypeSection(result.archetypes, titles, true),
     outlierList(result.outliers, titles),
-    S.nodes.actions,
+    h("div", { class: "preview-actions" }, h("div", { class: "btn-row" }, saveBtn, discardBtn), S.nodes.hint, S.nodes.alerts),
   ];
-  renderPreviewActions();
-  return view;
 }
 
-// Save/discard row: also called while typing so the disabled state and reason follow the name fields.
-function renderPreviewActions() {
-  const box = S.nodes.actions;
-  if (!box || !S.preview) return;
+// After the preview is in the DOM and while typing: only touches disabled state and the reason hint.
+function updateActions() {
+  if (!S.preview || !S.nodes.saveBtn) return;
   const missing = missingNames();
-  const saveBtn = h("button", { type: "button", class: "btn btn-primary", disabled: S.saving || missing.length > 0 }, "저장");
-  const discardBtn = h("button", { type: "button", class: "btn", disabled: S.saving }, "버리기");
-  saveBtn.addEventListener("click", save);
-  discardBtn.addEventListener("click", discard);
-  const kids = [h("div", { class: "btn-row" }, saveBtn, discardBtn)];
-  if (missing.length) {
-    kids.push(h("p", { class: "muted hint" }, `아키타입 이름이 비어 있어 저장할 수 없습니다: ${missing.map((a) => a.id).join(", ")}`));
+  S.nodes.saveBtn.disabled = S.saving || missing.length > 0;
+  S.nodes.discardBtn.disabled = S.saving;
+  S.nodes.hint.textContent = missing.length
+    ? `아키타입 이름이 비어 있어 저장할 수 없습니다: ${missing.map((a) => a.id).join(", ")}` : "";
+}
+
+// Alerts live in their own node and are rebuilt only when their content changes (no re-announcing on keystrokes).
+function renderAlerts() {
+  const box = S.nodes.alerts;
+  if (!box || !S.preview) return;
+  const sig = JSON.stringify([S.changed, S.saveError, S.confirmDiscard, S.saving, S.running]);
+  if (sig === S.alertSig) return;
+  S.alertSig = sig;
+  const kids = [];
+  if (S.confirmDiscard) {
+    const yes = h("button", { type: "button", class: "btn btn-danger", "data-discard-yes": "", disabled: S.saving }, "버리기");
+    const no = h("button", { type: "button", class: "btn" }, "취소");
+    yes.addEventListener("click", discard);
+    no.addEventListener("click", () => { S.confirmDiscard = false; renderAlerts(); S.nodes.discardBtn.focus(); });
+    kids.push(h("div", { class: "inline-confirm", role: "alert" },
+      h("p", { class: "warn-text" }, "미리보기를 버립니다. 고친 내용은 사라지고 저장된 결과가 그대로 남습니다."),
+      h("div", { class: "btn-row" }, yes, no)));
   }
   if (S.changed) {
     const rerun = h("button", { type: "button", class: "btn", disabled: S.running || isActive(S.job) }, "다시 실행");
@@ -531,9 +627,7 @@ function renderPreviewActions() {
       h("p", { class: "warn-text" }, CHANGED_TEXT), rerun));
   }
   if (S.saveError) kids.push(h("p", { class: "error", role: "alert" }, S.saveError));
-  const hadFocus = box.contains(document.activeElement);
   fill(box, ...kids);
-  if (hadFocus && !S.saving) saveBtn.focus();
 }
 
 // ---- page contract ------------------------------------------------------------

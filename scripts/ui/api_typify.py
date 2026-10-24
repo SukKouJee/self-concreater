@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -90,7 +92,9 @@ def run_target(category: str) -> Any:
         notes, _ = claude_cli.ask_validated(
             _rules(), result, TYPIFY_TASK, lambda d: cluster.validate_notes(result, d), schema=NOTES_SCHEMA,
         )
-        job.update(0, state="awaiting", step="preview", ask="save", preview={"result": result, "notes": notes})
+        job.update(0, state="awaiting", step="preview", ask="save", preview={
+                "result": result, "notes": notes, "titles": cluster.video_titles(category, result),
+            })
         job.finish("done", {"archetypes": len(result["archetypes"]), "ref": result["ref"]})
 
     return target
@@ -124,10 +128,13 @@ def _save(req: Request) -> dict:
     notes = body.get("notes")
     if not isinstance(notes, dict):
         raise ScriptError("bad_request", "notes는 JSON 객체여야 합니다")
-    tmp = workspace_dir("tmp", "typify_notes_ui.json")
-    tmp.parent.mkdir(parents=True, exist_ok=True)
-    tmp.write_text(json.dumps(notes, ensure_ascii=False), encoding="utf-8")
+    tmp_dir = workspace_dir("tmp")
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix="typify_notes_", suffix=".json", dir=tmp_dir)   # 요청마다 고유한 파일
+    tmp = Path(name)
     try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(notes, f, ensure_ascii=False)
         result = cluster.apply(category, tmp, expected_run_at=run_at)
     finally:
         tmp.unlink(missing_ok=True)

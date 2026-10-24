@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 
 import pytest
 
@@ -250,6 +251,36 @@ def test_apply_writes_applied_snapshot(home):
     assert set(snap["axes"]["structure"]) == {"verdict", "n", "k", "silhouette", "max_share", "note"}
     assert snap["archetypes"][0]["name"] == "결과 먼저 몰아먹기" and snap["archetypes"][0]["id"] == "A1"
     assert any(o["id"] == "zodd" for o in snap["outliers"])
+
+
+def test_run_at_has_microseconds_and_report_prefix_still_date(home):
+    standard_set(home)
+    run_at = cluster.run(CAT)["run_at"]
+    assert "." in run_at and run_at[:10] == datetime.now(timezone.utc).date().isoformat()
+
+
+def test_video_titles_covers_result_ids_and_applied_snapshot(home):
+    standard_set(home, odd=True)
+    result = cluster.run(CAT)
+    titles = cluster.video_titles(CAT, result)
+    ids = {v for a in result["archetypes"] for v in a["members"]} | {o["id"] for o in result["outliers"]}
+    ids |= {v for res in result["axes"].values() for c in res["clusters"] for v in c["members"]}
+    assert ids <= set(titles) and all(isinstance(t, str) for t in titles.values())
+
+    cluster.apply(CAT, notes(home, NOTES))
+    assert json.loads(cluster.applied_path(CAT).read_text("utf-8"))["titles"] == titles
+
+
+@pytest.mark.parametrize("bad", [
+    [], "x", {"axes": []}, {"axes": {}, "archetypes": ["x"]}, {"axes": {}, "archetypes": [{"name": "a"}]},
+    {"axes": {}, "archetypes": {"A1": "a"}}, {"axes": "x"},
+])
+def test_validate_notes_malformed_shape(home, bad):
+    standard_set(home)
+    result = cluster.run(CAT)
+    with pytest.raises(ScriptError) as exc:
+        cluster.validate_notes(result, bad)
+    assert exc.value.code == "invalid_notes" and "notes 형식이 맞지 않습니다" in exc.value.message
 
 
 def test_apply_rejects_stale_run_at(home):

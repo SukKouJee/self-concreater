@@ -264,3 +264,12 @@ def test_typify_page_served(client):
     assert status == 200
     assert "javascript" in headers["Content-Type"]
     assert "/api/typify" in raw.decode("utf-8")
+
+
+def test_typify_verdict_labels_match_server_and_edits_survive_rerun():
+    js = (STATIC_DIR / "pages" / "typify.js").read_text(encoding="utf-8")
+    for label in ['typable: "유형 있음"', 'weak: "약한 경향"', 'untypable: "유형 없음"', 'insufficient: "데이터 부족"']:
+        assert label in js, label
+    for token in ["carry", "editedNotes", "renderAlerts", "data-discard-yes", "data-rerun-yes", "S.preview.titles", "applied.titles"]:
+        assert token in js, token
+    assert "confirm(" not in js.replace("inline-confirm", "").replace("renderConfirm", "")

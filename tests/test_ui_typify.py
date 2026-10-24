@@ -1,7 +1,6 @@
 """유형화 API: 상태, 실행(작업) → 미리보기, 저장. claude 호출은 가짜로 바꾼다."""
 import json
 import threading
-import time
 
 import pytest
 
@@ -123,6 +122,11 @@ def test_run_job_reaches_preview(client, home, fakes):
     assert item["id"] == CAT and item["state"] == "awaiting" and item["step"] == "preview" and item["ask"] == "save"
     assert list(item["preview"]["result"]["axes"]) == features.AXES
     assert item["preview"]["notes"] == NOTES
+    titles = item["preview"]["titles"]
+    ids = {v for a in item["preview"]["result"]["archetypes"] for v in a["members"]}
+    ids |= {o["id"] for o in item["preview"]["result"]["outliers"]}
+    ids |= {v for res in item["preview"]["result"]["axes"].values() for c in res["clusters"] for v in c["members"]}
+    assert ids and ids <= set(titles) and all(isinstance(t, str) for t in titles.values())
     [(rules, payload, task, kw)] = fakes.asks
     assert rules == [claude_cli.SKILLS_DIR / "yt-typify" / "SKILL.md"]
     assert payload["run_at"] == item["preview"]["result"]["run_at"]
@@ -178,6 +182,27 @@ def test_save_applies_and_returns_snapshot(client, home):
     assert not (home / "workspace" / "tmp" / "typify_notes_ui.json").exists()
 
 
+@pytest.mark.parametrize("bad_notes", [
+    {"axes": [], "archetypes": []}, {"axes": {}, "archetypes": ["x"]}, {"axes": {}, "archetypes": [{"name": "a"}]},
+    {"axes": "x", "archetypes": []}, {"axes": {}, "archetypes": {"A1": "a"}}, {"archetypes": [None]},
+])
+def test_save_malformed_notes_is_invalid_notes(client, home, bad_notes):
+    standard_set(home)
+    job = _run_preview(client)
+    status, body = client.json("POST", "/api/typify/save", _save_body(job, notes=bad_notes))
+    assert status == 400 and body["error"] == "invalid_notes" and "notes 형식이 맞지 않습니다" in body["message"]
+    assert list((home / "workspace" / "tmp").glob("typify_notes*")) == []
+
+
+def test_save_applied_has_titles(client, home):
+    standard_set(home)
+    job = _run_preview(client)
+    status, body = client.json("POST", "/api/typify/save", _save_body(job))
+    assert status == 200, body
+    assert body["applied"]["titles"] == job["items"][0]["preview"]["titles"]
+    assert not list(cluster.applied_path(CAT).parent.glob("*.tmp"))
+
+
 def test_save_empty_name_is_invalid_notes(client, home):
     standard_set(home)
     job = _run_preview(client)
@@ -191,7 +216,6 @@ def test_save_stale_run_at(client, home):
     standard_set(home)
     job = _run_preview(client)
     first = _save_body(job)
-    time.sleep(1.1)                                      # run_at은 초 단위
     cluster.run(CAT)
     status, body = client.json("POST", "/api/typify/save", first)
     assert status == 400 and body["error"] == "typify_changed"
