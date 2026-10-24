@@ -14,7 +14,7 @@ conti JSON (yt-conti 규칙)
    "cuts": [{"section": <섹션 번호 0~>, "size", "angle", "sec", "action", "line", "caption", "sfx", "guide"}]}
 - 검증(실패): 섹션 수와 script 수, 섹션별 컷 길이 합 = 섹션 길이(±0.3초), 샷 크기 어휘, action·guide 필수
 - 경고(저장은 함): 대사가 컷 길이에 비해 김(말 속도 기준), 컷 대사를 이으면 그 섹션 전체 대사와 다름
-- 말 속도 = 카테고리 ref 영상 자막의 초당 글자 수 중앙값(sparse 제외). 없으면 4.5
+- 말 속도 = 카테고리 ref 영상 자막의 초당 글자 수 중앙값(sparse 제외). 없으면 thresholds.json의 speech_default_cps(4.5)
 - 시각화: 컷마다 샷 크기 도식(SVG) + 레퍼런스 대표 프레임(참고용). 이미지는 base64로 넣어 한 파일로 만든다
 """
 from __future__ import annotations
@@ -30,12 +30,13 @@ from pathlib import Path
 from typing import Any
 
 from scripts import features, fetch, motif, refstore
-from scripts.common import ArgParser, ScriptError, run, work_root, workspace_dir
+from scripts.common import TEMPLATES_DIR, ArgParser, ScriptError, run, work_root, workspace_dir
 from scripts.features import SHOT_SIZES
 from scripts.report import SLOTS, _vars
 from scripts.videomd import LABELS, _existing_memo, fmt_time, load_cuts
 
-DEFAULT_CPS = 4.5
+DEFAULT_CPS = float(json.loads((TEMPLATES_DIR / "thresholds.json").read_text("utf-8"))["speech_default_cps"])
+CONTI_SUFFIX = "-conti"
 SEC_TOLERANCE = 0.3
 OVERFLOW_SLACK = 1.15          # 말 속도 × 컷 길이의 115%까지는 허용
 SCHEMA_VERSION = 2
@@ -83,7 +84,7 @@ def parse_draft(path: Path) -> dict:
             blocks[-1]["shots"].append({"size": row.group(2).strip(), "angle": row.group(3).strip().strip("-") or None,
                                         "sec": float(row.group(4)), "action": row.group(5).replace("\\|", "|").strip()})
         elif line.strip() and not line.startswith("|"):
-            blocks[-1]["script"].append(re.sub(r"^\\(#{1,6})(?=\s|$)", r"\1", line.strip()))   # draft.validate의 제목 이스케이프 제거
+            blocks[-1]["script"].append(re.sub(r"^\\(#{1,6}(?=\s|$)|\|)", r"\1", line.strip()))   # 제목(#)·표(|) 이스케이프 제거
     sections = []
     for i, s in enumerate(fm["sections"]):
         block = blocks[i] if i < len(blocks) and blocks[i]["label"] == s["label"] else {"script": [], "shots": []}
@@ -120,7 +121,24 @@ def video_format(target_sec: float) -> str:
 
 
 def conti_path(draft: Path) -> Path:
-    return draft.with_name(f"{draft.stem}-conti.md")
+    return draft.with_name(f"{draft.stem}{CONTI_SUFFIX}.md")
+
+
+def safe_draft_path(value: Any, *, conti_file: bool | None = None) -> Path:
+    """작업 폴더의 drafts/ 안 .md 파일만 허용한다(상대 경로 → 절대 경로).
+    conti_file: True면 콘티 파일만, False면 기획안만, None이면 둘 다."""
+    if not isinstance(value, str) or not value:
+        raise ScriptError("bad_request", "path가 필요합니다")
+    drafts = (work_root() / "drafts").resolve()
+    try:
+        target = (work_root() / value).resolve()
+    except (OSError, ValueError) as e:
+        raise ScriptError("bad_path", f"잘못된 경로입니다: {value}") from e
+    if not target.is_relative_to(drafts) or target.suffix.lower() != ".md" or "\x00" in value:
+        raise ScriptError("bad_path", f"drafts 폴더 안의 .md 파일만 쓸 수 있습니다: {value}")
+    if conti_file is not None and target.stem.endswith(CONTI_SUFFIX) != conti_file:
+        raise ScriptError("bad_path", f"{'콘티' if conti_file else '기획안'} 파일이 아닙니다: {value}")
+    return target
 
 
 def context(draft: str | Path) -> dict:

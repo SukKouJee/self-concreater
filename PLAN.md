@@ -228,6 +228,21 @@
 
 ---
 
+## Phase 15. 다듬기 — `/yt-polish` (추가 요건)
+
+계획: `docs/superpowers/plans/2026-10-24-polish.md`. 훅·제목·썸네일을 저장된 기획안에서 다듬고, 고른 것만 반영한다.
+
+- [x] 설계서 v2.3 반영 (커맨드·`## 패키징`)
+- [x] `skills/yt-polish/`: 훅 공식 21가지(`hooks.json`, MIT 출처) + SKILL.md, `THIRD_PARTY_NOTICES.md`
+- [x] `polish.py`: 한국어 기준 점수·지적(제목 폭·숫자·기호·겹침, 훅 길이·인사), ref 근거, `context`·`evaluate`·`apply`
+- [x] `commands/yt-polish.md`, README 표
+- [x] 로컬 UI: 기획안 상세의 다듬기 영역 (`api_polish`, `draft.js`)
+
+완료 조건
+- 실제 draft로 `/yt-coach:yt-polish`를 돌려 후보·점수·근거가 보이고, 고른 것만 기획안에 반영되며 샷 표·내 메모가 그대로이고 이전 값이 이력에 남는다
+
+---
+
 ## 일정 요약
 
 | Phase | 내용 | 예상 |
@@ -241,6 +256,7 @@
 | 12 | 콘티 (추가) | 반나절 |
 | 13 | 로컬 UI 1차 (추가) | 계획서 참조 |
 | 14 | 로컬 UI 2차 (추가) | 미정 |
+| 15 | 다듬기 (추가) | 계획서 참조 |
 
 **첫 마일스톤(Phase 0~4)**: 링크를 넣으면 영상별 md가 쌓이는 상태. 여기서 한 번 실사용하며 섹션 라벨·md 양식을 다듬고 나서 Phase 5로 간다.
 

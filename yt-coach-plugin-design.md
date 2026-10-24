@@ -1,6 +1,6 @@
 # yt-coach — 유튜브 콘텐츠 분석·발상 Claude Code 플러그인 설계서
 
-버전: v2.2 (2026-10-23, 로컬 UI 추가; v2.1 2026-10-20 콘티 추가) / 상태: 개발 착수용
+버전: v2.3 (2026-10-24, 다듬기 단계 추가; v2.2 2026-10-23 로컬 UI 추가; v2.1 2026-10-20 콘티 추가) / 상태: 개발 착수용
 
 ## 1. 목적과 범위
 
@@ -9,7 +9,7 @@
 유형(아키타입) 분석은 모티브를 뽑기 위한 기반이고, 내 콘텐츠 진단과 일일 미션은 그 위에서 돌아가는 보조 루프다.
 
 ### 1.1 사용 흐름
-`/yt-init` → `/yt-add`(ref) → `/yt-typify` → `/yt-inspire` → `/yt-draft` → `/yt-conti` → (제작) → `/yt-diagnose`(mine) → `/yt-mission`, `/yt-review`
+`/yt-init` → `/yt-add`(ref) → `/yt-typify` → `/yt-inspire` → `/yt-draft` → `/yt-polish` → `/yt-conti` → (제작) → `/yt-diagnose`(mine) → `/yt-mission`, `/yt-review`
 
 ### 1.2 범위 안
 - 첫 실행 인터뷰와 프로필 생성
@@ -46,7 +46,7 @@
 ```
 yt-coach/
 ├── .claude-plugin/plugin.json
-├── commands/        yt-init, yt-add, yt-typify, yt-inspire, yt-draft, yt-conti,
+├── commands/        yt-init, yt-add, yt-typify, yt-inspire, yt-draft, yt-polish, yt-conti,
 │                    yt-diagnose, yt-mission, yt-review, yt-ui (.md)
 ├── skills/
 │   ├── yt-analyze/   시놉시스·섹션·기법·촬영 요약 규칙
@@ -54,6 +54,7 @@ yt-coach/
 │   ├── yt-typify/    축 정의·판정 기준·아키타입 포맷
 │   ├── yt-inspire/   모티브 카드 생성 규칙
 │   ├── yt-draft/     대본 골격 + 샷 리스트 규칙
+│   ├── yt-polish/    훅 5·제목 10·썸네일 지시서 규칙 + hooks.json(공식 21, MIT 출처)
 │   ├── yt-conti/     전체 대사 + 컷별 대사·가이드 규칙
 │   ├── yt-diagnose/  근접도·갭 서술 규칙
 │   └── yt-mission/   성장 단계·미션·회고 규칙
@@ -129,6 +130,12 @@ yt-coach/
 - 섹션별 대본 + 샷 리스트(샷 크기·앵글·길이·컷 수)
 - profile의 피하고 싶은 스타일 반영
 - `drafts/`에 저장
+
+### `/yt-polish <draft파일 | latest>`
+- 저장된 draft의 **훅·제목·썸네일**을 다듬는 선택 단계(draft 뒤, 콘티 앞 어디서든). Claude가 훅 5개(공식 id·hook_type·`말:`/`자막:` 대본·이유)·제목 10개·썸네일 지시서(문구 3단어 이하·표정·구도·배경)를 내고, 스크립트가 한국어 기준 점수·지적(제목 폭 모바일 56·데스크톱 100, 숫자 없음, 느낌표 과다, 썸네일과 겹치는 낱말, 훅이 구간에 들어가는지, 인사로 시작)과 내 ref 근거("내 레퍼런스 N개 중 K개")를 붙인다
+- 규칙은 `skills/yt-polish/`(훅 공식 21가지 `hooks.json`). Jakeschincariol/youtube-agent-skill(MIT)의 `yt-script`·`yt-package`를 한국어로 옮기고 고친 것이며 출처는 `THIRD_PARTY_NOTICES.md`. 영어 점수 도구·정규식은 가져오지 않는다
+- 반영(A안): 사용자가 고른 뒤에만 draft를 고친다 — 프런트매터 `title`·`title_pattern`, 본문 `# ` 줄, 훅 섹션 대본 문단(고른 훅의 `hook_type`이 다르면 프런트매터 `hook_type`과 `## 개요`의 훅 줄도). `## 패키징`(내 메모 앞)에 썸네일 지시서·훅 공식·이전 제목/훅 유형/훅 대본 이력. 샷 표와 `## 내 메모`는 건드리지 않고, 화면을 연 뒤 파일이 바뀌었으면 `draft_changed`로 거부. 콘티가 있으면 다시 만들라는 경고
+- 유형화·아키타입 기준은 바뀌지 않는다(`mine`을 섞지 않음, 근거는 ref만)
 
 ### `/yt-conti <draft파일 | latest>`
 - draft의 샷 리스트를 컷 뼈대로 받아 **전체 대사**(영상 전체를 잇는 원고)를 쓰고, 컷마다 그 구간의 대사·자막·효과음·**가이드**(연기·촬영 지시)를 배정

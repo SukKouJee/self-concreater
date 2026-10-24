@@ -277,3 +277,13 @@ def test_parse_draft_keeps_backslash_before_non_heading_hash(home):
     out = draft.save(CAT, draft_file(home, data))
     script = conti.parse_draft(home / out["path"])["sections"][0]["script"]
     assert script == "\#tag\n## 제목"
+
+
+def test_save_pipe_script_line_round_trips(home):
+    from scripts import conti
+    data = json.loads(json.dumps(DRAFT))
+    data["archetype"] = None
+    data["sections"][0]["script"] = "말: 가\n| 표처럼 보이는 줄"
+    out = draft.save(CAT, draft_file(home, data))
+    parsed = conti.parse_draft(home / out["path"])["sections"][0]
+    assert parsed["script"] == "말: 가\n| 표처럼 보이는 줄" and len(parsed["shots"]) == 1
