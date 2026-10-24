@@ -1,0 +1,841 @@
+// 기획안 화면
+//   #/draft                 현재 카테고리의 저장된 기획안 목록
+//   #/draft/view/<path>     기획안 상세(읽기 전용) + 콘티 화면으로 가는 링크
+//   #/draft/new[/<source>]  새 기획안: 출처 고르기 → 만들기(작업: 자료 모으기 → Claude) → 미리보기(편집) → 저장
+// 미리보기 단계에서는 drafts/가 바뀌지 않는다. 저장은 사용자가 누른 뒤에만, 고친 draft 그대로 보낸다.
+// 작업 폴링·재진입·handled·job_id·aborted 처리는 pages/motif.js와 같은 방식이다.
+import { h, fill } from "/static/dom.js";
+
+const POLL_MS = 1000;
+const POLL_MAX_MS = 15000;
+const HANDLED_KEY = "ytc.draft.handled";
+const ACTIVE = new Set(["running", "awaiting"]);
+const MAX_TOPIC = 100;
+const MIN_TARGET = 5;
+const MAX_TARGET = 1800;
+const GAP_BIG = 0.1;            // |기획 - 아키타입| > 10%p 이면 강조
+const SUM_TOL = 0.05;           // 샷 길이 합과 섹션 길이의 허용 오차(초)
+const STEP_TEXT = { context: "자료 모으는 중", claude: "Claude가 기획안 만드는 중" };
+const SHOT_SIZES = ["익스트림 클로즈업", "클로즈업", "바스트", "미디엄", "와이드", "탑뷰", "POV", "인서트"];
+const NEW_SHOT = { size: "미디엄", angle: "", sec: "2", action: "" };
+
+// ---- helpers ------------------------------------------------------------------
+
+const isActive = (job) => !!job && ACTIVE.has(job.status);
+const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+const viewHref = (path) => `#/draft/view/${encodeURIComponent(path)}`;
+const contiHref = (path) => `#/conti/${encodeURIComponent(path)}`;
+const round2 = (x) => Math.round(x * 100) / 100;
+const pct = (x) => `${Math.round(x * 100)}%`;
+
+function fmtTime(sec) {
+  const s = Math.max(0, Math.floor(num(sec)));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+const fmtRange = (s) => `${fmtTime(s.start)}–${fmtTime(s.end)}`;
+const sortByStart = (list) => [...list].sort((a, b) => num(a.start) - num(b.start));
+const lastEnd = (sections) => Math.max(0, ...(sections || []).map((s) => num(s && s.end)));
+const sectionTitle = (s) => `${s.label}${s.sub ? `(${s.sub})` : ""}`;
+
+// "" and non-numbers become NaN so callers can tell "not a number" from 0.
+function parseNum(text) {
+  const t = String(text).trim();
+  const v = Number(t);
+  return t !== "" && Number.isFinite(v) ? v : NaN;
+}
+
+// Segment widths are percentages of the last section end (same drawing as the reference screens).
+function sectionBand(sections) {
+  const segs = sortByStart((sections || []).filter((s) => s && typeof s.label === "string" && s.label));
+  const total = lastEnd(segs);
+  if (!segs.length || !(total > 0)) return null;
+  const band = h("div", {
+    class: "sec-band", role: "img",
+    "aria-label": `섹션 흐름: ${segs.map((s) => s.label).join(" → ")}`,
+  });
+  let cursor = 0;
+  for (const s of segs) {
+    const from = Math.max(num(s.start), cursor);
+    const gap = Math.min(100, (Math.max(0, from - cursor) / total) * 100);
+    const width = Math.max(0, Math.min(100, ((num(s.end) - from) / total) * 100));
+    const text = `${s.label} ${fmtRange(s)}`;
+    const seg = h("span", { class: `lb-${s.label}`, title: text, "aria-label": text });
+    seg.style.width = `${width}%`;
+    if (gap > 0) seg.style.marginLeft = `${gap}%`;
+    band.append(seg);
+    cursor = Math.max(cursor, num(s.end));
+  }
+  return band;
+}
+
+function readHandled() {
+  try {
+    const v = JSON.parse(localStorage.getItem(HANDLED_KEY) || "[]");
+    return Array.isArray(v) ? v : [];
+  } catch { return []; }
+}
+
+// A preview that was saved (or discarded) in this browser is not restored after a reload.
+function markHandled(jobId) {
+  if (!jobId) return;
+  const ids = readHandled().filter((x) => x !== jobId);
+  ids.push(jobId);
+  try { localStorage.setItem(HANDLED_KEY, JSON.stringify(ids.slice(-20))); } catch { /* storage unavailable */ }
+}
+
+const isHandled = (jobId) => readHandled().includes(jobId);
+
+function previewOf(job) {
+  const item = job && job.items && job.items[0];
+  const p = item && item.state === "awaiting" ? item.preview : null;
+  return p && p.draft && Array.isArray(p.draft.sections) && p.draft.sections.length ? p : null;
+}
+
+// ---- page state ---------------------------------------------------------------
+
+let S = null;
+
+// Each mount / category change builds a fresh state, so late async work of the old one sees S !== mine and stops.
+function freshState(el, ctx, category, params) {
+  return {
+    el, ctx, category, mode: params.mode || "list", path: params.path || null, wantSource: params.source || null,
+    sources: null, source: params.source || "", topic: "", target: "", sourceNote: null,
+    job: null, jobId: null, preview: null, edit: null, dirty: false,
+    timer: null, pollErrors: 0, running: false, saving: false,
+    runError: null, saveError: null, confirmRerun: false, confirmDiscard: false,
+    runSig: null, alertSig: null, nodes: {},
+  };
+}
+
+const alive = (mine) => S === mine && mine.ctx.isCurrent();
+const ignorable = (e) => !e || e.error === "aborted";
+
+function stopPolling() {
+  if (S && S.timer) { clearTimeout(S.timer); S.timer = null; }
+}
+
+function focusStatus() {
+  const t = S && S.nodes.status;
+  if (t) { t.setAttribute("tabindex", "-1"); t.focus({ preventScroll: true }); }
+}
+
+const crumb = () => h("p", { class: "crumb" }, h("a", { href: "#/draft" }, "← 기획안 목록"));
+
+// ---- load ---------------------------------------------------------------------
+
+function loadError(e, mine) {
+  const retry = h("button", { type: "button", class: "btn" }, "다시 시도");
+  retry.addEventListener("click", () => { if (alive(mine)) load(); });
+  fill(mine.el, mine.mode === "list" ? null : crumb(), h("h1", {}, "기획안"),
+    h("p", { class: "error", role: "alert" }, (e && e.message) || "불러오지 못했습니다"),
+    h("div", { class: "btn-row" }, retry));
+}
+
+async function load() {
+  const mine = S;
+  if (mine.mode === "view") { await loadView(mine); return; }
+  const cat = mine.category;
+  if (!cat) {
+    fill(mine.el, h("h1", {}, "기획안"), h("p", { class: "muted" }, "카테고리가 없습니다. 홈에서 먼저 카테고리를 만드세요."));
+    return;
+  }
+  fill(mine.el, h("h1", {}, "기획안"), h("p", { class: "muted", role: "status" }, "불러오는 중…"));
+  if (mine.mode === "new") await loadNew(mine, cat); else await loadList(mine, cat);
+}
+
+async function loadList(mine, cat) {
+  try {
+    const data = await mine.ctx.api("GET", `/api/draft/list?category=${encodeURIComponent(cat)}`);
+    if (!alive(mine)) return;
+    renderList(mine, data.drafts || []);
+  } catch (e) {
+    if (!alive(mine) || ignorable(e)) return;
+    loadError(e, mine);
+  }
+}
+
+async function loadView(mine) {
+  if (!mine.path) { fill(mine.el, crumb(), h("h1", {}, "기획안"), h("p", { class: "error", role: "alert" }, "기획안 경로가 없습니다")); return; }
+  fill(mine.el, crumb(), h("h1", {}, "기획안"), h("p", { class: "muted", role: "status" }, "불러오는 중…"));
+  try {
+    const data = await mine.ctx.api("GET", `/api/draft?path=${encodeURIComponent(mine.path)}`);
+    if (!alive(mine)) return;
+    renderView(mine, data);
+  } catch (e) {
+    if (!alive(mine) || ignorable(e)) return;
+    loadError(e, mine);
+  }
+}
+
+async function loadNew(mine, cat) {
+  try {
+    const [src, cur] = await Promise.all([
+      mine.ctx.api("GET", `/api/draft/sources?category=${encodeURIComponent(cat)}`),
+      mine.ctx.api("GET", "/api/jobs/current?kind=draft"),
+    ]);
+    if (!alive(mine)) return;
+    mine.sources = src;
+    const ids = sourceIds(src);
+    if (mine.wantSource && !ids.has(mine.wantSource)) {
+      mine.sourceNote = `고른 출처(${mine.wantSource})를 찾을 수 없어 목록에서 다시 골라야 합니다`;
+      mine.source = "";
+    }
+    const job = cur.job;
+    // The latest draft job may belong to another category.
+    if (job && job.category === cat && !isHandled(job.id)) {
+      if (isActive(job) || (job.status === "done" && previewOf(job))) {
+        adoptJob(mine, job);
+      } else if (job.status === "failed" || job.status === "stopped") {
+        adoptJob(mine, job);          // shown once, then not again
+        markHandled(job.id);
+      }
+    }
+    renderNew();
+    if (isActive(mine.job)) schedulePoll();
+  } catch (e) {
+    if (!alive(mine) || ignorable(e)) return;
+    loadError(e, mine);
+  }
+}
+
+function sourceIds(src) {
+  const ids = new Set();
+  for (const list of [src.stars, src.cards, src.archetypes]) for (const x of list || []) ids.add(x.id);
+  return ids;
+}
+
+function adoptJob(mine, job) {
+  mine.job = job;
+  const preview = job.status === "done" ? previewOf(job) : null;
+  if (preview && (!mine.preview || mine.jobId !== job.id)) {
+    mine.preview = preview;
+    mine.jobId = job.id;
+    initEdit(mine, preview);
+  }
+}
+
+function initEdit(mine, preview) {
+  const d = preview.draft;
+  mine.edit = {
+    title: String(d.title || ""),
+    sections: d.sections.map((s) => ({
+      src: s,
+      script: String(s.script || ""),
+      shots: (s.shots || []).map((sh) => ({
+        src: sh, size: String(sh.size || ""), angle: String(sh.angle || ""),
+        sec: sh.sec === null || sh.sec === undefined ? "" : String(sh.sec), action: String(sh.action || ""),
+      })),
+      nodes: {},
+    })),
+    prep: (d.prep || []).join("\n"),
+  };
+  mine.dirty = false;
+  mine.confirmRerun = false;
+  mine.confirmDiscard = false;
+  mine.runError = null;
+  mine.saveError = null;
+}
+
+// ---- list ---------------------------------------------------------------------
+
+function draftRow(d) {
+  const sections = (d.sections || []).filter((s) => s && s.label);
+  const total = lastEnd(sections) || num(d.target_sec);
+  const conti = d.conti
+    ? h("span", { class: "badge conti-yes" }, "콘티 있음")
+    : h("span", { class: "badge" }, "콘티 없음");
+  const meta = [String(d.date || "").slice(0, 10), d.source ? `출처 ${d.source}` : null, total > 0 ? `길이 ${fmtTime(total)}` : null]
+    .filter(Boolean).join(" · ");
+  return h("li", { class: "card dr-row" },
+    h("div", { class: "card-head" },
+      h("h2", {}, h("a", { href: viewHref(d.path) }, String(d.title))), conti),
+    h("p", { class: "muted small" }, meta),
+    sectionBand(sections));
+}
+
+function renderList(mine, drafts) {
+  const make = h("a", { class: "btn btn-primary", href: "#/draft/new" }, "새 기획안 만들기");
+  const kids = [h("h1", {}, "기획안"), h("p", { class: "lead" }, `${mine.category} · 저장한 기획안 ${drafts.length}개`)];
+  if (!drafts.length) {
+    kids.push(h("p", { class: "muted" }, "아직 기획안이 없습니다"), h("div", { class: "btn-row" }, make));
+  } else {
+    kids.push(h("div", { class: "btn-row dr-tools" }, make),
+      h("ul", { class: "dr-list", "aria-label": "저장한 기획안" }, ...drafts.map(draftRow)));
+  }
+  fill(mine.el, ...kids);
+}
+
+// ---- view (read only) ---------------------------------------------------------
+
+async function copyText(mine, text, okMsg) {
+  try {
+    await navigator.clipboard.writeText(text);
+    if (alive(mine)) mine.ctx.toast(okMsg, "info");
+  } catch {
+    if (alive(mine)) mine.ctx.toast("복사하지 못했습니다. 직접 선택해 복사하세요", "error");
+  }
+}
+
+function renderView(mine, d) {
+  const sections = (d.sections || []).filter((s) => s && s.label);
+  const pacing = d.pacing && typeof d.pacing === "object" ? d.pacing : null;
+  const meta = [
+    String(d.date || "").slice(0, 10),
+    d.source ? `출처 ${d.source}` : null,
+    d.archetype ? `아키타입 ${d.archetype}` : null,
+    lastEnd(sections) > 0 ? `길이 ${fmtTime(lastEnd(sections))}` : null,
+    d.hook_type ? `훅 ${d.hook_type}` : null,
+    d.narrative_type ? `서사 ${d.narrative_type}` : null,
+    pacing && pacing.avg_cut_sec ? `평균 컷 ${pacing.avg_cut_sec}초` : null,
+  ].filter(Boolean).join(" · ");
+  mine.nodes = {};
+  mine.nodes.status = h("h1", {}, String(d.title));
+  const kids = [crumb(), mine.nodes.status, h("p", { class: "muted small" }, meta), sectionBand(sections)];
+  if (sections.length) {
+    kids.push(h("ul", { class: "ref-sec-list dr-sec-list", "aria-label": "섹션" }, ...sortByStart(sections).map((s) =>
+      h("li", {}, h("span", { class: `lb-dot lb-${s.label}`, "aria-hidden": "true" }), `${sectionTitle(s)} ${fmtRange(s)}`))));
+  }
+  for (const part of d.body || []) {
+    const text = h("div", { class: "md-text" });
+    text.textContent = part.text || "";
+    kids.push(h("section", { class: "ref-block" }, part.heading ? h("h2", {}, part.heading) : null, text));
+  }
+  const copy = h("button", { type: "button", class: "btn" }, "경로 복사");
+  copy.addEventListener("click", () => copyText(mine, d.path, "경로를 복사했습니다"));
+  kids.push(
+    h("div", { class: "btn-row" },
+      h("a", { class: "btn btn-primary", href: contiHref(d.path) }, d.conti ? "콘티 보기" : "콘티 만들기")),
+    h("div", { class: "ref-path" }, h("span", { class: "muted small" }, "md 파일"), h("code", {}, d.path), copy));
+  fill(mine.el, ...kids);
+}
+
+// ---- new: run box -------------------------------------------------------------
+
+function sourceLabel(x) {
+  if (x.name !== undefined) {                                   // archetype
+    const dur = num(x.mean_duration) > 0 ? ` · 평균 ${fmtTime(x.mean_duration)}` : "";
+    return `${x.id}${x.name ? ` ${x.name}` : ""}${dur}`;
+  }
+  return `${x.id} · ${x.type_ko ? `[${x.type_ko}] ` : ""}${x.title}`;
+}
+
+function sourceSelect(disabled) {
+  const sel = h("select", { id: "draft-source", disabled });
+  sel.append(h("option", { value: "" }, "출처를 고르세요"));
+  const groups = [["★ 카드", S.sources.stars], ["카드", S.sources.cards], ["아키타입", S.sources.archetypes]];
+  for (const [label, list] of groups) {
+    if (!list || !list.length) continue;
+    sel.append(h("optgroup", { label }, ...list.map((x) => h("option", { value: x.id }, sourceLabel(x)))));
+  }
+  sel.value = S.source;
+  sel.addEventListener("change", () => { S.source = sel.value; S.sourceNote = null; updateRunControls(); });
+  return sel;
+}
+
+// Why the run button is disabled (empty string when it can be used).
+function runBlocker() {
+  if (!S.source) return "출처를 골라 주세요";
+  if (S.target.trim() !== "") {
+    const v = parseNum(S.target);
+    if (!(v >= MIN_TARGET && v <= MAX_TARGET)) return `목표 길이는 ${MIN_TARGET}~${MAX_TARGET}초로 적어 주세요`;
+  }
+  return "";
+}
+
+function updateRunControls() {
+  const n = S.nodes;
+  if (!n.runBtn) return;
+  const reason = runBlocker();
+  n.runBtn.disabled = S.running || isActive(S.job) || S.saving || !!reason;
+  n.runHint.textContent = reason;
+}
+
+function requestRerun(from) {
+  if (S.preview && S.dirty && !S.confirmRerun) {
+    S.confirmRerun = from;
+    S.alertSig = null;
+    renderRunBox();
+    renderAlerts();
+    const box = from === "preview" ? S.nodes.alerts : S.nodes.run;
+    const yes = box && box.querySelector("[data-rerun-yes]");
+    if (yes) yes.focus();
+    return;
+  }
+  startRun();
+}
+
+function rerunConfirm(from) {
+  const yes = h("button", { type: "button", class: "btn btn-danger", "data-rerun-yes": "" }, "다시 만들기");
+  const no = h("button", { type: "button", class: "btn" }, "취소");
+  yes.addEventListener("click", startRun);
+  no.addEventListener("click", () => {
+    S.confirmRerun = false;
+    S.alertSig = null;
+    renderRunBox();
+    renderAlerts();
+    const back = from === "preview" ? S.nodes.rerunBtn : S.nodes.runBtn;
+    if (back) back.focus();
+  });
+  return h("div", { class: "inline-confirm", role: "alert" },
+    h("p", { class: "warn-text" }, "지금 미리보기에서 고친 내용은 사라집니다. 저장한 기획안은 그대로입니다."),
+    h("div", { class: "btn-row" }, yes, no));
+}
+
+async function startRun() {
+  const mine = S;
+  if (mine.running || mine.saving || isActive(mine.job) || runBlocker()) return;
+  mine.running = true;
+  mine.runError = null;
+  mine.confirmRerun = false;
+  mine.alertSig = null;
+  renderRunBox();
+  try {
+    const body = { category: mine.category, source: mine.source };
+    const topic = mine.topic.trim();
+    if (topic) body.topic = topic;
+    if (mine.target.trim() !== "") body.target_sec = parseNum(mine.target);
+    const res = await mine.ctx.api("POST", "/api/draft/run", body);
+    if (!alive(mine)) return;
+    if (mine.jobId) markHandled(mine.jobId);
+    mine.job = res.job;
+    mine.preview = null;
+    mine.jobId = null;
+    mine.edit = null;
+    mine.dirty = false;
+    mine.pollErrors = 0;
+    if (isActive(mine.job)) schedulePoll();
+  } catch (e) {
+    if (!alive(mine) || ignorable(e)) return;
+    mine.runError = e.message || "기획안을 만들지 못했습니다";
+  } finally {
+    if (alive(mine)) { mine.running = false; renderNew(); if (!mine.runError) focusStatus(); }
+  }
+}
+
+// Source / topic / target inputs, run button, progress and errors. Re-rendered by polling without touching the (editable) preview.
+function renderRunBox() {
+  const box = S.nodes.run;
+  if (!box) return;
+  const job = S.job;
+  const active = isActive(job);
+  const failed = !!job && (job.status === "failed" || job.status === "stopped");
+  const item0 = job && job.items && job.items[0];
+  const sig = JSON.stringify([active, failed, S.running, S.runError, S.confirmRerun, S.sourceNote,
+    item0 && item0.step, item0 && item0.message, job && job.message, !!S.preview, S.saving]);
+  if (sig === S.runSig && box.childNodes.length) return;
+  S.runSig = sig;
+  const busy = S.running || active || S.saving;
+  const topic = h("input", {
+    id: "draft-topic", type: "text", maxlength: String(MAX_TOPIC), placeholder: "예: 편의점 라면", disabled: busy,
+  });
+  topic.value = S.topic;
+  topic.addEventListener("input", () => { S.topic = topic.value; });
+  const target = h("input", {
+    id: "draft-target", type: "number", min: String(MIN_TARGET), max: String(MAX_TARGET), step: "1",
+    inputmode: "numeric", placeholder: "예: 60", disabled: busy, "aria-describedby": "draft-run-hint",
+  });
+  target.value = S.target;
+  target.addEventListener("input", () => { S.target = target.value; updateRunControls(); });
+  S.nodes.runBtn = h("button", { type: "button", class: "btn btn-primary", "aria-describedby": "draft-run-hint" }, "기획안 만들기");
+  S.nodes.runBtn.addEventListener("click", () => requestRerun("run"));
+  S.nodes.runHint = h("span", { class: "muted small", id: "draft-run-hint" });
+  const kids = [
+    h("div", { class: "field" }, h("label", { for: "draft-source" }, "출처"), sourceSelect(busy)),
+    S.sourceNote ? h("p", { class: "muted small", role: "status" }, S.sourceNote) : null,
+    h("div", { class: "field" }, h("label", { for: "draft-topic" }, "주제(선택)"), topic),
+    h("div", { class: "field" }, h("label", { for: "draft-target" }, `목표 길이 초(선택, ${MIN_TARGET}~${MAX_TARGET})`), target),
+    h("div", { class: "btn-row" }, S.nodes.runBtn, S.nodes.runHint, h("span", { class: "muted small" }, "Claude를 한 번 부릅니다(수십 초)")),
+  ];
+  if (S.confirmRerun === "run") kids.push(rerunConfirm("run"));
+  if (active) {
+    const step = (item0 && STEP_TEXT[item0.step]) || "준비 중";
+    kids.push(h("div", { class: "job-status", role: "status" },
+      h("progress", { class: "job-progress", "aria-label": "기획안 만들기 진행" }),
+      h("span", {}, `${step}…`)));
+  }
+  if (failed) {
+    kids.push(h("p", { class: "error", role: "alert" },
+      `${(item0 && item0.message) || job.message || "기획안을 만들지 못했습니다"} 저장한 기획안은 그대로입니다.`));
+  }
+  if (S.runError) kids.push(h("p", { class: "error", role: "alert" }, S.runError));
+  fill(box, ...kids);
+  updateRunControls();
+}
+
+// ---- polling ------------------------------------------------------------------
+
+function pollDelay(errors) {
+  return errors > 0 ? Math.min(POLL_MS * 2 ** errors, POLL_MAX_MS) : POLL_MS;
+}
+
+function schedulePoll() {
+  stopPolling();
+  const mine = S;
+  mine.timer = setTimeout(async () => {
+    mine.timer = null;
+    if (!alive(mine) || !mine.job) return;
+    try {
+      const data = await mine.ctx.api("GET", `/api/jobs/${encodeURIComponent(mine.job.id)}`);
+      if (!alive(mine)) return;
+      if (mine.pollErrors) mine.ctx.toast("다시 연결되었습니다", "info");
+      mine.pollErrors = 0;
+      const wasActive = isActive(mine.job);
+      adoptJob(mine, data.job);
+      if (wasActive && !isActive(mine.job)) {
+        if (mine.job.status === "failed" || mine.job.status === "stopped") markHandled(mine.job.id);
+        renderNew();
+        focusStatus();
+      } else {
+        renderRunBox();
+      }
+    } catch (e) {
+      if (!alive(mine) || ignorable(e)) return;
+      if (e.error === "job_not_found" || e.status === 404) {
+        mine.ctx.toast("작업을 찾을 수 없습니다. 서버가 다시 켜졌다면 기획안을 다시 만드세요", "error");
+        mine.job = null;
+        renderNew();
+        return;
+      }
+      mine.pollErrors += 1;
+      if (mine.pollErrors === 1) mine.ctx.toast("진행 상황을 가져오지 못하고 있습니다. 계속 다시 시도합니다", "error");
+    }
+    if (alive(mine) && isActive(mine.job)) schedulePoll();
+  }, pollDelay(mine.pollErrors));
+}
+
+// ---- new: page ----------------------------------------------------------------
+
+function renderNew() {
+  S.nodes = {};
+  S.runSig = null;
+  S.alertSig = null;
+  S.nodes.status = h("h1", { id: "draft-title" }, "새 기획안 만들기");
+  const kids = [crumb(), S.nodes.status];
+  const src = S.sources;
+  const any = sourceIds(src).size > 0;
+  if (!any) {
+    kids.push(h("p", { class: "muted hint" }, "고를 수 있는 출처가 없습니다. ",
+      h("a", { href: "#/motif" }, "모티브에서 카드 만들기"), " 또는 ", h("a", { href: "#/typify" }, "유형화로 아키타입 만들기")));
+  } else {
+    S.nodes.run = h("section", { class: "job-box motif-run", "aria-label": "기획안 만들기" });
+    kids.push(S.nodes.run);
+  }
+  S.nodes.body = h("div", { class: "motif-body" });
+  kids.push(S.nodes.body);
+  fill(S.el, ...kids);
+  renderRunBox();
+  renderBody();
+}
+
+function renderBody() {
+  const body = S.nodes.body;
+  if (!body) return;
+  if (!S.preview || !S.edit) { fill(body); return; }
+  fill(body, previewView());
+  updateAll();
+  renderAlerts();
+}
+
+// ---- preview ------------------------------------------------------------------
+
+const cutCount = () => S.edit.sections.reduce((n, s) => n + s.shots.length, 0);
+
+function shotsSum(sec) {
+  return sec.shots.reduce((sum, sh) => {
+    const v = parseNum(sh.sec);
+    return Number.isFinite(v) && v > 0 ? sum + v : sum;
+  }, 0);
+}
+
+// Why the save button is disabled (empty string when it can be used). Over/under-long shots only warn.
+function saveBlocker() {
+  if (!S.edit.title.trim()) return "제목이 비어 있습니다";
+  for (const [i, sec] of S.edit.sections.entries()) {
+    if (!sec.shots.length) return `${i + 1}번 섹션에 샷이 하나 이상 있어야 합니다`;
+    for (const [k, sh] of sec.shots.entries()) {
+      if (!(parseNum(sh.sec) > 0)) return `${i + 1}번 섹션 ${k + 1}번 샷의 길이는 0보다 큰 숫자여야 합니다`;
+    }
+  }
+  return "";
+}
+
+function draftPayload() {
+  const e = S.edit;
+  return {
+    ...S.preview.draft,
+    title: e.title.trim(),
+    sections: e.sections.map((sec) => ({
+      ...sec.src,
+      script: sec.script,
+      shots: sec.shots.map((sh) => ({ ...sh.src, size: sh.size, angle: sh.angle, sec: parseNum(sh.sec), action: sh.action })),
+    })),
+    prep: e.prep.split("\n").map((l) => l.trim()).filter(Boolean),
+  };
+}
+
+function compareView(c) {
+  const rows = (c.ratio || []).map((r) => {
+    const big = Math.abs(num(r.gap)) > GAP_BIG + 1e-9;
+    const gap = `${num(r.gap) > 0 ? "+" : ""}${Math.round(num(r.gap) * 100)}%p`;
+    return h("tr", { class: big ? "is-warn gap-big" : null },
+      h("th", { scope: "row" }, h("span", { class: `lb-dot lb-${r.label}`, "aria-hidden": "true" }), ` ${r.label}`),
+      h("td", { class: "num" }, pct(num(r.draft))),
+      h("td", { class: "num" }, pct(num(r.archetype))),
+      h("td", { class: "num" }, gap, big ? h("span", { class: "badge gap-flag" }, "차이 큼") : null));
+  });
+  return h("section", { class: "dr-compare", "aria-labelledby": "draft-compare-title" },
+    h("h2", { id: "draft-compare-title" }, `아키타입 ${c.archetype}${c.name ? ` ${c.name}` : ""}와 섹션 비율`),
+    h("div", { class: "table-wrap" },
+      h("table", { class: "preview-table" },
+        h("thead", {}, h("tr", {}, h("th", { scope: "col" }, "섹션"), h("th", { scope: "col" }, "기획"),
+          h("th", { scope: "col" }, "아키타입"), h("th", { scope: "col" }, "차이"))),
+        h("tbody", {}, ...rows))));
+}
+
+function shotRow(sec, si, k) {
+  const sh = sec.shots[k];
+  const label = (what) => `${si + 1}번 섹션 ${k + 1}번 샷 ${what}`;
+  const touch = () => { S.dirty = true; updateSection(sec, si); updateSummary(); updateActions(); };
+  const size = h("select", { "aria-label": label("크기") },
+    ...(sh.size && !SHOT_SIZES.includes(sh.size) ? [sh.size] : []).concat(SHOT_SIZES).map((v) => h("option", { value: v }, v)));
+  size.value = sh.size;
+  size.addEventListener("change", () => { sh.size = size.value; touch(); });
+  const angle = h("input", { type: "text", "aria-label": label("앵글"), maxlength: "60" });
+  angle.value = sh.angle;
+  angle.addEventListener("input", () => { sh.angle = angle.value; touch(); });
+  const secInput = h("input", { type: "number", min: "0.1", step: "0.1", class: "dr-sec-input", "aria-label": label("길이(초)") });
+  secInput.value = sh.sec;
+  secInput.addEventListener("input", () => { sh.sec = secInput.value; touch(); });
+  const action = h("input", { type: "text", "aria-label": label("내용"), maxlength: "200" });
+  action.value = sh.action;
+  action.addEventListener("input", () => { sh.action = action.value; touch(); });
+  const del = h("button", { type: "button", class: "btn", "aria-label": label("삭제"), "data-del": String(k) }, "삭제");
+  del.addEventListener("click", () => {
+    sec.shots.splice(k, 1);
+    S.dirty = true;
+    renderShots(sec, si);
+    updateSection(sec, si);
+    updateSummary();
+    updateActions();
+    const next = sec.nodes.tbody.querySelector(`[data-del="${Math.min(k, sec.shots.length - 1)}"]`);
+    (next || sec.nodes.addBtn).focus();
+  });
+  return h("tr", {},
+    h("td", {}, size), h("td", {}, angle), h("td", {}, secInput), h("td", { class: "dr-action" }, action), h("td", {}, del));
+}
+
+function renderShots(sec, si) {
+  fill(sec.nodes.tbody, ...sec.shots.map((_, k) => shotRow(sec, si, k)));
+}
+
+// Warning under a section when the shot lengths do not add up to the section length (save stays possible).
+function updateSection(sec, si) {
+  const warn = sec.nodes.warn;
+  const dur = num(sec.src.end) - num(sec.src.start);
+  let text = "";
+  if (!sec.shots.length) {
+    text = "샷이 하나 이상 있어야 저장할 수 있습니다";
+  } else {
+    const sum = shotsSum(sec);
+    if (Math.abs(sum - dur) > SUM_TOL) text = `샷 길이 합 ${round2(sum)}초 · 섹션 ${round2(dur)}초`;
+  }
+  if (warn.textContent !== text) warn.textContent = text;
+  sec.nodes.table.setAttribute("aria-label", `${si + 1}번 섹션 샷 표`);
+}
+
+function sectionCard(sec, si) {
+  const s = sec.src;
+  const n = si + 1;
+  const script = h("textarea", { rows: "4", "aria-label": `${n}번 섹션 대본` });
+  script.value = sec.script;
+  script.addEventListener("input", () => { sec.script = script.value; S.dirty = true; });
+  sec.nodes.tbody = h("tbody");
+  sec.nodes.warn = h("p", { class: "warn-text small", role: "status" });
+  sec.nodes.addBtn = h("button", { type: "button", class: "btn" }, "샷 추가");
+  sec.nodes.addBtn.addEventListener("click", () => {
+    sec.shots.push({ src: {}, ...NEW_SHOT });
+    S.dirty = true;
+    renderShots(sec, si);
+    updateSection(sec, si);
+    updateSummary();
+    updateActions();
+    const rows = sec.nodes.tbody.querySelectorAll("tr");
+    const first = rows.length ? rows[rows.length - 1].querySelector("select") : null;
+    if (first) first.focus();
+  });
+  sec.nodes.table = h("table", { class: "preview-table dr-shots" },
+    h("thead", {}, h("tr", {}, h("th", { scope: "col" }, "크기"), h("th", { scope: "col" }, "앵글"),
+      h("th", { scope: "col" }, "길이(초)"), h("th", { scope: "col" }, "내용"), h("th", { scope: "col" }, "삭제"))),
+    sec.nodes.tbody);
+  renderShots(sec, si);
+  return h("article", { class: "card dr-sec" },
+    h("h3", { class: "dr-sec-title" }, h("span", { class: `lb-dot lb-${s.label}`, "aria-hidden": "true" }),
+      ` ${fmtRange(s)} · ${sectionTitle(s)}`, h("span", { class: "muted small" }, ` (${round2(num(s.end) - num(s.start))}초)`)),
+    h("div", { class: "field" }, h("label", {}, "대본", script)),
+    h("div", { class: "table-wrap" }, sec.nodes.table),
+    h("div", { class: "btn-row" }, sec.nodes.addBtn),
+    sec.nodes.warn);
+}
+
+function previewView() {
+  const p = S.preview;
+  const e = S.edit;
+  const title = h("input", { type: "text", id: "draft-edit-title", maxlength: "120" });
+  title.value = e.title;
+  title.addEventListener("input", () => { e.title = title.value; S.dirty = true; updateActions(); });
+  S.nodes.summary = h("p", { class: "dr-summary", role: "status" });
+  const prep = h("textarea", { rows: "4", id: "draft-prep" });
+  prep.value = e.prep;
+  prep.addEventListener("input", () => { e.prep = prep.value; S.dirty = true; });
+  const saveBtn = h("button", { type: "button", class: "btn btn-primary", "aria-describedby": "draft-save-hint" }, "저장");
+  const rerunBtn = h("button", { type: "button", class: "btn" }, "다시 만들기");
+  const discardBtn = h("button", { type: "button", class: "btn" }, "버리기");
+  saveBtn.addEventListener("click", save);
+  rerunBtn.addEventListener("click", () => requestRerun("preview"));
+  discardBtn.addEventListener("click", askDiscard);
+  S.nodes.saveBtn = saveBtn;
+  S.nodes.rerunBtn = rerunBtn;
+  S.nodes.discardBtn = discardBtn;
+  S.nodes.hint = h("p", { class: "muted hint", id: "draft-save-hint" });
+  S.nodes.alerts = h("div", { class: "preview-alerts" });
+  S.alertSig = null;
+  const src = p.source;
+  return h("section", { class: "motif-sec", "aria-labelledby": "draft-preview-title" },
+    h("h2", { id: "draft-preview-title" }, src && src.title ? `미리보기 · 출처: ${src.title}` : "미리보기"),
+    h("p", { class: "muted small" }, "저장하기 전에는 파일이 바뀌지 않습니다. 섹션 구간·라벨은 고칠 수 없고, 다른 화면으로 가면 고친 내용은 사라집니다."),
+    h("div", { class: "field" }, h("label", { for: "draft-edit-title" }, "제목"), title),
+    S.nodes.summary,
+    p.compare ? compareView(p.compare) : null,
+    ...e.sections.map(sectionCard),
+    h("div", { class: "field" }, h("label", { for: "draft-prep" }, "준비물 (한 줄에 하나)"), prep),
+    h("div", { class: "preview-actions" },
+      h("div", { class: "btn-row" }, saveBtn, rerunBtn, discardBtn), S.nodes.hint, S.nodes.alerts));
+}
+
+function updateSummary() {
+  const node = S.nodes.summary;
+  if (!node || !S.edit) return;
+  const dur = lastEnd(S.edit.sections.map((s) => s.src));
+  const cuts = cutCount();
+  const parts = [`길이 ${fmtTime(dur)}`, `컷 ${cuts}개`, cuts ? `평균 컷 ${round2(dur / cuts)}초` : "평균 컷 -"];
+  const arch = S.preview.compare && S.preview.compare.archetype_avg_cut;
+  if (arch) parts.push(`아키타입 평균 컷 ${round2(num(arch))}초`);
+  node.textContent = parts.join(" · ");
+}
+
+function updateActions() {
+  if (!S.preview || !S.nodes.saveBtn) return;
+  const reason = saveBlocker();
+  S.nodes.saveBtn.disabled = S.saving || !!reason;
+  S.nodes.rerunBtn.disabled = S.saving || S.running || isActive(S.job);
+  S.nodes.discardBtn.disabled = S.saving;
+  S.nodes.hint.textContent = reason;
+}
+
+function updateAll() {
+  S.edit.sections.forEach((sec, i) => updateSection(sec, i));
+  updateSummary();
+  updateActions();
+}
+
+// Alerts live in their own node and are rebuilt only when their content changes (no re-announcing on keystrokes).
+function renderAlerts() {
+  const box = S.nodes.alerts;
+  if (!box || !S.preview) return;
+  const sig = JSON.stringify([S.saveError, S.confirmDiscard, S.saving, S.confirmRerun === "preview"]);
+  if (sig === S.alertSig) return;
+  S.alertSig = sig;
+  const kids = [];
+  if (S.confirmDiscard) {
+    const yes = h("button", { type: "button", class: "btn btn-danger", "data-discard-yes": "", disabled: S.saving }, "버리기");
+    const no = h("button", { type: "button", class: "btn" }, "취소");
+    yes.addEventListener("click", discard);
+    no.addEventListener("click", () => { S.confirmDiscard = false; renderAlerts(); S.nodes.discardBtn.focus(); });
+    kids.push(h("div", { class: "inline-confirm", role: "alert" },
+      h("p", { class: "warn-text" }, "미리보기를 버립니다. 고친 내용은 사라집니다. 저장한 기획안은 그대로입니다."),
+      h("div", { class: "btn-row" }, yes, no)));
+  }
+  if (S.confirmRerun === "preview") kids.push(rerunConfirm("preview"));
+  if (S.saveError) kids.push(h("p", { class: "error", role: "alert" }, S.saveError));
+  fill(box, ...kids);
+}
+
+// ---- save / discard -----------------------------------------------------------
+
+async function save() {
+  const mine = S;
+  if (mine.saving || !mine.preview || !mine.edit || saveBlocker()) return;
+  mine.saving = true;
+  mine.saveError = null;
+  updateActions();
+  renderAlerts();
+  renderRunBox();
+  try {
+    const res = await mine.ctx.api("POST", "/api/draft/save", {
+      category: mine.category, draft: draftPayload(), job_id: mine.jobId,
+    });
+    markHandled(mine.jobId);                    // before the alive check: a finished save is never restored as a preview
+    if (!alive(mine)) return;
+    mine.ctx.toast("기획안을 저장했습니다", "info");
+    mine.saving = false;
+    location.hash = viewHref(res.path);          // hashchange mounts the detail page
+  } catch (e) {
+    // An aborted request (page left mid-save) may still have been saved by the server: never restore that preview.
+    if (e && e.error === "aborted") markHandled(mine.jobId);
+    if (!alive(mine) || ignorable(e)) return;
+    mine.saveError = e.message || "저장하지 못했습니다";
+    mine.saving = false;
+    updateActions();
+    renderAlerts();
+    renderRunBox();
+  }
+}
+
+function askDiscard() {
+  if (S.saving) return;
+  S.confirmDiscard = true;
+  renderAlerts();
+  const yes = S.nodes.alerts && S.nodes.alerts.querySelector("[data-discard-yes]");
+  if (yes) yes.focus();
+}
+
+function discard() {
+  if (S.saving) return;
+  markHandled(S.jobId);
+  S.preview = null;
+  S.edit = null;
+  S.dirty = false;
+  S.job = null;
+  S.jobId = null;
+  S.saveError = null;
+  S.confirmDiscard = false;
+  S.ctx.toast("미리보기를 닫았습니다. 저장하지 않았습니다", "info");
+  renderNew();
+  focusStatus();
+}
+
+// ---- page contract ------------------------------------------------------------
+
+export async function mount(el, params, ctx) {
+  stopPolling();
+  S = freshState(el, ctx, ctx.category, params || {});
+  await load();
+}
+
+// A draft (or an unsaved preview) belongs to one category: leave for the list of the new category.
+export function onCategory(category) {
+  if (!S || S.category === category) return;
+  stopPolling();
+  if (S.mode === "list") {
+    S = freshState(S.el, S.ctx, category, { mode: "list" });
+    load();
+    return;
+  }
+  location.hash = "#/draft";      // hashchange remounts the list page
+}
+
+export function unmount() {
+  stopPolling();
+  S = null;
+}

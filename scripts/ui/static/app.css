@@ -468,3 +468,32 @@ code { background: var(--grid); padding: 1px 6px; border-radius: 4px; }
 .star-btn { min-width: 36px; padding: 0 var(--sp-2); }
 .star-btn[aria-pressed="true"] { color: var(--s4); }
 .list-alert:empty { display: none; }
+
+/* 기획안 */
+.dr-list { list-style: none; margin: var(--sp-4) 0 0; padding: 0; }
+.dr-row h2 { overflow-wrap: anywhere; }
+.dr-row .card-head { margin-bottom: var(--sp-2); }
+.dr-row .sec-band { margin-top: var(--sp-2); }
+.badge.conti-yes { color: var(--ok); border-color: var(--ok); }
+.dr-sec-list { margin: var(--sp-3) 0 0; }
+.dr-summary { font-weight: 600; margin: var(--sp-3) 0; }
+.dr-compare { margin: var(--sp-4) 0; }
+.preview-table tr.gap-big td, .preview-table tr.gap-big th { background: color-mix(in srgb, var(--s4) 18%, transparent); font-weight: 600; }
+.gap-flag { margin-left: var(--sp-2); color: var(--ink); border-color: var(--s4); }
+.dr-sec { margin: 0 0 var(--sp-4); }
+.dr-sec-title { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; font-size: 16px; margin: 0 0 var(--sp-3); }
+.dr-sec textarea, #draft-prep, .motif-run input[type="number"] { font: inherit; color: var(--ink); background: var(--page); border: 1px solid var(--axis);
+  border-radius: var(--radius-sm); padding: var(--sp-2) var(--sp-3); width: 100%; line-height: 1.5; resize: vertical; }
+#draft-edit-title, #draft-source, #draft-topic { font: inherit; color: var(--ink); background: var(--page); border: 1px solid var(--axis);
+  border-radius: var(--radius-sm); padding: var(--sp-2) var(--sp-3); width: 100%; min-height: 40px; }
+.motif-run input[type="number"] { min-height: 40px; max-width: 160px; resize: none; }
+.dr-shots { min-width: 560px; }
+.dr-shots input, .dr-shots select { font: inherit; font-size: 13px; color: var(--ink); background: var(--page); border: 1px solid var(--axis);
+  border-radius: var(--radius-sm); padding: 4px var(--sp-2); min-height: 32px; width: 100%; }
+.dr-shots .dr-sec-input { width: 80px; }
+.dr-shots td:nth-child(1) { min-width: 130px; }
+.dr-shots td:nth-child(2) { min-width: 110px; }
+.dr-shots td.dr-action { min-width: 200px; width: 100%; }
+.dr-sec .warn-text:empty { display: none; }
+.dr-sec .warn-text { margin: var(--sp-2) 0 0; }
+.dr-shots td:nth-child(5) { min-width: 0; }

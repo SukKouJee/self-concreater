@@ -32,7 +32,7 @@ const MENU = [
     group: "만들기",
     items: [
       { name: "모티브", route: "#/motif" },
-      { name: "기획안", soon: "draft", command: "/yt-coach:yt-draft" },
+      { name: "기획안", route: "#/draft" },
       { name: "콘티", route: "#/conti" },
     ],
   },
@@ -141,6 +141,7 @@ function markActive() {
     const href = a.dataset.href;
     const active = hash === href
       || (href === "#/conti" && hash.startsWith("#/conti/"))
+      || (href === "#/draft" && hash.startsWith("#/draft/"))
       || (href === "#/refs" && hash.startsWith("#/refs/"));
     if (active) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
@@ -251,6 +252,16 @@ function parseHash() {
     case "add": return { page: "add", params: {} };
     case "typify": return { page: "typify", params: {} };
     case "motif": return { page: "motif", params: {} };
+    case "draft": {
+      // #/draft | #/draft/view/<encoded path> | #/draft/new[/<encoded source id>]; anything else is the list.
+      const [sub, ...more] = tail.split("/");
+      const arg = more.join("/");
+      try {
+        if (sub === "view" && arg) return { page: "draft", params: { mode: "view", path: decodeURIComponent(arg) } };
+        if (sub === "new") return { page: "draft", params: { mode: "new", source: arg ? decodeURIComponent(arg) : null } };
+      } catch { /* undecodable: fall back to the list */ }
+      return { page: "draft", params: { mode: "list" } };
+    }
     case "conti": {
       let path = null;
       if (tail) { try { path = decodeURIComponent(tail); } catch { path = null; } }

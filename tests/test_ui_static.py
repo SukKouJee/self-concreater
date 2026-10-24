@@ -4,8 +4,8 @@ from scripts.ui.server import STATIC_DIR
 from tests.test_ui_server import client, no_browser  # noqa: F401  (fixture 재사용)
 
 MENU_NAMES = ["홈", "레퍼런스 추가", "레퍼런스 목록", "유형화", "리포트", "모티브", "기획안", "콘티", "진단", "미션"]
-COMMANDS = ["/yt-coach:yt-review",
-            "/yt-coach:yt-draft", "/yt-coach:yt-diagnose", "/yt-coach:yt-mission"]
+# yt-draft is no longer a terminal-only item: the draft screen is a live route.
+COMMANDS = ["/yt-coach:yt-review", "/yt-coach:yt-diagnose", "/yt-coach:yt-mission"]
 
 
 def test_index_loads_modules(client):
@@ -287,10 +287,10 @@ def test_motif_page_contract_and_safety():
     js = (STATIC_DIR / "pages" / "motif.js").read_text(encoding="utf-8")
     for token in ["export async function mount", "export function unmount", "export function onCategory",
                   "isCurrent()", "ctx.api(", "/api/motif", "/api/motif/run", "/api/motif/save", "/api/motif/star",
-                  "kind=motif", "새 카드 뽑기", "선택한 카드 저장", "저장하면서 ★", "기획안 명령 복사",
-                  "/yt-coach:yt-draft", "yt-inspire", "#/typify", "#/add", "#/refs/",
+                  "kind=motif", "새 카드 뽑기", "선택한 카드 저장", "저장하면서 ★", "기획안 만들기",
+                  "yt-inspire", "#/typify", "#/add", "#/refs/",
                   "프로필이 없어 카드가 일반적으로 나옵니다", "유형화를 먼저 하면 흐름·조합 카드가 나옵니다",
-                  "먼저 레퍼런스를 넣어 주세요", "즐겨찾기만", "res.warning", "job_id: mine.jobId", '"<주제>"']:
+                  "먼저 레퍼런스를 넣어 주세요", "즐겨찾기만", "res.warning", "job_id: mine.jobId"]:
         assert token in js, token
     for bad in ["innerHTML", "insertAdjacentHTML", "outerHTML"]:
         assert bad not in js, bad
@@ -303,3 +303,39 @@ def test_motif_page_served(client):
     assert status == 200
     assert "javascript" in headers["Content-Type"]
     assert "/api/motif" in raw.decode("utf-8")
+
+
+def test_draft_menu_is_live_route():
+    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    home = (STATIC_DIR / "pages" / "home.js").read_text(encoding="utf-8")
+    assert 'route: "#/draft"' in app
+    assert 'soon: "draft"' not in app
+    assert 'case "draft"' in app
+    assert '"#/draft"' in home
+    assert "#/draft/view/" in home
+
+
+def test_draft_page_contract_and_safety():
+    js = (STATIC_DIR / "pages" / "draft.js").read_text(encoding="utf-8")
+    for token in ["export async function mount", "export function unmount", "export function onCategory",
+                  "isCurrent()", "ctx.api(", "/api/draft/sources", "/api/draft/list", "/api/draft/run",
+                  "/api/draft/save", "kind=draft", "job_id", "기획안 만들기", "샷 추가", "샷 길이 합",
+                  "콘티 보기", "콘티 만들기", "#/conti/", "#/motif", "#/typify", "익스트림 클로즈업"]:
+        assert token in js, token
+    for bad in ["innerHTML", "insertAdjacentHTML", "outerHTML"]:
+        assert bad not in js, bad
+    for bad in ["confirm(", "alert(", "prompt("]:
+        assert bad not in js.replace("inline-confirm", ""), bad
+    assert "http://" not in js and "https://" not in js
+
+
+def test_motif_links_to_draft():
+    js = (STATIC_DIR / "pages" / "motif.js").read_text(encoding="utf-8")
+    assert "#/draft/new/" in js and "기획안 명령 복사" not in js
+
+
+def test_draft_page_served(client):
+    status, headers, raw = client.call("GET", "/static/pages/draft.js")
+    assert status == 200
+    assert "javascript" in headers["Content-Type"]
+    assert "/api/draft" in raw.decode("utf-8")
