@@ -1181,6 +1181,7 @@ function paintTitleCard(card, lint) {
   card.score.textContent = `점수 ${num(lint.score)}`;
   fill(card.cuts, ...cutBadges(lint));
   fill(card.issues, issueList(lint.issues));
+  if (lint.evidence && card.evidence) card.evidence.textContent = String(lint.evidence);   // 고친 제목의 레퍼런스 근거
 }
 
 function titleCards(pl) {
@@ -1196,11 +1197,11 @@ function titleCards(pl) {
     const score = h("span", { class: "badge pol-score" });
     const cuts = h("span", {});
     const issues = h("div", {});
+    const evidence = h("p", { class: "muted small" }, cand.evidence ? String(cand.evidence) : "");
     const root = h("div", { class: "pol-cand" },
       h("label", { class: "pol-pick" }, radio, h("span", {}, `${rank}위`), score, cuts),
-      field, issues,
-      cand.evidence ? h("p", { class: "muted small" }, String(cand.evidence)) : null);
-    const card = { root, field, radio, score, cuts, issues };
+      field, issues, evidence);
+    const card = { root, field, radio, score, cuts, issues, evidence };
     paintTitleCard(card, cand.lint || {});
     return card;
   });

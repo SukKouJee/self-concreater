@@ -299,7 +299,8 @@ def relint(draft: str | Path, hook_script: Any = None, title: Any = None, thumb_
         cps = conti.speech_rate(d["fm"].get("category"))["cps"]
         out["hook"] = score_hook("\n".join(line for line in lines if line.strip()), hook_sec, cps)
     if clean_title is not None:
-        out["title"] = lint_title(clean_title, words)
+        out["title"] = {**lint_title(clean_title, words),
+                        "evidence": evidence_title(clean_title, ref_stats(d["fm"].get("category")))}
     if words is not None:
         out["thumbnail"] = lint_thumbnail(words, clean_title or "")
     return out

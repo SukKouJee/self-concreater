@@ -542,6 +542,10 @@ def test_relint_scores_edits_without_claude(draft_md, home):
     assert out["title"]["overlap"] if "overlap" in out["title"] else "라면" in " ".join(out["title"]["issues"])
     assert out["thumbnail"]["overlap"] == ["라면"]
     assert set(polish.relint(rel, title="제목 3개")) == {"title"}
+    # 고친 제목의 레퍼런스 근거도 다시 계산한다(패턴이 바뀌면 근거 문장도 바뀐다)
+    stats = polish.ref_stats(conti.refstore.read_md(draft_md)[0].get("category"))
+    for t in ("라면 5봉지 먹방!", "라면 먹방"):
+        assert polish.relint(rel, title=t)["title"]["evidence"] == polish.evidence_title(t, stats)
     assert set(polish.relint(rel, thumb_words=["가"])) == {"thumbnail"}
     assert set(polish.relint(rel, hook_script="")) == {"hook"}
 
