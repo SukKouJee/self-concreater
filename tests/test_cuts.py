@@ -192,7 +192,48 @@ def test_read_scene_frames_past_the_end_leaves_frames_out(sample_video):
     assert got[0][1] is not None and got[1][1] is None
 
 
+class FlakyGrab:
+    """grab()이 정해진 호출에서 한 번만 False를 내는 VideoCapture (깨진 패킷 하나)."""
+
+    def __init__(self, path, fail_at):
+        self._cap = cv2.VideoCapture(str(path))
+        self._calls = 0
+        self._fail_at = fail_at
+
+    def grab(self):
+        self._calls += 1
+        if self._calls == self._fail_at:
+            return False
+        return self._cap.grab()
+
+    def __getattr__(self, name):
+        return getattr(self._cap, name)
+
+
+def test_read_scene_frames_keeps_going_after_one_failed_grab(sample_video):
+    # 장면 감지(scenedetect)처럼 다시 시도해서, 깨진 프레임 하나 뒤 장면도 읽는다
+    cap = FlakyGrab(sample_video, fail_at=10)
+    try:
+        got = list(cuts.read_scene_frames(cap, [([(2, 5)], None), ([(70, 73)], 150)]))
+    finally:
+        cap.release()
+    assert [sorted(grays) for grays, _ in got] == [[2, 5], [70, 73]]
+    assert got[1][1] is not None
+
+
+def test_read_scene_frames_skips_negative_targets(sample_video):
+    # 프레임 수를 모르는 영상의 대체 구간 [(0, -1)]: 대표 프레임 번호가 -1이 되어도 읽기 전 retrieve를 하지 않는다
+    cap = cv2.VideoCapture(str(sample_video))
+    try:
+        got = list(cuts.read_scene_frames(cap, [([], -1)]))
+    finally:
+        cap.release()
+    assert got == [({}, None)]
+
+
 def test_analyze_video_reads_frames_in_one_pass_without_seeking(sample_video, tmp_path, monkeypatch):
+    detected = cuts.detect_scenes(sample_video)   # 장면 감지(scenedetect) 내부 seek은 세지 않는다
+    monkeypatch.setattr(cuts, "detect_scenes", lambda path, progress=None: detected)
     seeks = []
     real = cv2.VideoCapture
 

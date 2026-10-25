@@ -122,7 +122,10 @@ def expected(step: str, *, video_sec: float | None, engine: str | None = None) -
 
     samples: list[float] = []
     for item in _load().get(_key(step, engine), []):
-        if not isinstance(item, dict) or item.get("method", 1) != METHOD.get(step, 1):
+        if not isinstance(item, dict):
+            continue
+        method = item.get("method", 1)
+        if isinstance(method, bool) or method != METHOD.get(step, 1):
             continue
         elapsed = _num(item.get("elapsed_sec"))
         if elapsed is None:

@@ -15,8 +15,9 @@ from typing import Any, Protocol
 from scripts import timings
 
 MIN_INTERVAL = 0.5
-# 컷 가중치: 2026-10-25 이 PC 실측(1208초 영상·508장면, 컷 320초 = 받기 약 5초 + 장면 감지 약 92초
-# + 카메라 약 225초, 장면당 약 0.44초)으로 정한 기본값. 구간별 기록으로 고치는 것은 나중 일이다.
+# 컷 가중치: 2026-10-25 이 PC 실측(카메라 판정을 한 번 순차 읽기로 바꾼 뒤, 받기/장면 감지/카메라:
+# 1208초·508장면 137초 = 11/89/38초, 1113초·142장면 107초 = 5/84/17초)으로 정한 기본값.
+# 구간별 기록으로 고치는 것은 나중 일이다.
 # 마지막 가중 구간(camera)은 progress-utils.js의 LAST_PHASES와 맞춘다.
 PHASE_WEIGHTS: dict[str, dict[str, float]] = {
     "cuts": {"wait": 0.0, "download": 0.06, "scenes": 0.70, "camera": 0.24},

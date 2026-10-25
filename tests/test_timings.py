@@ -60,6 +60,15 @@ def test_cuts_records_carry_method_and_old_method_rows_are_ignored():
     assert timings.expected("cuts", video_sec=1200) == pytest.approx(180)
 
 
+@pytest.mark.parametrize("method", ["2", True, None, 3])
+def test_cuts_rows_with_other_method_values_are_ignored(method):
+    path = workspace_dir("timings.json")
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"cuts": [{"elapsed_sec": 600, "video_sec": 600, "method": method}] * 3}),
+                    encoding="utf-8")
+    assert timings.expected("cuts", video_sec=600) == pytest.approx(default_cuts(600))
+
+
 def test_steps_without_method_keep_old_rows():
     path = workspace_dir("timings.json")
     path.parent.mkdir(parents=True)

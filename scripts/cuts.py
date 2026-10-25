@@ -49,6 +49,7 @@ PAN_RATIO = 0.6           # 전체 움직임 중 한 방향 평행이동 비중
 ZOOM_RATIO = 0.5          # 전체 움직임 중 중심에서 퍼지거나 모이는 비중
 SCENE_REPORTS = 500       # 장면 감지 중 진행 보고 횟수(전체 프레임을 이만큼 나눠 알린다)
 UNKNOWN_TOTAL_EVERY = 30  # 전체 프레임 수를 모를 때 이 프레임마다 알린다
+DECODE_RETRIES = 5        # 프레임 읽기 실패 시 다시 시도하는 횟수 (scenedetect max_decode_attempts 기본값과 같다)
 
 if TYPE_CHECKING:
     from scenedetect import ContentDetector, FrameTimecode
@@ -206,18 +207,19 @@ def read_scene_frames(
     plans는 장면마다 (flow_pairs, 대표 프레임 번호 또는 None)이고 장면 구간은 겹치지 않고 순서대로다.
     번호로 찾아가면(CAP_PROP_POS_FRAMES) 매번 앞 키프레임부터 다시 풀어서 느리다(8분 영상 장면 65개:
     25초). 그래서 처음부터 한 번만 읽고(grab) 필요한 번호에서만 꺼낸다(retrieve, 같은 영상 6.6초).
-    한 장면 프레임만 들고 있다가 내보낸다. 영상이 컨테이너 프레임 수보다 일찍 끝나면 못 읽은 프레임은 빠진다.
+    한 장면 프레임만 들고 있다가 내보낸다. 깨진 프레임은 장면 감지처럼 DECODE_RETRIES번 다시 시도하고,
+    그래도 안 되면(영상이 컨테이너 프레임 수보다 일찍 끝남) 못 읽은 프레임은 빠진다.
     """
     index = -1  # 마지막으로 읽은 프레임 번호
     ended = False
     for pairs, picture_at in plans:
         wanted = {n for pair in pairs for n in pair}
-        targets = sorted(wanted | ({picture_at} if picture_at is not None else set()))
+        targets = sorted(n for n in wanted | ({picture_at} if picture_at is not None else set()) if n >= 0)
         grays: dict[int, np.ndarray] = {}
         picture = None
         for target in targets:
             while not ended and index < target:
-                if not cap.grab():
+                if not any(cap.grab() for _ in range(1 + DECODE_RETRIES)):
                     ended = True
                     break
                 index += 1
@@ -310,7 +312,7 @@ def analyze_video(path: Path, frames_dir: Path, progress: Progress | None = None
                  for i, (start, end) in enumerate(bounds)]
         scenes = []
         frames = read_scene_frames(cap, plans)
-        for i, ((start, end), (pairs, mid), (grays, picture)) in enumerate(zip(bounds, plans, frames)):
+        for i, ((start, end), (pairs, mid), (grays, picture)) in enumerate(zip(bounds, plans, frames, strict=True)):
             frame_name = None
             if picture is not None and mid is not None:
                 frame_name = f"scene{i + 1:03d}_{mid / fps:.1f}s.jpg"
