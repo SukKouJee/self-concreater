@@ -679,7 +679,7 @@ code { background: var(--grid); padding: 1px 6px; border-radius: 4px; }
 .help-panel[hidden] { display: none; }
 .help-panel { width: 360px; flex-shrink: 0; position: sticky; top: var(--topbar-h); align-self: flex-start;
   height: calc(100vh - var(--topbar-h)); display: flex; flex-direction: column; background: var(--surface);
-  border-left: 1px solid var(--grid); min-width: 0; }
+  border-left: 1px solid var(--grid); min-width: 0; margin-left: auto; }
 .help-head { display: flex; align-items: baseline; gap: var(--sp-2); padding: var(--sp-3) var(--sp-4) var(--sp-2); }
 .help-head h2 { font-size: 16px; }
 .help-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

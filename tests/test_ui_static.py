@@ -639,3 +639,19 @@ def test_help_panel_restores_question_on_send_failure():
     assert "job_running" in panel
     assert "앞 질문을 정리하는 중입니다" in panel
     assert "input.value = q" in panel
+
+
+def test_help_panel_resets_chat_on_category_change():
+    panel = (STATIC_DIR / "help-panel.js").read_text(encoding="utf-8")
+    on_category = panel[panel.index("function onCategory"):panel.index("function toggle")]
+    assert "resetChat()" in on_category
+    assert "return { setPage, onCategory, toggle }" in panel
+    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    set_category = app[app.index("setCategory(name) {"):app.index("refreshCategories,\n};")]
+    assert "helpPanel.onCategory(ctx.category)" in set_category
+
+
+def test_help_panel_sits_at_right_edge():
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    rule = re.search(r"\.help-panel \{([^}]*)\}", css).group(1)
+    assert "margin-left: auto" in rule

@@ -79,6 +79,7 @@ const ctx = {
     ctx.category = name || null;
     if (name) storeCategory(name);
     updateTopbar();
+    if (helpPanel) helpPanel.onCategory(ctx.category);
     if (state.currentPage === "home") {
       route();
     } else if (state.current && typeof state.current.onCategory === "function") {

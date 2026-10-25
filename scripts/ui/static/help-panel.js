@@ -1,7 +1,7 @@
 // Help side panel (every screen): [이 화면] tab = docs/help/<page>.md, [챗봇] tab = Claude answers grounded in the
 // workspace status. Markdown goes through renderMarkdown, everything else is text nodes.
 //
-//   createHelpPanel(root, getCategory) -> { setPage(page), toggle(open?) }
+//   createHelpPanel(root, getCategory) -> { setPage(page), onCategory(name), toggle(open?) }
 //   Expects the topbar button #help-toggle (app.js) and the scrim #help-scrim (index.html).
 //
 // Stale-answer rule: `epoch` is bumped on every page change, cancel and new question. Any async result that was
@@ -35,7 +35,7 @@ export function createHelpPanel(root, getCategory) {
   const isOverlay = () => !!media && media.matches;
 
   const S = {
-    open: false, tab: "screen", page: null, loadedPage: null, screenSeq: 0,
+    open: false, tab: "screen", page: null, category: getCategory() || null, loadedPage: null, screenSeq: 0,
     conv: [], epoch: 0, jobId: null, pending: false, timer: null, pollErrors: 0, lastQuestion: "",
   };
 
@@ -348,6 +348,14 @@ export function createHelpPanel(root, getCategory) {
     ensureScreen();
   }
 
+  // The answer is grounded in the category's situation, so a category switch starts a fresh chat (like setPage).
+  function onCategory(name) {
+    const next = name || null;
+    if (next === S.category) return;
+    S.category = next;
+    resetChat();
+  }
+
   function toggle(open) {
     const next = typeof open === "boolean" ? open : !S.open;
     setOpen(next, { returnFocus: !next && isOverlay() });
@@ -358,5 +366,5 @@ export function createHelpPanel(root, getCategory) {
   S.open = readOpen() && !isOverlay();            // a remembered "open" does not cover the page on a narrow screen
   syncOpenUi();
 
-  return { setPage, toggle };
+  return { setPage, onCategory, toggle };
 }
