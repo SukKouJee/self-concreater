@@ -10,20 +10,26 @@
   화면 위주 분석 안내(SCREEN_HINT)도 같은 경우에만 task에 붙인다.
 - 단계 사이마다 `job.check_cancelled()`: 서버 종료 시 진행 중인 단계(다운로드 정리 try/finally 포함)를
   끝까지 마친 뒤 다음 단계로 가지 않고 멈춘다.
+- 항목마다 `timing`(단계 줄별 진행·예상 시간, `scripts.ui.progress.ItemTiming`)을 게시한다.
+  줄은 fetch·cuts·analyze(+shots), 샷 전용 작업은 shots 하나. 사용자 결정 대기와 차단 방지 대기는
+  걸린 시간에서 뺀다. 진행 표시는 보조 정보라 그 오류로 수집을 멈추지 않는다(`_StepClock`).
 """
 from __future__ import annotations
 
 import json
+import math
 import sys
 import traceback
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from scripts import claude_cli, cuts, fetch, llm, refstore, shots, stt, videomd
-from scripts.common import ScriptError, work_root, workspace_dir
+from scripts.common import Progress, ScriptError, work_root, workspace_dir
 from scripts.ui.jobs import Job, JobCancelled, new_item
+from scripts.ui.progress import ItemTiming
 from scripts.ui.server import Request, route
 
 KIND = "collect"
@@ -48,6 +54,9 @@ MSG_BLOCKED = "차단으로 중단"
 MSG_CLAUDE_STOP = "Claude(LLM 엔진)를 쓸 수 없어 중단"
 MSG_SKIPPED = "건너뜀"
 MSG_NO_FRAMES = "컷 통계가 없어 샷 분류를 건너뜁니다"
+COLLECT_ROWS = ("fetch", "cuts", "analyze")
+SHOTS_ROW = "shots"
+WAIT_PHASE = "wait"   # fetch.wait_turn의 차단 방지 대기: 걸린 시간에 넣지 않는다
 
 
 def _analyze_rules() -> list[Path]:
@@ -124,6 +133,133 @@ def _classify_shots(video_id: str, category: str) -> dict:
     return applied
 
 
+# ---- 단계별 진행 시간 ----------------------------------------------------------------
+
+def _timing_engine() -> str | None:
+    """분석·샷 기록을 나눌 엔진 이름. 설정이 깨졌으면 None(기록만 엔진 없이, 수집은 계속)."""
+    try:
+        return str(llm.config()["engine"])
+    except ScriptError:
+        return None
+
+
+def _length(value: Any) -> float | None:
+    """유한하고 0보다 큰 숫자만 영상 길이(초)로 쓴다."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) and number > 0 else None
+
+
+def _raw_length(video_id: str) -> float | None:
+    """캐시된 raw의 메타 길이. raw가 없거나 읽을 수 없으면 None(그 경우 수집이 다시 받는다)."""
+    try:
+        raw = fetch.load_raw(video_id)
+    except (ScriptError, OSError, ValueError):
+        return None
+    meta = raw.get("meta") if isinstance(raw, dict) else None
+    return _length(meta.get("duration")) if isinstance(meta, dict) else None
+
+
+def _link_length(link: str) -> float | None:
+    try:
+        video_id = fetch.parse_video_id(link)
+    except ScriptError:
+        return None   # 잘못된 링크는 fetch가 알린다
+    return _raw_length(video_id)
+
+
+class _StepClock:
+    """한 항목의 ItemTiming을 감싼다. 진행 표시는 보조 정보라 여기서 난 오류는 stderr에 한 번 남기고 계속한다.
+
+    - 지금 달리는 줄을 직접 기억해, 실패·취소 때 `fail_running()`으로 그 줄을 실패로 둔다.
+    - 영상 길이는 처음 알게 된 값만 쓴다(`offer_video_sec`): raw 캐시 → no_transcript 정보 → 메타 → 컷 통계 순으로 부른다.
+    - `progress()`는 수집 함수에 넘길 콜백이다. 차단 방지 대기("wait") 동안은 줄을 멈춰 걸린 시간에서 빼고,
+      대기 글은 그대로 보여 준다.
+    """
+
+    def __init__(self, job: Job, index: int, rows: list[str], engine: str | None) -> None:
+        self._timing: ItemTiming | None = None
+        self._running: str | None = None
+        self._video_sec: float | None = None
+        self._warned = False
+        try:
+            self._timing = ItemTiming(job, index, rows, engine=engine)
+        except Exception:  # noqa: BLE001 - 진행 표시가 고장 나도 수집은 계속한다
+            self._warn()
+
+    def offer_video_sec(self, value: Any) -> None:
+        sec = _length(value)
+        if self._video_sec is None and sec is not None:
+            self._video_sec = sec
+            self._call(lambda t: t.set_video_sec(sec))
+
+    def start(self, row: str, sub: str | None = None) -> None:
+        self._running = row
+        self._call(lambda t: t.start(row, sub))
+
+    def done(self, row: str, *, cached: bool = False, **record_kw: Any) -> None:
+        if self._running == row:
+            self._running = None
+        self._call(lambda t: t.done(row, cached=cached, **record_kw))
+
+    def fail(self, row: str) -> None:
+        if self._running == row:
+            self._running = None
+        self._call(lambda t: t.fail(row))
+
+    def fail_running(self) -> None:
+        if self._running is not None:
+            self.fail(self._running)
+
+    def pause(self) -> None:
+        self._call(lambda t: t.pause())
+
+    def resume(self) -> None:
+        self._call(lambda t: t.resume())
+
+    @contextmanager
+    def progress(self) -> Iterator[Progress]:
+        """with 블록 안에서 쓸 진행 콜백. 블록이 끝날 때 대기 중이었으면 다시 시계를 움직인다."""
+        waiting = False
+
+        def report(phase: str, fraction: float | None, text: str) -> None:
+            nonlocal waiting
+            if phase == WAIT_PHASE and not waiting:
+                waiting = True
+                self.pause()
+            elif phase != WAIT_PHASE and waiting:
+                waiting = False
+                self.resume()
+            self._call(lambda t: t.phase(phase, fraction, text))
+
+        try:
+            yield report
+        finally:
+            if waiting:
+                self.resume()
+
+    def _call(self, action: Callable[[ItemTiming], None]) -> None:
+        if self._timing is None:
+            return
+        try:
+            action(self._timing)
+        except Exception:  # noqa: BLE001 - 진행 표시가 고장 나도 수집은 계속한다
+            self._warn()
+
+    def _warn(self) -> None:
+        if not self._warned:
+            self._warned = True
+            traceback.print_exc(file=sys.stderr)
+
+
+@dataclass(frozen=True)
+class _AnalyzeRun:
+    analysis: dict
+    frames: int       # 첨부한 장면 프레임 수
+    text_chars: int   # 대본(자막) 글자 수
+
+
 class Collector:
     """링크 목록을 하나씩 처리하는 작업 함수(JobManager.start의 target)."""
 
@@ -131,8 +267,10 @@ class Collector:
         self.opts = opts
         self.save_all = False
         self.stage_text: str | None = None
+        self.engine: str | None = None
 
     def __call__(self, job: Job) -> None:
+        self.engine = _timing_engine()
         for index in range(len(job.items)):
             job.check_cancelled()
             try:
@@ -153,18 +291,33 @@ class Collector:
     # ---- 영상 하나 -------------------------------------------------------------------
 
     def _one(self, job: Job, index: int) -> None:
+        rows = [*COLLECT_ROWS, *([SHOTS_ROW] if self.opts.shots else [])]
+        clock = _StepClock(job, index, rows, self.engine)
+        try:
+            self._collect(job, index, clock)
+        except BaseException:
+            clock.fail_running()   # 실패·취소: 달리던 줄은 기록하지 않고 실패로 둔다
+            raise
+
+    def _collect(self, job: Job, index: int, clock: _StepClock) -> None:
         opts = self.opts
         notes: list[str] = []
         job.update(index, state="running", step="fetch")
         link = job.item(index)["url"]
         screen = False
+        clock.offer_video_sec(_link_length(link))
+        clock.start("fetch")
         try:
-            info = fetch.fetch(link, opts.category, opts.role, force=opts.refetch, reanalyze=opts.force)
+            with clock.progress() as report:
+                info = fetch.fetch(link, opts.category, opts.role, force=opts.refetch, reanalyze=opts.force,
+                                   progress=report)
         except ScriptError as e:
             if e.code != "no_transcript":
                 raise
+            clock.offer_video_sec(e.details.get("duration_sec"))
             video_id = self._identify(job, index, e.details.get("id"), e.details.get("title"))
-            choice = self._wait(job, index, ask="no_transcript", message=e.message)["action"]
+            choice = self._wait(job, index, clock, ask="no_transcript", message=e.message)["action"]
+            clock.done("fetch", cached=e.details.get("status") == "cached")
             if choice == "skip":
                 job.update(index, state="skipped", step="done", ask=None, message=MSG_SKIPPED)
                 return
@@ -172,28 +325,36 @@ class Collector:
                 raise ScriptError("bad_action", f"알 수 없는 결정입니다: {choice!r}")
             job.update(index, ask=None, message=None)
             if choice == "stt":
-                screen = not self._transcribe(job, index, video_id, notes)
+                screen = not self._transcribe(job, index, video_id, notes, clock)
             else:
                 screen = True
         else:
+            clock.offer_video_sec(info.get("duration_sec"))
             video_id = self._identify(job, index, info.get("id"), info.get("title"))
+            clock.done("fetch", cached=info.get("status") in {"cached", "exists"})
             if info.get("status") == "exists":
                 job.update(index, state="skipped", step="done", message=MSG_EXISTS)
                 return
 
         job.check_cancelled()
         job.update(index, step="cuts")
+        clock.start("cuts")
         try:
-            stats = cuts.cut_stats(video_id, force=opts.refetch)
-            job.update(index, frames=list(stats.get("frames") or []))
+            with clock.progress() as report:
+                stats = cuts.cut_stats(video_id, force=opts.refetch, progress=report)
         except ScriptError as e:
+            clock.fail("cuts")
             if e.code in STOP_CODES:
                 raise
             notes.append(f"컷 통계 없이 계속합니다: {e.message}")
+        else:
+            clock.offer_video_sec(stats.get("duration_sec"))
+            clock.done("cuts", cached=stats.get("status") == "cached")
+            job.update(index, frames=list(stats.get("frames") or []))
         job.update(index, message=" / ".join(notes) or None)
 
         job.check_cancelled()
-        self._analyze_and_save(job, index, video_id, screen)
+        self._analyze_and_save(job, index, video_id, screen, clock)
 
     def _identify(self, job: Job, index: int, video_id: Any, title: Any) -> str:
         """링크로 시작한 항목에 영상 id·제목을 붙인다. 다른 항목이 같은 id를 쓰면 항목 id는 링크로 둔다."""
@@ -206,23 +367,39 @@ class Collector:
         job.update(index, **fields)
         return str(video_id)
 
-    def _wait(self, job: Job, index: int, **fields: Any) -> dict:
+    def _wait(self, job: Job, index: int, clock: _StepClock, **fields: Any) -> dict:
+        """사용자 결정을 기다린다. 기다리는 동안은 달리던 줄의 시계를 멈춘다(걸린 시간에 넣지 않는다)."""
         job.update(index, state="awaiting", **fields)
-        return job.wait_decision(job.item(index)["id"])
-
-    def _transcribe(self, job: Job, index: int, video_id: str, notes: list[str]) -> bool:
-        """STT로 자막을 만든다. stt_unavailable이면 이유를 남기고 False(화면 분석으로)."""
-        job.update(index, message="음성 인식 중")
+        clock.pause()
         try:
-            stt.transcribe(video_id)
+            return job.wait_decision(job.item(index)["id"])
+        finally:
+            clock.resume()
+
+    def _transcribe(self, job: Job, index: int, video_id: str, notes: list[str], clock: _StepClock) -> bool:
+        """STT로 자막을 만든다(자막 줄의 새 회차, 기록 키 stt). stt_unavailable이면 이유를 남기고 False(화면 분석으로)."""
+        job.update(index, message="음성 인식 중")
+        clock.start("fetch", sub="stt")
+        try:
+            with clock.progress() as report:
+                result = stt.transcribe(video_id, progress=report)
         except ScriptError as e:
+            clock.fail("fetch")
             if e.code != "stt_unavailable":
                 raise
             notes.append(f"{e.message} — 화면만 보고 분석합니다")
             return False
+        clock.done("fetch", cached=result.get("status") == "exists")
         return True
 
-    def _analyze(self, video_id: str, screen: bool, feedback: str | None) -> dict:
+    def _timed_analyze(self, clock: _StepClock, video_id: str, screen: bool, feedback: str | None) -> dict:
+        """분석 줄을 새 회차로 시작해 분석하고 첨부 프레임 수·대본 글자 수와 함께 기록한다."""
+        clock.start("analyze")
+        run = self._analyze(video_id, screen, feedback)
+        clock.done("analyze", frames=run.frames, text_chars=run.text_chars)
+        return run.analysis
+
+    def _analyze(self, video_id: str, screen: bool, feedback: str | None) -> _AnalyzeRun:
         ctx = videomd.context(video_id, self.opts.category)
         # duration·cut_times는 videomd.write와 같은 방식으로 구한다
         raw = fetch.load_raw(video_id)
@@ -230,28 +407,26 @@ class Collector:
         duration = float(raw["meta"].get("duration") or (cut_data or {}).get("duration_sec") or 0)
         cut_times = cut_data["cuts"] if cut_data else []
         need_frames = bool(ctx.get("sparse") or screen)
-        files = [
-            *(_analysis_frames(cut_data) if need_frames else []),
-            *[work_root() / e for e in ctx.get("examples") or []],
-        ]
+        frames = _analysis_frames(cut_data) if need_frames else []
+        files = [*frames, *[work_root() / e for e in ctx.get("examples") or []]]
         task = ANALYZE_TASK + (SCREEN_HINT if need_frames else "")
         if feedback:
             task += f"\n사용자 의견: {feedback}"
         _, analysis = llm.ask_validated(
             _analyze_rules(), ctx, task, lambda d: videomd.validate(d, duration, cut_times), files=files,
         )
-        return analysis
+        return _AnalyzeRun(analysis, frames=len(frames), text_chars=_transcript_chars(raw))
 
-    def _analyze_and_save(self, job: Job, index: int, video_id: str, screen: bool) -> None:
+    def _analyze_and_save(self, job: Job, index: int, video_id: str, screen: bool, clock: _StepClock) -> None:
         job.update(index, step="analyze")
-        preview = self._analyze(video_id, screen, None)
+        preview = self._timed_analyze(clock, video_id, screen, None)
         note = job.item(index)["message"]
         while True:
             if self.save_all:
                 decision: dict = {"action": "save"}
                 job.update(index, preview=preview)
             else:
-                decision = self._wait(job, index, step="confirm", preview=preview, message=note)
+                decision = self._wait(job, index, clock, step="confirm", preview=preview, message=note)
             action = decision["action"]
             if action == "skip":
                 job.update(index, state="skipped", step="done", message=MSG_SKIPPED)
@@ -260,7 +435,7 @@ class Collector:
                 job.check_cancelled()
                 job.update(index, state="running", step="analyze")
                 feedback = str(decision.get("feedback") or "").strip() or None
-                preview = self._analyze(video_id, screen, feedback)
+                preview = self._timed_analyze(clock, video_id, screen, feedback)
                 continue
             if action not in SAVE_ACTIONS:
                 # 저장 버튼을 누르지 않은 결정으로는 절대 쓰지 않는다
@@ -288,7 +463,7 @@ class Collector:
         if self.opts.shots:
             job.check_cancelled()
             job.update(index, step="shots")
-            self._shots_after_save(job, index, video_id)
+            self._shots_after_save(job, index, video_id, clock)
         job.update(index, state="saved", step="done")
 
     def _write(self, video_id: str, analysis: dict) -> dict:
@@ -301,24 +476,40 @@ class Collector:
         finally:
             path.unlink(missing_ok=True)
 
-    def _shots_after_save(self, job: Job, index: int, video_id: str) -> None:
-        """md는 이미 저장됐으므로 샷 분류 실패는 항목을 실패로 바꾸지 않고 이유만 남긴다."""
+    def _shots_after_save(self, job: Job, index: int, video_id: str, clock: _StepClock) -> None:
+        """md는 이미 저장됐으므로 샷 분류 실패는 항목을 실패로 바꾸지 않고 이유만 남긴다(샷 줄만 실패)."""
+        clock.start(SHOTS_ROW)
         try:
             _classify_shots(video_id, self.opts.category)
         except ScriptError as e:
+            clock.fail(SHOTS_ROW)
             message = MSG_NO_FRAMES if e.code == "no_frames" else f"샷 분류 실패: {e.message}"
             prior = job.item(index)["message"]
             job.update(index, message=f"{prior} / {message}" if prior else message)
+            return
+        clock.done(SHOTS_ROW)
+
+
+def _transcript_chars(raw: Any) -> int:
+    """raw 자막의 글자 수(분석 기록용). 자막이 없거나 모양이 다르면 0."""
+    transcript = raw.get("transcript") if isinstance(raw, dict) else None
+    segments = transcript.get("segments") if isinstance(transcript, dict) else None
+    return sum(len(s["text"]) for s in segments or [] if isinstance(s, dict) and isinstance(s.get("text"), str))
 
 
 def run_shots_only(category: str) -> Any:
     def target(job: Job) -> None:
+        engine = _timing_engine()
         for index, item in enumerate(job.items):
             job.check_cancelled()
             job.update(index, state="running", step="shots")
+            clock = _StepClock(job, index, [SHOTS_ROW], engine)
+            clock.offer_video_sec(_raw_length(item["id"]))
+            clock.start(SHOTS_ROW)
             try:
                 _classify_shots(item["id"], category)
             except ScriptError as e:
+                clock.fail(SHOTS_ROW)
                 if e.code == "no_frames":
                     job.update(index, state="skipped", step="done", message=MSG_NO_FRAMES)
                     continue
@@ -328,6 +519,10 @@ def run_shots_only(category: str) -> Any:
                     job.finish("stopped", _summary(job, None), e.message)
                     return
                 continue
+            except BaseException:
+                clock.fail_running()   # 예상치 못한 오류·취소: 기록하지 않는다
+                raise
+            clock.done(SHOTS_ROW)
             job.update(index, state="saved", step="done")
         job.finish("done", _summary(job, None))
 

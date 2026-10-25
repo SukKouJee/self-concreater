@@ -44,6 +44,11 @@ class Fakes:
         self.cut_calls = []
         self.stt_calls = []
         self.stt_error = None
+        self.cut_status = "analyzed"
+        self.cut_hook = None        # callable(progress): cut_stats 안에서 진행 콜백을 부른다
+        self.progress = {}          # "fetch"/"cuts"/"stt" -> 받은 progress 콜백
+        self.raw_cached = True      # False면 fetch를 부르기 전에는 raw 캐시가 없다
+        self.step_sec = 0.02        # 가짜 단계도 시간이 걸려야 기록된다(걸린 시간 0은 기록하지 않음)
         self.asks = []              # (rules, payload, task, kw)
         self.ask_errors = []        # 차례대로 낼 오류(None이면 정상)
         self.writes = []            # dict(args..., analysis=tmp 내용)
@@ -52,27 +57,38 @@ class Fakes:
         self.pending = []
 
     # fetch / cuts / stt
-    def fetch(self, link, category=None, role="ref", force=False, reanalyze=False):
+    def fetch(self, link, category=None, role="ref", force=False, reanalyze=False, progress=None):
         vid = link[-11:]
+        self.progress["fetch"] = progress
+        time.sleep(self.step_sec)
         self.fetch_calls.append({"vid": vid, "category": category, "role": role,
                                  "force": force, "reanalyze": reanalyze})
         if vid in self.fetch_errors:
             raise self.fetch_errors[vid]
         status = self.fetch_status.get(vid, "fetched")
-        return {"id": vid, "status": status, "title": f"제목 {vid}", "sparse": False}
+        return {"id": vid, "status": status, "title": f"제목 {vid}", "sparse": False, "duration_sec": 60}
 
-    def cut_stats(self, vid, force=False):
+    def cut_stats(self, vid, force=False, progress=None):
         self.cut_calls.append((vid, force))
-        return {"id": vid, "status": "analyzed", "frames": [f"workspace/frames/{vid}/scene001_0.5s.jpg"]}
+        self.progress["cuts"] = progress
+        time.sleep(self.step_sec)
+        if self.cut_hook:
+            self.cut_hook(progress)
+        return {"id": vid, "status": self.cut_status, "duration_sec": 60,
+                "frames": [f"workspace/frames/{vid}/scene001_0.5s.jpg"]}
 
-    def transcribe(self, vid, force=False):
+    def transcribe(self, vid, force=False, progress=None):
         self.stt_calls.append(vid)
+        self.progress["stt"] = progress
+        time.sleep(self.step_sec)
         if self.stt_error:
             raise self.stt_error
         return {"id": vid, "status": "transcribed"}
 
     # videomd
     def load_raw(self, vid):
+        if not self.raw_cached and vid not in [c["vid"] for c in self.fetch_calls]:
+            raise ScriptError("raw_not_found", f"수집 데이터가 없습니다: {vid} (먼저 fetch)")
         return {"id": vid, "meta": {"duration": 60}}
 
     def load_cuts(self, vid):
@@ -92,6 +108,7 @@ class Fakes:
     # claude
     def ask_validated(self, rules, payload, task, validate, **kw):
         self.asks.append((rules, payload, task, kw))
+        time.sleep(self.step_sec)
         if self.ask_errors:
             err = self.ask_errors.pop(0)
             if err is not None:
@@ -351,7 +368,7 @@ def test_add_routes_require_claude_before_job(client, fakes, monkeypatch, path, 
 
 
 def test_cuts_failure_keeps_going(client, fakes, monkeypatch):
-    def broken(vid, force=False):
+    def broken(vid, force=False, progress=None):
         raise ScriptError("download_failed", "영상 파일을 받지 못했습니다.")
     monkeypatch.setattr(cuts, "cut_stats", broken)
     job = start_add(client, [url(A)])
@@ -557,7 +574,7 @@ def test_job_unexpected_error_marks_failed():
 def test_cancel_during_cuts_stops_before_analysis(client, fakes, monkeypatch):
     entered, release = threading.Event(), threading.Event()
 
-    def slow_cuts(vid, force=False):
+    def slow_cuts(vid, force=False, progress=None):
         entered.set()
         assert release.wait(5)
         return {"id": vid, "status": "analyzed", "frames": []}
@@ -651,3 +668,230 @@ def test_analyze_attaches_frames_when_context_is_sparse(client, fakes, monkeypat
     files = fakes.analyze_asks()[0][3]["files"]
     assert [f.name for f in files if f.suffix == ".jpg"] == ["s00.jpg", "s01.jpg", "s02.jpg"]
     assert api_add.SCREEN_HINT in fakes.analyze_asks()[0][2]
+
+
+# ---- 단계별 진행 시간(timing) ---------------------------------------------------------
+
+def records(tmp_path):
+    path = tmp_path / "workspace" / "timings.json"
+    return json.loads(path.read_text("utf-8")) if path.exists() else {}
+
+
+def steps(job, i=0):
+    return job["items"][i]["timing"]["steps"]
+
+
+def engine_key(step):
+    return f"{step}:{llm.config()['engine']}"
+
+
+def test_collect_item_has_timing_rows(client, fakes):
+    job = start_add(client, [url(A)])
+    job = wait_for(client, job["id"], item_state(0, "awaiting"))
+    timing = job["items"][0]["timing"]
+    assert list(timing["steps"]) == ["fetch", "cuts", "analyze"]
+    assert timing["video_sec"] == 60
+    assert [s["state"] for s in timing["steps"].values()] == ["done", "done", "done"]
+    decide(client, job["id"], A, action="save")
+    job = wait_for(client, job["id"], finished)
+    assert [s["state"] for s in steps(job).values()] == ["done", "done", "done"]
+
+
+def test_timing_rows_include_shots_when_selected(client, fakes, tmp_path):
+    job = start_add(client, [url(A)], shots=True)
+    job = wait_for(client, job["id"], item_state(0, "awaiting"))
+    assert list(steps(job)) == ["fetch", "cuts", "analyze", "shots"]
+    assert steps(job)["shots"]["state"] == "pending"
+    decide(client, job["id"], A, action="save")
+    job = wait_for(client, job["id"], finished)
+    assert steps(job)["shots"]["state"] == "done"
+    assert len(records(tmp_path)[engine_key("shots")]) == 1
+
+
+def test_timing_records_written(client, fakes, tmp_path, monkeypatch):
+    monkeypatch.setattr(fetch, "load_raw", lambda vid: {
+        "id": vid, "meta": {"duration": 60}, "transcript": {"segments": [{"text": "안녕 하세요"}, {"text": "네"}]}})
+    job = start_add(client, [url(A)])
+    wait_for(client, job["id"], item_state(0, "awaiting"))
+    decide(client, job["id"], A, action="save")
+    wait_for(client, job["id"], finished)
+    data = records(tmp_path)
+    assert {"fetch", "cuts", engine_key("analyze")} <= set(data)
+    assert data["cuts"][0]["video_sec"] == 60
+    analyze = data[engine_key("analyze")][0]
+    assert analyze["text_chars"] == len("안녕 하세요") + len("네")
+    assert analyze["frames"] == 0            # 자막이 충분하면 장면 프레임은 첨부하지 않는다
+
+
+def test_cached_cuts_not_recorded(client, fakes, tmp_path):
+    fakes.cut_status = "cached"
+    job = start_add(client, [url(A)])
+    job = wait_for(client, job["id"], item_state(0, "awaiting"))
+    cuts_row = steps(job)["cuts"]
+    assert cuts_row["state"] == "done" and cuts_row["expected"] == 0
+    assert "cuts" not in records(tmp_path)
+
+
+def test_cached_fetch_not_recorded(client, fakes, tmp_path):
+    fakes.fetch_status[A] = "cached"
+    job = start_add(client, [url(A)])
+    job = wait_for(client, job["id"], item_state(0, "awaiting"))
+    assert steps(job)["fetch"]["state"] == "done" and steps(job)["fetch"]["expected"] == 0
+    assert "fetch" not in records(tmp_path)
+
+
+def test_reanalyze_restarts_analyze_row(client, fakes, tmp_path):
+    job = start_add(client, [url(A)])
+    job = wait_for(client, job["id"], item_state(0, "awaiting"))
+    first = steps(job)["analyze"]["started_at"]
+    time.sleep(0.4)                                  # 확인 대기
+    decide(client, job["id"], A, action="reanalyze", feedback="")
+    job = wait_for(client, job["id"], lambda j: j["items"][0]["state"] == "awaiting" and len(fakes.asks) == 2)
+    row = steps(job)["analyze"]
+    assert row["state"] == "done"
+    assert row["started_at"] >= first + 0.4
+    assert row["elapsed"] < 0.3                      # 확인 대기 시간은 넣지 않는다
+    entries = records(tmp_path)[engine_key("analyze")]
+    assert len(entries) == 2 and all(e["elapsed_sec"] < 0.3 for e in entries)
+
+
+def test_shots_only_has_single_row(client, fakes, tmp_path):
+    fakes.pending = [A]
+    status, body = client.json("POST", "/api/add/shots-only", {"category": CAT})
+    job = wait_for(client, body["job"]["id"], finished)
+    timing = job["items"][0]["timing"]
+    assert list(timing["steps"]) == ["shots"]
+    assert timing["video_sec"] == 60 and timing["steps"]["shots"]["state"] == "done"
+    assert len(records(tmp_path)[engine_key("shots")]) == 1
+
+
+def test_shots_only_failure_marks_row_failed(client, fakes, tmp_path):
+    fakes.pending = [A]
+    fakes.ask_errors = [ScriptError("claude_failed", "실패")]
+    status, body = client.json("POST", "/api/add/shots-only", {"category": CAT})
+    job = wait_for(client, body["job"]["id"], finished)
+    assert steps(job)["shots"]["state"] == "failed"
+    assert engine_key("shots") not in records(tmp_path)
+
+
+def test_failed_step_not_recorded(client, fakes, tmp_path, monkeypatch):
+    def broken(vid, force=False, progress=None):
+        raise ScriptError("download_failed", "영상 파일을 받지 못했습니다.")
+    monkeypatch.setattr(cuts, "cut_stats", broken)
+    job = start_add(client, [url(A)])
+    job = wait_for(client, job["id"], item_state(0, "awaiting"))
+    assert steps(job)["cuts"]["state"] == "failed"
+    data = records(tmp_path)
+    assert "cuts" not in data and "fetch" in data
+
+
+def test_failed_analysis_marks_row_failed(client, fakes, tmp_path):
+    fakes.ask_errors = [ScriptError("claude_failed", "Claude 응답 시간 초과(600초)")]
+    job = start_add(client, [url(A)])
+    job = wait_for(client, job["id"], finished)
+    assert steps(job)["analyze"]["state"] == "failed"
+    assert engine_key("analyze") not in records(tmp_path)
+
+
+def test_wait_phase_is_shown_but_excluded_from_elapsed(client, fakes, tmp_path):
+    in_wait, release = threading.Event(), threading.Event()
+
+    def hook(progress):
+        progress("wait", None, "차단 방지 대기 1초")
+        in_wait.set()
+        assert release.wait(5)
+        progress("download", 0.5, "영상 받는 중 50%")
+
+    fakes.cut_hook = hook
+    job = start_add(client, [url(A)])
+    assert in_wait.wait(5)
+    row = steps(snap(client, job["id"]))["cuts"]
+    assert row["phase_text"] == "차단 방지 대기 1초" and "paused_at" in row
+    time.sleep(0.4)
+    release.set()
+    job = wait_for(client, job["id"], item_state(0, "awaiting"))
+    assert steps(job)["cuts"]["elapsed"] < 0.3
+    assert records(tmp_path)["cuts"][0]["elapsed_sec"] < 0.3
+
+
+def test_wait_still_paused_when_call_returns_is_resumed(client, fakes, tmp_path):
+    fakes.cut_hook = lambda progress: progress("wait", None, "차단 방지 대기 1초")
+    job = start_add(client, [url(A)])
+    job = wait_for(client, job["id"], item_state(0, "awaiting"))
+    row = steps(job)["cuts"]
+    assert row["state"] == "done" and "paused_at" not in row
+    assert "cuts" in records(tmp_path)
+
+
+def test_fetch_gets_progress_callback(client, fakes):
+    job = start_add(client, [url(A)])
+    wait_for(client, job["id"], item_state(0, "awaiting"))
+    assert callable(fakes.progress["fetch"]) and callable(fakes.progress["cuts"])
+
+
+def test_no_transcript_wait_paused_then_stt_is_new_fetch_run(client, fakes, tmp_path):
+    fakes.fetch_errors[A] = ScriptError("no_transcript", "자막이 없습니다", id=A, title="무자막",
+                                        duration_sec=120, status="fetched")
+    fakes.raw_cached = False                         # 길이는 no_transcript 정보에서 얻는다
+    job = start_add(client, [url(A)])
+    job = wait_for(client, job["id"], item_state(0, "awaiting"))
+    timing = job["items"][0]["timing"]
+    assert timing["video_sec"] == 120
+    assert timing["steps"]["fetch"]["state"] == "running" and "paused_at" in timing["steps"]["fetch"]
+    time.sleep(0.3)                                  # 사용자 결정 대기
+    decide(client, job["id"], A, action="stt")
+    job = wait_for(client, job["id"], lambda j: j["items"][0]["preview"] is not None)
+    assert callable(fakes.progress["stt"])
+    assert steps(job)["fetch"]["state"] == "done"
+    data = records(tmp_path)
+    assert data["fetch"][0]["elapsed_sec"] < 0.25 and data["stt"][0]["elapsed_sec"] < 0.25
+    assert data["stt"][0]["video_sec"] == 120
+
+
+def test_stt_unavailable_marks_fetch_row_failed(client, fakes, tmp_path):
+    fakes.fetch_errors[A] = ScriptError("no_transcript", "자막이 없습니다", id=A, title="무자막")
+    fakes.stt_error = ScriptError("stt_unavailable", "faster-whisper가 없습니다")
+    job = start_add(client, [url(A)])
+    wait_for(client, job["id"], item_state(0, "awaiting"))
+    decide(client, job["id"], A, action="stt")
+    job = wait_for(client, job["id"], lambda j: j["items"][0]["preview"] is not None)
+    assert steps(job)["fetch"]["state"] == "failed"
+    assert "stt" not in records(tmp_path)
+
+
+def test_timing_errors_never_fail_collection(client, fakes, monkeypatch):
+    from scripts.ui import progress
+
+    def boom(*a, **kw):
+        raise RuntimeError("timing broke")
+
+    monkeypatch.setattr(progress.ItemTiming, "done", boom)
+    monkeypatch.setattr(progress.ItemTiming, "phase", boom)
+    fakes.cut_hook = lambda p: p("download", 0.1, "영상 받는 중 10%")
+    job = start_add(client, [url(A)])
+    wait_for(client, job["id"], item_state(0, "awaiting"))
+    decide(client, job["id"], A, action="save")
+    job = wait_for(client, job["id"], finished)
+    assert job["items"][0]["state"] == "saved"
+
+
+def test_timing_constructor_error_never_fails_collection(client, fakes, monkeypatch):
+    from scripts.ui import progress
+
+    def boom(*a, **kw):
+        raise RuntimeError("timing broke")
+
+    monkeypatch.setattr(progress.ItemTiming, "__init__", boom)
+    job = start_add(client, [url(A)])
+    wait_for(client, job["id"], item_state(0, "awaiting"))
+    decide(client, job["id"], A, action="save")
+    job = wait_for(client, job["id"], finished)
+    assert job["items"][0]["state"] == "saved"
+
+
+def test_engine_falls_back_to_none_when_llm_config_broken(monkeypatch):
+    def broken():
+        raise ScriptError("llm_not_configured", "알 수 없는 LLM 엔진입니다")
+
+    monkeypatch.setattr(llm, "config", broken)
+    assert api_add._timing_engine() is None

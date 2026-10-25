@@ -403,3 +403,31 @@ def test_wait_turn_survives_raising_callback(home, monkeypatch, capsys):
     fetch.wait_turn(progress=boom)
     assert sum(sleeps) == pytest.approx(2.0)
     assert "ui gone" in capsys.readouterr().err
+
+
+def test_fetch_passes_progress_to_wait_turn_then_reports_meta(home, net, monkeypatch):
+    monkeypatch.setenv("YT_FETCH_INTERVAL", "2")
+    clock = _clock(monkeypatch, net["sleeps"])
+    fetch.fetch(VID)
+    clock[0] += 0.5                                  # 남은 대기 1.5초
+    calls = []
+    fetch.fetch(VID, force=True, progress=lambda *a: calls.append(a))
+    assert calls == [("wait", None, "차단 방지 대기 2초"), ("wait", None, "차단 방지 대기 1초"),
+                     ("meta", None, fetch.META_TEXT)]
+
+
+def test_fetch_cached_does_not_report_progress(home, net):
+    fetch.fetch(VID)
+    calls = []
+    assert fetch.fetch(VID, progress=lambda *a: calls.append(a))["status"] == "cached"
+    assert calls == []
+
+
+def test_no_transcript_details_carry_fetch_status(home, net):
+    net["transcript_value"] = None
+    with pytest.raises(ScriptError) as exc:
+        fetch.fetch(VID)
+    assert exc.value.details["status"] == "fetched"
+    with pytest.raises(ScriptError) as exc:
+        fetch.fetch(VID)
+    assert exc.value.details["status"] == "cached"
