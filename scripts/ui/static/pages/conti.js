@@ -4,6 +4,7 @@
 //   #/conti/<conti>    편집: 왼쪽 컷 목록, 오른쪽 패널(레퍼런스 실제 장면 · 대사 대안 · 직접 고치기)
 // 모든 컷 저장은 마지막으로 받은 hash를 보낸다. 파일이 밖에서 바뀌면 서버가 conti_changed로 거절한다.
 import { h, filesUrl } from "/static/dom.js";
+import { sectionLabelName } from "/static/labels.js";
 
 const POLL_MS = 1000;
 const POLL_MAX_MS = 15000;
@@ -379,7 +380,7 @@ function focusJobTitle() {
 }
 
 function sectionTag(label) {
-  return h("span", { class: "sec-tag" }, h("span", { class: `lb-dot lb-${label}`, "aria-hidden": "true" }), label);
+  return h("span", { class: "sec-tag" }, h("span", { class: `lb-dot lb-${label}`, "aria-hidden": "true" }), sectionLabelName(label));
 }
 
 function previewCard(job, item, d) {

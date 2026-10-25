@@ -308,6 +308,7 @@ def test_list_carries_avg_cut_and_camera_shares(client, home):  # noqa: F811
     refstore.update_frontmatter(video_path(home, "a01"), {
         "pacing": {"avg_cut_sec": "fast"}, "camera": {"static": 1.5, "pan": float("nan"), "tilt": 0.3, "zoom": True}})
     refstore.update_frontmatter(video_path(home, "a02"), {"pacing": None, "camera": "static"})
+    refstore.update_frontmatter(video_path(home, "a03"), {"pacing": {"avg_cut_sec": 10 ** 30}})
     data = _strict_get(client, "/api/refs?category=mukbang")
     vids = {v["id"]: v for v in data["videos"]}
     assert vids["a00"]["avg_cut_sec"] == 2.38
@@ -315,3 +316,4 @@ def test_list_carries_avg_cut_and_camera_shares(client, home):  # noqa: F811
     assert vids["a01"]["avg_cut_sec"] is None                # 숫자가 아니면 없음
     assert vids["a01"]["camera"] is None                     # 0~1 밖, NaN, 모르는 키, bool은 버린다 → 남는 게 없다
     assert vids["a02"]["avg_cut_sec"] is None and vids["a02"]["camera"] is None
+    assert vids["a03"]["avg_cut_sec"] is None                # 한 시간을 넘는 평균 컷은 손으로 잘못 고친 값

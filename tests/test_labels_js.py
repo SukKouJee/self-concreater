@@ -47,6 +47,7 @@ def test_top_camera():
     assert run_js("m.topCamera({static: 0.5, pan: 0.5})")["key"] == "static"      # 같으면 고정 먼저
     assert run_js("[m.topCamera(null), m.topCamera({}), m.topCamera({pan: NaN, zoom: 2}), m.topCamera('x')]") == [
         None, None, None, None]
+    assert run_js("[m.topCamera({static: 0, pan: 0, zoom: 0}), m.topCamera({static: 0.004})]") == [None, None]   # "0%" 칸은 없다
 
 
 def test_fmt_cut():
@@ -64,3 +65,14 @@ def test_band_caption():
     bad = '[null, {label: "hook", start: NaN, end: 3}, {label: "hook", start: 5, end: 2}, {start: 0, end: 9}]'
     assert run_js(f"m.bandCaption({bad})") == ""
     assert run_js("[m.bandCaption(null), m.bandCaption([])]") == ["", ""]
+
+
+def test_section_names_cover_the_fixed_labels():
+    got = run_js("[Object.keys(m.SECTION_KO), Object.keys(m.BODY_SUB_KO)]")
+    assert got == [videomd.LABELS, videomd.BODY_SUBS]
+
+
+def test_section_name_with_and_without_subtype():
+    assert run_js("[m.sectionName('body', 'explain'), m.sectionName('hook'), m.sectionName('body', ''), "
+                  "m.sectionName('cta', null), m.sectionName('my_part', 'my_sub'), m.sectionName('', 'story')]") == [
+        "본문(설명)", "훅", "본문", "행동 유도(CTA)", "my_part(my_sub)", "(이야기)"]

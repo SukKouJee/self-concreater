@@ -759,8 +759,11 @@ def test_refs_card_shows_chips_tags_stats_and_flow():
     card = js.split("function thumb(v)", 1)[1].split("// ---- detail", 1)[0]
     for token in ["formatName(v.format)", 'VIEW.role === "all"', "직접 고침", "fmtTime(v.duration_sec)",
                   "hookName(v.hook_type)", "narrativeName(v.narrative_type)", "fmtCut(v.avg_cut_sec)",
-                  "topCamera(v.camera)", "bandCaption(v.sections)", '"dl"']:
+                  "topCamera(v.camera)", "bandCaption(v.sections)", '"dl"', '"aria-labelledby": tid',
+                  '"aria-describedby"', 'band.setAttribute("aria-hidden", "true")']:
         assert token in card, token
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    assert re.search(r"@media \(forced-colors: active\) \{[^}]*aria-pressed", css)
 
 
 def test_selected_states_use_pick_colors_with_contrast():
@@ -771,9 +774,21 @@ def test_selected_states_use_pick_colors_with_contrast():
         assert _contrast(tokens["--pick-bg"], tokens["--page"]) >= 3.0          # 선택된 버튼이 바탕과 구분된다
         assert _contrast(tokens["--ink2"], tokens["--chip"]) >= 4.5             # 꼬리표 글자
         assert _contrast(tokens["--muted"], tokens["--chip"]) >= 4.5
+        assert _contrast(tokens["--muted"], tokens["--page"]) >= 4.5           # 숫자 칸(--page 바탕)의 이름
     for selector in ('.ref-filters .btn[aria-pressed="true"]', '.filter-btn[aria-pressed="true"]',
                      '.diag-toggle[aria-pressed="true"]', ".seg-opt input:checked + span",
                      '.lib-tab[aria-selected="true"]', '.btn.help-toggle[aria-expanded="true"]'):
         rule = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", css).group(1)
         assert "var(--pick-bg)" in rule and "var(--pick-fg)" in rule, selector
     assert "box-shadow: var(--elev-1)" in re.search(r"^\.card \{([^}]*)\}", css, re.M).group(1)
+
+
+def test_pages_show_korean_section_names():
+    pages = STATIC_DIR / "pages"
+    for name in ("add.js", "draft.js", "library.js", "refs.js", "conti.js", "diagnose.js"):
+        js = (pages / name).read_text(encoding="utf-8")
+        assert 'from "/static/labels.js"' in js, name
+        # 섹션 라벨·세부 유형을 글자로 찍는 곳은 이름 함수를 거친다 (lb-<label> 색 클래스만 코드 그대로)
+        text = js.replace("lb-${s.label}", "")
+        assert "${s.label}" not in text and "${s.sub}" not in text, name
+    assert "LABEL_KO" not in (pages / "diagnose.js").read_text(encoding="utf-8")   # 한 곳(labels.js)에서만 정의

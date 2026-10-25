@@ -5,7 +5,7 @@
 // 미리보기 단계에서는 drafts/가 바뀌지 않는다. 저장은 사용자가 누른 뒤에만, 고친 draft 그대로 보낸다.
 // 작업 폴링·재진입·handled·job_id·aborted 처리는 pages/motif.js와 같은 방식이다.
 import { h, fill } from "/static/dom.js";
-import { hookName, narrativeName } from "/static/labels.js";
+import { hookName, narrativeName, sectionLabelName, sectionName } from "/static/labels.js";
 import { renderMarkdown } from "/static/md.js";
 
 const POLL_MS = 1000;
@@ -38,7 +38,7 @@ function fmtTime(sec) {
 const fmtRange = (s) => `${fmtTime(s.start)}–${fmtTime(s.end)}`;
 const sortByStart = (list) => [...list].sort((a, b) => num(a.start) - num(b.start));
 const lastEnd = (sections) => Math.max(0, ...(sections || []).map((s) => num(s && s.end)));
-const sectionTitle = (s) => `${s.label}${s.sub ? `(${s.sub})` : ""}`;
+const sectionTitle = (s) => sectionName(s.label, s.sub);
 
 // The server escapes real md headings in scripts ("\## x"); show them as typed. Saving escapes them again.
 const unescapeHeadings = (text) => text.replace(/^\\(#{1,6})(?=\s|$)/gm, "$1");
@@ -57,14 +57,14 @@ function sectionBand(sections) {
   if (!segs.length || !(total > 0)) return null;
   const band = h("div", {
     class: "sec-band", role: "img",
-    "aria-label": `섹션 흐름: ${segs.map((s) => s.label).join(" → ")}`,
+    "aria-label": `섹션 흐름: ${segs.map((s) => sectionLabelName(s.label)).join(" → ")}`,
   });
   let cursor = 0;
   for (const s of segs) {
     const from = Math.max(num(s.start), cursor);
     const gap = Math.min(100, (Math.max(0, from - cursor) / total) * 100);
     const width = Math.max(0, Math.min(100, ((num(s.end) - from) / total) * 100));
-    const text = `${s.label} ${fmtRange(s)}`;
+    const text = `${sectionName(s.label, s.sub)} ${fmtRange(s)}`;
     const seg = h("span", { class: `lb-${s.label}`, title: text, "aria-label": text });
     seg.style.width = `${width}%`;
     if (gap > 0) seg.style.marginLeft = `${gap}%`;

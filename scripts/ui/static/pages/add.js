@@ -1,7 +1,7 @@
 // 레퍼런스 추가 화면: 링크 입력 → 1초 폴링 진행 표시 → 영상별 확인 카드 → 마무리 요약.
 // 서버 작업(kind "collect")이 이미 있으면 화면에 들어올 때 그 작업을 이어서 보여 준다.
 import { h, filesUrl } from "/static/dom.js";
-import { hookName, narrativeName } from "/static/labels.js";
+import { bodySubName, hookName, narrativeName, sectionLabelName, sectionName } from "/static/labels.js";
 import { fmtDur, fmtClock, fmtRemain, spokenDur, rowView, itemRemaining, monotonicFraction } from "/static/progress-utils.js";
 
 const POLL_MS = 1000;
@@ -527,10 +527,10 @@ function isEdited(item) {
 function timelineBar(sections) {
   const total = Math.max(...sections.map((s) => Number(s.end) || 0), 1);
   const bar = h("div", { class: "tl-bar", role: "img",
-    "aria-label": `섹션 ${sections.length}개: ${sections.map((s) => s.label).join(", ")}` });
+    "aria-label": `섹션 ${sections.length}개: ${sections.map((s) => sectionLabelName(s.label)).join(", ")}` });
   for (const s of sections) {
     const w = Math.max(((Number(s.end) - Number(s.start)) / total) * 100, 1.5);
-    bar.append(h("span", { class: `tl-seg lb-${s.label}`, style: `flex-grow:${w.toFixed(2)}`, title: `${s.label} ${fmtTime(s.start)}` }));
+    bar.append(h("span", { class: `tl-seg lb-${s.label}`, style: `flex-grow:${w.toFixed(2)}`, title: `${sectionName(s.label, s.sub)} ${fmtTime(s.start)}` }));
   }
   return bar;
 }
@@ -541,17 +541,17 @@ function sectionRow(item, a, idx) {
   const sel = h("select", { id, class: "label-select", "aria-label": `${fmtTime(s.start)} 섹션 라벨` });
   const labels = LABELS.includes(s.label) ? LABELS : [s.label, ...LABELS];
   for (const l of labels) {
-    const opt = h("option", { value: l }, l);
+    const opt = h("option", { value: l }, sectionLabelName(l));
     if (l === s.label) opt.selected = true;
     sel.append(opt);
   }
   const bullet = h("span", { class: `lb-dot lb-${s.label}`, "aria-hidden": "true" });
-  const sub = h("span", { class: "sec-sub muted" }, s.sub ? s.sub : "");
+  const sub = h("span", { class: "sec-sub muted" }, bodySubName(s.sub));
   sel.addEventListener("change", () => {
     s.label = sel.value;
     if (s.label !== "body") delete s.sub;
     bullet.className = `lb-dot lb-${s.label}`;
-    sub.textContent = s.sub || "";
+    sub.textContent = bodySubName(s.sub);
     li.classList.toggle("edited", s.label !== item.preview.sections[idx].label);
     const warn = li.closest(".confirm");
     if (warn) {

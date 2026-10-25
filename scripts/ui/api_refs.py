@@ -67,12 +67,13 @@ def _duration(value: Any) -> float | int | None:
 
 
 CAMERA_KEYS = ("static", "pan", "zoom")
+MAX_AVG_CUT_SEC = 3600   # a hand-edited huge value would print as "1e+30초" on the card
 
 
 def _avg_cut(pacing: Any) -> float | int | None:
-    """pacing.avg_cut_sec if it is a finite number above 0, else None (list cards show it as a number)."""
+    """pacing.avg_cut_sec if it is a finite number in (0, MAX_AVG_CUT_SEC], else None (list cards show it as a number)."""
     value = _duration(pacing.get("avg_cut_sec")) if isinstance(pacing, dict) else None
-    return value if value is not None and value > 0 else None
+    return value if value is not None and 0 < value <= MAX_AVG_CUT_SEC else None
 
 
 def _camera_shares(camera: Any) -> dict | None:

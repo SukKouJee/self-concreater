@@ -3,7 +3,7 @@
 //   지인이 쓴 글(이름·메모·본문)은 신뢰하지 않는 데이터라 항상 텍스트 노드나 renderMarkdown으로만 그린다.
 //   올리기는 "올리기" → 인라인 확인 → "올리기 확인"을 눌러야만 서버로 간다. 자동으로 올리지 않는다.
 import { h, fill } from "/static/dom.js";
-import { hookName, narrativeName } from "/static/labels.js";
+import { hookName, narrativeName, sectionName } from "/static/labels.js";
 import { renderMarkdown } from "/static/md.js";
 
 const POLL_MS = 1000;
@@ -751,14 +751,14 @@ function templateEditor() {
   S.nodes.summaryBox = h("div", { class: "lib-summary-box" });
   const rows = sh.sections.map((s, i) => {
     const input = h("input", {
-      type: "text", maxlength: String(MAX_SUMMARY), "aria-label": `${s.label} 구간 요약`, "data-summary": String(i),
+      type: "text", maxlength: String(MAX_SUMMARY), "aria-label": `${sectionName(s.label, s.sub)} 구간 요약`, "data-summary": String(i),
       placeholder: "이 구간이 하는 일 한 줄",
     });
     input.value = s.summary;
     input.addEventListener("input", () => { s.summary = input.value; });
     return h("li", { class: "lib-sec" },
       h("div", { class: "lib-sec-head" },
-        h("span", { class: "badge" }, s.sub ? `${s.label} · ${s.sub}` : s.label),
+        h("span", { class: "badge" }, sectionName(s.label, s.sub)),
         h("span", { class: "muted small" }, sectionPct(s.ratio)),
         s.rhythm ? h("span", { class: "muted small" }, `샷 리듬 ${s.rhythm}`) : null),
       input);

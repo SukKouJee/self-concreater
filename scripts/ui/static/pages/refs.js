@@ -5,7 +5,9 @@
 // api 호출은 ctx.api를 쓴다: 페이지별 ctx.api가 이미 ctx.signal(이동하면 abort)을 실어 보낸다. 중단된 요청(error "aborted")은 조용히 무시한다.
 // 모든 비동기 뒤에는 ctx.isCurrent()로 화면이 아직 이 페이지인지 확인한다.
 import { h, fill, filesUrl } from "/static/dom.js";
-import { bandCaption, fmtCut, formatName, hookName, narrativeName, topCamera } from "/static/labels.js";
+import {
+  bandCaption, bodySubName, fmtCut, formatName, hookName, narrativeName, sectionLabelName, sectionName, topCamera,
+} from "/static/labels.js";
 import { renderMarkdown } from "/static/md.js";
 
 const COUNT_DEBOUNCE_MS = 300;
@@ -64,7 +66,7 @@ function sectionBand(sections, duration) {
   if (!(total > 0)) return null;
   const band = h("div", {
     class: "sec-band", role: "img",
-    "aria-label": `섹션 흐름: ${segs.map((s) => s.label).join(" → ")}`,
+    "aria-label": `섹션 흐름: ${segs.map((s) => sectionLabelName(s.label)).join(" → ")}`,
   });
   // Position by start: a gap before a section becomes a left margin; overlaps are clamped to the previous end.
   let cursor = 0;
@@ -72,7 +74,7 @@ function sectionBand(sections, duration) {
     const from = Math.max(num(s.start), cursor);
     const gap = Math.min(100, (Math.max(0, from - cursor) / total) * 100);
     const width = Math.max(0, Math.min(100, ((num(s.end) - from) / total) * 100));
-    const text = `${s.label} ${fmtRange(s)}`;
+    const text = `${sectionName(s.label, s.sub)} ${fmtRange(s)}`;
     const seg = h("span", { class: `lb-${s.label}`, title: text, "aria-label": text });
     seg.style.width = `${width}%`;
     if (gap > 0) seg.style.marginLeft = `${gap}%`;
@@ -216,7 +218,7 @@ function toolbar() {
 
 function renderCards() {
   const list = visibleVideos();
-  S.nodes.grid.replaceChildren(...list.map(videoCard));
+  S.nodes.grid.replaceChildren(...list.map((v, i) => videoCard(v, i)));
   S.nodes.empty.hidden = list.length > 0;
   // The live region is updated after typing pauses so screen readers don't announce every keystroke.
   const mine = S;
@@ -233,10 +235,13 @@ function thumb(v) {
     ? h("img", { src: filesUrl(v.thumb), alt: "", loading: "lazy" })
     : h("span", { class: "ref-thumb-empty" }, "프레임 없음");
   const tl = [formatName(v.format), VIEW.role === "all" ? roleText(v.role) : ""].filter(Boolean);
-  return h("div", { class: "ref-thumb" + (v.thumb ? "" : " ref-thumb-none") }, pic,
-    tl.length ? h("span", { class: "ref-ov ref-ov-tl" }, ...tl.map((t) => h("span", { class: "ref-chip" }, t))) : null,
-    v.reviewed ? h("span", { class: "ref-ov ref-ov-tr" }, h("span", { class: "ref-chip ref-chip-ok" }, "직접 고침")) : null,
-    num(v.duration_sec) > 0 ? h("span", { class: "ref-ov ref-ov-br" }, h("span", { class: "ref-chip" }, fmtTime(v.duration_sec))) : null);
+  // A space before each chip keeps the card's description readable ("롱폼 레퍼런스 20:28", not "롱폼레퍼런스20:28");
+  // whitespace between flex items takes no room.
+  const chip = (text, cls = "ref-chip") => [" ", h("span", { class: cls }, text)];
+  return h("div", { class: "ref-thumb" }, pic,
+    tl.length ? h("span", { class: "ref-ov ref-ov-tl" }, ...tl.flatMap((t) => chip(t))) : null,
+    v.reviewed ? h("span", { class: "ref-ov ref-ov-tr" }, ...chip("직접 고침", "ref-chip ref-chip-ok")) : null,
+    num(v.duration_sec) > 0 ? h("span", { class: "ref-ov ref-ov-br" }, ...chip(fmtTime(v.duration_sec))) : null);
 }
 
 function typeTags(v) {
@@ -260,15 +265,19 @@ function bandWithCaption(v) {
   const band = sectionBand(v.sections, v.duration_sec);
   if (!band) return null;
   const caption = bandCaption(v.sections);
+  if (caption) band.setAttribute("aria-hidden", "true");   // the caption below reads the same flow in words
   return h("div", { class: "ref-flow" }, band, caption ? h("p", { class: "ref-flow-cap" }, caption) : null);
 }
 
-function videoCard(v) {
+// The link is named by the title alone (screen-reader link lists stay scannable); chips and the rest of the
+// card are its description. Ids come from the card index: video ids are file stems and need no escaping this way.
+function videoCard(v, i) {
+  const tid = `ref-card-${i}`;
   return h("li", { class: "ref-card" },
-    h("a", { class: "ref-link", href: refsHref(v.id) },
-      thumb(v),
+    h("a", { class: "ref-link", href: refsHref(v.id), "aria-labelledby": tid, "aria-describedby": `${tid}-d` },
+      h("div", { id: `${tid}-d`, class: "ref-desc" }, thumb(v)),
       h("div", { class: "ref-body" },
-        h("h2", { class: "ref-title" }, displayTitle(v)),
+        h("h2", { class: "ref-title", id: tid }, displayTitle(v)),
         v.channel ? h("p", { class: "ref-meta" }, v.channel) : null,
         typeTags(v),
         stats(v),
@@ -358,7 +367,7 @@ function sectionBlock(data, sections) {
     sectionBand(sections, v.duration_sec),
     h("ul", { class: "ref-sec-list" }, ...sections.map((s) =>
       h("li", {}, h("span", { class: `lb-dot lb-${s.label}`, "aria-hidden": "true" }),
-        `${s.label}${s.sub ? `(${s.sub})` : ""} ${fmtRange(s)}`))));
+        `${sectionName(s.label, s.sub)} ${fmtRange(s)}`))));
   return block;
 }
 
@@ -419,10 +428,10 @@ function editBlock(data, viewBlock) {
     const dot = h("span", { class: `lb-dot lb-${d.label}`, "aria-hidden": "true" });
     const labelSel = selectOf(
       { class: "label-select", "aria-label": `${fmtRange(item)} 섹션 라벨` },
-      optionList(vocab.label, d.label), d.label);
+      optionList(vocab.label, d.label, sectionLabelName), d.label);
     const subSel = selectOf(
       { class: "label-select", "aria-label": `${fmtRange(item)} 본문 세부 유형` },
-      [h("option", { value: "" }, "(없음)"), ...optionList(vocab.body_sub, d.sub)], d.sub);
+      [h("option", { value: "" }, "(없음)"), ...optionList(vocab.body_sub, d.sub, bodySubName)], d.sub);
     subSel.hidden = d.label !== "body";
     labelSel.addEventListener("change", () => {
       d.label = labelSel.value;

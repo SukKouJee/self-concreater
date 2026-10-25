@@ -3,6 +3,7 @@
 //   / "설명 받기"(작업: 비교 → Claude 1회) → 미리보기(편집) → 저장.
 //   미리보기 단계에서는 mine/ 이 바뀌지 않는다. 저장은 사용자가 누른 뒤에만. 의도한 차이 표시는 사용자 행동이라 바로 저장한다.
 import { h, fill } from "/static/dom.js";
+import { sectionLabelName } from "/static/labels.js";
 import { renderMarkdown } from "/static/md.js";
 import { recordMismatch as gapsMismatch, previewStale as gapsStale } from "/static/diagnose-gaps.js";
 
@@ -15,9 +16,6 @@ const MISSION_COMMAND = "/yt-coach:yt-mission today";
 const STEP_TEXT = { compare: "아키타입과 비교하는 중", claude: "Claude가 설명 쓰는 중" };
 // Mirrors scripts/ui/api_diagnose.AXIS_KO; the server's `axis_ko` wins when present.
 const AXIS_KO = { structure: "구조", hook: "훅", narrative: "서사", title: "제목", pacing: "컷 속도", shots: "샷" };
-const LABEL_KO = {
-  hook: "훅", intro: "인트로", body: "본문", demo: "시연", transition: "전환", cta: "행동 유도(CTA)", outro: "아웃트로",
-};
 const AXIS_ORDER = ["structure", "hook", "narrative", "title", "pacing", "shots"];
 
 // ---- helpers ------------------------------------------------------------------
@@ -52,7 +50,7 @@ function previewOf(job) {
 function gapName(key, axisKo) {
   const [axis, sub] = String(key).split(":");
   const name = (axisKo && axisKo[axis]) || AXIS_KO[axis] || axis;
-  if (axis === "structure" && sub) return `${name}: ${LABEL_KO[sub] || sub}`;
+  if (axis === "structure" && sub) return `${name}: ${sectionLabelName(sub)}`;
   if (axis === "pacing" && sub) return `${name}: 평균 컷 길이`;
   return name;
 }

@@ -5,6 +5,11 @@ export const HOOK_KO = { question: "질문형", result_first: "결과 먼저", s
 export const NARRATIVE_KO = { problem_solution: "문제 해결", list: "목록", journey: "여정", compare: "비교", reaction: "리액션" };
 export const FORMAT_KO = { long: "롱폼", short: "쇼츠" };
 export const CAMERA_KO = { static: "고정", pan: "패닝", zoom: "줌" };
+// Section labels and body subtypes (scripts/videomd.py LABELS, BODY_SUBS).
+export const SECTION_KO = {
+  hook: "훅", intro: "인트로", body: "본문", demo: "시연", transition: "전환", cta: "행동 유도(CTA)", outro: "아웃트로",
+};
+export const BODY_SUB_KO = { list_item: "목록 항목", story: "이야기", explain: "설명", compare: "비교" };
 
 // Known code -> Korean; an unknown non-empty code is shown as is (a hand-edited md stays visible); else "".
 function nameIn(map, code) {
@@ -14,10 +19,19 @@ function nameIn(map, code) {
 export const hookName = (code) => nameIn(HOOK_KO, code);
 export const narrativeName = (code) => nameIn(NARRATIVE_KO, code);
 export const formatName = (code) => nameIn(FORMAT_KO, code);
+export const sectionLabelName = (code) => nameIn(SECTION_KO, code);
+export const bodySubName = (code) => nameIn(BODY_SUB_KO, code);
+// "body" + "explain" -> "본문(설명)"; no subtype -> just the label name.
+export function sectionName(label, sub) {
+  const name = sectionLabelName(label);
+  const subName = bodySubName(sub);
+  return subName ? `${name}(${subName})` : name;
+}
 
 const finite = (v) => typeof v === "number" && Number.isFinite(v);
 
-// Largest camera share as { key, label, pct } (ties keep static > pan > zoom), or null when there is none.
+// Largest camera share as { key, label, pct } (ties keep static > pan > zoom), or null when there is none
+// or it rounds to 0%.
 export function topCamera(shares) {
   if (!shares || typeof shares !== "object") return null;
   let best = null;
@@ -25,7 +39,8 @@ export function topCamera(shares) {
     const v = shares[key];
     if (finite(v) && v >= 0 && v <= 1 && (best === null || v > best.v)) best = { key, v };
   }
-  return best && { key: best.key, label: CAMERA_KO[best.key], pct: Math.round(best.v * 100) };
+  const pct = best ? Math.round(best.v * 100) : 0;
+  return pct >= 1 ? { key: best.key, label: CAMERA_KO[best.key], pct } : null;   // all zero -> no cell, never "0%"
 }
 
 // 2.38 -> "2.4초", 12 -> "12초"; non-positive or not a number -> "".
