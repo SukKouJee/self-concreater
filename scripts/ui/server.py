@@ -54,7 +54,7 @@ PING_TIMEOUT = 1.0
 ROUTE_MODULES: list[str] = ["scripts.ui.api_add", "scripts.ui.api_conti", "scripts.ui.api_refs", "scripts.ui.api_typify",
                            "scripts.ui.api_motif", "scripts.ui.api_draft", "scripts.ui.api_polish",
                            "scripts.ui.api_diagnose", "scripts.ui.api_mission", "scripts.ui.api_report",
-                           "scripts.ui.api_library"]
+                           "scripts.ui.api_library", "scripts.ui.api_help"]
 
 BAD_TOKEN = {"error": "bad_token", "message": "주소의 key가 맞지 않습니다. 터미널에 나온 새 주소로 여세요"}
 

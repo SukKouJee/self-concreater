@@ -40,6 +40,7 @@
 - 원칙: md 프런트매터가 유일한 원본이고 화면은 읽고 쓰는 창. 저장·바꾸기 클릭이 사용자 확인이며, 클릭 없이 AI 출력이 파일에 쓰이지 않는다(`--shots-only`, `script_mismatch` 자동 맞춤 제외). 화면 밖 수정은 내용 해시로 감지해 저장을 거부한다.
 - LLM 엔진: 화면의 모든 Claude 호출은 `scripts/llm.py` 하나를 지난다. 기본 `claude-cli`(위 `claude -p`), 작업 폴더 `yt-coach.json`의 `{"llm": {"engine": "anthropic-api"}}` 또는 `YTC_LLM_ENGINE`으로 Anthropic Messages API(표준 라이브러리 HTTP, 키는 `ANTHROPIC_API_KEY` 환경 변수만)로 바꾼다. 새 엔진은 `check()`·`ask()`를 가진 모듈을 `ENGINES`에 등록하면 된다. 터미널 커맨드(Claude Code 대화)는 무관.
 - 오래 걸리는 수집은 job으로 돌리고(동시에 하나), 화면을 닫아도 계속된다. 서버를 끄면 멈춘다.
+- 가이드·도움말(v2.4): `#/guide/shorts`·`#/guide/long`은 숏폼·롱폼 흐름과 단계 링크·완료 배지를 보여주고, 모든 화면 오른쪽 패널([이 화면]/[챗봇])이 `docs/help/*.md`를 `GET /api/help/<page>`(허용 목록만)로 읽어 보여준다. 챗봇은 `POST /api/help/chat`(job kind `help_chat`, 120초 제한)이고 화면 설명·가이드·메뉴·상황 요약·단계 규칙만 근거로 답한다. 입력에서 제외하는 것: md 본문, 대본·자막, `## 내 메모`, 프레임, 작업 폴더 절대 경로, 파일 경로, 공용 라이브러리 원격 URL·작성자. 숫자와 상태 요약(`situation`)만 넣는다. 스펙: `docs/superpowers/specs/2026-10-25-help-chatbot-design.md`
 - 새 스크립트: `status`(홈 데이터), `claude_cli`(Claude 호출기), `ui`(서버). `conti`에 `update`·`scenes`·`cut-context` 추가.
 
 ## 2. 저장소 구조

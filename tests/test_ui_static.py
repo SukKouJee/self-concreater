@@ -3,7 +3,7 @@ import re
 from scripts.ui.server import STATIC_DIR
 from tests.test_ui_server import client, no_browser  # noqa: F401  (fixture 재사용)
 
-MENU_NAMES = ["홈", "레퍼런스 추가", "레퍼런스 목록", "공용 라이브러리", "유형화", "리포트", "모티브", "기획안", "콘티", "진단", "미션"]
+MENU_NAMES = ["홈", "레퍼런스 추가", "레퍼런스 목록", "공용 라이브러리", "유형화", "리포트", "모티브", "기획안", "콘티", "진단", "미션", "가이드"]
 # yt-draft is no longer a terminal-only item: the draft screen is a live route.
 # diagnose is live too: its terminal command no longer appears in the menu definition.
 # mission and report are live too: no menu item shows a terminal command any more.
@@ -19,7 +19,8 @@ def test_index_loads_modules(client):
 
 
 def test_static_files_served(client):
-    for rel in ["app.css", "app.js", "api.js", "pages/home.js", "pages/placeholder.js", "pages/add.js"]:
+    for rel in ["app.css", "app.js", "api.js", "pages/home.js", "pages/placeholder.js", "pages/add.js",
+                "help-panel.js", "help-utils.js", "pages/guide.js"]:
         status, headers, _ = client.call("GET", f"/static/{rel}")
         assert status == 200, rel
     status, headers, _ = client.call("GET", "/static/app.js")
@@ -606,3 +607,51 @@ def test_library_review_fixes_present():
         assert token in draft, token
     render_new = draft[draft.index("function renderNew"):draft.index("function renderBody")]
     assert render_new.index("sourceNoteNode()") < render_new.index("고를 수 있는 출처가 없습니다")   # note also when !any
+
+
+def test_app_routes_guide():
+    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert 'case "guide"' in app
+    assert "/static/help-panel.js" in app
+    assert "#/guide/" in app                                  # markActive keeps the menu item lit on the sub tabs
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    assert 'id="help-panel"' in html
+
+
+def test_help_panel_contract():
+    panel = (STATIC_DIR / "help-panel.js").read_text(encoding="utf-8")
+    for needle in ["helpPage", "trimHistory", "createHelpPanel", "ytc.helpOpen", "/api/help/chat", "/cancel",
+                   "aria-expanded", "aria-live", 'role: "tablist"', "isComposing", '"Escape"']:
+        assert needle in panel, needle
+    assert "innerHTML" not in panel
+
+
+def test_guide_page_contract():
+    guide = (STATIC_DIR / "pages" / "guide.js").read_text(encoding="utf-8")
+    for needle in ["export async function mount", "export function unmount", "guide-shorts", "guide-long",
+                   "/api/status", "isCurrent"]:
+        assert needle in guide, needle
+    assert "innerHTML" not in guide
+
+
+def test_help_panel_restores_question_on_send_failure():
+    panel = (STATIC_DIR / "help-panel.js").read_text(encoding="utf-8")
+    assert "job_running" in panel
+    assert "앞 질문을 정리하는 중입니다" in panel
+    assert "input.value = q" in panel
+
+
+def test_help_panel_resets_chat_on_category_change():
+    panel = (STATIC_DIR / "help-panel.js").read_text(encoding="utf-8")
+    on_category = panel[panel.index("function onCategory"):panel.index("function toggle")]
+    assert "resetChat()" in on_category
+    assert "return { setPage, onCategory, toggle }" in panel
+    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    set_category = app[app.index("setCategory(name) {"):app.index("refreshCategories,\n};")]
+    assert "helpPanel.onCategory(ctx.category)" in set_category
+
+
+def test_help_panel_sits_at_right_edge():
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    rule = re.search(r"\.help-panel \{([^}]*)\}", css).group(1)
+    assert "margin-left: auto" in rule

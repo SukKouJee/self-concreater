@@ -50,6 +50,19 @@ def _load_typify(category: str) -> dict:
     return result
 
 
+def typify_gate(category: str) -> dict[str, bool | None]:
+    """진단 가능 여부: 비교할 아키타입이 있는 유형화 결과가 있으면 available.
+
+    preliminary는 그 결과의 status가 "formal"이 아닌지(마지막 유형화 실행 때 ref 수로 정해진다)다.
+    진단 화면(api_diagnose)과 도움말 챗봇 상황(api_help)이 같은 판단을 쓴다.
+    """
+    try:
+        result = _load_typify(category)
+    except ScriptError:
+        return {"available": False, "preliminary": None}
+    return {"available": True, "preliminary": result.get("status") != "formal"}
+
+
 def _names(category: str) -> dict:
     fm, _ = refstore.read_md(refstore.existing_category_dir(category) / "index.md")
     return {a["id"]: a.get("name") for a in fm.get("archetypes") or []}

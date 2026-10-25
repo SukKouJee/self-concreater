@@ -674,3 +674,58 @@ code { background: var(--grid); padding: 1px 6px; border-radius: 4px; }
 .lib-choose-set { margin: var(--sp-2) 0; }
 .lib-choose-list { display: flex; flex-direction: column; gap: var(--sp-1); max-height: 14em; overflow: auto; padding: var(--sp-1) 0; }
 .lib-choose:empty { display: none; }
+
+/* help panel (right side column on wide screens, overlay below 1100px) */
+.help-panel[hidden] { display: none; }
+.help-panel { width: 360px; flex-shrink: 0; position: sticky; top: var(--topbar-h); align-self: flex-start;
+  height: calc(100vh - var(--topbar-h)); display: flex; flex-direction: column; background: var(--surface);
+  border-left: 1px solid var(--grid); min-width: 0; margin-left: auto; }
+.help-head { display: flex; align-items: baseline; gap: var(--sp-2); padding: var(--sp-3) var(--sp-4) var(--sp-2); }
+.help-head h2 { font-size: 16px; }
+.help-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.help-close { align-self: center; margin-left: auto; min-height: 32px; padding: 2px var(--sp-3); }
+.help-tabs { display: flex; gap: var(--sp-1); border-bottom: 1px solid var(--grid); padding: 0 var(--sp-4); }
+.help-tab { font: inherit; font-size: 14px; color: var(--ink2); background: transparent; border: 0; border-bottom: 2px solid transparent;
+  padding: var(--sp-2) var(--sp-3); min-height: 40px; cursor: pointer; margin-bottom: -1px; }
+.help-tab:hover { color: var(--ink); }
+.help-tab[aria-selected="true"] { color: var(--ink); font-weight: 600; border-bottom-color: var(--accent); }
+.help-pane { flex: 1; min-height: 0; overflow-y: auto; padding: var(--sp-4); }
+.help-pane[hidden] { display: none; }
+.help-chat { display: flex; flex-direction: column; gap: var(--sp-3); overflow: hidden; }
+.help-chat[hidden] { display: none; }
+.help-md h3 { font-size: 15px; }
+.help-ask-row { margin-top: var(--sp-4); }
+.help-shortcuts { gap: var(--sp-2); }
+.help-shortcut { min-height: 32px; padding: 2px var(--sp-3); font-size: 13px; border-radius: 999px; }
+.help-empty { margin: 0; }
+.help-log { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: var(--sp-2); }
+.help-msg { padding: var(--sp-2) var(--sp-3); border-radius: var(--radius); max-width: 100%; overflow-wrap: anywhere; }
+.help-user { align-self: flex-end; background: var(--accent-soft); white-space: pre-wrap; max-width: 90%; }
+.help-bot { background: var(--page); border: 1px solid var(--grid); }
+.help-bot .md p:last-child { margin-bottom: 0; }
+.help-err { border: 1px solid var(--danger); color: var(--danger); background: var(--page); }
+.help-note { padding: 0 var(--sp-1); }
+.help-status { display: flex; align-items: center; gap: var(--sp-2); }
+.help-status:empty { display: none; }
+.help-form { display: flex; flex-direction: column; gap: var(--sp-2); }
+.help-input { font: inherit; color: var(--ink); background: var(--page); border: 1px solid var(--axis); border-radius: var(--radius-sm);
+  padding: var(--sp-2) var(--sp-3); width: 100%; resize: vertical; line-height: 1.5; min-height: 64px; max-height: 200px; }
+.help-send-row { justify-content: space-between; }
+.btn.help-toggle[aria-expanded="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+
+@media (max-width: 1099px) {
+  .help-panel { position: fixed; top: var(--topbar-h); right: 0; bottom: 0; height: auto; width: min(400px, 92vw); z-index: 36;
+    align-self: auto; }
+  .help-scrim { z-index: 34; }
+}
+
+/* guide screen */
+.guide-tabs { display: flex; gap: var(--sp-1); border-bottom: 1px solid var(--grid); margin: 0 0 var(--sp-4); }
+.guide-tab { color: var(--ink2); text-decoration: none; padding: var(--sp-2) var(--sp-4); min-height: 40px; display: inline-flex; align-items: center;
+  border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.guide-tab:hover { color: var(--ink); }
+.guide-tab[aria-current="page"] { color: var(--ink); font-weight: 600; border-bottom-color: var(--accent); }
+.guide-md li { margin-bottom: var(--sp-2); }
+.guide-badge { margin-left: var(--sp-2); font-size: 11px; font-weight: 600; color: var(--muted); border: 1px solid var(--axis);
+  border-radius: 999px; padding: 0 7px; line-height: 18px; white-space: nowrap; }
+.guide-badge-done { color: var(--on-ok); background: var(--ok); border-color: var(--ok); }

@@ -151,6 +151,17 @@ def typify_path(category: str) -> Path:
     return workspace_dir("typify", f"{category}.json")
 
 
+def allowed_types(category: str) -> list[str]:
+    """허용 카드 type. 3단계라도 유형화 결과(json)가 없으면 흐름·조합은 막는다(yt-inspire 규칙).
+
+    모티브 화면(api_motif)과 도움말 챗봇 상황(api_help)이 같은 판단을 쓰도록 여기 한 곳에 둔다.
+    """
+    stage = refstore.count(category)["stage"]
+    if stage == 3 and not typify_path(category).exists():
+        return ["technique", "angle"]
+    return list(ALLOWED_BY_STAGE[stage])
+
+
 def ref_titles(category: str) -> dict[str, Any]:
     """ref 영상 id → 제목. mine은 근거가 될 수 없으므로 들어가지 않는다."""
     return {r["id"]: r["fm"].get("title") for r in features.load_videos(category)}

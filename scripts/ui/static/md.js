@@ -13,7 +13,9 @@
 //        | { t: "strong" | "em", c: Inline[] }
 //        | { t: "ref", id, c }       link to videos/<id>.md, resolved by opts.refHref
 //        | { t: "link", href, c }    https YouTube link only; any other link becomes plain text "label (url)"
-// renderMarkdown opts: refHref(id) -> href for ref links; dropTitle (string) drops a leading "# <title>" heading.
+//        | { t: "route", href, c }   in-app "#/..." link; only when parseMarkdown/renderMarkdown get { routeLinks: true }
+// renderMarkdown opts: refHref(id) -> href for ref links; dropTitle (string) drops a leading "# <title>" heading;
+// routeLinks (bool) turns safe in-app "#/..." links into clickable links (help pages and chatbot answers only).
 // Not supported on purpose: images, raw HTML, indented code, setext headings, footnotes.
 import { h } from "./dom.js";
 
@@ -31,13 +33,16 @@ const DELIM_CELL = /^:?-+:?$/;
 const VIDEO_MD = /(?:^|\/)videos\/([^/?#\s]+)\.md$/;
 const HAS_SCHEME = /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i;
 const WORD_CHAR = /[\p{L}\p{N}]/u;
+const ROUTE_HREF = /^#\/[A-Za-z0-9_\-./%]*$/;
+let routeLinks = false;   // set for the duration of one synchronous parseMarkdown call
 
 // ---- block parsing ------------------------------------------------------------------------
 
-export function parseMarkdown(text) {
+export function parseMarkdown(text, opts = {}) {
   const src = String(text === null || text === undefined ? "" : text).replace(/\r\n?/g, "\n");
   const lines = src.split("\n").map((ln) => ln.replace(/^\t+/, (m) => "    ".repeat(m.length)));
-  return parseBlocks(lines, 0);
+  routeLinks = !!opts.routeLinks;
+  try { return parseBlocks(lines, 0); } finally { routeLinks = false; }
 }
 
 const isBlank = (ln) => ln.trim() === "";
@@ -217,6 +222,7 @@ function destinationOf(rawHref) {
 }
 
 function classifyLink(href, children) {
+  if (routeLinks && ROUTE_HREF.test(href)) return { t: "route", href, c: children };
   const video = HAS_SCHEME.test(href) ? null : VIDEO_MD.exec(href);
   if (video) {
     let id = video[1];
@@ -404,7 +410,7 @@ const defaultRefHref = (id) => "#/refs/" + encodeURIComponent(id);
 export function renderMarkdown(text, opts = {}) {
   const refHref = typeof opts.refHref === "function" ? opts.refHref : defaultRefHref;
   const frag = document.createDocumentFragment();
-  const blocks = parseMarkdown(text);
+  const blocks = parseMarkdown(text, { routeLinks: !!opts.routeLinks });
   const first = blocks[0];
   // opts.dropTitle: skip a leading "# <title>" that only repeats the page heading
   if (typeof opts.dropTitle === "string" && first && first.t === "heading" && first.level === 1 &&
@@ -426,6 +432,7 @@ function renderInline(nodes, refHref) {
       case "strong": return h("strong", {}, ...renderInline(node.c, refHref));
       case "em": return h("em", {}, ...renderInline(node.c, refHref));
       case "ref": return h("a", { href: refHref(node.id) }, ...renderInline(node.c, refHref));
+      case "route": return h("a", { href: node.href }, ...renderInline(node.c, refHref));
       case "link":
         return h("a", { href: node.href, target: "_blank", rel: "noopener noreferrer" }, ...renderInline(node.c, refHref));
       default: return "";
