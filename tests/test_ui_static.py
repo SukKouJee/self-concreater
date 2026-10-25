@@ -819,3 +819,26 @@ def test_home_layout_tokens():
         assert re.search(rf"^{re.escape(sel)}[\s{{.,:\[]", css, re.M), sel
     narrow = [m.group(1) for m in re.finditer(r"@media \(max-width: 720px\) \{(.*?)\n\}", css, re.S)]
     assert any(".vid-row" in block for block in narrow)
+
+
+def _media_blocks(css, width):
+    return [m.group(1) for m in re.finditer(rf"@media \(max-width: {width}px\) \{{(.*?)\n\}}", css, re.S)]
+
+
+def test_home_narrow_layout_wraps_instead_of_overflowing():
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    narrow = "\n".join(_media_blocks(css, 560))
+
+    def rule(sel):
+        m = re.search(rf"^\s*{re.escape(sel)} \{{([^}}]*)\}}", narrow, re.M)
+        assert m, sel
+        return m.group(1)
+
+    assert "flex-direction: column" in rule(".home-next")              # primary button goes under the text
+    assert "grid-template-columns: minmax(0, 1fr)" in rule(".vid-row")  # next button on its own row
+    assert "flex: 1 1 0" in rule(".vid-step") and "min-width: 0" in rule(".vid-step")  # dots share the width
+    assert "flex-basis: 100%" in rule(".cat-tags")                     # tags get their own wrapping row
+    assert "flex-wrap: wrap" in rule(".recent li")                     # date drops below the file name
+    # tags wrap in every width; two-column cards never demand more than the viewport
+    assert "flex-wrap: wrap" in re.search(r"^\.cat-tags \{([^}]*)\}", css, re.M).group(1)
+    assert "minmax(min(300px, 100%), 1fr)" in re.search(r"^\.grid-2 \{([^}]*)\}", css, re.M).group(1)

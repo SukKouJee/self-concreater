@@ -128,7 +128,7 @@ code { background: var(--grid); padding: 1px 6px; border-radius: 4px; }
   box-shadow: var(--elev-1); }
 .card-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-3); flex-wrap: wrap; margin-bottom: var(--sp-3); }
 .card > h1, .card > h2 { margin-bottom: var(--sp-3); }
-.grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: var(--sp-4); }
+.grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: var(--sp-4); }
 .grid-2 > .card { margin: 0; }
 
 /* step bar */
@@ -198,7 +198,7 @@ code { background: var(--grid); padding: 1px 6px; border-radius: 4px; }
 .vid-more { margin-top: var(--sp-2); }
 .cat-line { display: flex; align-items: center; gap: var(--sp-2) var(--sp-3); flex-wrap: wrap; }
 .cat-line .cat-name { font-size: 15px; font-weight: 700; margin: 0; }
-.cat-tags { list-style: none; margin: 0; padding: 0; display: inline-flex; flex-wrap: wrap; gap: 6px; }
+.cat-tags { list-style: none; margin: 0; padding: 0; display: inline-flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .cat-tag { font-size: 12px; padding: 2px 10px; border-radius: 999px; background: var(--chip); color: var(--ink2); white-space: nowrap; }
 .cat-tag-done { background: color-mix(in srgb, var(--ok) 14%, var(--surface)); color: var(--ink); }
 .cat-tag-done::before { content: "✓ "; color: var(--ok); font-weight: 700; }
@@ -249,9 +249,20 @@ code { background: var(--grid); padding: 1px 6px; border-radius: 4px; }
   .vid-step { width: 50px; }
   .cat-stage { margin-left: 0; flex-basis: 100%; }
 }
-@media (max-width: 420px) {
-  .vid-row { grid-template-columns: 1fr; }
+@media (max-width: 560px) {
+  /* phone width: nothing may be wider than the screen. Next-action button under the text, the row's next
+     button on its own row under the dots, the six dots share the row width, tags and dates wrap. */
+  .home-next { flex-direction: column; align-items: stretch; gap: var(--sp-3); }
+  .home-next-body { min-width: 0; }
+  .home-next > .btn { align-self: flex-start; max-width: 100%; white-space: normal; }
+  .vid-row { grid-template-columns: minmax(0, 1fr); }
+  .vid-steps { width: 100%; }
+  .vid-step { flex: 1 1 0; min-width: 0; width: auto; }
+  .vid-film { min-width: 0; width: 100%; }
   .vid-end { justify-self: start; }
+  .cat-tags { flex-basis: 100%; }
+  .recent li { flex-wrap: wrap; }
+  .recent time { flex-basis: 100%; }
 }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
