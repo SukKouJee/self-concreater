@@ -210,12 +210,12 @@ code { background: var(--grid); padding: 1px 6px; border-radius: 4px; }
 .step-main { display: grid; grid-template-columns: 4.5em minmax(60px, 1fr) minmax(0, auto); gap: var(--sp-3); align-items: center; font-size: 13px; }
 .step-name { font-weight: 600; }
 .step-time { text-align: right; font-variant-numeric: tabular-nums; color: var(--ink2); }
-.step-done .step-time { color: var(--ok); }
-.step-failed .step-time { color: var(--danger); }
-.step-pending .step-name, .step-pending .step-time, .step-skipped .step-name, .step-skipped .step-time { color: var(--muted); }
+.row-done .step-time { color: var(--ok); }
+.row-failed .step-time { color: var(--danger); }
+.row-pending .step-name, .row-pending .step-time, .row-skipped .step-name, .row-skipped .step-time { color: var(--muted); }
 .bar { display: block; height: 8px; border-radius: 4px; background: var(--grid); overflow: hidden; }
 .bar-fill { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 4px; transition: width 0.9s linear; }
-.step-done .bar-fill { background: var(--ok); }
+.row-done .bar-fill { background: var(--ok); }
 .is-over .bar-fill { background: var(--s4); }
 .bar-indet .bar-fill { width: 30% !important; animation: bar-slide 1.6s ease-in-out infinite alternate; }
 @keyframes bar-slide { from { margin-left: 0; } to { margin-left: 70%; } }

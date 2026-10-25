@@ -360,11 +360,12 @@ function stepChips(item) {
 
 // ---- step rows (progress bars, remaining time) --------------------------------
 
-function pctOf(row) {
-  return typeof row.fraction === "number" ? Math.round(Math.min(1, Math.max(0, row.fraction)) * 100) : null;
+// Percent shown for a measured row: the displayed (never-decreasing) bar value, so text, bar and aria agree.
+function shownPct(row, shown) {
+  return typeof row.fraction === "number" && shown !== null ? Math.round(Math.min(1, Math.max(0, shown)) * 100) : null;
 }
 
-function rowText(row, v) {
+function rowText(row, v, p) {
   const exp = v.expected;
   const hasExp = exp !== null && exp !== undefined;
   switch (row.state) {
@@ -375,7 +376,6 @@ function rowText(row, v) {
     case "skipped":
       return "건너뜀";
     case "running": {
-      const p = pctOf(row);
       const pct = p === null ? "" : `${p}% · `;
       return hasExp ? `${pct}${fmtDur(v.elapsed)} / 예상 ${fmtDur(exp)}` : `${pct}${fmtDur(v.elapsed)} · 예상 계산 중`;
     }
@@ -397,11 +397,13 @@ function buildStepRow(key) {
 function paintStepRow(r, key, row, nowS, frozen) {
   const v = rowView(row, nowS);
   const running = row.state === "running";
-  r.li.className = `step-row step-${row.state}${running && v.over ? " is-over" : ""}`;
-  r.time.textContent = rowText(row, v);
+  // Row state classes are row-* so they never pick up the guide's .step-done/.step-current styles.
+  r.li.className = `step-row row-${row.state}${running && v.over ? " is-over" : ""}`;
   // The shown bar never moves backward (estimate-based value -> measured fraction, or a grown estimate).
   if (running) r.maxFrac = monotonicFraction(r.maxFrac, v.fraction);
   const shown = running ? r.maxFrac : v.fraction;
+  const p = running ? shownPct(row, shown) : null;
+  r.time.textContent = rowText(row, v, p);
   r.fill.style.width = `${shown === null ? 0 : Math.round(shown * 100)}%`;
   r.bar.classList.toggle("bar-indet", running && shown === null && !frozen && row.paused_at == null);
   if (!running) {
@@ -416,7 +418,6 @@ function paintStepRow(r, key, row, nowS, frozen) {
   r.bar.setAttribute("aria-label", `${ROW_NAMES[key] || key} 진행률`);
   r.bar.setAttribute("aria-valuemin", "0");
   r.bar.setAttribute("aria-valuemax", "100");
-  const p = pctOf(row);
   if (p !== null) {
     r.bar.setAttribute("aria-valuenow", String(p));
     r.bar.removeAttribute("aria-valuetext");
@@ -429,7 +430,9 @@ function paintStepRow(r, key, row, nowS, frozen) {
   const parts = [];
   if (row.phase_text) parts.push(row.phase_text);
   if (!frozen) {
-    if (v.over) parts.push("예상보다 길어지는 중", "곧 끝날 예정");
+    // Over the estimate: a measured fraction still gives a real remaining time; only unmeasured rows say "soon".
+    if (v.over) parts.push("예상보다 길어지는 중");
+    if (v.over && !v.byFraction) parts.push("곧 끝날 예정");
     else if (v.remaining !== null) parts.push(`${fmtRemain(v.remaining, false)} 남음`, `${fmtClock(nowS + v.remaining)}쯤 끝`);
   }
   r.sub.textContent = parts.join(" · ");

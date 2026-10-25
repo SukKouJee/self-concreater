@@ -665,3 +665,21 @@ def test_add_page_step_progress_wiring():
     for needle in ['"progressbar"', "aria-valuenow", "aria-valuetext", "확인을 기다리는 중", "예상보다 길어지는 중", "곧 끝날 예정"]:
         assert needle in js, needle
     assert ".is-over .bar-fill" in css and "prefers-reduced-motion" in css
+
+
+def test_add_page_step_rows_use_own_state_classes():
+    # 가이드 단계(.step-done/.step-current)와 겹치지 않게 줄 상태는 row-* 클래스를 쓴다.
+    js = (STATIC_DIR / "pages" / "add.js").read_text(encoding="utf-8")
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    assert "step-${row.state}" not in js and "row-${row.state}" in js
+    for sel in [".row-done .step-time", ".row-failed .step-time", ".row-pending .step-name", ".row-done .bar-fill"]:
+        assert sel in css, sel
+    assert not re.search(r"\.step-(done|failed|pending|skipped) \.(step-time|step-name|bar-fill)", css)
+
+
+def test_add_page_over_text_and_shown_percent():
+    js = (STATIC_DIR / "pages" / "add.js").read_text(encoding="utf-8")
+    paint = js[js.index("function paintStepRow"):js.index("function stepRows")]
+    assert "v.byFraction" in paint
+    assert "pctOf(row)" not in paint                     # % 글자와 aria-valuenow는 보이는 막대 값을 쓴다
+    assert paint.index("monotonicFraction") < paint.index("rowText(")
