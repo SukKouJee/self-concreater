@@ -200,12 +200,12 @@ def test_step_weights_follow_time_with_a_floor():
     eq = run_js('m.stepWeights({steps: {a: {state: "pending", expected: null}, b: {state: "pending", expected: null}}}, 0)')
     assert eq == {"a": 0.5, "b": 0.5}
     # 모두 건너뜀·실패(시간 0 또는 모름)면 똑같이 나눈다
-    allz = run_js('m.stepWeights({steps: {a: {state: "skipped", expected: 9}, b: {state: "failed", elapsed: null}}}, 0)')
-    assert allz == {"a": 0.5, "b": 0.5}
-    # 진행 중인 줄의 남은 시간을 모르면 예상값으로 센다
-    run = run_js('m.stepWeights({steps: {a: {state: "running", started_at: 0, expected: 100},'
+    allz = run_js('m.stepWeights({steps: {a: {state: "skipped", expected: 9}, b: {state: "failed", elapsed: 0}}}, 0)')
+    assert allz == {"a": 0.5, "b": 0.5}                        # 시간 합이 0
+    # 진행 중인 줄의 남은 시간도 예상도 모르면 똑같이 나눈다
+    run = run_js('m.stepWeights({steps: {a: {state: "running", started_at: 0, expected: null},'
                  ' b: {state: "pending", expected: 100}}}, 10)')
-    assert abs(run["a"] - run["b"]) < 1e-9
+    assert run == {"a": 0.5, "b": 0.5}
 
 
 def test_item_progress_flags_an_overdue_unmeasured_step():
