@@ -66,8 +66,10 @@ def home(monkeypatch, tmp_path):
 def fake_download(monkeypatch, sample_video):
     calls = []
 
-    def download_video(video_id, out_dir, proxy):
+    def download_video(video_id, out_dir, proxy, progress=None):
         calls.append(video_id)
+        if progress is not None:
+            progress("download", 1.0, "영상 받는 중 100%")
         out_dir.mkdir(parents=True, exist_ok=True)
         dest = out_dir / f"{video_id}.mp4"
         shutil.copy(sample_video, dest)
@@ -192,6 +194,159 @@ def test_force_reanalyzes_and_replaces_frames(home, fake_download):
 def test_main_parses_url(home, fake_download):
     out = cuts.main([f"https://youtube.com/shorts/{VID}"])
     assert out["id"] == VID
+
+
+# --- 진행 콜백 ------------------------------------------------------------------
+
+class Recorder:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, phase, fraction, text):
+        self.calls.append((phase, fraction, text))
+
+    def of(self, phase):
+        return [c for c in self.calls if c[0] == phase]
+
+
+def test_download_progress_hook():
+    rec = Recorder()
+    hook = cuts.download_progress_hook(rec)
+    hook({"status": "downloading", "downloaded_bytes": 50, "total_bytes": 100})
+    assert rec.calls == [("download", 0.5, "영상 받는 중 50%")]
+
+
+def test_download_progress_uses_estimate_and_finishes_at_one():
+    rec = Recorder()
+    hook = cuts.download_progress_hook(rec)
+    hook({"status": "downloading", "downloaded_bytes": 25, "total_bytes": None, "total_bytes_estimate": 100})
+    hook({"status": "finished", "downloaded_bytes": 100, "total_bytes": 100})
+    assert [c[1] for c in rec.calls] == [0.25, 1.0]
+    assert rec.calls[-1][2] == "영상 받는 중 100%"
+
+
+def test_download_progress_never_goes_backward():
+    rec = Recorder()
+    hook = cuts.download_progress_hook(rec)
+    hook({"status": "downloading", "downloaded_bytes": 60, "total_bytes_estimate": 100})
+    hook({"status": "downloading", "downloaded_bytes": 61, "total_bytes_estimate": 200})   # 추정치가 커짐
+    assert [c[1] for c in rec.calls] == [0.6, 0.6]
+    assert rec.calls[-1][2] == "영상 받는 중 60%"
+
+
+def test_download_progress_without_total():
+    rec = Recorder()
+    hook = cuts.download_progress_hook(rec)
+    hook({"status": "downloading", "downloaded_bytes": 3_500_000})
+    hook({"status": "downloading"})
+    assert [c[:2] for c in rec.calls] == [("download", None), ("download", None)]
+    assert all(c[2].startswith("영상 받는 중") for c in rec.calls)
+
+
+def test_download_progress_hook_survives_raising_callback(capsys):
+    def boom(*a):
+        raise RuntimeError("ui gone")
+
+    hook = cuts.download_progress_hook(boom)
+    hook({"status": "downloading", "downloaded_bytes": 50, "total_bytes": 100})   # 예외가 새지 않는다
+    assert "ui gone" in capsys.readouterr().err
+
+
+def _fake_ydl(seen, tmp_path, emit):
+    class FakeYDL:
+        def __init__(self, opts):
+            seen["opts"] = opts
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def extract_info(self, url, download):
+            f = {"format_id": "b", "width": 640, "height": 360, "vcodec": "avc1", "protocol": "https", "ext": "mp4"}
+            list(seen["opts"]["format"]({"formats": [f]}))
+            if emit:
+                for hook in seen["opts"]["progress_hooks"]:
+                    hook({"status": "downloading", "downloaded_bytes": 1, "total_bytes": 4})
+            (tmp_path / f"{VID}.mp4").write_bytes(b"v")
+            return {}
+
+    return FakeYDL
+
+
+def test_download_video_registers_progress_hook(monkeypatch, tmp_path):
+    yt_dlp = pytest.importorskip("yt_dlp")
+    seen = {}
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", _fake_ydl(seen, tmp_path, emit=True))
+    rec = Recorder()
+    cuts.download_video(VID, tmp_path, None, progress=rec)
+    assert rec.calls == [("download", 0.25, "영상 받는 중 25%")]
+
+
+def test_download_video_without_progress_has_no_hook(monkeypatch, tmp_path):
+    yt_dlp = pytest.importorskip("yt_dlp")
+    seen = {}
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", _fake_ydl(seen, tmp_path, emit=False))
+    cuts.download_video(VID, tmp_path, None)
+    assert "progress_hooks" not in seen["opts"]
+
+
+def test_analyze_video_reports_scenes_and_camera(sample_video, tmp_path):
+    rec = Recorder()
+    with_progress = cuts.analyze_video(sample_video, tmp_path / "a", progress=rec)
+    without = cuts.analyze_video(sample_video, tmp_path / "b")
+    assert with_progress == without
+
+    scenes = [c[1] for c in rec.of("scenes")]
+    assert len(scenes) >= 3
+    assert scenes == sorted(scenes)
+    assert scenes[0] < 0.5 and scenes[-1] == 1.0
+    assert all(0.0 <= f <= 1.0 for f in scenes)
+    assert rec.of("scenes")[-1][2] == "장면 확인 중 (180 / 180 프레임)"
+
+    camera = rec.of("camera")
+    assert [c[1] for c in camera] == pytest.approx([1 / 3, 2 / 3, 1.0])
+    assert camera[-1][2] == "카메라 움직임 확인 중 (3 / 3 장면)"
+    phases = [c[0] for c in rec.calls]
+    assert phases.index("camera") > max(i for i, p in enumerate(phases) if p == "scenes")
+
+
+def test_scene_progress_text_uses_thousands_separator():
+    assert cuts.scene_progress_text(38_800, 62_600) == "장면 확인 중 (38,800 / 62,600 프레임)"
+    assert cuts.camera_progress_text(300, 1_688) == "카메라 움직임 확인 중 (300 / 1,688 장면)"
+
+
+def test_analyze_video_survives_raising_callback(sample_video, tmp_path, capsys):
+    def boom(*a):
+        raise RuntimeError("ui gone")
+
+    result = cuts.analyze_video(sample_video, tmp_path / "frames", progress=boom)
+    assert len(result["scenes"]) == 3
+    assert "ui gone" in capsys.readouterr().err
+
+
+def test_cut_stats_reports_phases_in_order(home, fake_download):
+    rec = Recorder()
+    cuts.cut_stats(VID, progress=rec)
+    order = []
+    for phase, _, _ in rec.calls:
+        if not order or order[-1] != phase:
+            order.append(phase)
+    assert order == ["download", "scenes", "camera"]       # 간격 0이면 기다림 보고는 없다
+
+
+def test_cut_stats_reports_wait(home, fake_download, monkeypatch):
+    from scripts import fetch
+
+    monkeypatch.setenv("YT_FETCH_INTERVAL", "3")
+    monkeypatch.setattr(fetch.time, "sleep", lambda s: None)
+    (home / "workspace").mkdir(exist_ok=True)
+    (home / "workspace" / ".last_fetch").write_text(str(fetch.time.time()), encoding="utf-8")
+    rec = Recorder()
+    cuts.cut_stats(VID, progress=rec)
+    assert rec.calls[0][0] == "wait"
+    assert [c[0] for c in rec.calls if c[0] != "wait"][0] == "download"
 
 
 # --- 컷 찾기(가벼운 버전) --------------------------------------------------------

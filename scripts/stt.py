@@ -15,7 +15,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from scripts.common import ArgParser, ScriptError, run, workspace_dir
+from scripts.common import ArgParser, Progress, ScriptError, run, safe_progress, workspace_dir
 from scripts.fetch import load_raw, save_raw, ytdlp_error, ytdlp_options
 
 DEFAULT_MODEL = "small"
@@ -72,7 +72,25 @@ def decode_audio(path: Path):
     return np.concatenate(chunks).astype(np.float32) / 32768.0
 
 
-def transcribe(video_id: str, force: bool = False) -> dict:
+def _clock(sec: float) -> str:
+    total = int(sec)
+    h, rest = divmod(total, 3600)
+    m, s = divmod(rest, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def stt_progress_text(done_sec: float, duration_sec: float | None) -> str:
+    if not duration_sec:
+        return f"음성 인식 중 {_clock(done_sec)}"
+    return f"음성 인식 중 {_clock(min(done_sec, duration_sec))} / {_clock(duration_sec)}"
+
+
+def transcribe(video_id: str, force: bool = False, progress: Progress | None = None) -> dict:
+    """progress가 있으면 segment마다 ("stt", 끝 시각/영상 길이, "음성 인식 중 12:30 / 43:31")을 알린다.
+
+    segments는 순서대로 나오는 생성기라 끝 시각이 곧 처리한 음성 위치다. 길이는 Whisper가 잰
+    오디오 길이, 없으면 raw 메타의 duration. 둘 다 없으면 진행률은 None.
+    """
     data = load_raw(video_id)
     if data.get("transcript") and not force:
         return {"id": video_id, "status": "exists", "source": data["transcript"]["source"]}
@@ -80,12 +98,23 @@ def transcribe(video_id: str, force: bool = False) -> dict:
     WhisperModel = _load_whisper()
     model_name = os.environ.get("YT_STT_MODEL") or DEFAULT_MODEL
     tmp_dir = workspace_dir("tmp")
+    report = safe_progress(progress)
     try:
+        if report is not None:
+            report("stt", None, "음성 받는 중")
         audio = download_audio(video_id, tmp_dir, os.environ.get("YT_PROXY") or None)
+        if report is not None:
+            report("stt", None, "음성 인식 준비 중")
         model = WhisperModel(model_name, device="cpu", compute_type="int8")
         segments, info = model.transcribe(decode_audio(audio), language=None, vad_filter=True)
-        segs = [{"start": round(s.start, 2), "dur": round(s.end - s.start, 2), "text": s.text.strip()}
-                for s in segments if s.text.strip()]
+        duration = getattr(info, "duration", None) or (data.get("meta") or {}).get("duration") or None
+        segs = []
+        for s in segments:
+            if s.text.strip():
+                segs.append({"start": round(s.start, 2), "dur": round(s.end - s.start, 2), "text": s.text.strip()})
+            if report is not None:
+                fraction = min(1.0, max(0.0, s.end / duration)) if duration else None
+                report("stt", fraction, stt_progress_text(s.end, duration))
         # 말이 없으면(ASMR·음악) 감지 언어는 의미가 없다
         data["transcript"] = {"source": "stt", "language": info.language if segs else None, "segments": segs}
     finally:

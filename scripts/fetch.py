@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import time
@@ -28,7 +29,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from scripts import refstore
-from scripts.common import ArgParser, ScriptError, run, work_root, workspace_dir
+from scripts.common import ArgParser, Progress, ScriptError, run, safe_progress, work_root, workspace_dir
 
 SHORTS_MAX_SEC = 180
 # 공백 제외 글자 수 / 영상 길이(초)가 이보다 낮으면 말이 거의 없는 영상으로 본다
@@ -217,17 +218,26 @@ def get_transcript(video_id: str, proxy: str | None, original: str | None = None
 
 # --- 수집 흐름 ----------------------------------------------------------------
 
-def wait_turn() -> None:
-    """마지막 네트워크 수집 이후 최소 간격이 지날 때까지 기다린다 (프로세스 간 공유)."""
+def wait_turn(progress: Progress | None = None) -> None:
+    """마지막 네트워크 수집 이후 최소 간격이 지날 때까지 기다린다 (프로세스 간 공유).
+
+    progress가 있으면 1초마다 ("wait", None, "차단 방지 대기 N초")로 남은 대기를 알린다.
+    """
     interval = float(os.environ.get("YT_FETCH_INTERVAL") or FETCH_INTERVAL_SEC)
     stamp = workspace_dir(".last_fetch")
+    report = safe_progress(progress)
     if stamp.exists():
         try:
             wait = float(stamp.read_text("utf-8")) + interval - time.time()
         except ValueError:
             wait = 0
-        if wait > 0:
+        if wait > 0 and report is None:
             time.sleep(wait)
+        while wait > 0 and report is not None:
+            report("wait", None, f"차단 방지 대기 {math.ceil(wait)}초")
+            step = min(1.0, wait)
+            time.sleep(step)
+            wait -= step
     stamp.parent.mkdir(parents=True, exist_ok=True)
     stamp.write_text(str(time.time()), encoding="utf-8")
 

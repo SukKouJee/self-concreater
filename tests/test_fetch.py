@@ -351,3 +351,55 @@ def test_interval_from_env(home, net, monkeypatch):
     fetch.fetch(VID)
     fetch.fetch(VID, force=True)
     assert net["sleeps"] == [pytest.approx(10.0)]
+
+
+def _clock(monkeypatch, sleeps):
+    clock = [1000.0]
+    monkeypatch.setattr(fetch.time, "time", lambda: clock[0])
+    monkeypatch.setattr(fetch.time, "sleep", lambda s: sleeps.append(s))
+    return clock
+
+
+def test_wait_turn_reports_remaining(home, monkeypatch):
+    sleeps = []
+    monkeypatch.setenv("YT_FETCH_INTERVAL", "3")
+    clock = _clock(monkeypatch, sleeps)
+    fetch.wait_turn()
+    clock[0] += 0.5                                  # 남은 대기 2.5초
+    calls = []
+    fetch.wait_turn(progress=lambda *a: calls.append(a))
+    assert calls == [("wait", None, "차단 방지 대기 3초"), ("wait", None, "차단 방지 대기 2초"),
+                     ("wait", None, "차단 방지 대기 1초")]
+    assert sleeps == [pytest.approx(1.0), pytest.approx(1.0), pytest.approx(0.5)]
+
+
+def test_wait_turn_without_progress_sleeps_once(home, monkeypatch):
+    sleeps = []
+    monkeypatch.setenv("YT_FETCH_INTERVAL", "3")
+    clock = _clock(monkeypatch, sleeps)
+    fetch.wait_turn()
+    clock[0] += 0.5
+    fetch.wait_turn()
+    assert sleeps == [pytest.approx(2.5)]
+
+
+def test_wait_turn_no_wait_no_report(home, monkeypatch):
+    monkeypatch.setenv("YT_FETCH_INTERVAL", "0")
+    calls = []
+    fetch.wait_turn(progress=lambda *a: calls.append(a))
+    fetch.wait_turn(progress=lambda *a: calls.append(a))
+    assert calls == []
+
+
+def test_wait_turn_survives_raising_callback(home, monkeypatch, capsys):
+    sleeps = []
+    monkeypatch.setenv("YT_FETCH_INTERVAL", "2")
+    _clock(monkeypatch, sleeps)
+    fetch.wait_turn()
+
+    def boom(*a):
+        raise RuntimeError("ui gone")
+
+    fetch.wait_turn(progress=boom)
+    assert sum(sleeps) == pytest.approx(2.0)
+    assert "ui gone" in capsys.readouterr().err
