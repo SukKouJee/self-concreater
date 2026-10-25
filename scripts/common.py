@@ -127,7 +127,10 @@ Progress = Callable[[str, float | None, str], None]
 
 
 def safe_progress(progress: Progress | None) -> Progress | None:
-    """콜백 오류가 수집을 깨지 않게 감싼다. 진행 표시는 보조 정보라 오류는 stderr에 한 번만 남긴다."""
+    """콜백 오류가 수집을 깨지 않게 감싼다. 진행 표시는 보조 정보라 오류는 stderr에 한 번만 남긴다.
+
+    콜백은 취소 통로가 아니다: 콜백에서 던진 예외는 삼켜지므로 취소는 작업(job) 단위에서 한다.
+    """
     if progress is None:
         return None
     failed = False

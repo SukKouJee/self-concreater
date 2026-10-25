@@ -51,7 +51,7 @@ SCENE_REPORTS = 500       # 장면 감지 중 진행 보고 횟수(전체 프레
 UNKNOWN_TOTAL_EVERY = 30  # 전체 프레임 수를 모를 때 이 프레임마다 알린다
 
 if TYPE_CHECKING:
-    from scenedetect import FrameTimecode
+    from scenedetect import ContentDetector, FrameTimecode
 
 
 # --- 다운로드 -----------------------------------------------------------------
@@ -208,6 +208,31 @@ def camera_progress_text(done: int, total: int) -> str:
     return f"카메라 움직임 확인 중 ({done:,} / {total:,} 장면)"
 
 
+def reporting_detector(report: Progress, total: int) -> ContentDetector:
+    """process_frame에서 읽은 프레임 수를 ("scenes", 읽은/전체, 글)로 알리는 ContentDetector.
+
+    scenedetect 0.6은 프레임 번호를 int로, 0.7은 FrameTimecode로 넘긴다. 둘 다 int()가 된다.
+    전체 프레임 수(컨테이너 값)를 모르거나 실제보다 작아 읽은 수가 넘어서면 100%에 멈추지 않도록
+    진행률을 None으로 보내고 글에는 실제 읽은 수만 쓴다(화면은 앞 값을 유지해 뒤로 가지 않는다).
+    """
+    from scenedetect import ContentDetector
+
+    every = max(1, total // SCENE_REPORTS) if total > 0 else UNKNOWN_TOTAL_EVERY
+
+    class _Reporting(ContentDetector):
+        def process_frame(self, timecode: FrameTimecode | int, frame_img: np.ndarray) -> list[FrameTimecode]:
+            found: list[FrameTimecode] = super().process_frame(timecode, frame_img)
+            read = int(timecode) + 1
+            if read % every == 0:
+                if 0 < total and read < total:
+                    report("scenes", read / total, scene_progress_text(read, total))
+                else:
+                    report("scenes", None, scene_progress_text(read, None))
+            return found
+
+    return _Reporting(threshold=SCENE_THRESHOLD, min_scene_len=MIN_SCENE_FRAMES)
+
+
 def detect_scenes(path: Path, progress: Progress | None = None) -> list[tuple[FrameTimecode, FrameTimecode]]:
     """scenedetect.detect()와 같은 장면 목록. progress가 있으면 ("scenes", 읽은 프레임/전체, 글)을 알린다.
 
@@ -223,22 +248,7 @@ def detect_scenes(path: Path, progress: Progress | None = None) -> list[tuple[Fr
         detector = ContentDetector(threshold=SCENE_THRESHOLD, min_scene_len=MIN_SCENE_FRAMES)
     else:
         total = video.duration.frame_num if video.duration is not None else 0
-        every = max(1, total // SCENE_REPORTS) if total > 0 else UNKNOWN_TOTAL_EVERY
-        reporter = report
-
-        class _Reporting(ContentDetector):
-            def process_frame(self, timecode: FrameTimecode, frame_img: np.ndarray) -> list[FrameTimecode]:
-                found: list[FrameTimecode] = super().process_frame(timecode, frame_img)
-                read = timecode.frame_num + 1
-                if read % every == 0:
-                    if total > 0:
-                        shown = min(read, total)
-                        reporter("scenes", shown / total, scene_progress_text(shown, total))
-                    else:
-                        reporter("scenes", None, scene_progress_text(read, None))
-                return found
-
-        detector = _Reporting(threshold=SCENE_THRESHOLD, min_scene_len=MIN_SCENE_FRAMES)
+        detector = reporting_detector(report, total)
 
     manager = SceneManager()
     manager.add_detector(detector)

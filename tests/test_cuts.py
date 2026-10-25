@@ -298,7 +298,7 @@ def test_analyze_video_reports_scenes_and_camera(sample_video, tmp_path):
     without = cuts.analyze_video(sample_video, tmp_path / "b")
     assert with_progress == without
 
-    scenes = [c[1] for c in rec.of("scenes")]
+    scenes = [c[1] for c in rec.of("scenes") if c[1] is not None]
     assert len(scenes) >= 3
     assert scenes == sorted(scenes)
     assert scenes[0] < 0.5 and scenes[-1] == 1.0
@@ -404,3 +404,48 @@ def test_detect_cuts_with_korean_file_name(sample_video, tmp_path):
     shutil.copy(sample_video, korean)
     result = cuts.detect_cuts(korean)
     assert len(result["cuts"]) == 2 and result["duration_sec"] == pytest.approx(6.0, abs=0.1)
+
+
+# --- 장면 감지기 진행(버전 호환·전체 프레임 수 오차) -------------------------------
+
+def _frame():
+    return np.zeros((H, W, 3), dtype=np.uint8)
+
+
+@pytest.fixture
+def plain_super(monkeypatch):
+    """설치된 0.7의 ContentDetector는 int를 못 받으므로, 0.6처럼 int를 받는 부모로 바꾼다."""
+    from scenedetect import ContentDetector
+
+    monkeypatch.setattr(ContentDetector, "process_frame", lambda self, timecode, frame: [])
+
+
+def test_reporting_detector_accepts_int_frame_numbers(plain_super):
+    # scenedetect 0.6.x는 process_frame에 FrameTimecode가 아니라 int를 넘긴다
+    rec = Recorder()
+    detector = cuts.reporting_detector(rec, total=4)
+    for n in range(4):
+        detector.process_frame(n, _frame())
+    assert [c[1] for c in rec.of("scenes")][:3] == [0.25, 0.5, 0.75]
+
+
+def test_reporting_detector_accepts_frame_timecodes():
+    from scenedetect import FrameTimecode
+
+    rec = Recorder()
+    detector = cuts.reporting_detector(rec, total=4)
+    for n in range(3):
+        detector.process_frame(FrameTimecode(n, float(FPS)), _frame())
+    assert [c[1] for c in rec.of("scenes")] == [0.25, 0.5, 0.75]
+    assert rec.of("scenes")[-1][2] == "장면 확인 중 (3 / 4 프레임)"
+
+
+def test_reporting_detector_does_not_pin_100_when_total_is_short(plain_super):
+    # 컨테이너 프레임 수(3)가 실제보다 작으면 1.0에 멈추지 않고 측정 불가로 실제 읽은 수를 보인다
+    rec = Recorder()
+    detector = cuts.reporting_detector(rec, total=3)
+    for n in range(5):
+        detector.process_frame(n, _frame())
+    calls = rec.of("scenes")
+    assert [c[1] for c in calls] == [1 / 3, 2 / 3, None, None, None]
+    assert calls[-1][2] == "장면 확인 중 (5 프레임)"
