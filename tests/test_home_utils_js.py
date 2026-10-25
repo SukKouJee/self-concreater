@@ -84,3 +84,10 @@ def test_target_text_seconds_under_a_minute_whole_minutes_from_60():
     assert run_js("[15, 45, 59.4, 59.6, 60, 90, 900, 0, -3, null, NaN].map(m.targetText)") == [
         "15초 목표", "45초 목표", "59초 목표", "1분 목표", "1분 목표", "2분 목표", "15분 목표", "", "", "", ""]
     assert run_js("m.videoMeta({date: '2026-10-25', target_sec: 15})") == "10월 25일 · 15초 목표"
+
+
+def test_is_folded_only_for_paths_behind_the_more_button():
+    vids = "[{path:'a'},{path:'b'},{path:'c'},{path:'d'},{path:'e'}]"
+    assert run_js(f"['a','c','d','e','x',null].map(p => m.isFolded({vids}, p))") == [
+        False, False, True, True, False, False]
+    assert run_js("m.isFolded([], 'a')") is False

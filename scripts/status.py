@@ -19,6 +19,8 @@ from scripts import conti, mission, refstore
 from scripts.common import ArgParser, ScriptError, run, work_root
 
 RECENT_LIMIT = 5
+# 메모장이 CP949로 저장한 md, 목록을 만든 뒤 지워진 md: 건너뛰고 나머지를 보여 준다
+_UNREADABLE = (ScriptError, OSError, UnicodeDecodeError)
 
 _STEPS = [
     ("collect", "레퍼런스 수집", "add"),
@@ -82,7 +84,7 @@ def _mine_records(category: str) -> tuple[int, set[str]]:
     for p in sorted((work_root() / "mine").glob("*.md")):
         try:
             fm = refstore.read_md(p)[0]
-        except ScriptError:
+        except _UNREADABLE:
             continue
         if fm.get("category") != category:
             continue
@@ -145,10 +147,13 @@ def _videos(category: str, _targets: set[str] | None = None) -> list[dict]:
             continue
         try:
             fm, body = refstore.read_md(p)
-        except ScriptError:
+            if fm.get("category") != category:
+                continue
+            # content_hash re-reads the file: it may be gone or replaced since the listing
+            video = _video(p, fm, body, targets)
+        except _UNREADABLE:
             continue
-        if fm.get("category") == category:
-            videos.append(_video(p, fm, body, targets))
+        videos.append(video)
     videos.sort(key=lambda v: v["path"], reverse=True)
     videos.sort(key=lambda v: v["date"] or "", reverse=True)
     videos.sort(key=lambda v: v["progress"], reverse=True)
@@ -191,7 +196,7 @@ def _category_status(entry: dict) -> dict:
     preliminary, _ = refstore._stage_limits()
     diagnosed, targets = _mine_records(category)
     videos = _videos(category, targets)
-    conti_count = sum(1 for v in videos if v["steps"][2]["done"])
+    conti_count = sum(1 for v in videos if next(s["done"] for s in v["steps"] if s["key"] == "conti"))
     typified = _typified_at(category) is not None
 
     done_detail = {

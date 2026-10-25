@@ -17,6 +17,11 @@ const NEXT_VERB = { conti: "콘티 만들기", filmed: "찍었으면 촬영함 �
 // Rows shown before the "N개 더 보기" button.
 export const VISIBLE_VIDEOS = 3;
 
+// True when `path` is one of the rows folded behind "N개 더 보기".
+export function isFolded(videos, path) {
+  return videos.slice(VISIBLE_VIDEOS).some((v) => v.path === path);
+}
+
 // Action for a video's next step: a link, the in-place filmed toggle, or nothing (video complete).
 export function nextButton(step, path) {
   if (step === "conti") return { text: "콘티 만들기", href: `#/conti/${encodeURIComponent(path)}` };

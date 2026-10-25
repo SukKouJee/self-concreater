@@ -224,7 +224,7 @@ def test_video_steps_from_files_and_filmed(home):
     d.write_text(d.read_text(encoding="utf-8") + "\n## 패키징\n- x\n", encoding="utf-8")
     (d.parent / f"{stem}-captions.mp4").write_bytes(b"")
     (home / "mine").mkdir(exist_ok=True)
-    (home / "mine" / "x.md").write_text(f"---\ncategory: {CAT}\ntarget: drafts\{d.name}\n---\n", encoding="utf-8")
+    (home / "mine" / "x.md").write_text(f"---\ncategory: {CAT}\ntarget: drafts\\{d.name}\n---\n", encoding="utf-8")
     v = _cat(status.overview())["videos"][0]
     assert all(s["done"] for s in v["steps"]) and v["next"] is None and v["progress"] == 4
     assert v["filmed_at"] == "2026-10-25"
@@ -261,6 +261,40 @@ def test_broken_draft_is_left_out_of_videos(home):
     standard_set(home)
     _video(home, "ok")
     (home / "drafts" / "broken.md").write_text("---\n: [\n---\n", encoding="utf-8")
+    assert [v["path"] for v in _videos(home)] == ["drafts/ok.md"]
+
+
+def test_cp949_draft_is_left_out_and_overview_still_works(home):
+    standard_set(home)
+    _video(home, "ok")
+    (home / "drafts" / "notepad.md").write_bytes(f"---\ncategory: {CAT}\ntitle: 메모장\n---\n본문\n".encode("cp949"))
+    assert [v["path"] for v in _videos(home)] == ["drafts/ok.md"]
+
+
+def test_cp949_mine_is_left_out_and_overview_still_works(home):
+    _video(home, "a")
+    (home / "mine").mkdir(exist_ok=True)
+    (home / "mine" / "notepad.md").write_bytes(
+        f"---\ncategory: {CAT}\ntarget: drafts/a.md\ntitle: 메모장\n---\n".encode("cp949"))
+    videos = _videos(home)
+    assert videos[0]["steps"][-1]["done"] is False
+    c = _cat(status.overview())
+    assert c["steps"][-1]["done"] is False
+
+
+def test_draft_deleted_before_hashing_is_left_out(home, monkeypatch):
+    standard_set(home)
+    _video(home, "ok")
+    _video(home, "gone")
+
+    real = conti.content_hash
+
+    def flaky(path):
+        if str(path).endswith("gone.md"):
+            raise FileNotFoundError(path)
+        return real(path)
+
+    monkeypatch.setattr(conti, "content_hash", flaky)
     assert [v["path"] for v in _videos(home)] == ["drafts/ok.md"]
 
 
@@ -328,3 +362,13 @@ def test_step_counts(home):
     counts = {s["key"]: s["count"] for s in _cat(status.overview())["steps"]}
     assert counts == {"collect": 10, "typify": None, "draft": 2, "conti": 1, "diagnose": 1}
     assert type(counts["draft"]) is int
+
+
+def test_conti_count_reads_the_conti_step_by_key(home, monkeypatch):
+    standard_set(home)
+    _video(home, "a", conti=True)
+    _video(home, "b")
+    monkeypatch.setattr(status, "VIDEO_STEPS", list(reversed(status.VIDEO_STEPS)))
+    c = _cat(status.overview())
+    conti_step = next(s for s in c["steps"] if s["key"] == "conti")
+    assert conti_step["count"] == 1 and conti_step["detail"] == "콘티 1개"

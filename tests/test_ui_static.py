@@ -811,13 +811,20 @@ def test_home_layout_tokens():
     assert "innerHTML" not in home
     assert "stepBar" not in home and "stage-notes" not in home
     # focus key is taken out at the start of mount; peers of one video are locked together
-    assert "const pendingFocus = focusAfter;" in home and "restoreFocus(el, pendingFocus)" in home
+    assert "const pendingFocus = focusAfter;" in home and "restoreFocus(el, pendingFocus, videos)" in home
+    # "더 보기" is pressed only when the focus target sits behind it
+    restore = home[home.index("function restoreFocus("):home.index("export async function mount(")]
+    assert "isFolded(videos, target.path)" in restore
+    # draft_changed: this video's toggles stay locked; "다시 불러오기" is the only way on
+    toggle = home[home.index("async function toggleFilmed("):home.index("// ---- 1.")]
+    assert re.search(r'const changed = e && e\.error === "draft_changed";\s*'
+                     r'if \(!changed\) for \(const b of peers\) b\.disabled = false;', toggle)
     assert home.count('"data-film-path": video.path') == 3
     assert '", 다음 단계"' in home
     css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
     for sel in [".home-next", ".vid-steps", ".cat-line"]:
         assert re.search(rf"^{re.escape(sel)}[\s{{.,:\[]", css, re.M), sel
-    narrow = [m.group(1) for m in re.finditer(r"@media \(max-width: 720px\) \{(.*?)\n\}", css, re.S)]
+    narrow = [m.group(1) for m in re.finditer(r"@container vid-list \(max-width: \d+px\) \{(.*?)\n\}", css, re.S)]
     assert any(".vid-row" in block for block in narrow)
 
 
@@ -825,20 +832,44 @@ def _media_blocks(css, width):
     return [m.group(1) for m in re.finditer(rf"@media \(max-width: {width}px\) \{{(.*?)\n\}}", css, re.S)]
 
 
+def _container_blocks(css, name, width):
+    return [m.group(1) for m in re.finditer(rf"@container {name} \(max-width: {width}px\) \{{(.*?)\n\}}", css, re.S)]
+
+
+def _rule(block, sel):
+    m = re.search(rf"^\s*{re.escape(sel)} \{{([^}}]*)\}}", block, re.M)
+    assert m, sel
+    return m.group(1)
+
+
 def test_home_narrow_layout_wraps_instead_of_overflowing():
     css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
-    narrow = "\n".join(_media_blocks(css, 560))
+    # Home rows follow their own width, not the viewport: the menu (240px) and the help panel (360px beside
+    # the content from 1100px) narrow the column while the window stays wide.
+    assert re.search(r"^\.home \{[^}]*container: home / inline-size", css, re.M)
+    assert re.search(r"^\.vid-list \{[^}]*container: vid-list / inline-size", css, re.M)
+    home_js = (STATIC_DIR / "pages" / "home.js").read_text(encoding="utf-8")
+    assert 'h("div", { class: "home" }' in home_js
+    for width in (720, 560):
+        for block in _media_blocks(css, width):
+            for sel in (".vid-row", ".vid-head", ".vid-step", ".vid-steps", ".vid-film", ".vid-end",
+                        ".home-next", ".home-next-body", ".cat-stage", ".cat-tags"):
+                assert not re.search(rf"^\s*{re.escape(sel)}[ ,>]", block, re.M), (width, sel)
 
-    def rule(sel):
-        m = re.search(rf"^\s*{re.escape(sel)} \{{([^}}]*)\}}", narrow, re.M)
-        assert m, sel
-        return m.group(1)
-
-    assert "flex-direction: column" in rule(".home-next")              # primary button goes under the text
-    assert "grid-template-columns: minmax(0, 1fr)" in rule(".vid-row")  # next button on its own row
-    assert "flex: 1 1 0" in rule(".vid-step") and "min-width: 0" in rule(".vid-step")  # dots share the width
-    assert "flex-basis: 100%" in rule(".cat-tags")                     # tags get their own wrapping row
-    assert "flex-wrap: wrap" in rule(".recent li")                     # date drops below the file name
+    rows_mid = "\n".join(_container_blocks(css, "vid-list", 640))     # title on top, dots + button below
+    assert "grid-template-columns: minmax(0, 1fr) auto" in _rule(rows_mid, ".vid-row")
+    assert "grid-column: 1 / -1" in _rule(rows_mid, ".vid-head")
+    rows = "\n".join(_container_blocks(css, "vid-list", 480))         # one column, dots share the width
+    assert "grid-template-columns: minmax(0, 1fr);" in _rule(rows, ".vid-row")
+    assert "flex: 1 1 0" in _rule(rows, ".vid-step") and "min-width: 0" in _rule(rows, ".vid-step")
+    assert "justify-self: start" in _rule(rows, ".vid-end")
+    cards_mid = "\n".join(_container_blocks(css, "home", 720))
+    assert "flex-basis: 100%" in _rule(cards_mid, ".cat-stage")       # stage text on its own line
+    cards = "\n".join(_container_blocks(css, "home", 560))
+    assert "flex-direction: column" in _rule(cards, ".home-next")     # primary button goes under the text
+    assert "flex-basis: 100%" in _rule(cards, ".cat-tags")            # tags get their own wrapping row
+    phone = "\n".join(_media_blocks(css, 560))
+    assert "flex-wrap: wrap" in _rule(phone, ".recent li")            # date drops below the file name
     # tags wrap in every width; two-column cards never demand more than the viewport
     assert "flex-wrap: wrap" in re.search(r"^\.cat-tags \{([^}]*)\}", css, re.M).group(1)
     assert "minmax(min(300px, 100%), 1fr)" in re.search(r"^\.grid-2 \{([^}]*)\}", css, re.M).group(1)

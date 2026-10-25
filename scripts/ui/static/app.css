@@ -164,7 +164,10 @@ code { background: var(--grid); padding: 1px 6px; border-radius: 4px; }
 .home-next-t { font-size: 18px; font-weight: 700; margin: 2px 0; overflow-wrap: anywhere; }
 .home-next-why { font-size: 13px; color: var(--ink2); margin: 0; }
 .home-next > .vid-warn { flex-basis: 100%; }
-.vid-list { list-style: none; margin: 0; padding: 0; }
+/* Size containers: home rows follow the column width, which the menu (240px) and the help panel (360px
+   beside the content from 1100px) narrow while the window stays wide. Viewport media rules stay for the viewport. */
+.home { container: home / inline-size; }
+.vid-list { list-style: none; margin: 0; padding: 0; container: vid-list / inline-size; }
 .vid-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: var(--sp-2) var(--sp-4); align-items: center; padding: 10px 0; }
 .vid-row + .vid-row { border-top: 1px solid var(--grid); }
 .vid-head { min-width: 0; }
@@ -242,25 +245,32 @@ code { background: var(--grid); padding: 1px 6px; border-radius: 4px; }
     background: var(--surface); border: 1px solid var(--danger); border-radius: var(--radius-sm); padding: var(--sp-2) var(--sp-3); z-index: 45; flex-wrap: wrap; }
   .shutdown:has(.confirm-text) .confirm-text { display: inline; flex: 1 0 100%; }
 }
-@media (max-width: 720px) {
-  /* narrow home: the video title on top, steps and the next button on the row below; step names stay visible */
+@container vid-list (max-width: 640px) {
+  /* narrow list: the video title on top, steps and the next button on the row below; step names stay visible */
   .vid-row { grid-template-columns: minmax(0, 1fr) auto; }
   .vid-head { grid-column: 1 / -1; }
   .vid-step { width: 50px; }
-  .cat-stage { margin-left: 0; flex-basis: 100%; }
 }
-@media (max-width: 560px) {
-  /* phone width: nothing may be wider than the screen. Next-action button under the text, the row's next
-     button on its own row under the dots, the six dots share the row width, tags and dates wrap. */
-  .home-next { flex-direction: column; align-items: stretch; gap: var(--sp-3); }
-  .home-next-body { min-width: 0; }
-  .home-next > .btn { align-self: flex-start; max-width: 100%; white-space: normal; }
+@container vid-list (max-width: 480px) {
+  /* six 50px dots + button no longer fit: the button gets its own row and the dots share the row width */
   .vid-row { grid-template-columns: minmax(0, 1fr); }
   .vid-steps { width: 100%; }
   .vid-step { flex: 1 1 0; min-width: 0; width: auto; }
   .vid-film { min-width: 0; width: 100%; }
   .vid-end { justify-self: start; }
+}
+@container home (max-width: 720px) {
+  .cat-stage { margin-left: 0; flex-basis: 100%; }
+}
+@container home (max-width: 560px) {
+  /* narrow column: next-action button under the text, tags on their own wrapping row */
+  .home-next { flex-direction: column; align-items: stretch; gap: var(--sp-3); }
+  .home-next-body { min-width: 0; }
+  .home-next > .btn { align-self: flex-start; max-width: 100%; white-space: normal; }
   .cat-tags { flex-basis: 100%; }
+}
+@media (max-width: 560px) {
+  /* phone width: the recent list's dates drop below the file name */
   .recent li { flex-wrap: wrap; }
   .recent time { flex-basis: 100%; }
 }

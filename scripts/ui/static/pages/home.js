@@ -1,6 +1,6 @@
 import { h, filesUrl, fill } from "/static/dom.js";
 import {
-  STEP_NAMES, NEXT_REASON, VISIBLE_VIDEOS, nextButton, nextHeadline, stepState, stepSr, videoMeta, stageLine,
+  STEP_NAMES, NEXT_REASON, VISIBLE_VIDEOS, isFolded, nextButton, nextHeadline, stepState, stepSr, videoMeta, stageLine,
 } from "/static/home-utils.js";
 
 const MENU_ROUTES = { add: "#/add", conti: "#/conti", typify: "#/typify", draft: "#/draft", diagnose: "#/diagnose" };
@@ -41,8 +41,10 @@ async function toggleFilmed(btn, video, filmed, warnHost, view) {
     mount(view.el, view.params, view.ctx);
   } catch (e) {
     if (!view.ctx.isCurrent()) return;
-    for (const b of peers) b.disabled = false;
-    if (e && e.error === "draft_changed") {
+    // draft_changed: the loaded hash is stale, so every toggle of this video stays locked until a reload
+    const changed = e && e.error === "draft_changed";
+    if (!changed) for (const b of peers) b.disabled = false;
+    if (changed) {
       const reload = h("button", { type: "button", class: "btn btn-sm" }, "다시 불러오기");
       reload.addEventListener("click", () => {
         if (!view.ctx.isCurrent()) return;
@@ -238,13 +240,13 @@ function findFilmStep(el, path) {
   return [...el.querySelectorAll(".vid-film")].find((b) => b.dataset.filmPath === path) || null;
 }
 
-function restoreFocus(el, target) {
+function restoreFocus(el, target, videos) {
   if (!target) return;
   let node = null;
   if (target.path) {
     node = findFilmStep(el, target.path);
     const more = el.querySelector(".vid-more");
-    if (!node && more) {
+    if (!node && more && isFolded(videos, target.path)) {
       more.click();
       node = findFilmStep(el, target.path);
     }
@@ -297,6 +299,7 @@ export async function mount(el, params, ctx) {
     el.append(card);
     return;
   }
+  let videos = [];
   if (st.categories.length === 0) {
     el.append(h("section", { class: "card" },
       h("h2", {}, "카테고리가 없습니다"),
@@ -304,10 +307,11 @@ export async function mount(el, params, ctx) {
   } else {
     const cat = st.categories.find((c) => c.category === ctx.category) || st.categories[0];
     const view = { el, params, ctx, category: cat.category };
-    el.append(nextCard(cat, view), videosCard(cat, view), categoryLine(cat));
-    const others = otherCategories(st.categories.filter((c) => c !== cat), ctx);
-    if (others) el.append(others);
+    videos = cat.videos;
+    // `.home` is the size container: its cards and rows switch layout by the column width (menu, help panel)
+    el.append(h("div", { class: "home" }, nextCard(cat, view), videosCard(cat, view), categoryLine(cat),
+      otherCategories(st.categories.filter((c) => c !== cat), ctx)));
   }
   el.append(h("div", { class: "grid-2 home-sub" }, missionCard(st.mission), recentCard(st.recent)));
-  restoreFocus(el, pendingFocus);
+  restoreFocus(el, pendingFocus, videos);
 }
