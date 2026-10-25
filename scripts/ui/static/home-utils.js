@@ -46,8 +46,16 @@ export function videoMeta(v) {
   const parts = [];
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(v.date || "");
   if (m) parts.push(`${Number(m[2])}월 ${Number(m[3])}일`);
-  if (typeof v.target_sec === "number" && v.target_sec > 0) parts.push(`${Math.max(1, Math.round(v.target_sec / 60))}분 목표`);
+  const target = targetText(v.target_sec);
+  if (target) parts.push(target);
   return parts.join(" · ");
+}
+
+// Target length: whole seconds under a minute ("15초 목표"), whole minutes from 60 up (90 -> "2분 목표").
+export function targetText(sec) {
+  if (typeof sec !== "number" || !Number.isFinite(sec) || sec <= 0) return "";
+  const s = Math.max(1, Math.round(sec));
+  return s < 60 ? `${s}초 목표` : `${Math.round(s / 60)}분 목표`;
 }
 
 // Short stage line: the span from stage_text ("현재 단계: 3 (10개 이상)"), else the ref count.

@@ -800,9 +800,20 @@ def test_home_layout_tokens():
     for token in ['"다음 할 일"', '"만들고 있는 영상"', '"/api/drafts/filmed"', '"aria-pressed"', '"draft_changed"',
                   '"다시 불러오기"', "개 더 보기", '"진단 기록"', 'from "/static/home-utils.js"']:
         assert token in home, token
+    # Every primary button goes through primary(); "btn-primary" lives only in its body. Call sites: the init
+    # screen (shown instead of the home) and nextCard's four mutually exclusive branches -> one on screen.
     assert home.count("btn-primary") == 1
+    assert re.search(r'function primary\(tag, attrs, text\) \{\s*return h\(tag, \{ \.\.\.attrs, class: "btn btn-primary" \}', home)
+    assert len(re.findall(r"(?<!function )\bprimary\(", home)) == 5
+    next_card = home[home.index("function nextCard("):home.index("// ---- 2.")]
+    assert len(re.findall(r"\bprimary\(", next_card)) == 4
+    assert "PRIMARY" not in home
     assert "innerHTML" not in home
     assert "stepBar" not in home and "stage-notes" not in home
+    # focus key is taken out at the start of mount; peers of one video are locked together
+    assert "const pendingFocus = focusAfter;" in home and "restoreFocus(el, pendingFocus)" in home
+    assert home.count('"data-film-path": video.path') == 3
+    assert '", 다음 단계"' in home
     css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
     for sel in [".home-next", ".vid-steps", ".cat-line"]:
         assert re.search(rf"^{re.escape(sel)}[\s{{.,:\[]", css, re.M), sel

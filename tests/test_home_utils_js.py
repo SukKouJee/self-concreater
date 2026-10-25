@@ -63,7 +63,7 @@ def test_step_sr():
 
 def test_video_meta():
     assert run_js("m.videoMeta({date: '2026-10-05', target_sec: 900})") == "10월 5일 · 15분 목표"
-    assert run_js("m.videoMeta({date: null, target_sec: 45})") == "1분 목표"
+    assert run_js("m.videoMeta({date: null, target_sec: 45})") == "45초 목표"
     assert run_js("m.videoMeta({date: '2026-01-31', target_sec: null})") == "1월 31일"
     assert run_js("m.videoMeta({date: null, target_sec: null})") == ""
 
@@ -78,3 +78,9 @@ def test_stage_line():
     text = "- ref: 19개 / mine: 0개\\n- 현재 단계: 3 (10개 이상) — 정식 유형화\\n- 마지막 단계입니다."
     assert run_js(f"m.stageLine({{stage: 3, ref: 19, stage_text: '{text}'}})") == "레퍼런스 10개 이상 · 3단계"
     assert run_js("m.stageLine({stage: 1, ref: 2, stage_text: ''})") == "레퍼런스 2개 · 1단계"
+
+
+def test_target_text_seconds_under_a_minute_whole_minutes_from_60():
+    assert run_js("[15, 45, 59.4, 59.6, 60, 90, 900, 0, -3, null, NaN].map(m.targetText)") == [
+        "15초 목표", "45초 목표", "59초 목표", "1분 목표", "1분 목표", "2분 목표", "15분 목표", "", "", "", ""]
+    assert run_js("m.videoMeta({date: '2026-10-25', target_sec: 15})") == "10월 25일 · 15초 목표"

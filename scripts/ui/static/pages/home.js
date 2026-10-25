@@ -10,17 +10,29 @@ const MISSION_STATUS = { done: "제출함", skipped: "건너뜀", replaced: "교
 // Category stage tags. The diagnose count is every diagnosis record of the category, not per video: "진단 기록".
 const CAT_TAG_NAMES = { collect: "모으기", typify: "유형화", draft: "기획안", conti: "콘티", diagnose: "진단 기록" };
 const TAG_SR = { done: " (완료)", now: " (지금 단계)", todo: " (아직)" };
-// The page's single primary button. The init screen (no work folder) shows instead of the home, never with it.
-const PRIMARY = "btn btn-primary";
-
-// Where focus goes after the home reloads from a filmed toggle: { next: true } or { path }.
+// Where focus goes after the home reloads (filmed toggle, reload, category switch): { next: true } or { path }.
+// mount() takes it out first thing, so a key never survives a navigation away.
 let focusAfter = null;
+
+// The only way this page makes a primary button. Exactly one is on screen at a time; call sites are
+// the init screen (no work folder, shown instead of the home) and nextCard's four branches
+// (video link, video filmed toggle, category, new draft), which are mutually exclusive.
+function primary(tag, attrs, text) {
+  return h(tag, { ...attrs, class: "btn btn-primary" }, text);
+}
 
 // ---- filmed toggle ------------------------------------------------------
 
 // Lock -> POST -> reload the home. draft_changed shows a warning (with a reload button) in `warnHost`.
+// Every control that toggles this video's filmed state (next-action button, step button, row-end button).
+function filmPeers(view, path) {
+  return [...view.el.querySelectorAll("[data-film-path]")].filter((b) => b.dataset.filmPath === path);
+}
+
 async function toggleFilmed(btn, video, filmed, warnHost, view) {
-  btn.disabled = true;
+  const peers = filmPeers(view, video.path);
+  if (!peers.includes(btn)) peers.push(btn);
+  for (const b of peers) b.disabled = true;
   try {
     await view.ctx.api("POST", "/api/drafts/filmed",
       { category: view.category, path: video.path, filmed, hash: video.hash });
@@ -29,10 +41,14 @@ async function toggleFilmed(btn, video, filmed, warnHost, view) {
     mount(view.el, view.params, view.ctx);
   } catch (e) {
     if (!view.ctx.isCurrent()) return;
-    btn.disabled = false;
+    for (const b of peers) b.disabled = false;
     if (e && e.error === "draft_changed") {
       const reload = h("button", { type: "button", class: "btn btn-sm" }, "다시 불러오기");
-      reload.addEventListener("click", () => { if (view.ctx.isCurrent()) mount(view.el, view.params, view.ctx); });
+      reload.addEventListener("click", () => {
+        if (!view.ctx.isCurrent()) return;
+        focusAfter = view.focusKey;
+        mount(view.el, view.params, view.ctx);
+      });
       fill(warnHost, h("p", { class: "vid-warn-text", role: "alert" }, e.message), reload);
       warnHost.hidden = false;
     } else {
@@ -54,9 +70,9 @@ function nextCard(cat, view) {
     body.append(h("p", { class: "home-next-t" }, nextHeadline(na.title || (video && video.title) || na.path, na.step)),
       h("p", { class: "home-next-why" }, NEXT_REASON[na.step] || ""));
     const nb = nextButton(na.step, na.path);
-    if (nb && nb.href) action = h("a", { class: PRIMARY, href: nb.href }, nb.text);
+    if (nb && nb.href) action = primary("a", { href: nb.href }, nb.text);
     else if (nb && nb.action === "film" && video) {
-      action = h("button", { type: "button", class: PRIMARY }, nb.text);
+      action = primary("button", { type: "button", "data-film-path": video.path }, nb.text);
       action.addEventListener("click", () => toggleFilmed(action, video, true, warn, { ...view, focusKey: { next: true } }));
     }
   } else if (na.kind === "category") {
@@ -65,11 +81,11 @@ function nextCard(cat, view) {
       h("p", { class: "home-next-why" }, allDone ? "만들고 있는 영상은 모두 마쳤어요. 카테고리 단계를 이어가요"
         : "카테고리 단계를 이어가요"));
     const route = MENU_ROUTES[na.menu];
-    if (route) action = h("a", { class: PRIMARY, href: route }, `${MENU_NAMES[na.menu]} 열기`);
+    if (route) action = primary("a", { href: route }, `${MENU_NAMES[na.menu]} 열기`);
   } else {
     body.append(h("p", { class: "home-next-t" }, "다음 영상을 기획할 차례예요"),
       h("p", { class: "home-next-why" }, "카테고리 단계와 만들고 있는 영상을 모두 마쳤어요"));
-    action = h("a", { class: PRIMARY, href: "#/draft/new" }, "새 기획안 만들기");
+    action = primary("a", { href: "#/draft/new" }, "새 기획안 만들기");
   }
   if (action) action.dataset.homeNext = "1";
   fill(card, body, action, warn);
@@ -86,7 +102,7 @@ function stepItem(step, video, warn, view) {
   if (step.key === "filmed") {
     const btn = h("button", {
       type: "button", class: "vid-film", "aria-pressed": step.done ? "true" : "false",
-      "aria-label": `${video.title} 촬영함`, "data-film-path": video.path,
+      "aria-label": `${video.title} 촬영함` + (state === "next" ? ", 다음 단계" : ""), "data-film-path": video.path,
     }, dot, name);
     btn.addEventListener("click", () =>
       toggleFilmed(btn, video, !step.done, warn, { ...view, focusKey: { path: video.path } }));
@@ -107,7 +123,8 @@ function videoRow(video, view) {
   if (!nb) end = h("span", { class: "vid-complete" }, "완료");
   else if (nb.href) end = h("a", { class: "btn btn-sm", href: nb.href, "aria-label": `${video.title} ${nb.text}` }, nb.text);
   else {
-    end = h("button", { type: "button", class: "btn btn-sm", "aria-label": `${video.title} ${nb.text}` }, nb.text);
+    end = h("button", { type: "button", class: "btn btn-sm", "aria-label": `${video.title} ${nb.text}`,
+      "data-film-path": video.path }, nb.text);
     end.addEventListener("click", () => toggleFilmed(end, video, true, warn, { ...view, focusKey: { path: video.path } }));
   }
   return h("li", { class: "vid-row" + (video.next ? "" : " vid-row-complete") }, head, steps, h("div", { class: "vid-end" }, end), warn);
@@ -170,7 +187,7 @@ function otherCategories(cats, ctx) {
     const btn = h("button", { type: "button", class: "cat-line cat-line-btn" },
       h("span", { class: "cat-name" }, cat.category), ...catLineParts(cat, true),
       h("span", { class: "sr-only" }, " — 이 카테고리 보기"));
-    btn.addEventListener("click", () => ctx.setCategory(cat.category));
+    btn.addEventListener("click", () => { focusAfter = { next: true }; ctx.setCategory(cat.category); });
     return h("li", {}, btn);
   }));
   return h("section", { class: "home-others", "aria-labelledby": "home-others-h" },
@@ -216,24 +233,39 @@ function recentCard(items) {
 
 // ---- mount --------------------------------------------------------------
 
-function restoreFocus(el) {
-  const target = focusAfter;
-  focusAfter = null;
+// The step toggle of `path` (expanding "더 보기" if that row is folded), else the next-action button, else the h1.
+function findFilmStep(el, path) {
+  return [...el.querySelectorAll(".vid-film")].find((b) => b.dataset.filmPath === path) || null;
+}
+
+function restoreFocus(el, target) {
   if (!target) return;
   let node = null;
-  if (target.next) node = el.querySelector("[data-home-next]");
-  else for (const b of el.querySelectorAll("button[data-film-path]")) if (b.dataset.filmPath === target.path) node = b;
+  if (target.path) {
+    node = findFilmStep(el, target.path);
+    const more = el.querySelector(".vid-more");
+    if (!node && more) {
+      more.click();
+      node = findFilmStep(el, target.path);
+    }
+  }
+  node = node || el.querySelector("[data-home-next]");
+  if (!node) {
+    node = el.querySelector("h1");
+    if (node) node.setAttribute("tabindex", "-1");
+  }
   if (node) node.focus();
 }
 
 export async function mount(el, params, ctx) {
+  const pendingFocus = focusAfter;
+  focusAfter = null;
   el.replaceChildren(h("h1", {}, "홈"), h("p", { class: "muted", role: "status" }, "불러오는 중…"));
   let st;
   try {
     st = await ctx.api("GET", "/api/status");
   } catch (e) {
     if (!ctx.isCurrent()) return;
-    focusAfter = null;
     const retry = h("button", { type: "button", class: "btn" }, "다시 시도");
     retry.addEventListener("click", () => { if (ctx.isCurrent()) mount(el, params, ctx); });
     el.replaceChildren(h("h1", {}, "홈"), h("p", { class: "error", role: "alert" }, e.message), retry);
@@ -245,7 +277,7 @@ export async function mount(el, params, ctx) {
     const card = h("section", { class: "card" });
     card.append(h("h2", {}, "아직 작업 폴더가 아닙니다"),
       h("p", { class: "muted" }, st.work_root));
-    const btn = h("button", { type: "button", class: PRIMARY }, "이 폴더를 yt-coach 작업 폴더로 만들기");
+    const btn = primary("button", { type: "button" }, "이 폴더를 yt-coach 작업 폴더로 만들기");
     btn.addEventListener("click", async () => {
       btn.disabled = true;
       try {
@@ -277,5 +309,5 @@ export async function mount(el, params, ctx) {
     if (others) el.append(others);
   }
   el.append(h("div", { class: "grid-2 home-sub" }, missionCard(st.mission), recentCard(st.recent)));
-  restoreFocus(el);
+  restoreFocus(el, pendingFocus);
 }

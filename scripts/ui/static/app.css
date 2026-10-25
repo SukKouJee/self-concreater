@@ -168,9 +168,11 @@ code { background: var(--grid); padding: 1px 6px; border-radius: 4px; }
 .vid-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: var(--sp-2) var(--sp-4); align-items: center; padding: 10px 0; }
 .vid-row + .vid-row { border-top: 1px solid var(--grid); }
 .vid-head { min-width: 0; }
-.vid-title { display: block; font-size: 14.5px; font-weight: 600; color: var(--ink); text-decoration: none;
+.vid-title { display: block; font-size: 14px; font-weight: 600; color: var(--ink); text-decoration: none;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .vid-title:hover { text-decoration: underline; }
+/* finished videos sit quietly at the bottom */
+.vid-row-complete .vid-title { color: var(--ink2); font-weight: 500; }
 .vid-meta { font-size: 12px; color: var(--muted); margin: 0; }
 .vid-steps { list-style: none; margin: 0; padding: 0; display: flex; }
 .vid-step { position: relative; display: flex; flex-direction: column; align-items: center; width: 58px; font-size: 11px; color: var(--muted); text-align: center; line-height: 1.3; }
