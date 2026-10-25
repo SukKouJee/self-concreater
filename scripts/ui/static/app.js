@@ -161,6 +161,8 @@ function storeCollapsed(list) {
   try { localStorage.setItem(MENU_KEY, JSON.stringify(list)); } catch { /* storage unavailable */ }
 }
 
+let lastGroup; // group of the previous route (undefined before the first route)
+
 const menuGroupId = (name) => `mg-${MENU.findIndex((g) => g.group === name)}`;
 
 // Top-level items (홈, 가이드) are links with an icon; groups are a box with a toggle button and the sub links.
@@ -209,9 +211,15 @@ function markActive() {
     if (isActive(a.dataset.href, hash)) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
   }
-  const collapsed = readCollapsed();
-  const expanded = expandFor(collapsed, activeGroup(MENU, hash));
-  if (expanded !== collapsed) storeCollapsed(expanded);
+  // Expand only when the user moves into a group from elsewhere: a group collapsed while its screen is open
+  // stays collapsed across reloads and within-group navigation.
+  const group = activeGroup(MENU, hash, itemHref);
+  if (lastGroup !== undefined && group !== lastGroup) {
+    const collapsed = readCollapsed();
+    const expanded = expandFor(collapsed, group);
+    if (expanded !== collapsed) storeCollapsed(expanded);
+  }
+  lastGroup = group;
   applyCollapsed();
 }
 

@@ -56,6 +56,7 @@ def test_active_group():
     assert run_js('m.activeGroup(MENU, "#/add")') == "모으기"
     assert run_js('m.activeGroup(MENU, "#/home")') is None        # 그룹 밖 메뉴
     assert run_js('m.activeGroup(MENU, "#/nope")') is None
+    assert run_js('m.activeGroup(MENU, "#/soon/x", (it) => it.route === "#/draft" ? "#/soon/x" : it.route)') == "만들기"
 
 
 @pytest.mark.parametrize("raw, expected", [

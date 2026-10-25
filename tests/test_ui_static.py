@@ -702,7 +702,8 @@ def test_sidebar_text_contrast_on_charcoal():
         for bg in ("--side-bg", "--side-grp", "--side-on-bg", "--side-hover"):
             for fg in ("--side-ink", "--side-sub"):
                 assert _contrast(tokens[fg], tokens[bg]) >= 4.5, (fg, bg)
-        assert _contrast(tokens["--side-accent"], tokens["--side-on-bg"]) >= 3.0   # 현재 표시 막대(비글자)
+        for bg in ("--side-bg", "--side-grp", "--side-on-bg", "--side-hover"):   # 현재 막대·포커스 테두리(비글자)
+            assert _contrast(tokens["--side-accent"], tokens[bg]) >= 3.0, bg
     assert {k: v for k, v in light.items() if k.startswith("--side-")} == \
         {k: v for k, v in dark.items() if k.startswith("--side-")}
 
@@ -720,7 +721,9 @@ def test_sidebar_groups_are_collapsible_buttons_with_icons():
     app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
     menu_block = app.split("const MENU = [", 1)[1].split("];", 1)[0]
     assert menu_block.count("icon:") == 6                 # 홈, 모으기, 분석, 만들기, 성장, 가이드
-    assert 'import { activeGroup, expandFor, isActive, parseCollapsed, toggleCollapsed } from "/static/menu-utils.js"' in app
+    imports = re.search(r'import \{([^}]*)\} from "/static/menu-utils\.js"', app).group(1)
+    for name in ("activeGroup", "expandFor", "isActive", "parseCollapsed", "toggleCollapsed"):
+        assert name in imports, name
     assert '"aria-expanded"' in app and '"aria-controls"' in app
     assert 'const SVG_NS = "http://www.w3.org/2000/svg"' in app and "createElementNS(SVG_NS" in app
     assert "ytc.menu.collapsed" in app
@@ -732,5 +735,8 @@ def test_sidebar_styles_use_side_tokens():
     css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
     menu_rule = re.search(r"^\.menu \{([^}]*)\}", css, re.M).group(1)
     assert "background: var(--side-bg)" in menu_rule
-    assert re.search(r"\.menu-group-toggle:focus-visible[^{]*\{[^}]*--focus-ring", css)
+    focus = re.search(r"\.menu-group-toggle:focus-visible[^{]*\{([^}]*)\}", css).group(1)
+    assert "box-shadow: var(--side-focus)" in focus
+    assert "outline: 2px solid transparent" in focus          # 고대비(forced-colors) 모드에서 테두리가 남는다
+    assert "--side-focus: 0 0 0 2px var(--side-accent)" in css
     assert re.search(r"\.menu-group\.closed \.menu-list\s*\{[^}]*display: none", css)

@@ -9,9 +9,10 @@ export function isActive(href, hash) {
 }
 
 // Name of the group holding the current screen, or null (top-level item or unknown route).
-export function activeGroup(menu, hash) {
+// hrefOf maps an item to the href the menu link uses (app.js passes itemHref so "soon" items match too).
+export function activeGroup(menu, hash, hrefOf = (it) => it.route) {
   for (const g of menu) {
-    if (g.group && g.items.some((it) => isActive(it.route, hash))) return g.group;
+    if (g.group && g.items.some((it) => isActive(hrefOf(it), hash))) return g.group;
   }
   return null;
 }

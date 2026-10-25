@@ -14,6 +14,7 @@
   /* Side menu: dark charcoal in both color schemes (defined once, not redefined for dark mode). */
   --side-bg: #16181d; --side-line: #262a31; --side-grp: #1f2229; --side-hover: #2a2e37; --side-on-bg: #2c3442;
   --side-ink: #f3f4f6; --side-sub: #b4bac4; --side-icon-bg: #2a2e37; --side-icon: #d6dae1; --side-accent: #5b9cf0;
+  --side-focus: 0 0 0 2px var(--side-accent);   /* --focus-ring is too faint on charcoal (about 2:1) */
   --font: system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif;
   --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
   --motion: 150ms ease;
@@ -89,7 +90,7 @@ code { background: var(--grid); padding: 1px 6px; border-radius: 4px; }
 .menu-top { margin: 0 0 var(--sp-2); }
 .menu-top:hover, .menu-group-toggle:hover { background: var(--side-hover); }
 .menu-top[aria-current="page"] { background: var(--side-on-bg); }
-.menu-top:focus-visible, .menu-group-toggle:focus-visible, .menu-link:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.menu-top:focus-visible, .menu-group-toggle:focus-visible, .menu-link:focus-visible { outline: 2px solid transparent; box-shadow: var(--side-focus); }
 .menu-icon { width: 24px; height: 24px; flex-shrink: 0; border-radius: 7px; background: var(--side-icon-bg); color: var(--side-icon);
   display: inline-flex; align-items: center; justify-content: center; }
 .menu .icon, .menu-chevron { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
@@ -106,6 +107,7 @@ code { background: var(--grid); padding: 1px 6px; border-radius: 4px; }
 .menu-list .menu-link[aria-current="page"]::before { content: ""; position: absolute; left: 30px; top: 9px; bottom: 9px; width: 3px;
   border-radius: 2px; background: var(--side-accent); }
 .menu-link.soon { color: var(--side-sub); }
+.menu .badge { color: var(--side-sub); border-color: var(--side-line); }
 .badge { font-size: 11px; font-weight: 600; color: var(--muted); border: 1px solid var(--axis); border-radius: 999px; padding: 0 7px; line-height: 18px; }
 .scrim { position: fixed; inset: var(--topbar-h) 0 0 0; background: rgba(0, 0, 0, .45); z-index: 30; }
 .scrim[hidden] { display: none; }
