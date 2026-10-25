@@ -120,20 +120,24 @@ export function monotonicFraction(prevMax, current) {
 }
 
 // 영상 전체 진행(시간 기준): 걸린 시간 / (걸린 시간 + 남은 시간). 남은 시간을 모르면 fraction은 null.
-// -> { elapsed, remaining, total, fraction } (timing이 없으면 null)
+// overdue: 측정 진행률 없이 예상을 넘긴 단계가 진행 중(그 단계의 남은 시간을 0으로 셌으니 숫자를 믿으면 안 된다).
+// -> { elapsed, remaining, total, fraction, overdue } (timing이 없으면 null)
 export function itemProgress(timing, nowSec) {
   const steps = timing && timing.steps;
   if (!steps) return null;
   let elapsed = 0;
+  let overdue = false;
   for (const row of Object.values(steps)) {
     if (row.state === "done" || row.state === "failed" || row.state === "running") {
-      elapsed += num(rowView(row, nowSec).elapsed) || 0;
+      const v = rowView(row, nowSec);
+      elapsed += num(v.elapsed) || 0;
+      if (row.state === "running" && v.over && !v.byFraction) overdue = true;
     }
   }
   const remaining = itemRemaining(timing, nowSec);
-  if (remaining === null) return { elapsed, remaining: null, total: null, fraction: null };
+  if (remaining === null) return { elapsed, remaining: null, total: null, fraction: null, overdue };
   const total = elapsed + remaining;
-  return { elapsed, remaining, total, fraction: total > 0 ? Math.min(1, elapsed / total) : null };
+  return { elapsed, remaining, total, fraction: total > 0 ? Math.min(1, elapsed / total) : null, overdue };
 }
 
 const STEP_FLOOR = 0.14; // 단계 칸의 최소 몫: 이름과 시간이 들어갈 만큼

@@ -199,3 +199,20 @@ def test_step_weights_follow_time_with_a_floor():
     # 시간을 모르면 똑같이 나눈다
     eq = run_js('m.stepWeights({steps: {a: {state: "pending", expected: null}, b: {state: "pending", expected: null}}}, 0)')
     assert eq == {"a": 0.5, "b": 0.5}
+    # 모두 건너뜀·실패(시간 0 또는 모름)면 똑같이 나눈다
+    allz = run_js('m.stepWeights({steps: {a: {state: "skipped", expected: 9}, b: {state: "failed", elapsed: null}}}, 0)')
+    assert allz == {"a": 0.5, "b": 0.5}
+    # 진행 중인 줄의 남은 시간을 모르면 예상값으로 센다
+    run = run_js('m.stepWeights({steps: {a: {state: "running", started_at: 0, expected: 100},'
+                 ' b: {state: "pending", expected: 100}}}, 10)')
+    assert abs(run["a"] - run["b"]) < 1e-9
+
+
+def test_item_progress_flags_an_overdue_unmeasured_step():
+    # 분석(측정 진행률 없음)이 예상 90초를 넘겨 120초째: 남은 시간 0으로 세지만 overdue로 알린다
+    timing = ('{steps: {fetch: {state: "done", elapsed: 10, expected: 10},'
+              ' analyze: {state: "running", started_at: 0, expected: 90}}}')
+    r = run_js(f"m.itemProgress({timing}, 120)")
+    assert r["overdue"] is True and r["remaining"] == 0 and r["fraction"] == 1
+    measured = ('{steps: {cuts: {state: "running", started_at: 0, expected: 10, fraction: 0.5}}}')
+    assert run_js(f"m.itemProgress({measured}, 30)")["overdue"] is False      # 측정 진행률이 있으면 숫자를 믿는다

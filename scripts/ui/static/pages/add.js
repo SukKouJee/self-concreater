@@ -45,6 +45,7 @@ function freshState(el, ctx) {
   return {
     el, ctx, timer: null, clock: null, offset: 0, job: null, view: null,
     rows: new Map(),       // item key -> { li, sig }
+    ringMax: new Map(),    // "<job id>:<item id>" -> highest whole-video fraction shown (cards are rebuilt per step)
     edits: new Map(),      // item id -> edited analysis (deep copy of preview)
     openFeedback: new Set(), // item ids whose feedback input is open
     feedbackText: new Map(),
@@ -400,31 +401,34 @@ function cellText(row, v, p) {
 
 function buildStepRow(key) {
   const name = h("span", { class: "step-name" }, ROW_NAMES[key] || key);
-  const time = h("span", { class: "step-time" });
+  // The short cell text is for eyes; screen readers get the full sentence (also the hover tooltip).
+  const time = h("span", { class: "step-time", "aria-hidden": "true" });
+  const full = h("span", { class: "sr-only" });
   const fill = h("span", { class: "bar-fill" });
   const bar = h("span", { class: "bar" }, fill);
-  const li = h("li", { class: "step-row" }, h("div", { class: "step-main" }, name, time), bar);
-  return { li, bar, fill, time, maxFrac: null };
+  const li = h("li", { class: "step-row" }, h("div", { class: "step-main" }, name, time, full), bar);
+  return { li, bar, fill, time, full, maxFrac: null };
 }
 
 function paintStepRow(r, key, row, nowS, frozen) {
   const v = rowView(row, nowS);
   const running = row.state === "running";
   // Row state classes are row-* so they never pick up the guide's .step-done/.step-current styles.
-  // Returns the running row's detail ("카메라 움직임 확인 중 · 이 단계 약 50초 남음") for the summary line, else "".
+  // Returns { phase, timing } for the summary line ("카메라 움직임 확인 중", "이 단계 약 50초 남음"); not running: null.
   r.li.className = `step-row row-${row.state}${running && v.over ? " is-over" : ""}`;
   // The shown bar never moves backward (estimate-based value -> measured fraction, or a grown estimate).
   if (running) r.maxFrac = monotonicFraction(r.maxFrac, v.fraction);
   const shown = running ? r.maxFrac : v.fraction;
   const p = running ? shownPct(row, shown) : null;
   r.time.textContent = cellText(row, v, p);
-  r.li.title = rowText(row, v, p);
+  r.full.textContent = rowText(row, v, p);
+  r.li.title = r.full.textContent;
   r.fill.style.width = `${shown === null ? 0 : Math.round(shown * 100)}%`;
   r.bar.classList.toggle("bar-indet", running && shown === null && !frozen && row.paused_at == null);
   if (!running) {
     for (const a of ["role", "aria-label", "aria-valuemin", "aria-valuemax", "aria-valuenow", "aria-valuetext"]) r.bar.removeAttribute(a);
     r.bar.setAttribute("aria-hidden", "true");
-    return "";
+    return null;
   }
   r.bar.removeAttribute("aria-hidden");
   r.bar.setAttribute("role", "progressbar");
@@ -440,15 +444,15 @@ function paintStepRow(r, key, row, nowS, frozen) {
       ? `${spokenDur(v.elapsed)} 경과, 예상 ${spokenDur(v.expected)}`
       : `${spokenDur(v.elapsed)} 경과`);
   }
-  const parts = [];
-  if (row.phase_text) parts.push(row.phase_text);
+  // What the step is doing, and its own time note ("" when frozen or unknown).
+  let note = "";
   if (!frozen) {
     // Over the estimate: a measured fraction still gives a real remaining time; only unmeasured rows say "soon".
-    if (v.over) parts.push("예상보다 길어지는 중");
-    if (v.over && !v.byFraction) parts.push("곧 끝날 예정");
-    else if (v.remaining !== null) parts.push(`이 단계 ${fmtRemain(v.remaining, false)} 남음`);
+    if (v.over && !v.byFraction) note = "예상보다 길어지는 중 · 곧 끝날 예정";
+    else if (v.over && v.remaining !== null) note = `예상보다 길어지는 중 · 이 단계 ${fmtRemain(v.remaining, false)} 남음`;
+    else if (v.remaining !== null) note = `이 단계 ${fmtRemain(v.remaining, false)} 남음`;
   }
-  return parts.join(" · ");
+  return { phase: row.phase_text || "", timing: note };
 }
 
 // Builds the progress block once per structural change; card._tick(item) patches texts and widths in place.
@@ -466,7 +470,7 @@ function stepRows(card, item) {
   const rows = new Map(keys.map((k) => [k, buildStepRow(k)]));
   rows.forEach((r) => ol.append(r.li));
   const detail = h("p", { class: "prog-detail" });
-  let ringMax = null;
+  let cols = "";
   card._tick = (cur) => {
     const timing = cur.timing;
     if (!timing || !timing.steps) return;
@@ -478,27 +482,41 @@ function stepRows(card, item) {
       const row = timing.steps[k];
       if (!row) continue;
       const text = paintStepRow(r, k, row, nowS, waiting);
-      if (row.state === "running") current = { name: ROW_NAMES[k] || k, text };
+      if (row.state === "running" && text) current = { name: ROW_NAMES[k] || k, ...text };
     }
+    // Widths in 2% steps and written only when they change, so cell edges don't creep every second.
     const w = stepWeights(timing, nowS);
-    ol.style.gridTemplateColumns = keys.map((k) => `${(w[k] || 0).toFixed(3)}fr`).join(" ");
+    const next = keys.map((k) => `${(Math.round((w[k] || 0) * 50) / 50).toFixed(2)}fr`).join(" ");
+    if (next !== cols) { cols = next; ol.style.gridTemplateColumns = next; }
 
     const prog = itemProgress(timing, nowS);
     const live = cur.state === "running" || waiting;
     hero.hidden = !live;
     if (live) {
-      // The ring never moves backward (a grown estimate would otherwise pull it back).
+      // The ring never moves backward, also across card rebuilds (a new step or an awaiting <-> running switch
+      // rebuilds the card); a grown estimate would otherwise pull it back. It stays at 99% until the video ends.
+      const ringKey = `${S.job ? S.job.id : ""}:${cur.id}`;
+      let ringMax = S.ringMax.has(ringKey) ? S.ringMax.get(ringKey) : null;
       if (prog && prog.fraction !== null) ringMax = monotonicFraction(ringMax, prog.fraction);
-      const pct = ringMax === null ? null : Math.round(ringMax * 100);
+      S.ringMax.set(ringKey, ringMax);
+      const pct = ringMax === null ? null : Math.min(99, Math.round(ringMax * 100));
       ring.style.setProperty("--p", String(pct === null ? 0 : pct));
       ringText.textContent = pct === null ? "…" : `${pct}%`;
       if (pct === null) { ring.removeAttribute("aria-valuenow"); ring.setAttribute("aria-valuetext", "계산 중"); }
       else { ring.setAttribute("aria-valuenow", String(pct)); ring.removeAttribute("aria-valuetext"); }
+      let saysOverdue = false;
       if (waiting) remain.textContent = "확인을 기다리는 중";
-      else if (prog && prog.remaining !== null) {
+      else if (prog && prog.overdue && prog.remaining !== null && prog.remaining < 60) {
+        saysOverdue = true;
+        // A step without a measured fraction is past its estimate: its remaining time counts as 0, so a clock
+        // would just follow "now". Say what is known instead.
+        remain.textContent = "예상보다 길어지는 중 · 곧 끝날 예정";
+      } else if (prog && prog.remaining !== null) {
         remain.textContent = `${fmtRemain(prog.remaining, true)} 남음 · ${fmtClock(nowS + prog.remaining)}쯤 끝`;
       } else remain.textContent = "남은 시간 계산 중";
-      now.textContent = current ? `지금: ${current.name}${current.text ? ` — ${current.text}` : ""}` : "";
+      // The step's own time note is dropped when the big line already says the same thing.
+      const detailParts = current ? [current.phase, saysOverdue ? "" : current.timing].filter(Boolean) : [];
+      now.textContent = current ? `지금: ${current.name}${detailParts.length ? ` — ${detailParts.join(" · ")}` : ""}` : "";
       now.hidden = !current;
     }
     const parts = [];
@@ -697,6 +715,7 @@ function renderForm() {
   setView("form");
   S.el.replaceChildren();
   S.rows.clear();
+  S.ringMax.clear();
   S.el.append(h("h1", {}, "레퍼런스 추가"));
   const card = h("section", { class: "card", "aria-label": "추가 설정" });
   S.el.append(card);

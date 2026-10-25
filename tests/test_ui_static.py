@@ -885,6 +885,8 @@ def test_add_progress_summary_first_then_proportional_steps():
         assert token in block, token
     assert block.index('"prog-hero"') < block.index('"steps prog-steps"') < block.index('"prog-detail"')
     assert "monotonicFraction(ringMax" in block                  # 전체 원도 뒤로 가지 않는다
+    assert "S.ringMax" in block and "Math.min(99" in block       # 카드를 새로 만들어도 유지, 끝나기 전엔 100%를 보이지 않는다
+    assert "prog.overdue" in block                               # 예상 넘긴 측정 불가 단계는 0초 남음 대신 문구
     assert "r.sub" not in js and "step-total" not in js            # 단계 아래 긴 줄과 맨 아래 합계 줄은 위쪽 요약으로 옮겼다
     assert "앞 영상이 끝나면 시작해요" in js                          # 대기 중 영상은 단계 칩 대신 한 줄
     for sel in [".prog-ring", ".prog-remain", ".steps.prog-steps", ".row-running .step-name", "@container (max-width: 420px)"]:
