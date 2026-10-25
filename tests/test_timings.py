@@ -92,3 +92,62 @@ def test_unknown_step_rejected():
         timings.record("x", elapsed_sec=1)
     with pytest.raises(ValueError):
         timings.expected("x", video_sec=1)
+
+
+BAD = [float("nan"), float("inf"), float("-inf"), -5.0, 0, 0.0]
+
+
+def _stored():
+    path = workspace_dir("timings.json")
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+
+@pytest.mark.parametrize("bad", BAD)
+def test_record_skips_bad_elapsed(bad):
+    timings.record("cuts", elapsed_sec=bad, video_sec=600)
+    assert _stored().get("cuts", []) == []
+
+
+@pytest.mark.parametrize("bad", BAD)
+def test_record_drops_bad_video_sec(bad):
+    timings.record("cuts", elapsed_sec=10, video_sec=bad)
+    entry = _stored()["cuts"][0]
+    assert "video_sec" not in entry and entry["elapsed_sec"] == 10
+
+
+@pytest.mark.parametrize("bad", [None, "12", "abc", [1], True])
+def test_record_never_raises_on_wrong_types(bad):
+    timings.record("cuts", elapsed_sec=bad, video_sec=bad)
+    timings.record("analyze", elapsed_sec=5, video_sec=bad, frames="x", text_chars=bad)
+
+
+@pytest.mark.parametrize("bad", BAD)
+def test_expected_skips_bad_samples_in_existing_file(bad):
+    path = workspace_dir("timings.json")
+    path.parent.mkdir(parents=True)
+    rows = [{"elapsed_sec": 120, "video_sec": 600}, {"elapsed_sec": 60, "video_sec": 600},
+            {"elapsed_sec": 90, "video_sec": 600}, {"elapsed_sec": bad, "video_sec": 600},
+            {"elapsed_sec": 50, "video_sec": bad}]
+    path.write_text(json.dumps({"cuts": rows}), encoding="utf-8")  # json.dumps가 NaN/Infinity를 그대로 쓴다
+    assert timings.expected("cuts", video_sec=1200) == pytest.approx(180)
+
+
+@pytest.mark.parametrize("bad", BAD + [None])
+def test_expected_proportional_needs_valid_length(bad):
+    assert timings.expected("cuts", video_sec=bad) is None
+    assert timings.expected("stt", video_sec=bad) is None
+
+
+def test_expected_never_below_floor(monkeypatch):
+    path = workspace_dir("timings.json")
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"analyze": [{"elapsed_sec": 1e-9}] * 3,
+                                "cuts": [{"elapsed_sec": 1e-12, "video_sec": 1e6}] * 3}), encoding="utf-8")
+    assert timings.expected("analyze", video_sec=None) == timings.MIN_EXPECTED
+    assert timings.expected("cuts", video_sec=1) == timings.MIN_EXPECTED
+
+
+def test_tmp_file_removed_when_replace_fails(monkeypatch):
+    monkeypatch.setattr(os, "replace", lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
+    timings.record("cuts", elapsed_sec=10, video_sec=600)
+    assert list(workspace_dir().glob("*.tmp")) == []

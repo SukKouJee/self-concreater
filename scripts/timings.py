@@ -5,8 +5,10 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import statistics
+import threading
 import time
 from typing import Any
 
@@ -15,6 +17,7 @@ from scripts.common import workspace_dir
 STEPS = ("fetch", "stt", "cuts", "analyze", "shots")
 KEEP = 20
 ENGINE_STEPS = ("analyze", "shots")
+MIN_EXPECTED = 1.0  # 예상 시간의 하한: 진행률 계산에서 0·음수로 나누지 않게
 
 # 기본값(기록 없을 때). 컷: 2026-10-25 이 PC에서 43분 31초(2611초) 영상이 약 490초
 # (360p 받기 + PySceneDetect + 장면별 카메라 흐름) -> 0.185 * 2611 + 7 ~ 490.
@@ -62,28 +65,42 @@ def record(
 ) -> None:
     """정상 종료한 단계의 걸린 시간을 남긴다. 저장 실패는 무시한다(알 수 없는 단계만 ValueError)."""
     _check(step)
-    entry: dict[str, Any] = {"elapsed_sec": float(elapsed_sec), "at": time.time()}
-    if video_sec is not None:
-        entry["video_sec"] = float(video_sec)
-    if frames is not None:
+    elapsed = _num(elapsed_sec)
+    if elapsed is None:
+        return  # 시계 점프·잘못된 값은 기록하지 않는다
+    entry: dict[str, Any] = {"elapsed_sec": elapsed, "at": time.time()}
+    length = _num(video_sec)
+    if length is not None:
+        entry["video_sec"] = length
+    if isinstance(frames, int) and not isinstance(frames, bool) and frames >= 0:
         entry["frames"] = frames
-    if text_chars is not None:
+    if isinstance(text_chars, int) and not isinstance(text_chars, bool) and text_chars >= 0:
         entry["text_chars"] = text_chars
+    tmp = None
     try:
         data = _load()
         key = _key(step, engine)
         data[key] = [*data.get(key, []), entry][-KEEP:]
         path = _path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(path.name + ".tmp")
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, path)
-    except OSError:
+    except (OSError, ValueError):
+        if tmp is not None:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
         return  # 진행률 기록은 부가 기능: 쓰기 실패가 본 작업을 막지 않는다
 
 
 def _num(value: Any) -> float | None:
-    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+    """유한하고 0보다 큰 숫자만 float로 돌려준다(NaN·inf·0·음수·bool·문자열은 None)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) and number > 0 else None
 
 
 def expected(step: str, *, video_sec: float | None, engine: str | None = None) -> float | None:
@@ -91,9 +108,10 @@ def expected(step: str, *, video_sec: float | None, engine: str | None = None) -
     _check(step)
     default = DEFAULTS[step]
     proportional = default["per_video_sec"] > 0
-    if proportional and not video_sec:
+    length_now = _num(video_sec)
+    if proportional and length_now is None:
         return None
-    default_value = default["per_video_sec"] * (video_sec or 0.0) + default["fixed_sec"]
+    default_value = default["per_video_sec"] * (length_now or 0.0) + default["fixed_sec"]
 
     samples: list[float] = []
     for item in _load().get(_key(step, engine), []):
@@ -104,16 +122,15 @@ def expected(step: str, *, video_sec: float | None, engine: str | None = None) -
             continue
         if proportional:
             length = _num(item.get("video_sec"))
-            if not length or length <= 0:
+            if length is None:
                 continue
             samples.append(elapsed / length)
         else:
             samples.append(elapsed)
 
+    scale = length_now if proportional and length_now is not None else 1.0
     if len(samples) >= 3:
-        median = statistics.median(samples)
-        return median * video_sec if proportional else median  # type: ignore[operator]
+        return max(MIN_EXPECTED, statistics.median(samples) * scale)
     if not samples:
-        return default_value
-    values = [elapsed * video_sec if proportional else elapsed for elapsed in samples]  # type: ignore[operator]
-    return statistics.fmean([default_value, *values])
+        return max(MIN_EXPECTED, default_value)
+    return max(MIN_EXPECTED, statistics.fmean([default_value, *(v * scale for v in samples)]))
