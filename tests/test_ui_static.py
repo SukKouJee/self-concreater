@@ -3,7 +3,7 @@ import re
 from scripts.ui.server import STATIC_DIR
 from tests.test_ui_server import client, no_browser  # noqa: F401  (fixture 재사용)
 
-MENU_NAMES = ["홈", "레퍼런스 추가", "레퍼런스 목록", "공용 라이브러리", "유형화", "리포트", "모티브", "기획안", "콘티", "진단", "미션"]
+MENU_NAMES = ["홈", "레퍼런스 추가", "레퍼런스 목록", "공용 라이브러리", "유형화", "리포트", "모티브", "기획안", "콘티", "진단", "미션", "가이드"]
 # yt-draft is no longer a terminal-only item: the draft screen is a live route.
 # diagnose is live too: its terminal command no longer appears in the menu definition.
 # mission and report are live too: no menu item shows a terminal command any more.

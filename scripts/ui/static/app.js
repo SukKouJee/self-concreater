@@ -44,6 +44,7 @@ const MENU = [
       { name: "미션", route: "#/mission" },
     ],
   },
+  { group: null, items: [{ name: "가이드", route: "#/guide" }] },
 ];
 
 const SOON = {};
