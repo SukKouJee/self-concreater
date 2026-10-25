@@ -793,3 +793,18 @@ def test_pages_show_korean_section_names():
         assert "${s.label}" not in text and "${s.sub}" not in text, name
         assert "cut.label}" not in text, name                    # 콘티 음성 안내도 이름 함수를 거친다
     assert "LABEL_KO" not in (pages / "diagnose.js").read_text(encoding="utf-8")   # 한 곳(labels.js)에서만 정의
+
+
+def test_home_layout_tokens():
+    home = (STATIC_DIR / "pages" / "home.js").read_text(encoding="utf-8")
+    for token in ['"다음 할 일"', '"만들고 있는 영상"', '"/api/drafts/filmed"', '"aria-pressed"', '"draft_changed"',
+                  '"다시 불러오기"', "개 더 보기", '"진단 기록"', 'from "/static/home-utils.js"']:
+        assert token in home, token
+    assert home.count("btn-primary") == 1
+    assert "innerHTML" not in home
+    assert "stepBar" not in home and "stage-notes" not in home
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    for sel in [".home-next", ".vid-steps", ".cat-line"]:
+        assert re.search(rf"^{re.escape(sel)}[\s{{.,:\[]", css, re.M), sel
+    narrow = [m.group(1) for m in re.finditer(r"@media \(max-width: 720px\) \{(.*?)\n\}", css, re.S)]
+    assert any(".vid-row" in block for block in narrow)
