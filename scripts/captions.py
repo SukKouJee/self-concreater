@@ -30,7 +30,10 @@ FPS = 30
 BACKGROUND = "#00FF00"
 SHORT_SIDE = 1080
 SIZES = {"shorts": (1080, 1920), "long": (1920, 1080)}
-DEFAULT_TIMEOUT_SEC = 900
+DEFAULT_TIMEOUT_SEC = 900                # 짧은 영상의 전체 상한(초). 긴 영상은 total_timeout()이 늘린다
+MIN_RENDER_FPS = 5                       # 전체 상한 계산에 쓰는 가장 느린 렌더 속도(프레임/초)
+START_ALLOWANCE_SEC = 600                # 번들링·첫 Chrome 준비·인코딩 마무리 몫
+STALL_SEC = 300                          # 이 시간 동안 출력이 한 줄도 없으면 멈춘 것으로 본다
 TERMINATE_GRACE_SEC = 5.0
 POLL_SEC = 0.1
 MISSING_MESSAGE = "움직이는 자막을 만들려면 처음 한 번 설치가 필요합니다: ytc captions setup (Node 18 이상)"
@@ -206,16 +209,24 @@ def _pump(stream: Any, lines: queue.Queue) -> None:
     lines.put(None)
 
 
+def total_timeout(frames: int) -> float:
+    """렌더 전체 상한. 렌더 속도는 영상 길이에 비례하므로(실측 약 15fps) 고정값이면 긴 롱폼이 늘 시간 초과가 난다."""
+    return max(float(DEFAULT_TIMEOUT_SEC), START_ALLOWANCE_SEC + frames / MIN_RENDER_FPS)
+
+
 def render(conti_path: str | Path, video: str | Path | None = None, track: str = "caption",
            progress: Callable[[int, int], None] | None = None, cancel: Callable[[], bool] | None = None,
-           timeout: float = DEFAULT_TIMEOUT_SEC, step: Callable[[str], None] | None = None) -> dict:
+           timeout: float | None = None, step: Callable[[str], None] | None = None) -> dict:
     """콘티 자막을 크로마 그린 MP4로 렌더해 `drafts/<기획안>-captions.mp4`에 둔다(같은 이름이면 교체).
 
     step은 편집본 컷을 찾는 동안 "detect"를 알린다(진행률 progress는 렌더가 시작된 뒤 프레임 단위).
+    timeout이 없으면 영상 길이로 정한다(total_timeout). 그와 별개로 STALL_SEC 동안 출력이 없으면 멈춘 것으로 보고 끈다.
     """
     check_setup()
     node = shutil.which("node") or "node"
     props, calc = _build(conti_path, video, track, step)
+    if timeout is None:
+        timeout = total_timeout(props["durationInFrames"])
     path: Path = calc["path"]
     out = path.with_name(f"{path.stem[: -len(conti.CONTI_SUFFIX)]}-captions.mp4")
     tmp_dir = workspace_dir("tmp")
@@ -238,6 +249,7 @@ def render(conti_path: str | Path, video: str | Path | None = None, track: str =
         reader = threading.Thread(target=_pump, args=(proc.stdout, lines), daemon=True)
         reader.start()
         deadline = time.monotonic() + timeout
+        last_output = time.monotonic()
         eof = False
         try:
             while True:
@@ -249,6 +261,7 @@ def render(conti_path: str | Path, video: str | Path | None = None, track: str =
                     if line is None:
                         eof = True
                     else:
+                        last_output = time.monotonic()
                         line = _strip_ansi(line)
                         m = _PROGRESS_RE.search(line)
                         if m:
@@ -258,6 +271,9 @@ def render(conti_path: str | Path, video: str | Path | None = None, track: str =
                             tail.append(line.strip())
                 if cancel is not None and cancel():
                     raise RenderCancelled()
+                if not eof and time.monotonic() - last_output > STALL_SEC:
+                    raise ScriptError("render_timeout",
+                                      f"자막 영상 렌더가 {int(STALL_SEC)}초 동안 진행되지 않아 멈췄습니다")
                 if time.monotonic() > deadline:
                     raise ScriptError("render_timeout", f"자막 영상 만들기가 {int(timeout)}초 안에 끝나지 않아 멈췄습니다")
                 if eof:

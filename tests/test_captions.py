@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -532,4 +533,51 @@ def test_real_render_produces_mp4_with_expected_size_and_frames(saved, home, mon
     cap.release()
     mp4.unlink(missing_ok=True)
     assert size == (1080, 1920) and frames == 90
+    assert not tmp_leftovers(home)
+
+
+def test_total_timeout_scales_with_video_length():
+    # 15분(27000프레임) 롱폼은 고정 900초로는 끝낼 수 없다: 상한이 길이에 비례해야 한다
+    assert captions.total_timeout(27000) >= 27000 / captions.MIN_RENDER_FPS
+    assert captions.total_timeout(27000) > captions.DEFAULT_TIMEOUT_SEC
+    assert captions.total_timeout(300) == captions.DEFAULT_TIMEOUT_SEC
+
+
+class Trickle(FakeProc):
+    """interval마다 진행 줄을 하나씩 내보내고 count개를 다 보내면 끝난다."""
+
+    def __init__(self, count, interval):
+        super().__init__([], hang=True)
+
+        def feed():
+            for i in range(1, count + 1):
+                time.sleep(interval)
+                self._q.put(f"Rendered {i}/{count}\n")
+            self._finish()
+
+        threading.Thread(target=feed, daemon=True).start()
+
+
+def test_render_keeps_going_while_progress_arrives(saved, home, ready, popen, monkeypatch):
+    # 전체 시간은 STALL_SEC보다 길어도, 진행 줄이 계속 오면 멈추지 않는다
+    monkeypatch.setattr(captions, "STALL_SEC", 0.3)
+    popen.write_output = False
+    proc = Trickle(8, 0.1)
+
+    def factory(cmd):
+        Path(cmd[5]).write_bytes(b"MP4DATA")
+        return proc
+
+    popen.factory = staticmethod(factory)
+    out = captions.render(rel(home, saved))
+    assert out["count"] >= 1 and not proc.terminated
+
+
+def test_render_stall_stops_process(saved, home, ready, popen, monkeypatch):
+    monkeypatch.setattr(captions, "STALL_SEC", 0.2)
+    popen.factory = staticmethod(lambda cmd: FakeProc(["Rendered 1/900\n"], hang=True))
+    with pytest.raises(ScriptError) as e:
+        captions.render(rel(home, saved))
+    assert e.value.code == "render_timeout" and popen.proc.terminated
+    assert "진행" in e.value.message
     assert not tmp_leftovers(home)

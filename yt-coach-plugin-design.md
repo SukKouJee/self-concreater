@@ -286,7 +286,7 @@ AI 출력은 제안. 파일 저장 전 사용자 확인.
 
 ### 7.1 자막 영상 렌더 (선택 설치, Remotion)
 
-콘티 자막을 CapCut에서 쓸 "초록 배경 + 움직이는 자막" MP4로 렌더한다(`scripts/captions.py`, `remotion/`). 자막 블록과 시간은 SRT 내보내기와 같은 계산(`conti.caption_blocks`: 계획 시간 또는 편집본 컷에 맞춘 시간)을 공유한다. 출력은 `drafts/<기획안>-captions.mp4`(H.264, 30fps, `#00FF00`, 쇼츠 1080×1920·롱폼 1920×1080·편집본이면 그 비율). 렌더는 `npx remotion render` 하위 프로세스(cwd `remotion/`, 임시 mp4로 렌더한 뒤 교체, 시간 제한, 취소 시 그 프로세스만 종료)이고, Node 18+와 사용자가 직접 실행하는 `ytc captions setup`이 있을 때만 켜진다(없으면 `remotion_missing`). 투명 배경 출력·스타일 편집 UI는 하지 않는다. Remotion은 개인·직원 3명 이하·비영리 무료.
+콘티 자막을 CapCut에서 쓸 "초록 배경 + 움직이는 자막" MP4로 렌더한다(`scripts/captions.py`, `remotion/`). 자막 블록과 시간은 SRT 내보내기와 같은 계산(`conti.caption_blocks`: 계획 시간 또는 편집본 컷에 맞춘 시간)을 공유한다. 출력은 `drafts/<기획안>-captions.mp4`(H.264, 30fps, `#00FF00`, 쇼츠 1080×1920·롱폼 1920×1080·편집본이면 그 비율). 렌더는 `npx remotion render` 하위 프로세스(cwd `remotion/`, 임시 mp4로 렌더한 뒤 교체, 시간 제한은 영상 길이에 비례한 전체 상한(`total_timeout`, 짧은 영상 900초)과 출력이 300초 동안 없을 때의 멈춤 감지, 취소 시 그 프로세스만 종료)이고, Node 18+와 사용자가 직접 실행하는 `ytc captions setup`이 있을 때만 켜진다(없으면 `remotion_missing`). 투명 배경 출력·스타일 편집 UI는 하지 않는다. Remotion은 개인·직원 3명 이하·비영리 무료.
 
 ## 8. 비용·운영
 - 영상은 하나씩 처리, md가 있으면 재분석 안 함
