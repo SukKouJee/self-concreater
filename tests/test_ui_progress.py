@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import threading
 from typing import Any
 
 import pytest
@@ -84,7 +85,7 @@ def test_zero_weight_phase_keeps_fraction(clock: Clock, recorded: list) -> None:
     t.phase("meta", 0.9, "메타")
     row = t._timing["steps"]["fetch"]
     assert row["fraction"] is None
-    assert row["text"] == "메타"
+    assert row["phase_text"] == "메타"
 
 
 def test_updates_are_throttled(clock: Clock, recorded: list) -> None:
@@ -146,6 +147,7 @@ def test_cached_done_not_recorded(clock: Clock, recorded: list) -> None:
     row = job.timing["steps"]["cuts"]
     assert row["state"] == "done"
     assert row["elapsed"] == 0
+    assert row["expected"] == 0.0
 
 
 def test_fail_not_recorded(clock: Clock, recorded: list) -> None:
@@ -179,3 +181,44 @@ def test_record_passes_engine(clock: Clock, recorded: list) -> None:
 
 def test_snapshot_has_now() -> None:
     assert isinstance(jobs.Job("collect", []).snapshot()["now"], float)
+
+
+def test_pause_on_one_row_does_not_leak_to_next(clock: Clock, recorded: list) -> None:
+    job, t = make()
+    t.start("fetch")
+    t.pause()
+    t.start("cuts")
+    assert "paused_at" not in job.timing["steps"]["fetch"]
+    clock.advance(4)
+    t.done("cuts")
+    assert job.timing["steps"]["cuts"]["elapsed"] == pytest.approx(4)
+
+
+def test_concurrent_phase_and_start_done_do_not_raise(recorded: list) -> None:
+    real = jobs.Job("collect", [jobs.new_item("a")])
+    t = progress.ItemTiming(real, 0, ["fetch", "cuts"])
+    errors: list[BaseException] = []
+
+    def hammer_phase() -> None:
+        try:
+            for i in range(3000):
+                t.phase("scenes" if i % 2 else "camera", (i % 10) / 10, "x")
+        except BaseException as e:  # noqa: BLE001
+            errors.append(e)
+
+    def hammer_rows() -> None:
+        try:
+            for _ in range(3000):
+                t.start("cuts")
+                t.done("cuts")
+                real.snapshot()
+        except BaseException as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=hammer_phase), threading.Thread(target=hammer_rows)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+    assert errors == []
+    assert real.item(0)["timing"]["steps"]["cuts"]["state"] == "done"
