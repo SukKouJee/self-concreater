@@ -19,6 +19,7 @@ import copy
 import secrets
 import sys
 import threading
+import time
 import traceback
 from collections.abc import Iterable, Mapping
 from typing import Any, Callable
@@ -94,7 +95,7 @@ class Job:
         with self._lock:
             return copy.deepcopy({
                 "id": self.id, "kind": self.kind, "status": self._status, "category": self.category,
-                "items": self._items, "summary": self._summary, "message": self._message,
+                "items": self._items, "summary": self._summary, "message": self._message, "now": time.time(),
             })
 
     def is_active(self) -> bool:
