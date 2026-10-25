@@ -290,3 +290,11 @@ def test_write_atomic_cleans_tmp_when_replace_keeps_failing(tmp_path, monkeypatc
         refstore.write_atomic(target, b"new")
     assert target.read_text(encoding="utf-8") == "old"
     assert not (tmp_path / "index.md.tmp").exists()
+
+
+def test_update_frontmatter_removes_keys_and_keeps_body(tmp_path):
+    p = tmp_path / "d.md"
+    p.write_text("---\ntitle: a\nfilmed_at: '2026-10-25'\n---\n본문\n\n## 내 메모\n메모\n", encoding="utf-8")
+    fm = refstore.update_frontmatter(p, {}, remove=["filmed_at", "nope"])
+    assert "filmed_at" not in fm and fm["title"] == "a"
+    assert p.read_text(encoding="utf-8").endswith("본문\n\n## 내 메모\n메모\n")

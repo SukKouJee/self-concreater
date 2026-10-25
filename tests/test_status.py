@@ -1,9 +1,10 @@
+import datetime
 import json
 import os
 
 import pytest
 
-from scripts import cluster, draft, mission, refstore, status
+from scripts import cluster, conti, draft, mission, refstore, status
 from tests.test_draft import DRAFT
 from tests.test_cluster import NOTES, notes
 from tests.typify_fixtures import CAT, standard_set, write_video
@@ -178,3 +179,152 @@ def test_broken_mission_md_does_not_break_overview(home):
     path.write_text("프런트매터 없음\n", encoding="utf-8")
     card = status.overview()["mission"]
     assert card["exists"] is True and card["status"] is None and card["kind"] is None
+
+
+# --- 영상별 단계 / 다음 할 일 -----------------------------------------------------
+
+def _md(home, rel, fm, body="본문\n"):
+    path = home / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(refstore.join_frontmatter(fm, body).encode("utf-8"))
+    return path
+
+
+def _video(home, name, *, date=None, conti=False, filmed=False, diagnosed=False, **extra):
+    fm = {"category": CAT, "title": name, **extra}
+    if date:
+        fm["date"] = date
+    if filmed:
+        fm["filmed_at"] = "2026-10-25"
+    path = _md(home, f"drafts/{name}.md", fm)
+    if conti:
+        _md(home, f"drafts/{name}-conti.md", {"category": CAT})
+    if diagnosed:
+        _md(home, f"mine/{name}.md", {"category": CAT, "target": f"./drafts/{name}.md"})
+    return path
+
+
+def _videos(home):
+    refstore.init_category(CAT)
+    return _cat(status.overview())["videos"]
+
+
+def test_video_steps_from_files_and_filmed(home):
+    standard_set(home)
+    d = _save_draft(home)
+    stem = d.stem
+    (d.parent / f"{stem}-conti.md").write_text("---\ncategory: mukbang\n---\n", encoding="utf-8")
+    v = _cat(status.overview())["videos"][0]
+    assert [s["key"] for s in v["steps"]] == ["draft", "polish", "conti", "filmed", "captions", "diagnose"]
+    assert {s["key"]: s["done"] for s in v["steps"]} == {
+        "draft": True, "polish": False, "conti": True, "filmed": False, "captions": False, "diagnose": False}
+    assert [s["optional"] for s in v["steps"]] == [False, True, False, False, True, False]
+    assert v["next"] == "filmed" and v["progress"] == 2 and v["filmed_at"] is None
+    refstore.update_frontmatter(d, {"filmed_at": "2026-10-25"})
+    d.write_text(d.read_text(encoding="utf-8") + "\n## 패키징\n- x\n", encoding="utf-8")
+    (d.parent / f"{stem}-captions.mp4").write_bytes(b"")
+    (home / "mine").mkdir(exist_ok=True)
+    (home / "mine" / "x.md").write_text(f"---\ncategory: {CAT}\ntarget: drafts\{d.name}\n---\n", encoding="utf-8")
+    v = _cat(status.overview())["videos"][0]
+    assert all(s["done"] for s in v["steps"]) and v["next"] is None and v["progress"] == 4
+    assert v["filmed_at"] == "2026-10-25"
+    assert v["path"] == f"drafts/{d.name}"
+    assert v["hash"] == conti.content_hash(d)
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("2026-10-25", "2026-10-25"), (datetime.date(2026, 10, 25), "2026-10-25"),
+    ("2026-13-40", None), ("yes", None), ("", None), (None, None), (True, None), (20261025, None)])
+def test_filmed_date(value, expected):
+    assert status.filmed_date(value) == expected
+
+
+def test_videos_sorted_by_progress_then_date_then_name(home):
+    _video(home, "a", date="2026-10-20", conti=True)
+    _video(home, "b", date="2026-10-25", conti=True)
+    _video(home, "c", date="2026-10-26")
+    _video(home, "z", date="2026-10-01", conti=True, filmed=True, diagnosed=True)
+    expected = ["drafts/b.md", "drafts/a.md", "drafts/c.md", "drafts/z.md"]
+    assert [v["path"] for v in _videos(home)] == expected
+    for i, name in enumerate(["a", "b", "c", "z"]):
+        os.utime(home / "drafts" / f"{name}.md", (1000 * (4 - i), 1000 * (4 - i)))
+    assert [v["path"] for v in _videos(home)] == expected
+
+
+def test_videos_tie_breaks_by_name_descending(home):
+    _video(home, "a", date="2026-10-20")
+    _video(home, "b", date="2026-10-20")
+    assert [v["path"] for v in _videos(home)] == ["drafts/b.md", "drafts/a.md"]
+
+
+def test_broken_draft_is_left_out_of_videos(home):
+    standard_set(home)
+    _video(home, "ok")
+    (home / "drafts" / "broken.md").write_text("---\n: [\n---\n", encoding="utf-8")
+    assert [v["path"] for v in _videos(home)] == ["drafts/ok.md"]
+
+
+def test_other_category_and_other_target_do_not_count(home):
+    _video(home, "mine1", diagnosed=True)
+    _md(home, "drafts/other.md", {"category": "other"})
+    assert [v["path"] for v in _videos(home)] == ["drafts/mine1.md"]
+    _md(home, "mine/mine1.md", {"category": CAT, "target": "drafts/elsewhere.md"})
+    assert _videos(home)[0]["steps"][-1]["done"] is False
+    (home / "mine" / "mine1.md").write_text("---\n: [\n---\n", encoding="utf-8")
+    assert _videos(home)[0]["steps"][-1]["done"] is False
+
+
+def test_title_date_fallbacks(home):
+    refstore.init_category(CAT)
+    _md(home, "drafts/2026-10-25-hello.md", {"category": CAT})
+    _md(home, "drafts/nodate.md", {"category": CAT, "title": "제목", "target_sec": 60})
+    by_path = {v["path"]: v for v in _videos(home)}
+    v = by_path["drafts/2026-10-25-hello.md"]
+    assert v["title"] == "2026-10-25-hello" and v["date"] == "2026-10-25" and v["target_sec"] is None
+    v = by_path["drafts/nodate.md"]
+    assert v["title"] == "제목" and v["date"] is None and v["target_sec"] == 60
+
+
+@pytest.mark.parametrize("bad", ["abc", -3, 0, float("nan"), float("inf"), True])
+def test_target_sec_rejects_non_positive_or_non_finite(home, bad):
+    _md(home, "drafts/t.md", {"category": CAT, "target_sec": bad})
+    assert _videos(home)[0]["target_sec"] is None
+
+
+def test_next_action_choices(home):
+    # (a) 기획안 없음, 카테고리 미완
+    refstore.init_category(CAT)
+    for i in range(3):
+        write_video(home, f"v{i:02d}")
+    c = _cat(status.overview())
+    assert c["videos"] == []
+    assert c["next_action"] == {"kind": "category", **c["next"]}
+    assert "개 더" in c["next_action"]["text"] and c["next_action"]["menu"] == "add"
+
+    # (b) 미완 영상 있음: 진행 가장 큰 것
+    _video(home, "low", date="2026-10-26")
+    _video(home, "high", date="2026-10-01", conti=True)
+    assert _cat(status.overview())["next_action"] == {
+        "kind": "video", "path": "drafts/high.md", "step": "filmed", "title": "high"}
+
+
+def test_next_action_new_draft_or_category_when_all_videos_done(home):
+    standard_set(home)
+    _video(home, "d1", conti=True, filmed=True, diagnosed=True)
+    # (d) 영상은 모두 완료, 유형화 미완 -> category
+    c = _cat(status.overview())
+    assert c["next_action"]["kind"] == "category" and c["next_action"]["menu"] == "typify"
+    # (c) 카테고리 단계도 모두 완료 -> new_draft
+    _typify(home)
+    c = _cat(status.overview())
+    assert c["current"] is None
+    assert c["next_action"] == {"kind": "new_draft"}
+
+
+def test_step_counts(home):
+    standard_set(home, n_a=7, n_b=3)
+    _video(home, "a", conti=True, diagnosed=True)
+    _video(home, "b")
+    counts = {s["key"]: s["count"] for s in _cat(status.overview())["steps"]}
+    assert counts == {"collect": 10, "typify": None, "draft": 2, "conti": 1, "diagnose": 1}
+    assert type(counts["draft"]) is int

@@ -16,6 +16,7 @@ import os
 import re
 import threading
 import time
+from collections.abc import Iterable
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -112,11 +113,14 @@ def read_md(path: Path) -> tuple[dict, str]:
         raise ScriptError(e.code, f"{path}: {e.message}") from e
 
 
-def update_frontmatter(path: Path, updates: dict[str, Any]) -> dict:
+def update_frontmatter(path: Path, updates: dict[str, Any], remove: Iterable[str] = ()) -> dict:
+    """`updates`를 적용한 뒤 `remove`의 키를 지운다(없는 키는 무시). 본문은 그대로 둔다."""
     text = _read_text(path)
     nl = "\r\n" if text.startswith("---\r\n") else "\n"
     fm, body = split_frontmatter(text)
     fm.update(updates)
+    for key in remove:
+        fm.pop(key, None)
     write_atomic(path, join_frontmatter(fm, body, nl).encode("utf-8"))
     return fm
 

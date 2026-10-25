@@ -9,10 +9,13 @@
 """
 from __future__ import annotations
 
+import datetime
+import math
+import re
 from pathlib import Path
 from typing import Any
 
-from scripts import mission, refstore
+from scripts import conti, mission, refstore
 from scripts.common import ArgParser, ScriptError, run, work_root
 
 RECENT_LIMIT = 5
@@ -25,25 +28,132 @@ _STEPS = [
     ("diagnose", "진단", "diagnose"),
 ]
 
+# (키, 이름, 선택 여부): 영상(기획안) 하나의 단계. 순서가 화면 순서다.
+VIDEO_STEPS: list[tuple[str, str, bool]] = [
+    ("draft", "기획안", False),
+    ("polish", "다듬기", True),
+    ("conti", "콘티", False),
+    ("filmed", "촬영함", False),
+    ("captions", "자막 영상", True),
+    ("diagnose", "진단", False),
+]
+_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_PACKAGING_RE = re.compile(r"^## 패키징\s*$", re.MULTILINE)
+
 
 def _rel(path: Path) -> str:
     return path.relative_to(work_root()).as_posix()
 
 
-def _category_of(path: Path) -> Any:
-    """프런트매터가 없거나 깨진 md(메모 등)는 어느 카테고리에도 세지 않는다(/api/drafts와 같은 처리)."""
+def _iso_date(text: str) -> str | None:
+    """`YYYY-MM-DD` 모양이면서 실제 달력에 있는 날짜만 통과시킨다."""
+    if not _DATE_RE.fullmatch(text):
+        return None
     try:
-        return refstore.read_md(path)[0].get("category")
-    except ScriptError:
+        return datetime.date.fromisoformat(text).isoformat()
+    except ValueError:
         return None
 
 
-def _drafts(category: str) -> list[Path]:
-    drafts = work_root() / "drafts"
-    return [
-        p for p in sorted(drafts.glob("*.md"))
-        if not p.stem.endswith("-conti") and _category_of(p) == category
-    ]
+def filmed_date(value: Any) -> str | None:
+    """`datetime.date`나 `YYYY-MM-DD` 문자열(실제 달력 날짜)만 "YYYY-MM-DD"로, 그 밖은 None."""
+    if isinstance(value, datetime.datetime):
+        return value.date().isoformat()
+    if isinstance(value, datetime.date):
+        return value.isoformat()
+    if isinstance(value, str):
+        return _iso_date(value)
+    return None
+
+
+def _norm_target(value: Any) -> str | None:
+    """mine target을 작업 폴더 기준 경로 모양으로 맞춘다: 역슬래시는 슬래시로, 앞의 ./ 는 지운다."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip().replace("\\", "/")
+    while text.startswith("./"):
+        text = text[2:]
+    return text
+
+
+def _mine_records(category: str) -> tuple[int, set[str]]:
+    """카테고리의 mine md를 한 번만 읽어 (진단 기록 수, 정규화한 target 집합)을 낸다. 깨진 md는 건너뛴다."""
+    count, targets = 0, set()
+    for p in sorted((work_root() / "mine").glob("*.md")):
+        try:
+            fm = refstore.read_md(p)[0]
+        except ScriptError:
+            continue
+        if fm.get("category") != category:
+            continue
+        count += 1
+        target = _norm_target(fm.get("target"))
+        if target:
+            targets.add(target)
+    return count, targets
+
+
+def _video_title(fm: dict, stem: str) -> str:
+    title = fm.get("title")
+    if isinstance(title, (str, int, float)) and not isinstance(title, bool) and str(title).strip():
+        return str(title).strip()
+    return stem
+
+
+def _video_date(fm: dict, name: str) -> str | None:
+    value = fm.get("date")
+    found = filmed_date(value) if not isinstance(value, str) else _iso_date(value[:10])
+    return found or _iso_date(name[:10])
+
+
+def _target_sec(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value if math.isfinite(value) and value > 0 else None
+
+
+def _video(path: Path, fm: dict, body: str, diagnosed_targets: set[str]) -> dict:
+    rel = _rel(path)
+    filmed_at = filmed_date(fm.get("filmed_at"))
+    done = {
+        "draft": True,
+        "polish": _PACKAGING_RE.search(body) is not None,
+        "conti": path.with_name(f"{path.stem}-conti.md").exists(),
+        "filmed": filmed_at is not None,
+        "captions": path.with_name(f"{path.stem}-captions.mp4").exists(),
+        "diagnose": rel in diagnosed_targets,
+    }
+    steps = [{"key": k, "done": done[k], "optional": optional} for k, _, optional in VIDEO_STEPS]
+    return {
+        "path": rel, "title": _video_title(fm, path.stem), "date": _video_date(fm, path.name),
+        "target_sec": _target_sec(fm.get("target_sec")), "steps": steps,
+        "next": next((s["key"] for s in steps if not s["done"] and not s["optional"]), None),
+        "progress": sum(1 for s in steps if s["done"] and not s["optional"]),
+        "filmed_at": filmed_at, "hash": conti.content_hash(path),
+    }
+
+
+def _videos(category: str, _targets: set[str] | None = None) -> list[dict]:
+    """카테고리의 기획안 하나하나를 영상으로 본다. 미완 영상(진행 큰 순 → 날짜 최근 → 파일 이름 역순) 뒤에 완료 영상.
+
+    파일 수정 시각은 쓰지 않는다: 촬영 체크·다듬기 저장이 수정 시각을 바꿔 순서가 튄다.
+    """
+    targets = _mine_records(category)[1] if _targets is None else _targets
+    videos: list[dict] = []
+    for p in sorted((work_root() / "drafts").glob("*.md")):
+        if p.stem.endswith("-conti"):
+            continue
+        try:
+            fm, body = refstore.read_md(p)
+        except ScriptError:
+            continue
+        if fm.get("category") == category:
+            videos.append(_video(p, fm, body, targets))
+    videos.sort(key=lambda v: v["path"], reverse=True)
+    videos.sort(key=lambda v: v["date"] or "", reverse=True)
+    videos.sort(key=lambda v: v["progress"], reverse=True)
+    videos.sort(key=lambda v: v["next"] is None)
+    return videos
 
 
 def _next(key: str, ref: int, preliminary: int) -> dict:
@@ -66,30 +176,40 @@ def _typified_at(category: str) -> Any:
         return None
 
 
+def _next_action(videos: list[dict], current: str | None, next_step: dict | None) -> dict:
+    """맨 위 카드용: 미완 영상의 다음 단계 > 카테고리 단계 > 새 기획안."""
+    pending = next((v for v in videos if v["next"] is not None), None)
+    if pending is not None:
+        return {"kind": "video", "path": pending["path"], "step": pending["next"], "title": pending["title"]}
+    if current is not None and next_step is not None:
+        return {"kind": "category", **next_step}
+    return {"kind": "new_draft"}
+
+
 def _category_status(entry: dict) -> dict:
     category, ref, mine = entry["category"], entry["ref"], entry["mine"]
     preliminary, _ = refstore._stage_limits()
-    drafts = _drafts(category)
-    conti_count = sum(1 for p in drafts if p.with_name(f"{p.stem}-conti.md").exists())
-    mine_dir = work_root() / "mine"
-    diagnosed = sum(1 for p in sorted(mine_dir.glob("*.md")) if _category_of(p) == category)
+    diagnosed, targets = _mine_records(category)
+    videos = _videos(category, targets)
+    conti_count = sum(1 for v in videos if v["steps"][2]["done"])
     typified = _typified_at(category) is not None
 
     done_detail = {
-        "collect": (ref >= preliminary, f"ref {ref}개 / mine {mine}개"),
-        "typify": (typified, "유형화 완료" if typified else "아직 없음"),
-        "draft": (len(drafts) >= 1, f"기획안 {len(drafts)}개"),
-        "conti": (conti_count >= 1, f"콘티 {conti_count}개"),
-        "diagnose": (diagnosed >= 1, f"내 영상 {diagnosed}개"),
+        "collect": (ref >= preliminary, f"ref {ref}개 / mine {mine}개", ref),
+        "typify": (typified, "유형화 완료" if typified else "아직 없음", None),
+        "draft": (len(videos) >= 1, f"기획안 {len(videos)}개", len(videos)),
+        "conti": (conti_count >= 1, f"콘티 {conti_count}개", conti_count),
+        "diagnose": (diagnosed >= 1, f"내 영상 {diagnosed}개", diagnosed),
     }
-    steps = [{"key": k, "label": label, "done": done_detail[k][0], "detail": done_detail[k][1]}
-             for k, label, _ in _STEPS]
+    steps = [{"key": k, "label": label, "done": done_detail[k][0], "detail": done_detail[k][1],
+              "count": done_detail[k][2]} for k, label, _ in _STEPS]
     current = next((s["key"] for s in steps if not s["done"]), None)
+    next_step = _next(current, ref, preliminary) if current else None
     return {
         "category": category, "ref": ref, "mine": mine, "stage": entry["stage"],
         "stage_text": refstore.stage_text(ref, mine),
-        "steps": steps, "current": current,
-        "next": _next(current, ref, preliminary) if current else None,
+        "steps": steps, "current": current, "next": next_step,
+        "videos": videos, "next_action": _next_action(videos, current, next_step),
     }
 
 
