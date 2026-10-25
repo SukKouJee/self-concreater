@@ -25,8 +25,12 @@ def test_expected_uses_defaults_without_records():
     assert timings.expected("analyze", video_sec=None) == timings.DEFAULTS["analyze"]["fixed_sec"]
 
 
-def test_default_cuts_matches_real_measurement():
-    assert 440 <= timings.expected("cuts", video_sec=2611) <= 540
+def test_default_cuts_matches_real_measurements():
+    # 2026-10-25 이 PC: 1208초 영상 -> 320초, 2611초 영상 -> 약 490초. 둘 다 상대 오차 20% 이내.
+    assert timings.DEFAULTS["cuts"] == {"per_video_sec": 0.22, "fixed_sec": 7.0}
+    for video_sec, measured in ((1208, 320), (2611, 490)):
+        got = timings.expected("cuts", video_sec=video_sec)
+        assert abs(got - measured) / measured <= 0.2, (video_sec, got)
 
 
 def test_expected_median_after_three_records():

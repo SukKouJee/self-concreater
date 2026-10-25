@@ -19,13 +19,14 @@ KEEP = 20
 ENGINE_STEPS = ("analyze", "shots")
 MIN_EXPECTED = 1.0  # 예상 시간의 하한: 진행률 계산에서 0·음수로 나누지 않게
 
-# 기본값(기록 없을 때). 컷: 2026-10-25 이 PC에서 43분 31초(2611초) 영상이 약 490초
-# (360p 받기 + PySceneDetect + 장면별 카메라 흐름) -> 0.185 * 2611 + 7 ~ 490.
+# 기본값(기록 없을 때). 컷(360p 받기 + PySceneDetect + 장면별 카메라 흐름): 2026-10-25 이 PC 실측 두 건,
+# 1208초 영상 -> 320초, 2611초 영상 -> 약 490초. 두 건의 최대 상대 오차가 가장 작은 값(약 0.216)을 반올림해
+# 0.22 * 길이 + 7 (1208초 -> 273초 -15%, 2611초 -> 581초 +19%). 장면 수에 따라 달라서 길이만으로는 이 정도가 한계다.
 # stt는 보수적으로 영상 길이의 0.3배, analyze/shots는 Claude 호출이라 고정 추정값(가정).
 DEFAULTS: dict[str, dict[str, float]] = {
     "fetch": {"per_video_sec": 0.0, "fixed_sec": 5.0},
     "stt": {"per_video_sec": 0.3, "fixed_sec": 10.0},
-    "cuts": {"per_video_sec": 0.185, "fixed_sec": 7.0},
+    "cuts": {"per_video_sec": 0.22, "fixed_sec": 7.0},
     "analyze": {"per_video_sec": 0.0, "fixed_sec": 90.0},
     "shots": {"per_video_sec": 0.0, "fixed_sec": 60.0},
 }
