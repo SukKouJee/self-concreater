@@ -9,14 +9,17 @@
 import { api, showBanner } from "/static/api.js";
 import { h } from "/static/dom.js";
 import { createHelpPanel, helpPage } from "/static/help-panel.js";
+import { activeGroup, expandFor, isActive, parseCollapsed, toggleCollapsed } from "/static/menu-utils.js";
 
 const CATEGORY_KEY = "ytc.category";
+const MENU_KEY = "ytc.menu.collapsed";
 
 // Menu definition. No item uses `soon` now; the `soon` mechanism and #/soon/<key> placeholder page are kept but unused.
 const MENU = [
-  { group: null, items: [{ name: "홈", route: "#/home" }] },
+  { group: null, icon: "home", items: [{ name: "홈", route: "#/home" }] },
   {
     group: "모으기",
+    icon: "plus",
     items: [
       { name: "레퍼런스 추가", route: "#/add" },
       { name: "레퍼런스 목록", route: "#/refs" },
@@ -25,6 +28,7 @@ const MENU = [
   },
   {
     group: "분석",
+    icon: "chart",
     items: [
       { name: "유형화", route: "#/typify" },
       { name: "리포트", route: "#/report" },
@@ -32,6 +36,7 @@ const MENU = [
   },
   {
     group: "만들기",
+    icon: "pen",
     items: [
       { name: "모티브", route: "#/motif" },
       { name: "기획안", route: "#/draft" },
@@ -40,12 +45,13 @@ const MENU = [
   },
   {
     group: "성장",
+    icon: "trend",
     items: [
       { name: "진단", route: "#/diagnose" },
       { name: "미션", route: "#/mission" },
     ],
   },
-  { group: null, items: [{ name: "가이드", route: "#/guide" }] },
+  { group: null, icon: "help", items: [{ name: "가이드", route: "#/guide" }] },
 ];
 
 const SOON = {};
@@ -123,37 +129,90 @@ function itemHref(it) {
   return it.soon ? `#/soon/${it.soon}` : it.route;
 }
 
+// Line icons for the menu (24x24, stroke). Built with createElementNS: h() makes HTML elements only.
+const ICONS = {
+  home: ["M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"],
+  plus: ["M12 5v14M5 12h14"],
+  chart: ["M4 20V10M10 20V4M16 20v-7M22 20H2"],
+  pen: ["M4 20h4L19 9l-4-4L4 16z"],
+  trend: ["M3 17l6-6 4 4 8-8M15 7h6v6"],
+  help: ["M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z", "M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6M12 17h.01"],
+  chevron: ["M6 9l6 6 6-6"],
+};
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function svgIcon(name, cls) {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("class", cls);
+  for (const d of ICONS[name]) {
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute("d", d);
+    svg.append(path);
+  }
+  return svg;
+}
+
+function readCollapsed() {
+  try { return parseCollapsed(localStorage.getItem(MENU_KEY)); } catch { return []; }
+}
+function storeCollapsed(list) {
+  try { localStorage.setItem(MENU_KEY, JSON.stringify(list)); } catch { /* storage unavailable */ }
+}
+
+const menuGroupId = (name) => `mg-${MENU.findIndex((g) => g.group === name)}`;
+
+// Top-level items (홈, 가이드) are links with an icon; groups are a box with a toggle button and the sub links.
 function renderMenu() {
   const nav = $("menu");
   nav.replaceChildren();
   for (const g of MENU) {
-    const sec = h("div", { class: "menu-group" });
-    if (g.group) sec.append(h("div", { class: "menu-title", id: `mg-${g.group}` }, g.group));
-    const ul = h("ul", { class: "menu-list", "aria-labelledby": g.group ? `mg-${g.group}` : false });
+    if (!g.group) {
+      for (const it of g.items) {
+        nav.append(h("a", { class: "menu-link menu-top", href: itemHref(it), "data-href": itemHref(it) },
+          h("span", { class: "menu-icon" }, svgIcon(g.icon, "icon")), h("span", {}, it.name)));
+      }
+      continue;
+    }
+    const id = menuGroupId(g.group);
+    const toggle = h("button", {
+      type: "button", class: "menu-group-toggle", id: `${id}-t`, "aria-expanded": "true", "aria-controls": `${id}-list`,
+    }, h("span", { class: "menu-icon" }, svgIcon(g.icon, "icon")), h("span", { class: "menu-title" }, g.group),
+    svgIcon("chevron", "menu-chevron"));
+    toggle.addEventListener("click", () => {
+      storeCollapsed(toggleCollapsed(readCollapsed(), g.group));
+      applyCollapsed();
+    });
+    const ul = h("ul", { class: "menu-list", id: `${id}-list`, "aria-labelledby": `${id}-t` });
     for (const it of g.items) {
       const a = h("a", { class: "menu-link" + (it.soon ? " soon" : ""), href: itemHref(it), "data-href": itemHref(it) }, it.name);
       if (it.soon) a.append(h("span", { class: "badge" }, "2차"));
       ul.append(h("li", {}, a));
     }
-    sec.append(ul);
-    nav.append(sec);
+    nav.append(h("div", { class: "menu-group", "data-group": g.group }, toggle, ul));
+  }
+}
+
+function applyCollapsed() {
+  const collapsed = readCollapsed();
+  for (const sec of $("menu").querySelectorAll(".menu-group")) {
+    const open = !collapsed.includes(sec.dataset.group);
+    sec.classList.toggle("closed", !open);
+    sec.querySelector(".menu-group-toggle").setAttribute("aria-expanded", String(open));
   }
 }
 
 function markActive() {
   const hash = location.hash || "#/home";
   for (const a of $("menu").querySelectorAll("a.menu-link")) {
-    const href = a.dataset.href;
-    const active = hash === href
-      || (href === "#/conti" && hash.startsWith("#/conti/"))
-      || (href === "#/draft" && hash.startsWith("#/draft/"))
-      || (href === "#/diagnose" && hash.startsWith("#/diagnose/"))
-      || (href === "#/refs" && hash.startsWith("#/refs/"))
-      || (href === "#/report" && hash.startsWith("#/report/"))
-      || (href === "#/guide" && hash.startsWith("#/guide/"));
-    if (active) a.setAttribute("aria-current", "page");
+    if (isActive(a.dataset.href, hash)) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
   }
+  const collapsed = readCollapsed();
+  const expanded = expandFor(collapsed, activeGroup(MENU, hash));
+  if (expanded !== collapsed) storeCollapsed(expanded);
+  applyCollapsed();
 }
 
 function setDrawer(open) {

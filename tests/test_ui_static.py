@@ -39,7 +39,7 @@ def test_menu_definition_has_all_items():
 def test_no_external_resources():
     for path in STATIC_DIR.rglob("*"):
         if path.is_file():
-            text = path.read_text(encoding="utf-8")
+            text = path.read_text(encoding="utf-8").replace('"http://www.w3.org/2000/svg"', "")  # SVG 이름공간은 주소가 아니다
             assert not re.search(r"https?://", text), path.name
 
 
@@ -613,7 +613,8 @@ def test_app_routes_guide():
     app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
     assert 'case "guide"' in app
     assert "/static/help-panel.js" in app
-    assert "#/guide/" in app                                  # markActive keeps the menu item lit on the sub tabs
+    menu_utils = (STATIC_DIR / "menu-utils.js").read_text(encoding="utf-8")
+    assert '"#/guide"' in menu_utils.split("PREFIX_ROUTES = [", 1)[1].split("]", 1)[0]  # 하위 탭에서도 메뉴가 켜진다
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     assert 'id="help-panel"' in html
 
@@ -683,3 +684,53 @@ def test_add_page_over_text_and_shown_percent():
     assert "v.byFraction" in paint
     assert "pctOf(row)" not in paint                     # % 글자와 aria-valuenow는 보이는 막대 값을 쓴다
     assert paint.index("monotonicFraction") < paint.index("rowText(")
+
+
+# --- 사이드바: 어두운 차콜, 아이콘 머리, 그룹 상자, 접고 펴기 ---------------------
+
+def _root_tokens(css):
+    dark_at = css.index("@media (prefers-color-scheme: dark)")
+    light = dict(re.findall(r"(--[\w-]+):\s*(#[0-9a-fA-F]{6})", css[:dark_at]))
+    dark = dict(light, **dict(re.findall(r"(--[\w-]+):\s*(#[0-9a-fA-F]{6})", css[dark_at:css.index("}", dark_at)])))
+    return light, dark
+
+
+def test_sidebar_text_contrast_on_charcoal():
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    light, dark = _root_tokens(css)
+    for tokens in (light, dark):           # 사이드바 색은 두 모드에서 같아야 하고 글자 대비는 4.5 이상
+        for bg in ("--side-bg", "--side-grp", "--side-on-bg", "--side-hover"):
+            for fg in ("--side-ink", "--side-sub"):
+                assert _contrast(tokens[fg], tokens[bg]) >= 4.5, (fg, bg)
+        assert _contrast(tokens["--side-accent"], tokens["--side-on-bg"]) >= 3.0   # 현재 표시 막대(비글자)
+    assert {k: v for k, v in light.items() if k.startswith("--side-")} == \
+        {k: v for k, v in dark.items() if k.startswith("--side-")}
+
+
+def test_light_page_text_contrast():
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    light, dark = _root_tokens(css)
+    for tokens in (light, dark):
+        for bg in ("--page", "--surface"):
+            for fg in ("--ink", "--ink2", "--muted"):
+                assert _contrast(tokens[fg], tokens[bg]) >= 4.5, (fg, bg)
+
+
+def test_sidebar_groups_are_collapsible_buttons_with_icons():
+    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    menu_block = app.split("const MENU = [", 1)[1].split("];", 1)[0]
+    assert menu_block.count("icon:") == 6                 # 홈, 모으기, 분석, 만들기, 성장, 가이드
+    assert 'import { activeGroup, expandFor, isActive, parseCollapsed, toggleCollapsed } from "/static/menu-utils.js"' in app
+    assert '"aria-expanded"' in app and '"aria-controls"' in app
+    assert 'const SVG_NS = "http://www.w3.org/2000/svg"' in app and "createElementNS(SVG_NS" in app
+    assert "ytc.menu.collapsed" in app
+    assert re.search(r"try \{ return parseCollapsed\(localStorage\.getItem\(MENU_KEY\)\); \} catch \{ return \[\]; \}", app)
+    assert re.search(r"try \{ localStorage\.setItem\(MENU_KEY", app)
+
+
+def test_sidebar_styles_use_side_tokens():
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    menu_rule = re.search(r"^\.menu \{([^}]*)\}", css, re.M).group(1)
+    assert "background: var(--side-bg)" in menu_rule
+    assert re.search(r"\.menu-group-toggle:focus-visible[^{]*\{[^}]*--focus-ring", css)
+    assert re.search(r"\.menu-group\.closed \.menu-list\s*\{[^}]*display: none", css)

@@ -1,7 +1,8 @@
-/* Tokens: --page..--axis and --s1..--s8 are copied from scripts/report.py (CSS, SLOTS) so the UI matches reports/conti. */
+/* Tokens: --s1..--s8 are copied from scripts/report.py (SLOTS) so charts match reports/conti. The UI neutrals
+   (--page..--axis) are a cool gray of their own (2026-10-25 redesign), no longer report.py's warm off-white. */
 :root {
-  --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink2: #52514e; --muted: #6f6d67;
-  --grid: #e1e0d9; --axis: #c3c2b7;
+  --page: #f5f6f8; --surface: #ffffff; --ink: #14171c; --ink2: #4a5160; --muted: #646d7c;
+  --grid: #e3e6eb; --axis: #c5cad3;
   --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #e87ba4; --s6: #008300; --s7: #4a3aa7; --s8: #e34948;
   --accent: #1f64b8; --accent-on: #ffffff; --accent-soft: #e6eefa;
   --danger: #c0302f; --ok: #0a7a52;
@@ -9,15 +10,18 @@
   --focus-ring: 0 0 0 3px color-mix(in srgb, var(--s1) 55%, transparent);
   --radius: 10px; --radius-sm: 6px;
   --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px; --sp-6: 32px;
-  --topbar-h: 52px; --menu-w: 232px;
+  --topbar-h: 52px; --menu-w: 240px;
+  /* Side menu: dark charcoal in both color schemes (defined once, not redefined for dark mode). */
+  --side-bg: #16181d; --side-line: #262a31; --side-grp: #1f2229; --side-hover: #2a2e37; --side-on-bg: #2c3442;
+  --side-ink: #f3f4f6; --side-sub: #b4bac4; --side-icon-bg: #2a2e37; --side-icon: #d6dae1; --side-accent: #5b9cf0;
   --font: system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif;
   --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
   --motion: 150ms ease;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --page: #0d0d0d; --surface: #1a1a19; --ink: #ffffff; --ink2: #c3c2b7; --muted: #a4a299;
-    --grid: #2c2c2a; --axis: #383835;
+    --page: #0f1114; --surface: #1a1d22; --ink: #f3f4f6; --ink2: #c0c6cf; --muted: #9aa2ae;
+    --grid: #2a2e35; --axis: #3a3f48;
     --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
     --accent: #3987e5; --accent-on: #0b0b0b; --accent-soft: #14253b;
     --danger: #e66767; --ok: #3cc596;
@@ -74,17 +78,34 @@ code { background: var(--grid); padding: 1px 6px; border-radius: 4px; }
 /* layout */
 .layout { display: flex; align-items: flex-start; min-height: calc(100vh - var(--topbar-h)); }
 .menu { width: var(--menu-w); flex-shrink: 0; position: sticky; top: var(--topbar-h); align-self: flex-start;
-  max-height: calc(100vh - var(--topbar-h)); overflow-y: auto; padding: var(--sp-4) var(--sp-3); border-right: 1px solid var(--grid); background: var(--surface); min-height: calc(100vh - var(--topbar-h)); }
+  max-height: calc(100vh - var(--topbar-h)); overflow-y: auto; padding: var(--sp-3) var(--sp-2); border-right: 1px solid var(--side-line); background: var(--side-bg); min-height: calc(100vh - var(--topbar-h));
+  color: var(--side-ink); color-scheme: dark; }
 .main { flex: 1; min-width: 0; padding: var(--sp-5); max-width: 980px; }
 .main:focus { outline: none; }
-.menu-group { margin-bottom: var(--sp-4); }
-.menu-title { font-size: 12px; font-weight: 700; color: var(--muted); padding: 0 var(--sp-3); margin-bottom: var(--sp-1); }
-.menu-list { list-style: none; margin: 0; padding: 0; }
-.menu-link { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); padding: 7px var(--sp-3);
-  border-radius: var(--radius-sm); color: var(--ink); text-decoration: none; min-height: 36px; border-left: 3px solid transparent; }
-.menu-link:hover { background: var(--grid); }
-.menu-link[aria-current="page"] { background: var(--accent-soft); border-left-color: var(--accent); font-weight: 600; }
-.menu-link.soon { color: var(--muted); }
+/* top-level rows: 홈, 가이드 links and the group toggles share one look (icon + bold white label) */
+.menu-top, .menu-group-toggle { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 38px; padding: 4px var(--sp-2);
+  border: 0; border-radius: 7px; background: none; color: var(--side-ink); font: inherit; font-size: 14.5px; font-weight: 700;
+  text-align: left; text-decoration: none; cursor: pointer; }
+.menu-top { margin: 0 0 var(--sp-2); }
+.menu-top:hover, .menu-group-toggle:hover { background: var(--side-hover); }
+.menu-top[aria-current="page"] { background: var(--side-on-bg); }
+.menu-top:focus-visible, .menu-group-toggle:focus-visible, .menu-link:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.menu-icon { width: 24px; height: 24px; flex-shrink: 0; border-radius: 7px; background: var(--side-icon-bg); color: var(--side-icon);
+  display: inline-flex; align-items: center; justify-content: center; }
+.menu .icon, .menu-chevron { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.menu-title { flex: 1; }
+.menu-chevron { color: var(--side-sub); transition: transform var(--motion); }
+.menu-group.closed .menu-chevron { transform: rotate(-90deg); }
+.menu-group { background: var(--side-grp); border-radius: 9px; padding: var(--sp-1); margin-bottom: var(--sp-2); }
+.menu-list { list-style: none; margin: 0; padding: 0 0 2px; }
+.menu-group.closed .menu-list { display: none; }
+.menu-list .menu-link { position: relative; display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2);
+  min-height: 34px; padding: 5px var(--sp-2) 5px 42px; border-radius: 6px; color: var(--side-sub); font-size: 14px; text-decoration: none; }
+.menu-list .menu-link:hover { background: var(--side-hover); color: var(--side-ink); }
+.menu-list .menu-link[aria-current="page"] { background: var(--side-on-bg); color: var(--side-ink); font-weight: 600; }
+.menu-list .menu-link[aria-current="page"]::before { content: ""; position: absolute; left: 30px; top: 9px; bottom: 9px; width: 3px;
+  border-radius: 2px; background: var(--side-accent); }
+.menu-link.soon { color: var(--side-sub); }
 .badge { font-size: 11px; font-weight: 600; color: var(--muted); border: 1px solid var(--axis); border-radius: 999px; padding: 0 7px; line-height: 18px; }
 .scrim { position: fixed; inset: var(--topbar-h) 0 0 0; background: rgba(0, 0, 0, .45); z-index: 30; }
 .scrim[hidden] { display: none; }

@@ -1,0 +1,35 @@
+// Pure helpers for the side menu (no DOM, no imports) so node tests can load them.
+
+// Menus whose detail screens live under "<route>/..." (e.g. #/refs/<id>) stay current on those screens.
+const PREFIX_ROUTES = ["#/refs", "#/conti", "#/draft", "#/diagnose", "#/report", "#/guide"];
+
+export function isActive(href, hash) {
+  const current = hash || "#/home";
+  return current === href || (PREFIX_ROUTES.includes(href) && current.startsWith(href + "/"));
+}
+
+// Name of the group holding the current screen, or null (top-level item or unknown route).
+export function activeGroup(menu, hash) {
+  for (const g of menu) {
+    if (g.group && g.items.some((it) => isActive(it.route, hash))) return g.group;
+  }
+  return null;
+}
+
+// Stored collapsed-group list -> array of unique group names. Anything unreadable means "all open".
+export function parseCollapsed(raw) {
+  let value;
+  try { value = JSON.parse(raw); } catch { return []; }
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((v) => typeof v === "string"))];
+}
+
+export function toggleCollapsed(collapsed, group) {
+  return collapsed.includes(group) ? collapsed.filter((g) => g !== group) : [...collapsed, group];
+}
+
+// Opening a screen inside a collapsed group expands that group (and remembers it), so the current item never
+// hides; the user can still collapse it again afterwards.
+export function expandFor(collapsed, current) {
+  return current && collapsed.includes(current) ? collapsed.filter((g) => g !== current) : collapsed;
+}
