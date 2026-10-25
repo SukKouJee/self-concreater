@@ -632,3 +632,10 @@ def test_guide_page_contract():
                    "/api/status", "isCurrent"]:
         assert needle in guide, needle
     assert "innerHTML" not in guide
+
+
+def test_help_panel_restores_question_on_send_failure():
+    panel = (STATIC_DIR / "help-panel.js").read_text(encoding="utf-8")
+    assert "job_running" in panel
+    assert "앞 질문을 정리하는 중입니다" in panel
+    assert "input.value = q" in panel

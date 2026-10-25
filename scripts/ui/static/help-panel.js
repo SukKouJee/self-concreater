@@ -307,7 +307,12 @@ export function createHelpPanel(root, getCategory) {
       handleJob(res.job, epoch);
     } catch (e) {
       if (epoch !== S.epoch) return;
-      finishError((e && e.message) || "질문을 보내지 못했습니다");
+      // The question never reached Claude: give it back so the user can resend without retyping.
+      if (!input.value) input.value = q;
+      // Cancel is cooperative on the server: the previous job stays active until its Claude call ends.
+      finishError(e && e.error === "job_running"
+        ? "앞 질문을 정리하는 중입니다. 잠시 뒤 다시 보내 주세요"
+        : (e && e.message) || "질문을 보내지 못했습니다");
     }
   }
 
