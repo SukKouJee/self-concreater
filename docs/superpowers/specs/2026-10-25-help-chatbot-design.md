@@ -125,7 +125,13 @@ title: 모티브
   - `screen`: page id, 그 화면 md 전문, 화면 제목.
   - `guide`: 사용자가 묻는 흐름에 답하도록 `guide-shorts.md`, `guide-long.md` 전문. 둘 다 짧게 유지한다.
   - `menu`: 실제 메뉴 이름과 라우트 목록. 서버 쪽 고정 표(`scripts/ui/api_help.py`의 상수)이며 `app.js` MENU와 같은 내용이다. 테스트가 `app.js`에서 `{ name: "…", route: "#/…" }` 쌍을 정규식으로 뽑아 비교한다. **(제 판단)**
-  - `situation`: `status.overview(category)`를 줄인 것. 카테고리별 ref/mine 수, 단계, stage_text, steps, next, 오늘 미션의 exists/status/kind가 들어간다. `work_root`, `mission.path`, `recent`의 path는 뺀다. recent는 kind별 개수만 넣는다. 파일명에 사용자가 쓴 제목이 들어갈 수 있어서다. 카테고리 이름은 넣는다. 예측에 필요하기 때문이다. **(제 판단)** category가 없거나 없는 카테고리면 전체 overview를 쓴다. 공용 라이브러리 화면이면 `library.status()`의 connected, shared_count, last_pull만 넣는다(remote·author 제외).
+  - `situation`: `status.overview(category)`를 줄인 것. 카테고리별 ref/mine 수, 단계, stage_text, steps, next, 오늘 미션의 exists/status/kind가 들어간다. `work_root`, `mission.path`, `recent`는 뺀다. 파일명에 사용자가 쓴 제목이 들어갈 수 있어서다. recent는 최근 5개만 세므로 개수로도 넣지 않는다(정확한 개수는 steps의 detail에 있다). 카테고리 이름은 넣는다. 예측에 필요하기 때문이다. **(제 판단)** category가 없거나 없는 카테고리면 전체 overview를 쓴다. 공용 라이브러리 화면이면 `library.status()`의 connected, shared_count, last_pull만 넣는다(remote·author 제외).
+  - `gates`(situation의 카테고리마다): 화면이 실제로 쓰는 문턱. 화면 API와 같은 도메인 함수로 계산해 예측이 그 화면 결과와 어긋나지 않게 한다. 개수·참거짓·한국어 type 이름만 넣는다.
+    - `has_profile`: `profile.md`가 있는지. 없으면 모티브·미션이 일반적으로 나온다.
+    - `typify_result`: 유형화 결과(`workspace/typify/<cat>.json`)가 있는지. steps의 typify(저장 `typified_at`)와 다를 수 있다.
+    - `motif_allowed`: 모티브 화면 허용 카드(`motif.allowed_types`). 3단계라도 유형화 결과가 없으면 기법·각도뿐이다.
+    - `diagnose`: `{"available", "preliminary"}`(`similarity.typify_gate`). available은 아키타입이 있는 유형화 결과가 있는지, preliminary는 그 결과의 status가 formal이 아닌지(마지막 유형화 실행 때의 ref 수로 정해진다)다.
+    - `draft_sources`: 기획안 출처 개수 `{"stars", "cards", "archetypes"}`(`draft.sources`). 기획안 화면에서 물으면 지인 틀 개수 `library_templates`(연결 전 null)도 넣는다.
   - `stage_rules`: 단계별 허용 카드 종류(`motif.ALLOWED_BY_STAGE`, `TYPE_KO`)와 단계 기준 수(`refstore._stage_limits()`). 예측이 실제 규칙과 맞게 하기 위해서다.
   - `history`, `question`.
 - 넣지 않는 것: md 본문, 대본·자막, `## 내 메모`, 프레임, 작업 폴더 절대 경로, 라이브러리 원격 URL.
@@ -134,10 +140,10 @@ title: 모티브
 
 ### 6.3 `_chatbot.md` 규칙(요지)
 - 한국어, 짧게 답한다. 기본 5~8줄, 필요하면 목록을 쓴다.
-- 근거는 `screen`, `guide`, `menu`, `situation`, `stage_rules`뿐이다. 없는 버튼·화면·기능은 말하지 않는다. 모르면 모른다고 하고 가이드를 가리킨다.
+- 근거는 `screen`, `guide`, `menu`, `situation`, `stage_rules`뿐이다. 화면 결과 예측은 `gates`가 `stage_rules`·`steps`보다 우선한다. steps의 typify 완료(저장)와 `gates.typify_result`가 다르면 짧게 알린다. 없는 버튼·화면·기능은 말하지 않는다. 모르면 모른다고 하고 가이드를 가리킨다.
 - "해보면 어떻게 돼?" 같은 예측 질문에는 다음 형식으로 답한다.
   - 첫 줄 `**예측 (내 상황 기준)**`.
-  - 지금 상황의 숫자를 인용한다. 예: "먹방 레퍼런스 3개, 2단계".
+  - 지금 상황의 숫자를 인용한다. 예: "먹방 레퍼런스 7개, 2단계 → 기법·각도 카드. 흐름·조합은 3단계(10개)부터이고 유형화 결과도 있어야 한다".
   - 무엇이 나올지와 그 한계를 적는다.
   - 더 좋아지려면 무엇을 하면 되는지 적는다. 링크를 붙일 수 있다.
   - 예측은 실제 실행이 아니라는 것을 한 줄로 밝힌다.
