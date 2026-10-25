@@ -91,14 +91,14 @@ agent: efl:python-developer
 ```python
 def test_get_help_screen(client)       # GET /api/help/motif → 200, title == "모티브"의 프런트매터 값, markdown이 "## 무엇을 하나요"로 시작(앞 공백 제외)
 def test_get_help_guide(client)        # guide-shorts, guide-long → 200
-def test_get_help_unknown(client)      # "nope", "_chatbot" → 404, error == "help_not_found"
-def test_get_help_traversal(client)    # "/api/help/..%2FREADME" → 404 (어떤 에러 코드든 200이 아니면 된다)
+def test_get_help_unknown(client)      # "nope", "_chatbot" → 400, error == "help_not_found" (서버는 모든 ScriptError를 400으로 낸다)
+def test_get_help_traversal(client)    # "/api/help/..%2FREADME" → 200이 아니다 (라우트 정규식 불일치 404)
 def test_menu_matches_app_js()         # app.js에서 re.findall(r'\{ name: "([^"]+)", route: "(#/[^"]+)" \}') 결과 == [(m["name"], m["route"]) for m in MENU]
 ```
 `test_menu_matches_app_js`는 Task 4 전에는 "가이드" 항목 때문에 실패한다. 이 Task에서는 `MENU`에 가이드를 넣고 `app.js` MENU에도 `{ group: null, items: [{ name: "가이드", route: "#/guide" }] }`를 맨 끝 그룹으로 지금 추가한다(라우트 처리는 Task 4). `tests/test_ui_static.py`의 `MENU_NAMES`에 "가이드"를 끝에 더한다.
 
 - [ ] **Step 2: Run** `pytest tests/test_ui_help.py -v` → FAIL.
-- [ ] **Step 3: Implement** `api_help.py`(`read_help`, `MENU`, GET 라우트). 프런트매터 파싱은 `refstore.read_md`를 쓴다. 404 매핑은 기존 `ScriptError` 코드→상태 표를 확인하고, `help_not_found`가 없으면 그 표에 404로 더한다.
+- [ ] **Step 3: Implement** `api_help.py`(`read_help`, `MENU`, GET 라우트). 프런트매터 파싱은 `refstore.read_md`를 쓴다. `ScriptError`는 서버가 모두 400으로 낸다(새 상태 매핑을 만들지 않는다).
 - [ ] **Step 4: Run** `pytest tests/test_ui_help.py tests/test_ui_static.py -v` → PASS.
 - [ ] **Step 5: Commit** `git commit -m "feat(ui): serve help pages over /api/help"`
 
@@ -134,9 +134,9 @@ def test_chat_payload_has_no_private_data(client, fake, home)
 def test_chat_situation_counts_refs(client, fake, home)   # 카테고리에 ref 2개 → situation.categories[0]["ref"] == 2
 def test_chat_situation_without_categories(client, fake)  # 카테고리 없음 → 200, situation["categories"] == []
 def test_chat_library_situation_hides_remote(client, fake) # page "library", 연결 안 됨 → situation["library"] == {"connected": False}; 연결된 경우를 monkeypatch한 library.status로 → "remote"·"author" 키 없음
-def test_chat_rejects_bad_input(client)                    # question "", "   ", "가"*501 → 400 bad_request; history "x", [{"role": "bot", "text": "a"}] → 400; page "nope" → 404 help_not_found
+def test_chat_rejects_bad_input(client)                    # question "", "   ", "가"*501 → 400 bad_request; history "x", [{"role": "bot", "text": "a"}] → 400; page "nope" → 400 help_not_found
 def test_chat_trims_history(client, fake)                  # history 10개(각 3000자) → payload["history"] 길이 6, 각 text 길이 2000, 마지막 6개
-def test_chat_single_flight(client, slow_fake)             # 첫 작업 진행 중 두 번째 POST → 409(기존 SINGLE_KINDS 응답과 같은 코드), 메시지 "이미 답을 만드는 중입니다"
+def test_chat_single_flight(client, slow_fake)             # 첫 작업 진행 중 두 번째 POST → 400 error == "job_running", 메시지 "이미 답을 만드는 중입니다"
 def test_chat_without_engine(client, monkeypatch)          # llm.check가 ScriptError("claude_missing") → 오류 응답, req.app.jobs.current("help_chat") is None
 def test_validate_answer()                                 # "" / 4001자 / 숫자 / dict 아님 → invalid_answer; "ok" → "ok"
 def test_chat_passes_timeout(client, fake)                 # fake가 받은 kw["timeout"] == 120
@@ -182,7 +182,7 @@ def test_app_routes_guide()      # app.js에 'case "guide"'가 있고 help-panel
 - [ ] **Step 3: Implement help-panel.js** — 스펙 §5.2~5.4 그대로:
   - 열림 상태 `localStorage["ytc.helpOpen"]`(try/catch, 실패 시 닫힘). 상단바 토글 버튼 `aria-expanded`, `aria-controls`.
   - ≥1100px: `body.help-open`일 때 main 오른쪽 360px 열(본문이 좁아짐). 그보다 좁으면 오른쪽 덮개 + scrim, Esc/닫기 버튼으로 닫고 포커스를 토글로 되돌린다.
-  - 탭 [이 화면]/[챗봇] (`role="tablist"`). [이 화면]: `/api/help/<page>` 렌더, 실패(404)면 "이 화면 도움말은 아직 없습니다", 맨 아래 "챗봇에게 묻기" 버튼(챗봇 탭으로 전환, 입력창 포커스).
+  - 탭 [이 화면]/[챗봇] (`role="tablist"`). [이 화면]: `/api/help/<page>` 렌더, 실패(help_not_found)면 "이 화면 도움말은 아직 없습니다", 맨 아래 "챗봇에게 묻기" 버튼(챗봇 탭으로 전환, 입력창 포커스).
   - [챗봇]: 바로가기 "이 화면은?", "사용 예", "해보면 어떻게 돼?"; textarea(maxlength 500, Enter 보내기 / Shift+Enter 줄바꿈); 보내는 동안 "생각하는 중…"+취소; 답은 `renderMarkdown`; 오류(`claude_missing` 등)는 오류 말풍선(`role="alert"`)과 서버 message; 답 영역 `aria-live="polite"`. 폴링 간격은 기존 페이지(`motif.js`의 pollDelay)와 같은 방식.
   - `setPage(page)`: page가 바뀌면 [이 화면] 다시 불러오고, 대화 비우고, 진행 중 작업은 cancel API 호출 + 대화 세대 토큰을 올려 늦게 온 답을 버린다(Review Focus 2).
   - 보낼 때 본문: `{page, category: getCategory(), question, history: trimHistory(대화)}`.
