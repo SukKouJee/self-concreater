@@ -162,3 +162,40 @@ def test_last_phases_match_server_weights():
     from scripts.ui import progress
     last = [k for k, v in progress.PHASE_WEIGHTS["cuts"].items() if v > 0][-1]
     assert f'LAST_PHASES = ["{last}"]' in UTILS.read_text(encoding="utf-8")
+
+
+# --- 영상 전체 진행률과 단계 칸 폭 (기다리는 화면 위쪽 큰 숫자) -------------------------
+
+def test_item_progress_is_time_based():
+    timing = ('{steps: {fetch: {state: "done", elapsed: 40, expected: 40},'
+              ' cuts: {state: "running", started_at: 0, expected: 135, fraction: 0.5},'
+              ' analyze: {state: "pending", expected: 90}}}')
+    r = run_js(f"m.itemProgress({timing}, 60)")
+    # 걸린 시간 = 40 + 60, 남은 시간 = 60*(0.5/0.5) + 90 = 150 -> 100 / 250
+    assert r["elapsed"] == 100 and abs(r["remaining"] - 150) < 1e-9
+    assert abs(r["fraction"] - 0.4) < 1e-9 and r["total"] == 250
+
+
+def test_item_progress_unknown_and_finished():
+    unknown = '{steps: {cuts: {state: "running", started_at: 0, expected: 10, fraction: 0.5}, analyze: {state: "pending", expected: null}}}'
+    r = run_js(f"m.itemProgress({unknown}, 5)")
+    assert r["fraction"] is None and r["remaining"] is None and r["elapsed"] == 5
+    done = '{steps: {fetch: {state: "done", elapsed: 4, expected: 5}, cuts: {state: "skipped", expected: 0}}}'
+    assert run_js(f"m.itemProgress({done}, 99)")["fraction"] == 1
+    assert run_js("m.itemProgress(null, 1)") is None
+    assert run_js('m.itemProgress({steps: {}}, 1)')["fraction"] is None
+
+
+def test_step_weights_follow_time_with_a_floor():
+    timing = ('{steps: {fetch: {state: "done", elapsed: 5, expected: 5},'
+              ' cuts: {state: "running", started_at: 0, expected: 135, fraction: 0.5},'
+              ' analyze: {state: "pending", expected: 90}, shots: {state: "skipped", expected: 60}}}')
+    w = run_js(f"m.stepWeights({timing}, 60)")
+    assert list(w) == ["fetch", "cuts", "analyze", "shots"]
+    total = sum(w.values())
+    assert abs(total - 1) < 1e-9
+    assert all(v >= 0.14 - 1e-9 for v in w.values())          # 글자가 들어갈 만큼은 남긴다
+    assert w["cuts"] > w["analyze"] > w["fetch"]                # 오래 걸리는 단계가 넓다
+    # 시간을 모르면 똑같이 나눈다
+    eq = run_js('m.stepWeights({steps: {a: {state: "pending", expected: null}, b: {state: "pending", expected: null}}}, 0)')
+    assert eq == {"a": 0.5, "b": 0.5}

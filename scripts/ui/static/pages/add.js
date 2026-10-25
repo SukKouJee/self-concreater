@@ -2,7 +2,9 @@
 // 서버 작업(kind "collect")이 이미 있으면 화면에 들어올 때 그 작업을 이어서 보여 준다.
 import { h, filesUrl } from "/static/dom.js";
 import { bodySubName, hookName, narrativeName, sectionLabelName, sectionName } from "/static/labels.js";
-import { fmtDur, fmtClock, fmtRemain, spokenDur, rowView, itemRemaining, monotonicFraction } from "/static/progress-utils.js";
+import {
+  fmtDur, fmtClock, fmtRemain, spokenDur, rowView, itemProgress, stepWeights, monotonicFraction,
+} from "/static/progress-utils.js";
 
 const POLL_MS = 1000;
 const LABELS = ["hook", "intro", "body", "demo", "transition", "cta", "outro"];
@@ -385,34 +387,44 @@ function rowText(row, v, p) {
   }
 }
 
+// Short text inside a step cell; the full sentence (rowText) is the cell's tooltip.
+function cellText(row, v, p) {
+  switch (row.state) {
+    case "done": return `✓ ${fmtDur(v.elapsed)}`;
+    case "failed": return "실패";
+    case "skipped": return "건너뜀";
+    case "running": return p !== null ? `${p}%` : fmtDur(v.elapsed);
+    default: return v.expected !== null && v.expected !== undefined ? `~${fmtDur(v.expected)}` : "–";
+  }
+}
+
 function buildStepRow(key) {
   const name = h("span", { class: "step-name" }, ROW_NAMES[key] || key);
   const time = h("span", { class: "step-time" });
   const fill = h("span", { class: "bar-fill" });
   const bar = h("span", { class: "bar" }, fill);
-  const sub = h("div", { class: "step-sub muted", hidden: true });
-  const li = h("li", { class: "step-row" }, h("div", { class: "step-main" }, name, bar, time), sub);
-  return { li, bar, fill, time, sub, maxFrac: null };
+  const li = h("li", { class: "step-row" }, h("div", { class: "step-main" }, name, time), bar);
+  return { li, bar, fill, time, maxFrac: null };
 }
 
 function paintStepRow(r, key, row, nowS, frozen) {
   const v = rowView(row, nowS);
   const running = row.state === "running";
   // Row state classes are row-* so they never pick up the guide's .step-done/.step-current styles.
+  // Returns the running row's detail ("카메라 움직임 확인 중 · 이 단계 약 50초 남음") for the summary line, else "".
   r.li.className = `step-row row-${row.state}${running && v.over ? " is-over" : ""}`;
   // The shown bar never moves backward (estimate-based value -> measured fraction, or a grown estimate).
   if (running) r.maxFrac = monotonicFraction(r.maxFrac, v.fraction);
   const shown = running ? r.maxFrac : v.fraction;
   const p = running ? shownPct(row, shown) : null;
-  r.time.textContent = rowText(row, v, p);
+  r.time.textContent = cellText(row, v, p);
+  r.li.title = rowText(row, v, p);
   r.fill.style.width = `${shown === null ? 0 : Math.round(shown * 100)}%`;
   r.bar.classList.toggle("bar-indet", running && shown === null && !frozen && row.paused_at == null);
   if (!running) {
     for (const a of ["role", "aria-label", "aria-valuemin", "aria-valuemax", "aria-valuenow", "aria-valuetext"]) r.bar.removeAttribute(a);
     r.bar.setAttribute("aria-hidden", "true");
-    r.sub.hidden = true;
-    r.sub.textContent = "";
-    return;
+    return "";
   }
   r.bar.removeAttribute("aria-hidden");
   r.bar.setAttribute("role", "progressbar");
@@ -434,40 +446,69 @@ function paintStepRow(r, key, row, nowS, frozen) {
     // Over the estimate: a measured fraction still gives a real remaining time; only unmeasured rows say "soon".
     if (v.over) parts.push("예상보다 길어지는 중");
     if (v.over && !v.byFraction) parts.push("곧 끝날 예정");
-    else if (v.remaining !== null) parts.push(`${fmtRemain(v.remaining, false)} 남음`, `${fmtClock(nowS + v.remaining)}쯤 끝`);
+    else if (v.remaining !== null) parts.push(`이 단계 ${fmtRemain(v.remaining, false)} 남음`);
   }
-  r.sub.textContent = parts.join(" · ");
-  r.sub.hidden = parts.length === 0;
+  return parts.join(" · ");
 }
 
-// Builds the step list once per structural change; card._tick(item) patches times and widths in place.
+// Builds the progress block once per structural change; card._tick(item) patches texts and widths in place.
+// Top: the whole video (ring %, remaining time and finish clock, what is happening now). Below: one cell per step,
+// widths proportional to each step's time (stepWeights), then elapsed / expected total.
 function stepRows(card, item) {
   const keys = Object.keys(item.timing.steps);
-  const ol = h("ol", { class: "steps", "aria-label": "단계" });
+  const ringText = h("span", {});
+  const ring = h("div", { class: "prog-ring", role: "progressbar", "aria-label": "이 영상 전체 진행률",
+    "aria-valuemin": "0", "aria-valuemax": "100" }, ringText);
+  const remain = h("p", { class: "prog-remain" });
+  const now = h("p", { class: "prog-now" });
+  const hero = h("div", { class: "prog-hero" }, ring, h("div", { class: "prog-text" }, remain, now));
+  const ol = h("ol", { class: "steps prog-steps", "aria-label": "단계" });
   const rows = new Map(keys.map((k) => [k, buildStepRow(k)]));
   rows.forEach((r) => ol.append(r.li));
-  const total = h("p", { class: "step-total muted", hidden: true });
+  const detail = h("p", { class: "prog-detail" });
+  let ringMax = null;
   card._tick = (cur) => {
     const timing = cur.timing;
     if (!timing || !timing.steps) return;
     const waiting = cur.state === "awaiting";
     // While the user decides, the clock stays at the last server snapshot.
     const nowS = waiting && S.job && typeof S.job.now === "number" ? S.job.now : nowSec();
+    let current = null;
     for (const [k, r] of rows) {
       const row = timing.steps[k];
-      if (row) paintStepRow(r, k, row, nowS, waiting);
+      if (!row) continue;
+      const text = paintStepRow(r, k, row, nowS, waiting);
+      if (row.state === "running") current = { name: ROW_NAMES[k] || k, text };
     }
-    if (waiting) {
-      total.textContent = "확인을 기다리는 중";
-      total.hidden = false;
-      return;
+    const w = stepWeights(timing, nowS);
+    ol.style.gridTemplateColumns = keys.map((k) => `${(w[k] || 0).toFixed(3)}fr`).join(" ");
+
+    const prog = itemProgress(timing, nowS);
+    const live = cur.state === "running" || waiting;
+    hero.hidden = !live;
+    if (live) {
+      // The ring never moves backward (a grown estimate would otherwise pull it back).
+      if (prog && prog.fraction !== null) ringMax = monotonicFraction(ringMax, prog.fraction);
+      const pct = ringMax === null ? null : Math.round(ringMax * 100);
+      ring.style.setProperty("--p", String(pct === null ? 0 : pct));
+      ringText.textContent = pct === null ? "…" : `${pct}%`;
+      if (pct === null) { ring.removeAttribute("aria-valuenow"); ring.setAttribute("aria-valuetext", "계산 중"); }
+      else { ring.setAttribute("aria-valuenow", String(pct)); ring.removeAttribute("aria-valuetext"); }
+      if (waiting) remain.textContent = "확인을 기다리는 중";
+      else if (prog && prog.remaining !== null) {
+        remain.textContent = `${fmtRemain(prog.remaining, true)} 남음 · ${fmtClock(nowS + prog.remaining)}쯤 끝`;
+      } else remain.textContent = "남은 시간 계산 중";
+      now.textContent = current ? `지금: ${current.name}${current.text ? ` — ${current.text}` : ""}` : "";
+      now.hidden = !current;
     }
-    const rem = cur.state === "running" ? itemRemaining(timing, nowS) : null;
-    total.hidden = rem === null;
-    if (rem !== null) total.textContent = `이 영상 전체: ${fmtRemain(rem, true)} 남음 · 예상 완료 ${fmtClock(nowS + rem)}`;
+    const parts = [];
+    if (prog) parts.push(`걸린 시간 ${fmtDur(prog.elapsed)}`);
+    if (live && prog && prog.total !== null) parts.push(`예상 전체 ${fmtDur(prog.total)}`);
+    detail.textContent = parts.join(" · ");
+    detail.hidden = parts.length === 0;
   };
   card._tick(item);
-  return h("div", { class: "step-block" }, ol, total);
+  return h("div", { class: "step-block" }, hero, ol, detail);
 }
 
 function buildItem(item) {
@@ -479,7 +520,9 @@ function buildItem(item) {
   );
   li.append(line);
   if (item.timing && item.timing.steps) li.append(stepRows(li, item));
-  else if (item.state === "running" || item.state === "awaiting" || item.state === "waiting") li.append(stepChips(item));
+  // A queued video has not started any step yet: say so instead of chips that would light up 자막 as "now".
+  else if (item.state === "waiting") li.append(h("p", { class: "muted item-wait" }, "앞 영상이 끝나면 시작해요"));
+  else if (item.state === "running" || item.state === "awaiting") li.append(stepChips(item));
   if (item.message) li.append(h("p", { class: item.state === "failed" ? "error item-msg" : "muted item-msg" }, item.message));
   if (item.state === "awaiting") {
     if (item.ask === "no_transcript") li.append(noTranscriptCard(item));

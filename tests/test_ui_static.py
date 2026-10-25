@@ -873,3 +873,19 @@ def test_home_narrow_layout_wraps_instead_of_overflowing():
     # tags wrap in every width; two-column cards never demand more than the viewport
     assert "flex-wrap: wrap" in re.search(r"^\.cat-tags \{([^}]*)\}", css, re.M).group(1)
     assert "minmax(min(300px, 100%), 1fr)" in re.search(r"^\.grid-2 \{([^}]*)\}", css, re.M).group(1)
+
+
+def test_add_progress_summary_first_then_proportional_steps():
+    js = (STATIC_DIR / "pages" / "add.js").read_text(encoding="utf-8")
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    block = js[js.index("function stepRows"):js.index("function buildItem")]
+    # 위에서부터: 전체 진행 원 -> 남은 시간·끝 시각 -> 지금 하는 일, 그 아래 단계 칸, 걸린 시간
+    for token in ['"prog-ring"', '"이 영상 전체 진행률"', "itemProgress(", "쯤 끝", "지금: ", "stepWeights(",
+                  "gridTemplateColumns", "걸린 시간", "예상 전체", "남은 시간 계산 중"]:
+        assert token in block, token
+    assert block.index('"prog-hero"') < block.index('"steps prog-steps"') < block.index('"prog-detail"')
+    assert "monotonicFraction(ringMax" in block                  # 전체 원도 뒤로 가지 않는다
+    assert "r.sub" not in js and "step-total" not in js            # 단계 아래 긴 줄과 맨 아래 합계 줄은 위쪽 요약으로 옮겼다
+    assert "앞 영상이 끝나면 시작해요" in js                          # 대기 중 영상은 단계 칩 대신 한 줄
+    for sel in [".prog-ring", ".prog-remain", ".steps.prog-steps", ".row-running .step-name", "@container (max-width: 420px)"]:
+        assert sel in css, sel

@@ -118,3 +118,47 @@ export function monotonicFraction(prevMax, current) {
   if (b === null) return a;
   return Math.max(a, b);
 }
+
+// 영상 전체 진행(시간 기준): 걸린 시간 / (걸린 시간 + 남은 시간). 남은 시간을 모르면 fraction은 null.
+// -> { elapsed, remaining, total, fraction } (timing이 없으면 null)
+export function itemProgress(timing, nowSec) {
+  const steps = timing && timing.steps;
+  if (!steps) return null;
+  let elapsed = 0;
+  for (const row of Object.values(steps)) {
+    if (row.state === "done" || row.state === "failed" || row.state === "running") {
+      elapsed += num(rowView(row, nowSec).elapsed) || 0;
+    }
+  }
+  const remaining = itemRemaining(timing, nowSec);
+  if (remaining === null) return { elapsed, remaining: null, total: null, fraction: null };
+  const total = elapsed + remaining;
+  return { elapsed, remaining, total, fraction: total > 0 ? Math.min(1, elapsed / total) : null };
+}
+
+const STEP_FLOOR = 0.14; // 단계 칸의 최소 몫: 이름과 시간이 들어갈 만큼
+
+// 단계 칸 폭(합 1): 단계별 시간(끝난 단계는 걸린 시간, 진행 중은 걸린+남은, 대기는 예상)에 비례하고
+// 모든 칸이 STEP_FLOOR 이상이다. 시간을 하나라도 모르면 똑같이 나눈다.
+export function stepWeights(timing, nowSec) {
+  const steps = (timing && timing.steps) || {};
+  const keys = Object.keys(steps);
+  if (keys.length === 0) return {};
+  const equal = Object.fromEntries(keys.map((k) => [k, 1 / keys.length]));
+  const times = {};
+  for (const k of keys) {
+    const row = steps[k];
+    const v = rowView(row, nowSec);
+    let t;
+    if (row.state === "skipped") t = 0;
+    else if (row.state === "running") t = v.remaining === null ? num(v.expected) : (num(v.elapsed) || 0) + v.remaining;
+    else if (row.state === "done" || row.state === "failed") t = num(v.elapsed);
+    else t = num(v.expected);
+    if (t === null) return equal;
+    times[k] = Math.max(0, t);
+  }
+  const sum = Object.values(times).reduce((a, b) => a + b, 0);
+  if (sum <= 0 || keys.length * STEP_FLOOR >= 1) return equal;
+  const spread = 1 - keys.length * STEP_FLOOR;
+  return Object.fromEntries(keys.map((k) => [k, STEP_FLOOR + spread * (times[k] / sum)]));
+}
