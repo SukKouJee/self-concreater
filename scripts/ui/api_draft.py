@@ -312,7 +312,12 @@ def _filmed(req: Request) -> dict:
     expected = body.get("hash")
     if not isinstance(expected, str) or not expected:
         raise ScriptError("bad_request", "hash가 필요합니다")
-    path = _safe_path(body.get("path"), conti_file=False)
+    raw = body.get("path")
+    if isinstance(raw, str) and (Path(raw).is_absolute() or "\\" in raw):
+        raise ScriptError("bad_path", f"작업 폴더 기준 상대 경로만 쓸 수 있습니다: {raw}")
+    path = _safe_path(raw, conti_file=False)
+    if path.parent != (work_root() / "drafts").resolve():
+        raise ScriptError("bad_path", "drafts 폴더 바로 아래의 기획안만 체크할 수 있습니다")
     with _FILMED_LOCK:
         if not path.is_file():
             raise ScriptError("draft_not_found", f"기획안을 찾을 수 없습니다: {body.get('path')}")
@@ -320,7 +325,7 @@ def _filmed(req: Request) -> dict:
         if fm.get("category") != category:
             raise ScriptError("draft_not_found", f"기획안을 찾을 수 없습니다: {body.get('path')}")
         if conti.content_hash(path) != expected:
-            raise ScriptError("draft_changed", "화면을 연 뒤 기획안이 바뀌었습니다. 새로고침한 뒤 다시 눌러 주세요")
+            raise ScriptError("draft_changed", "화면을 연 뒤 기획안이 바뀌었습니다. 다시 불러와 주세요")
         if filmed:
             fm = refstore.update_frontmatter(path, {"filmed_at": date.today().isoformat()})
         else:

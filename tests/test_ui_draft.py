@@ -467,6 +467,7 @@ def test_filmed_rejects_stale_hash(client, home):
     before = (home / rel).read_bytes()
     status, resp = _filmed(client, rel, True, "0" * 64)
     assert status == 400 and resp["error"] == "draft_changed"
+    assert resp["message"] == "화면을 연 뒤 기획안이 바뀌었습니다. 다시 불러와 주세요"
     assert (home / rel).read_bytes() == before
 
 
@@ -477,10 +478,15 @@ def test_filmed_rejects_bad_paths(client, home):
     profile = home / "profile.md"
     snapshot = {p: p.read_bytes() for p in [home / rel, home / "drafts" / "x-conti.md",
                                             home / "drafts" / "other.md"] + ([profile] if profile.exists() else [])}
-    for bad in ["drafts/../profile.md", "drafts/x-conti.md", str(home / "drafts" / "other.md"),
-                "drafts/none.md", "drafts/other.md"]:
-        status, resp = _filmed(client, bad, True, "0" * 64)
+    (home / "drafts" / "sub").mkdir()
+    (home / "drafts" / "sub" / "x.md").write_text("---\ncategory: " + CAT + "\n---\nbody\n", encoding="utf-8")
+    snapshot[home / "drafts" / "sub" / "x.md"] = (home / "drafts" / "sub" / "x.md").read_bytes()
+    for bad in ["drafts/../profile.md", "drafts/x-conti.md", "drafts/none.md", "drafts/other.md", "drafts/sub/x.md",
+                str(home / rel), str(home / "drafts" / "other.md"), rel.replace("/", "\\")]:
+        status, resp = _filmed(client, bad, True, conti.content_hash(rel))
         assert status == 400, (bad, resp)
+        if bad in (str(home / rel), "drafts/sub/x.md", rel.replace("/", "\\")):
+            assert resp["error"] == "bad_path", (bad, resp)
     assert {p: p.read_bytes() for p in snapshot} == snapshot
 
 
