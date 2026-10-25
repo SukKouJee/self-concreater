@@ -110,7 +110,7 @@ title: 모티브
 
 ### 6.1 API
 - `GET /api/help/<page>`: `{"page", "title", "markdown"}`. page는 §4 목록과 `guide-shorts`, `guide-long`만 받는다. 그 밖의 값은 `help_not_found`다(서버 규칙대로 400). 경로 문자열로 파일을 열지 않고 허용 목록으로만 연다.
-- `POST /api/help/chat`: 본문 `{"page", "category"?, "question", "history"?}`, 작업(kind `help_chat`)을 시작해 `{"job_id"}`를 준다.
+- `POST /api/help/chat`: 본문 `{"page", "category"?, "question", "history"?}`, 작업(kind `help_chat`)을 시작해 `{"job": snapshot}`을 준다(다른 작업 경로와 같은 형식).
   - `question`은 앞뒤 공백을 지운 1~500자이고, 그 밖은 `bad_request`다.
   - `history`는 `[{"role": "user"|"assistant", "text"}]`이다. 서버가 최근 6개만 쓰고 항목마다 2000자로 자른다. 형식이 틀리면 `bad_request`다.
   - `help_chat`은 `SINGLE_KINDS`에 넣는다. 진행 중이면 "이미 답을 만드는 중입니다"가 나온다.
