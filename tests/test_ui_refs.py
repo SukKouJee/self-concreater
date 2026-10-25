@@ -299,3 +299,19 @@ def test_post_labels_returns_null_video_when_summary_fails(client, home, monkeyp
     monkeypatch.setattr(api_refs, "_summary", boom)
     r = post(client, "/api/refs/a00/labels?category=mukbang", {"hash": d["hash"], "hook_type": "question"})
     assert r["video"] is None and r["changed"] == ["hook_type"]
+
+
+def test_list_carries_avg_cut_and_camera_shares(client, home):  # noqa: F811
+    refstore.update_frontmatter(video_path(home, "a00"), {
+        "pacing": {"avg_cut_sec": 2.38, "by_section": {"hook": 2.7}},
+        "camera": {"static": 0.88, "pan": 0.12, "zoom": 0.0}})
+    refstore.update_frontmatter(video_path(home, "a01"), {
+        "pacing": {"avg_cut_sec": "fast"}, "camera": {"static": 1.5, "pan": float("nan"), "tilt": 0.3, "zoom": True}})
+    refstore.update_frontmatter(video_path(home, "a02"), {"pacing": None, "camera": "static"})
+    data = _strict_get(client, "/api/refs?category=mukbang")
+    vids = {v["id"]: v for v in data["videos"]}
+    assert vids["a00"]["avg_cut_sec"] == 2.38
+    assert vids["a00"]["camera"] == {"static": 0.88, "pan": 0.12, "zoom": 0.0}
+    assert vids["a01"]["avg_cut_sec"] is None                # 숫자가 아니면 없음
+    assert vids["a01"]["camera"] is None                     # 0~1 밖, NaN, 모르는 키, bool은 버린다 → 남는 게 없다
+    assert vids["a02"]["avg_cut_sec"] is None and vids["a02"]["camera"] is None

@@ -1,6 +1,7 @@
 // 레퍼런스 추가 화면: 링크 입력 → 1초 폴링 진행 표시 → 영상별 확인 카드 → 마무리 요약.
 // 서버 작업(kind "collect")이 이미 있으면 화면에 들어올 때 그 작업을 이어서 보여 준다.
 import { h, filesUrl } from "/static/dom.js";
+import { hookName, narrativeName } from "/static/labels.js";
 import { fmtDur, fmtClock, fmtRemain, spokenDur, rowView, itemRemaining, monotonicFraction } from "/static/progress-utils.js";
 
 const POLL_MS = 1000;
@@ -583,8 +584,8 @@ function confirmCard(item) {
   const card = h("section", { class: "confirm", "aria-label": `${itemLabel(item)} 분석 확인` });
   if (a.summary) card.append(h("p", { class: "confirm-title" }, a.summary));
   const meta = h("p", { class: "meta-line" });
-  if (a.hook_type) meta.append(h("span", { class: "tag" }, `훅 ${a.hook_type}`));
-  if (a.narrative_type) meta.append(h("span", { class: "tag" }, `서사 ${a.narrative_type}`));
+  if (a.hook_type) meta.append(h("span", { class: "tag" }, `훅 ${hookName(a.hook_type)}`));
+  if (a.narrative_type) meta.append(h("span", { class: "tag" }, `서사 ${narrativeName(a.narrative_type)}`));
   if (meta.childNodes.length) card.append(meta);
   if (a.synopsis) card.append(h("p", { class: "muted synopsis" }, a.synopsis));
 

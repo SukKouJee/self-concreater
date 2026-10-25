@@ -740,3 +740,40 @@ def test_sidebar_styles_use_side_tokens():
     assert "outline: 2px solid transparent" in focus          # 고대비(forced-colors) 모드에서 테두리가 남는다
     assert "--side-focus: 0 0 0 2px var(--side-accent)" in css
     assert re.search(r"\.menu-group\.closed \.menu-list\s*\{[^}]*display: none", css)
+
+
+# --- 카드 새 모양: 한국어 유형 이름, 레퍼런스 카드 정보, 선택 상태 색 ---------------------
+
+def test_pages_show_korean_type_names_not_codes():
+    pages = STATIC_DIR / "pages"
+    for name in ("add.js", "draft.js", "library.js", "refs.js"):
+        js = (pages / name).read_text(encoding="utf-8")
+        assert 'from "/static/labels.js"' in js, name
+        assert not re.search(r"\$\{[\w.]*\.(hook_type|narrative_type)\}", js), name   # 영어 코드를 그대로 찍지 않는다
+    refs = (pages / "refs.js").read_text(encoding="utf-8")
+    assert "vocab.hook_type, hookName)" in refs and "vocab.narrative_type, narrativeName)" in refs   # 고치기 선택지도 한국어
+
+
+def test_refs_card_shows_chips_tags_stats_and_flow():
+    js = (STATIC_DIR / "pages" / "refs.js").read_text(encoding="utf-8")
+    card = js.split("function thumb(v)", 1)[1].split("// ---- detail", 1)[0]
+    for token in ["formatName(v.format)", 'VIEW.role === "all"', "직접 고침", "fmtTime(v.duration_sec)",
+                  "hookName(v.hook_type)", "narrativeName(v.narrative_type)", "fmtCut(v.avg_cut_sec)",
+                  "topCamera(v.camera)", "bandCaption(v.sections)", '"dl"']:
+        assert token in card, token
+
+
+def test_selected_states_use_pick_colors_with_contrast():
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    light, dark = _root_tokens(css)
+    for tokens in (light, dark):
+        assert _contrast(tokens["--pick-fg"], tokens["--pick-bg"]) >= 4.5
+        assert _contrast(tokens["--pick-bg"], tokens["--page"]) >= 3.0          # 선택된 버튼이 바탕과 구분된다
+        assert _contrast(tokens["--ink2"], tokens["--chip"]) >= 4.5             # 꼬리표 글자
+        assert _contrast(tokens["--muted"], tokens["--chip"]) >= 4.5
+    for selector in ('.ref-filters .btn[aria-pressed="true"]', '.filter-btn[aria-pressed="true"]',
+                     '.diag-toggle[aria-pressed="true"]', ".seg-opt input:checked + span",
+                     '.lib-tab[aria-selected="true"]', '.btn.help-toggle[aria-expanded="true"]'):
+        rule = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", css).group(1)
+        assert "var(--pick-bg)" in rule and "var(--pick-fg)" in rule, selector
+    assert "box-shadow: var(--elev-1)" in re.search(r"^\.card \{([^}]*)\}", css, re.M).group(1)

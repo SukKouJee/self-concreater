@@ -3,6 +3,7 @@
 //   지인이 쓴 글(이름·메모·본문)은 신뢰하지 않는 데이터라 항상 텍스트 노드나 renderMarkdown으로만 그린다.
 //   올리기는 "올리기" → 인라인 확인 → "올리기 확인"을 눌러야만 서버로 간다. 자동으로 올리지 않는다.
 import { h, fill } from "/static/dom.js";
+import { hookName, narrativeName } from "/static/labels.js";
 import { renderMarkdown } from "/static/md.js";
 
 const POLL_MS = 1000;
@@ -469,8 +470,8 @@ function itemCard(it) {
   } else {
     const facts = [];
     if (it.target_sec) facts.push(`목표 ${Math.round(it.target_sec)}초`);
-    if (it.hook_type) facts.push(`훅 ${it.hook_type}`);
-    if (it.narrative_type) facts.push(`서사 ${it.narrative_type}`);
+    if (it.hook_type) facts.push(`훅 ${hookName(it.hook_type)}`);
+    if (it.narrative_type) facts.push(`서사 ${narrativeName(it.narrative_type)}`);
     if (facts.length) kids.push(h("p", { class: "small" }, facts.join(" · ")));
   }
   if (it.note) kids.push(h("div", { class: "lib-note" }, h("span", { class: "muted small" }, "메모"), md(it.note)));
@@ -698,8 +699,8 @@ function previewFacts(pv) {
   if (pv.kind === "technique") return [fm.technique_kind, pv.category].filter(Boolean).join(" · ");
   const facts = [pv.category];
   if (fm.target_sec) facts.push(`목표 ${Math.round(fm.target_sec)}초`);
-  if (fm.hook_type) facts.push(`훅 ${fm.hook_type}`);
-  if (fm.narrative_type) facts.push(`서사 ${fm.narrative_type}`);
+  if (fm.hook_type) facts.push(`훅 ${hookName(fm.hook_type)}`);
+  if (fm.narrative_type) facts.push(`서사 ${narrativeName(fm.narrative_type)}`);
   if (fm.pacing && typeof fm.pacing.avg_cut_sec === "number") facts.push(`평균 컷 ${fm.pacing.avg_cut_sec}초`);
   return facts.filter(Boolean).join(" · ");
 }

@@ -5,6 +5,7 @@
 // 미리보기 단계에서는 drafts/가 바뀌지 않는다. 저장은 사용자가 누른 뒤에만, 고친 draft 그대로 보낸다.
 // 작업 폴링·재진입·handled·job_id·aborted 처리는 pages/motif.js와 같은 방식이다.
 import { h, fill } from "/static/dom.js";
+import { hookName, narrativeName } from "/static/labels.js";
 import { renderMarkdown } from "/static/md.js";
 
 const POLL_MS = 1000;
@@ -318,8 +319,8 @@ function renderView(mine, d) {
     d.source ? `출처 ${d.source}` : null,
     d.archetype ? `아키타입 ${d.archetype}` : null,
     lastEnd(sections) > 0 ? `길이 ${fmtTime(lastEnd(sections))}` : null,
-    d.hook_type ? `훅 ${d.hook_type}` : null,
-    d.narrative_type ? `서사 ${d.narrative_type}` : null,
+    d.hook_type ? `훅 ${hookName(d.hook_type)}` : null,
+    d.narrative_type ? `서사 ${narrativeName(d.narrative_type)}` : null,
     pacing && pacing.avg_cut_sec ? `평균 컷 ${pacing.avg_cut_sec}초` : null,
   ].filter(Boolean).join(" · ");
   mine.detail = d;

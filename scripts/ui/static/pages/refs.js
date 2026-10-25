@@ -5,6 +5,7 @@
 // api 호출은 ctx.api를 쓴다: 페이지별 ctx.api가 이미 ctx.signal(이동하면 abort)을 실어 보낸다. 중단된 요청(error "aborted")은 조용히 무시한다.
 // 모든 비동기 뒤에는 ctx.isCurrent()로 화면이 아직 이 페이지인지 확인한다.
 import { h, fill, filesUrl } from "/static/dom.js";
+import { bandCaption, fmtCut, formatName, hookName, narrativeName, topCamera } from "/static/labels.js";
 import { renderMarkdown } from "/static/md.js";
 
 const COUNT_DEBOUNCE_MS = 300;
@@ -36,9 +37,9 @@ function fmtRange(s) {
   return `${fmtTime(s.start)}–${fmtTime(s.end)}`;
 }
 
-function roleBadge(role) {
-  const text = ROLE_TEXT[role] || (role ? String(role) : "");
-  return text ? h("span", { class: `badge role-${String(role).replace(/[^\w-]/g, "_")}` }, text) : null;
+// Unknown roles (a hand-edited md) are shown as is.
+function roleText(role) {
+  return ROLE_TEXT[role] || (role ? String(role) : "");
 }
 
 function reviewedBadge() {
@@ -225,27 +226,53 @@ function renderCards() {
   }, COUNT_DEBOUNCE_MS);
 }
 
+// Thumbnail with chips on top: format and (when the list mixes roles) role at top-left, "직접 고침" at top-right,
+// length at bottom-right. Chips are plain text so screen readers read them with the card link.
 function thumb(v) {
-  if (!v.thumb) return h("div", { class: "ref-thumb ref-thumb-none" }, "프레임 없음");
-  return h("div", { class: "ref-thumb" }, h("img", { src: filesUrl(v.thumb), alt: "", loading: "lazy" }));
+  const pic = v.thumb
+    ? h("img", { src: filesUrl(v.thumb), alt: "", loading: "lazy" })
+    : h("span", { class: "ref-thumb-empty" }, "프레임 없음");
+  const tl = [formatName(v.format), VIEW.role === "all" ? roleText(v.role) : ""].filter(Boolean);
+  return h("div", { class: "ref-thumb" + (v.thumb ? "" : " ref-thumb-none") }, pic,
+    tl.length ? h("span", { class: "ref-ov ref-ov-tl" }, ...tl.map((t) => h("span", { class: "ref-chip" }, t))) : null,
+    v.reviewed ? h("span", { class: "ref-ov ref-ov-tr" }, h("span", { class: "ref-chip ref-chip-ok" }, "직접 고침")) : null,
+    num(v.duration_sec) > 0 ? h("span", { class: "ref-ov ref-ov-br" }, h("span", { class: "ref-chip" }, fmtTime(v.duration_sec))) : null);
 }
 
-function codes(v) {
-  const parts = [v.hook_type, v.narrative_type].filter(Boolean);
-  return parts.length ? h("p", { class: "ref-codes small muted" }, parts.join(" · ")) : null;
+function typeTags(v) {
+  const tags = [["훅", hookName(v.hook_type)], ["서사", narrativeName(v.narrative_type)]].filter(([, name]) => name);
+  if (!tags.length) return null;
+  return h("p", { class: "ref-tags" }, ...tags.map(([k, name]) => h("span", { class: "ref-tag" }, h("span", { class: "ref-tag-k" }, k), name)));
+}
+
+function stats(v) {
+  const cut = fmtCut(v.avg_cut_sec);
+  const cam = topCamera(v.camera);
+  const cells = [
+    cut ? ["평균 컷", cut] : null,
+    cam ? ["카메라", `${cam.label} ${cam.pct}%`] : null,
+  ].filter(Boolean);
+  if (!cells.length) return null;
+  return h("dl", { class: "ref-stats" }, ...cells.map(([k, val]) => h("div", { class: "ref-stat" }, h("dt", {}, k), h("dd", {}, val))));
+}
+
+function bandWithCaption(v) {
+  const band = sectionBand(v.sections, v.duration_sec);
+  if (!band) return null;
+  const caption = bandCaption(v.sections);
+  return h("div", { class: "ref-flow" }, band, caption ? h("p", { class: "ref-flow-cap" }, caption) : null);
 }
 
 function videoCard(v) {
-  const meta = [v.channel, num(v.duration_sec) > 0 ? fmtTime(v.duration_sec) : null].filter(Boolean).join(" · ");
   return h("li", { class: "ref-card" },
     h("a", { class: "ref-link", href: refsHref(v.id) },
       thumb(v),
       h("div", { class: "ref-body" },
         h("h2", { class: "ref-title" }, displayTitle(v)),
-        meta ? h("p", { class: "ref-meta small muted" }, meta) : null,
-        h("div", { class: "ref-badges" }, roleBadge(v.role), v.reviewed ? reviewedBadge() : null),
-        codes(v),
-        sectionBand(v.sections, v.duration_sec))));
+        v.channel ? h("p", { class: "ref-meta" }, v.channel) : null,
+        typeTags(v),
+        stats(v),
+        bandWithCaption(v))));
 }
 
 // ---- detail --------------------------------------------------------------------
@@ -280,9 +307,9 @@ function renderDetail(data) {
     v.channel,
     num(v.duration_sec) > 0 ? fmtTime(v.duration_sec) : null,
     ROLE_TEXT[v.role] || v.role,
-    v.hook_type ? `훅 ${v.hook_type}` : null,
-    v.narrative_type ? `서사 ${v.narrative_type}` : null,
-    v.format ? `형식 ${v.format}` : null,
+    v.hook_type ? `훅 ${hookName(v.hook_type)}` : null,
+    v.narrative_type ? `서사 ${narrativeName(v.narrative_type)}` : null,
+    v.format ? `형식 ${formatName(v.format)}` : null,
   ].filter(Boolean).join(" · ");
 
   fill(S.el,
@@ -336,10 +363,11 @@ function sectionBlock(data, sections) {
 }
 
 // Options list that keeps the current value even when the vocabulary does not contain it.
-function optionList(values, current) {
+// nameOf: what each option shows (the value stays the English code that is saved).
+function optionList(values, current, nameOf = (val) => val) {
   const list = Array.isArray(values) ? values : [];
   const all = current && !list.includes(current) ? [current, ...list] : list;
-  return all.map((val) => h("option", { value: val }, val));
+  return all.map((val) => h("option", { value: val }, nameOf(val)));
 }
 
 function selectOf(attrs, options, value) {
@@ -417,8 +445,8 @@ function editBlock(data, viewBlock) {
       h("span", { class: "sec-pick" }, dot, labelSel, subSel)));
   }
 
-  function typeField(id, text, state, values) {
-    const opts = optionList(values, state.cur);
+  function typeField(id, text, state, values, nameOf) {
+    const opts = optionList(values, state.cur, nameOf);
     if (!state.cur) opts.unshift(h("option", { value: "", disabled: true, selected: true }, "(없음)"));
     const sel = selectOf({ id, class: "label-select" }, opts, state.cur);
     sel.addEventListener("change", () => { state.cur = sel.value; refresh(); });
@@ -480,8 +508,8 @@ function editBlock(data, viewBlock) {
 
   form.append(rows,
     h("div", { class: "ref-edit-types" },
-      typeField("ref-edit-hook", "훅 유형", hook, vocab.hook_type),
-      typeField("ref-edit-narr", "서사 유형", narr, vocab.narrative_type)),
+      typeField("ref-edit-hook", "훅 유형", hook, vocab.hook_type, hookName),
+      typeField("ref-edit-narr", "서사 유형", narr, vocab.narrative_type, narrativeName)),
     notice,
     h("div", { class: "btn-row" }, save, cancel));
   block.append(h("div", { class: "ref-block-head" }, h("h2", { id: "ref-sec-title", tabindex: "-1" }, "섹션 흐름 — 라벨 고치기")),

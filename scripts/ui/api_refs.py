@@ -66,6 +66,27 @@ def _duration(value: Any) -> float | int | None:
         return None
 
 
+CAMERA_KEYS = ("static", "pan", "zoom")
+
+
+def _avg_cut(pacing: Any) -> float | int | None:
+    """pacing.avg_cut_sec if it is a finite number above 0, else None (list cards show it as a number)."""
+    value = _duration(pacing.get("avg_cut_sec")) if isinstance(pacing, dict) else None
+    return value if value is not None and value > 0 else None
+
+
+def _camera_shares(camera: Any) -> dict | None:
+    """camera {static, pan, zoom} shares kept only when finite and within 0..1; None if nothing is left."""
+    if not isinstance(camera, dict):
+        return None
+    shares = {}
+    for key in CAMERA_KEYS:
+        value = _duration(camera.get(key))
+        if value is not None and 0 <= value <= 1:
+            shares[key] = value
+    return shares or None
+
+
 def _json_safe(value: Any) -> Any:
     """Recursively drop non-finite numbers and stringify keys/dates so json.dumps(allow_nan=False) cannot fail."""
     if isinstance(value, dict):
@@ -135,6 +156,7 @@ def _summary(path: Path, fm: dict, frames: list[dict]) -> dict:
         "narrative_type": _text(fm.get("narrative_type")),
         "reviewed": bool(fm.get("reviewed")), "sections": _sections(fm),
         "thumb": frames[0]["frame"] if frames else None, "added": added,
+        "avg_cut_sec": _avg_cut(fm.get("pacing")), "camera": _camera_shares(fm.get("camera")),
     }
 
 
