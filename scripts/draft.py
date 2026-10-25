@@ -55,6 +55,28 @@ def _library_template(source: str) -> dict:
     return item
 
 
+def sources(category: str) -> dict[str, Any]:
+    """기획안 출처 목록(★ 카드, 나머지 카드, 아키타입). 지인 틀은 라이브러리 쪽이라 여기 넣지 않는다.
+
+    기획안 화면(api_draft)과 도움말 챗봇 상황(api_help)이 같은 목록을 쓴다.
+    """
+    details = motif.card_details(category)
+
+    def brief(c: dict) -> dict:
+        return {k: c[k] for k in ("id", "title", "type", "type_ko", "idea")}
+
+    index_fm, _ = refstore.read_md(refstore.existing_category_dir(category) / "index.md")
+    typify = motif._typify(category, index_fm)
+    archetypes = [{"id": a["id"], "name": a.get("name"), "size": a.get("size"), "skeleton": a.get("skeleton"),
+                   "mean_duration": a.get("mean_duration")} for a in (typify or {}).get("archetypes") or []]
+    return {
+        "stars": [brief(c) for c in details if c["starred"]],
+        "cards": [brief(c) for c in details if not c["starred"]],
+        "archetypes": archetypes,
+        "has_typify": motif.typify_path(category).exists(),
+    }
+
+
 def context(category: str, source: str, topic: str | None = None) -> dict:
     cat = refstore.existing_category_dir(category)
     index_fm, index_body = refstore.read_md(cat / "index.md")

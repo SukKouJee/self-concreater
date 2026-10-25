@@ -15,7 +15,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from scripts import claude_cli, conti, draft, library, llm, motif, refstore
+from scripts import claude_cli, conti, draft, library, llm, refstore
 from scripts.common import ScriptError, work_root, workspace_dir
 from scripts.ui.api_conti import CONTI_SUFFIX, _rel, _safe_path
 from scripts.ui.api_refs import _body_parts
@@ -122,21 +122,7 @@ def _library_templates() -> list[dict] | None:
 @route("GET", "/api/draft/sources")
 def _sources(req: Request) -> dict:
     category = _category(req.query.get("category"))
-    details = motif.card_details(category)
-
-    def brief(c: dict) -> dict:
-        return {k: c[k] for k in ("id", "title", "type", "type_ko", "idea")}
-
-    index_fm, _ = refstore.read_md(refstore.existing_category_dir(category) / "index.md")
-    typify = motif._typify(category, index_fm)
-    archetypes = [{"id": a["id"], "name": a.get("name"), "size": a.get("size"), "skeleton": a.get("skeleton"),
-                   "mean_duration": a.get("mean_duration")} for a in (typify or {}).get("archetypes") or []]
-    out = {
-        "stars": [brief(c) for c in details if c["starred"]],
-        "cards": [brief(c) for c in details if not c["starred"]],
-        "archetypes": archetypes,
-        "has_typify": motif.typify_path(category).exists(),
-    }
+    out = draft.sources(category)
     templates = _library_templates()
     if templates is not None:
         out["library_templates"] = {"label": "지인 틀", "items": templates}

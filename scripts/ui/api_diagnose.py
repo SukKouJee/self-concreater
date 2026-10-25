@@ -123,11 +123,8 @@ def _read(path: Path) -> dict | None:
 @route("GET", "/api/diagnose/targets")
 def _targets(req: Request) -> dict:
     category = _category(req.query.get("category"))
-    try:
-        typify = similarity._load_typify(category)
-        has_typify, preliminary = True, typify.get("status") != "formal"
-    except ScriptError:
-        has_typify, preliminary = False, None
+    gate = similarity.typify_gate(category)
+    has_typify, preliminary = gate["available"], gate["preliminary"]
     root = work_root()
     videos, drafts = [], []
     folder = refstore.existing_category_dir(category) / "videos"

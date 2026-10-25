@@ -5,7 +5,7 @@
 
 도움말 챗봇 작업(kind "help_chat")
 - 질문 하나 = 항목 하나(id "chat"). 답은 항목 `preview={"answer": md}`로 두고 항목·작업 모두 `done`으로 끝낸다. 저장 단계는 없다.
-- Claude에게는 도움말 md, 메뉴, 줄인 상황(`situation`), 단계 규칙만 준다. md 본문·대본·`## 내 메모`·작업 폴더 경로·라이브러리 원격은 보내지 않는다.
+- Claude에게는 도움말 md, 메뉴, 줄인 상황(`situation`, 카테고리마다 화면별 실제 문턱 `gates`), 단계 규칙만 준다. md 본문·대본·`## 내 메모`·작업 폴더 경로·라이브러리 원격은 보내지 않는다.
 - 규칙 파일 `_chatbot.md`는 허용 목록 밖이라 조회 API로는 나가지 않는다.
 """
 from __future__ import annotations
@@ -13,8 +13,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from scripts import library, llm, motif, refstore, status
-from scripts.common import PLUGIN_ROOT, ScriptError
+from scripts import draft, library, llm, motif, refstore, similarity, status
+from scripts.common import PLUGIN_ROOT, ScriptError, work_root
+from scripts.ui.api_draft import _library_templates
 from scripts.ui.jobs import Job, new_item
 from scripts.ui.server import Request, route
 
@@ -77,8 +78,30 @@ def _rules() -> list[Path]:
     return [HELP_DIR / "_chatbot.md"]          # 허용 목록 밖이라 읽기 API로는 나가지 않는다
 
 
+def gates(category: str, page: str) -> dict[str, Any]:
+    """화면이 실제로 쓰는 문턱. 각 화면 API와 같은 함수로 계산한다(개수·참거짓·한국어 type 이름만).
+
+    - motif_allowed: 모티브 화면의 허용 카드(`motif.allowed_types`).
+    - typify_result: 유형화 결과(json)가 있는지. 저장(typified_at)과는 별개다.
+    - diagnose: 진단 화면의 `similarity.typify_gate`(available, preliminary).
+    - draft_sources: 기획안 화면 출처 개수(`draft.sources`). 기획안 화면이면 지인 틀 개수(연결 전 None)도 넣는다.
+    """
+    sources = draft.sources(category)
+    draft_sources: dict[str, Any] = {k: len(sources[k]) for k in ("stars", "cards", "archetypes")}
+    if page == "draft":
+        templates = _library_templates()
+        draft_sources["library_templates"] = None if templates is None else len(templates)
+    return {
+        "has_profile": (work_root() / "profile.md").exists(),
+        "typify_result": motif.typify_path(category).exists(),
+        "motif_allowed": [motif.TYPE_KO[t] for t in motif.allowed_types(category)],
+        "diagnose": similarity.typify_gate(category),
+        "draft_sources": draft_sources,
+    }
+
+
 def situation(category: str | None, page: str) -> dict[str, Any]:
-    """`status.overview`를 챗봇용으로 줄인다. 경로·최근 산출물 이름·라이브러리 원격은 넣지 않는다."""
+    """`status.overview`를 챗봇용으로 줄이고 카테고리마다 `gates`를 붙인다. 경로·산출물 이름·라이브러리 원격은 넣지 않는다."""
     try:
         overview = status.overview(category)
     except ScriptError as e:
@@ -86,14 +109,11 @@ def situation(category: str | None, page: str) -> dict[str, Any]:
             raise
         overview = status.overview(None)          # 없는 카테고리는 전체로 본다
     mission = overview["mission"]
-    counts: dict[str, int] = {}
-    for item in overview["recent"]:
-        counts[item["kind"]] = counts.get(item["kind"], 0) + 1
     result: dict[str, Any] = {
         "initialized": overview["initialized"],
-        "categories": [{k: c[k] for k in CATEGORY_KEYS} for c in overview["categories"]],
+        "categories": [{**{k: c[k] for k in CATEGORY_KEYS}, "gates": gates(c["category"], page)}
+                       for c in overview["categories"]],
         "mission": {k: mission[k] for k in ("date", "exists", "status", "kind")},
-        "recent_counts": counts,
     }
     if page == "library":
         lib = library.status()
@@ -173,6 +193,7 @@ def _chat(req: Request) -> dict[str, Any]:
     question = _question(body.get("question"))
     history = _history(body.get("history"))
     category = _chat_category(body.get("category"))
+    llm.check()                                   # 엔진이 없으면 상황을 모으지도, 작업을 만들지도 않는다
     payload = {
         "screen": {"page": screen["page"], "title": screen["title"], "markdown": screen["markdown"]},
         "guide": {name: read_help(name)["markdown"] for name in GUIDE_PAGES},
@@ -182,6 +203,5 @@ def _chat(req: Request) -> dict[str, Any]:
         "history": history,
         "question": question,
     }
-    llm.check()                                   # 엔진이 없으면 작업을 만들지 않는다
     job = req.app.jobs.start(KIND, chat_target(payload), items=[new_item("chat", title=page, step="claude")])
     return {"job": job.snapshot()}

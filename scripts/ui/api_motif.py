@@ -78,11 +78,7 @@ def _library_ids(value: Any) -> list[str] | None:
 
 
 def _allowed(category: str) -> list[str]:
-    """허용 카드 type. 3단계라도 유형화 결과가 없으면 흐름·조합은 막는다(yt-inspire 규칙)."""
-    stage = refstore.count(category)["stage"]
-    if stage == 3 and not motif.typify_path(category).exists():
-        return ["technique", "angle"]
-    return motif.ALLOWED_BY_STAGE[stage]
+    return motif.allowed_types(category)
 
 
 # ---- 상태 -------------------------------------------------------------------------------

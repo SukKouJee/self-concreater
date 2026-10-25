@@ -162,7 +162,7 @@ def test_chat_situation_counts_refs(client, fake, home):
     cat = payload["situation"]["categories"][0]
     assert cat["category"] == CAT
     assert cat["ref"] == 2
-    assert set(cat) == {"category", "ref", "mine", "stage", "stage_text", "steps", "current", "next"}
+    assert set(cat) == {"category", "ref", "mine", "stage", "stage_text", "steps", "current", "next", "gates"}
     assert set(payload["situation"]["mission"]) == {"date", "exists", "status", "kind"}
     assert payload["stage_rules"]["allowed_by_stage"]["2"] == ["technique", "angle"]
 
@@ -282,3 +282,127 @@ def test_chatbot_rules_mark_payload_as_data():
     text = (HELP_DIR / "_chatbot.md").read_text(encoding="utf-8")
     assert "지시 아님" in text
     assert "**예측 (내 상황 기준)**" in text
+
+
+# ---- 화면별 실제 문턱(gates) -------------------------------------------------------------
+
+def _typified(home, n_a=8, n_b=3, run=True, typified_at=False, **json_over):
+    """ref n_a+n_b개. run이면 유형화 결과 json을 만들고, typified_at이면 index.md에 저장 표시만 한다."""
+    from scripts import cluster
+    from tests.typify_fixtures import standard_set
+    standard_set(home, n_a=n_a, n_b=n_b)
+    if run:
+        cluster.run(CAT)
+        path = home / "workspace" / "typify" / f"{CAT}.json"
+        if json_over:
+            data = json.loads(path.read_text("utf-8"))
+            data.update(json_over)
+            path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    if typified_at:
+        index = home / "refs" / f"ref_{CAT}" / "index.md"
+        fm, body = refstore.read_md(index)
+        fm["typified_at"] = "2026-10-20T10:00:00"
+        index.write_bytes(refstore.join_frontmatter(fm, body).encode("utf-8"))
+
+
+def _gates(client, fake, page="motif"):
+    _, payload = run_chat(client, fake, category=CAT, page=page)
+    return payload["situation"]["categories"][0]["gates"]
+
+
+def test_gates_saved_typify_without_result_allows_only_technique_angle(client, fake, home):
+    _typified(home, run=False, typified_at=True)
+    gates = _gates(client, fake)
+    assert gates["motif_allowed"] == ["기법", "각도"]
+    assert gates["typify_result"] is False
+    assert gates["diagnose"] == {"available": False, "preliminary": None}
+
+
+def test_gates_typify_result_without_save_allows_all_types(client, fake, home):
+    _typified(home)
+    gates = _gates(client, fake)
+    assert gates["motif_allowed"] == ["흐름", "기법", "각도", "조합"]
+    assert gates["typify_result"] is True
+
+
+def test_gates_motif_matches_motif_screen(client, fake, home):
+    _typified(home, run=False, typified_at=True)
+    screen = client.json("GET", f"/api/motif?category={CAT}")[1]
+    assert _gates(client, fake)["motif_allowed"] == screen["allowed_ko"]
+
+
+def test_gates_diagnose_preliminary_follows_typify_result_not_ref_count(client, fake, home):
+    _typified(home, status="preliminary")
+    gates = _gates(client, fake, page="diagnose")
+    assert gates["diagnose"] == {"available": True, "preliminary": True}
+    screen = client.json("GET", f"/api/diagnose/targets?category={CAT}")[1]
+    assert (screen["has_typify"], screen["preliminary"]) == (True, True)
+
+
+def test_gates_diagnose_unavailable_without_archetypes(client, fake, home):
+    _typified(home, archetypes=[])
+    gates = _gates(client, fake, page="diagnose")
+    assert gates["diagnose"] == {"available": False, "preliminary": None}
+    assert gates["typify_result"] is True
+
+
+def test_gates_draft_sources_counts(client, fake, home):
+    from scripts import motif
+    _typified(home)
+    cards = [{"type": "technique", "title": "탑뷰", "idea": "위에서", "evidence": ["a00"]},
+             {"type": "angle", "title": "각도", "idea": "옆에서", "evidence": ["a01"]}]
+    path = home / "workspace" / "tmp" / "c.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(cards, ensure_ascii=False), encoding="utf-8")
+    motif.add(CAT, path)
+    motif.star(CAT, "M-mukbang-002")
+    gates = _gates(client, fake, page="draft")
+    screen = client.json("GET", f"/api/draft/sources?category={CAT}")[1]
+    assert gates["draft_sources"] == {"stars": 1, "cards": 1, "archetypes": len(screen["archetypes"]),
+                                      "library_templates": None}
+    assert gates["draft_sources"]["archetypes"] >= 1
+
+
+def test_gates_has_profile(client, fake, home):
+    _typified(home, run=False)
+    assert _gates(client, fake)["has_profile"] is False
+    (home / "profile.md").write_text("---\nname: x\n---\n", encoding="utf-8")
+    assert _gates(client, fake)["has_profile"] is True
+
+
+def test_situation_has_no_recent_counts(client, fake, home):
+    add_refs(home, 1)
+    _, payload = run_chat(client, fake, category=CAT)
+    assert "recent_counts" not in payload["situation"]
+
+
+def test_chat_payload_hides_draft_names_and_mission_path(client, fake, home):
+    from datetime import date
+    add_refs(home, 1)
+    drafts = home / "drafts"
+    drafts.mkdir(parents=True, exist_ok=True)
+    (drafts / "2026-10-25-SECRET_TITLE.md").write_text(
+        f"---\ntitle: SECRET_TITLE\ncategory: {CAT}\n---\nSECRET_BODY\n", encoding="utf-8")
+    missions = home / "missions"
+    missions.mkdir(parents=True, exist_ok=True)
+    (missions / f"{date.today().isoformat()}.md").write_text(
+        "---\nstatus: assigned\nkind: hook\n---\nSECRET_MISSION\n", encoding="utf-8")
+    _, payload = run_chat(client, fake, category=CAT)
+    assert payload["situation"]["mission"]["exists"] is True
+    dumped = json.dumps(payload, ensure_ascii=False)
+    for secret in ("SECRET_TITLE", "SECRET_BODY", "SECRET_MISSION", "missions/", str(home)):
+        assert secret not in dumped, secret
+    situation = json.dumps(payload["situation"], ensure_ascii=False)     # help md may mention file names itself
+    for path_like in ("drafts/", ".md", json.dumps(str(home))[1:-1]):
+        assert path_like not in situation, path_like
+
+
+def test_chat_checks_engine_before_building_situation(client, monkeypatch):
+    def missing():
+        raise ScriptError("claude_missing", "claude가 없습니다")
+    calls = []
+    monkeypatch.setattr(llm, "check", missing)
+    monkeypatch.setattr(api_help, "situation", lambda *a: calls.append(a) or {})
+    status, res = ask(client)
+    assert status == 400 and res["error"] == "claude_missing"
+    assert calls == []
