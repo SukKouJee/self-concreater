@@ -285,3 +285,12 @@ def test_render_drops_leading_title_heading_only_when_it_matches():
     assert [k["tag"] for k in kids] == ["h3", "p"]
     kids = render("### 내 기획안\n본문", {"dropTitle": "내 기획안"})
     assert kids[0]["tag"] == "h3"
+
+
+def test_route_links_are_opt_in():
+    text = "[홈](#/home) [x](#/draft/view/a%20b) [bad](#/a<script>)"
+    plain_kids = render(text)
+    assert find(plain_kids, "a") == []                     # default: plain text "label (#/..)"
+    kids = render(text, {"routeLinks": True})
+    links = find(kids, "a")
+    assert [a["attrs"] for a in links] == [{"href": "#/home"}, {"href": "#/draft/view/a%20b"}]

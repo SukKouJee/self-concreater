@@ -8,6 +8,7 @@
 // Rule: after EVERY await in mount/handlers, `if (!ctx.isCurrent()) return;` before touching the DOM.
 import { api, showBanner } from "/static/api.js";
 import { h } from "/static/dom.js";
+import { createHelpPanel, helpPage } from "/static/help-panel.js";
 
 const CATEGORY_KEY = "ytc.category";
 
@@ -51,6 +52,7 @@ const SOON = {};
 for (const g of MENU) for (const it of g.items) if (it.soon) SOON[it.soon] = it;
 
 const $ = (id) => document.getElementById(id);
+let helpPanel = null;
 const state = { status: null, categories: [], current: null, currentPage: null, navToken: 0, abort: null };
 
 // ---- ctx ---------------------------------------------------------------
@@ -146,7 +148,8 @@ function markActive() {
       || (href === "#/draft" && hash.startsWith("#/draft/"))
       || (href === "#/diagnose" && hash.startsWith("#/diagnose/"))
       || (href === "#/refs" && hash.startsWith("#/refs/"))
-      || (href === "#/report" && hash.startsWith("#/report/"));
+      || (href === "#/report" && hash.startsWith("#/report/"))
+      || (href === "#/guide" && hash.startsWith("#/guide/"));
     if (active) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
   }
@@ -175,9 +178,18 @@ function buildTopbar() {
     h("a", { class: "brand", href: "#/home" }, "yt-coach"),
     h("div", { class: "cat-select" }, sel),
     h("span", { class: "work-root", id: "work-root" }),
+    helpToggle(),
     shutdownArea(),
   );
   updateTopbar();
+}
+
+function helpToggle() {
+  const btn = h("button", {
+    type: "button", class: "btn help-toggle", id: "help-toggle", "aria-controls": "help-panel", "aria-expanded": "false",
+  }, "도움말");
+  btn.addEventListener("click", () => { if (helpPanel) helpPanel.toggle(); });
+  return btn;
 }
 
 // Only refresh dynamic parts so focus and a pending shutdown confirm survive.
@@ -255,6 +267,7 @@ function parseHash() {
   switch (head) {
     case "add": return { page: "add", params: {} };
     case "library": return { page: "library", params: {} };
+    case "guide": return { page: "guide", params: { tab: tail === "long" ? "long" : "shorts" } };
     case "typify": return { page: "typify", params: {} };
     case "motif": return { page: "motif", params: {} };
     case "mission": return { page: "mission", params: {} };
@@ -311,6 +324,7 @@ async function route() {
   state.currentPage = null;
   setDrawer(false);
   markActive();
+  if (helpPanel) helpPanel.setPage(helpPage(location.hash));
   // A malformed #/refs/<id> (undecodable) parses to null: show the list instead.
   const { page, params } = parseHash() || { page: "refs", params: {} };
   main.replaceChildren(h("p", { class: "muted", role: "status" }, "불러오는 중…"));
@@ -332,6 +346,7 @@ async function route() {
 async function start() {
   renderMenu();
   buildTopbar();
+  helpPanel = createHelpPanel($("help-panel"), () => ctx.category);
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") setDrawer(false); });
   $("scrim").addEventListener("click", () => setDrawer(false));
   window.addEventListener("hashchange", () => {

@@ -19,7 +19,8 @@ def test_index_loads_modules(client):
 
 
 def test_static_files_served(client):
-    for rel in ["app.css", "app.js", "api.js", "pages/home.js", "pages/placeholder.js", "pages/add.js"]:
+    for rel in ["app.css", "app.js", "api.js", "pages/home.js", "pages/placeholder.js", "pages/add.js",
+                "help-panel.js", "help-utils.js", "pages/guide.js"]:
         status, headers, _ = client.call("GET", f"/static/{rel}")
         assert status == 200, rel
     status, headers, _ = client.call("GET", "/static/app.js")
@@ -606,3 +607,28 @@ def test_library_review_fixes_present():
         assert token in draft, token
     render_new = draft[draft.index("function renderNew"):draft.index("function renderBody")]
     assert render_new.index("sourceNoteNode()") < render_new.index("고를 수 있는 출처가 없습니다")   # note also when !any
+
+
+def test_app_routes_guide():
+    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert 'case "guide"' in app
+    assert "/static/help-panel.js" in app
+    assert "#/guide/" in app                                  # markActive keeps the menu item lit on the sub tabs
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    assert 'id="help-panel"' in html
+
+
+def test_help_panel_contract():
+    panel = (STATIC_DIR / "help-panel.js").read_text(encoding="utf-8")
+    for needle in ["helpPage", "trimHistory", "createHelpPanel", "ytc.helpOpen", "/api/help/chat", "/cancel",
+                   "aria-expanded", "aria-live", 'role: "tablist"', "isComposing", '"Escape"']:
+        assert needle in panel, needle
+    assert "innerHTML" not in panel
+
+
+def test_guide_page_contract():
+    guide = (STATIC_DIR / "pages" / "guide.js").read_text(encoding="utf-8")
+    for needle in ["export async function mount", "export function unmount", "guide-shorts", "guide-long",
+                   "/api/status", "isCurrent"]:
+        assert needle in guide, needle
+    assert "innerHTML" not in guide
