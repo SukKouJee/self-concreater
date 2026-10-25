@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import time
@@ -28,7 +29,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from scripts import refstore
-from scripts.common import ArgParser, ScriptError, run, work_root, workspace_dir
+from scripts.common import ArgParser, Progress, ScriptError, run, safe_progress, work_root, workspace_dir
 
 SHORTS_MAX_SEC = 180
 # 공백 제외 글자 수 / 영상 길이(초)가 이보다 낮으면 말이 거의 없는 영상으로 본다
@@ -217,17 +218,29 @@ def get_transcript(video_id: str, proxy: str | None, original: str | None = None
 
 # --- 수집 흐름 ----------------------------------------------------------------
 
-def wait_turn() -> None:
-    """마지막 네트워크 수집 이후 최소 간격이 지날 때까지 기다린다 (프로세스 간 공유)."""
+META_TEXT = "영상 정보·자막 받는 중"
+
+
+def wait_turn(progress: Progress | None = None) -> None:
+    """마지막 네트워크 수집 이후 최소 간격이 지날 때까지 기다린다 (프로세스 간 공유).
+
+    progress가 있으면 1초마다 ("wait", None, "차단 방지 대기 N초")로 남은 대기를 알린다.
+    """
     interval = float(os.environ.get("YT_FETCH_INTERVAL") or FETCH_INTERVAL_SEC)
     stamp = workspace_dir(".last_fetch")
+    report = safe_progress(progress)
     if stamp.exists():
         try:
             wait = float(stamp.read_text("utf-8")) + interval - time.time()
         except ValueError:
             wait = 0
-        if wait > 0:
+        if wait > 0 and report is None:
             time.sleep(wait)
+        while wait > 0 and report is not None:
+            report("wait", None, f"차단 방지 대기 {math.ceil(wait)}초")
+            step = min(1.0, wait)
+            time.sleep(step)
+            wait -= step
     stamp.parent.mkdir(parents=True, exist_ok=True)
     stamp.write_text(str(time.time()), encoding="utf-8")
 
@@ -298,7 +311,8 @@ def _summary(data: dict, status: str, also_in: list[str]) -> dict:
 
 
 def fetch(url: str, category: str | None = None, role: str = "ref", force: bool = False,
-          reanalyze: bool = False) -> dict:
+          reanalyze: bool = False, progress: Progress | None = None) -> dict:
+    """progress가 있으면 네트워크로 받을 때만 차단 방지 대기("wait")와 메타·자막 받기("meta")를 알린다."""
     video_id = parse_video_id(url)
 
     also_in: list[str] = []
@@ -312,7 +326,10 @@ def fetch(url: str, category: str | None = None, role: str = "ref", force: bool 
         data, status = load_raw(video_id), "cached"
     else:
         proxy = os.environ.get("YT_PROXY") or None
-        wait_turn()
+        report = safe_progress(progress)
+        wait_turn(report)
+        if report is not None:
+            report("meta", None, META_TEXT)
         meta = get_metadata(video_id, proxy)
         transcript = get_transcript(video_id, proxy, meta.get("language"))
         data = {
@@ -332,6 +349,7 @@ def fetch(url: str, category: str | None = None, role: str = "ref", force: bool 
             "no_transcript",
             "이 영상에는 쓸 수 있는 자막이 없습니다. 음성 인식(STT)으로 만들 수 있습니다: "
             f"python -m scripts.stt {video_id}",
+            raw_status=status,
             **{k: summary[k] for k in ["id", "raw", "title", "duration_sec", "format"]},
         )
     return summary

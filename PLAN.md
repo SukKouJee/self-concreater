@@ -284,6 +284,20 @@
 
 ---
 
+## Phase 19. 레퍼런스 추가 진행률 (추가 요건)
+
+설계: `docs/superpowers/specs/2026-10-25-add-progress-design.md`. 레퍼런스 추가 화면에 단계별 진행률·남은 시간·예상 완료 시각을 보여 준다.
+
+- [x] `scripts/timings.py`(`workspace/timings.json`, 단계별 최근 20건, 분석·샷은 LLM 엔진별), `scripts/ui/progress.py`(`ItemTiming`), 받기·장면·카메라·STT 진행 콜백, `api_add.py` 연결, 추가 화면(`pages/add.js`, `static/progress-utils.js`)
+- [x] README UI 절, 설계서 1.5, 도움말 `docs/help/add.md`
+
+완료 조건
+- [x] 실제 10분 이상 영상 하나를 넣으면 컷 단계 막대가 받기 → 장면 → 카메라 순서로 차오르고 줄어들지 않는다
+- [x] 분석 단계가 경과/예상으로 보이고, 끝나면 `workspace/timings.json`에 기록이 남는다
+- [x] 두 번째 영상의 예상 시간에 첫 영상의 기록이 반영된다
+
+---
+
 ## 일정 요약
 
 | Phase | 내용 | 예상 |
@@ -301,6 +315,7 @@
 | 16 | 움직이는 자막 영상 (추가) | 계획서 참조 |
 | 17 | 공용 라이브러리 (추가) | 계획서 참조 |
 | 18 | 가이드·도움말 챗봇 (추가) | 스펙 참조 |
+| 19 | 레퍼런스 추가 진행률 (추가) | 스펙 참조 |
 
 **첫 마일스톤(Phase 0~4)**: 링크를 넣으면 영상별 md가 쌓이는 상태. 여기서 한 번 실사용하며 섹션 라벨·md 양식을 다듬고 나서 Phase 5로 간다.
 

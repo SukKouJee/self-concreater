@@ -148,3 +148,55 @@ def test_no_speech_keeps_empty_transcript(home, fake_audio, monkeypatch):
     assert out["speech"] is False and out["segments"] == 0 and out["language"] is None
     raw = fetch.load_raw(VID)
     assert raw["transcript"] == {"source": "stt", "language": None, "segments": []}
+
+
+# --- 진행 콜백 ------------------------------------------------------------------
+
+def _segments_model(ends, duration):
+    class Model:
+        def __init__(self, *a, **k):
+            pass
+
+        def transcribe(self, *a, **k):
+            info = types.SimpleNamespace(language="ko", duration=duration)
+            return iter(types.SimpleNamespace(start=e - 1, end=e, text=f"말{e}") for e in ends), info
+
+    return Model
+
+
+def test_stt_reports_segment_progress(home, fake_audio, monkeypatch):
+    monkeypatch.setitem(sys.modules, "faster_whisper",
+                        types.SimpleNamespace(WhisperModel=_segments_model([10, 20, 40], 40)))
+    calls = []
+    stt.transcribe(VID, progress=lambda *a: calls.append(a))
+    seg_calls = [c for c in calls if c[1] is not None]
+    assert [c[1] for c in seg_calls] == [0.25, 0.5, 1.0]
+    assert all(c[0] == "stt" for c in calls)
+    assert seg_calls[0][2] == "음성 인식 중 0:10 / 0:40"
+
+
+def test_stt_progress_text_formats():
+    assert stt.stt_progress_text(750, 2611) == "음성 인식 중 12:30 / 43:31"
+    assert stt.stt_progress_text(3725, 4000) == "음성 인식 중 1:02:05 / 1:06:40"
+    assert stt.stt_progress_text(5, None) == "음성 인식 중 0:05"
+
+
+def test_stt_progress_falls_back_to_meta_duration(home, fake_audio, monkeypatch):
+    # info에 길이가 없으면 raw 메타(30초)를 쓴다
+    monkeypatch.setitem(sys.modules, "faster_whisper",
+                        types.SimpleNamespace(WhisperModel=_segments_model([15, 30], None)))
+    calls = []
+    stt.transcribe(VID, progress=lambda *a: calls.append(a))
+    assert [c[1] for c in calls if c[1] is not None] == [0.5, 1.0]
+
+
+def test_stt_progress_survives_raising_callback(home, fake_audio, monkeypatch, capsys):
+    monkeypatch.setitem(sys.modules, "faster_whisper",
+                        types.SimpleNamespace(WhisperModel=_segments_model([10, 20], 20)))
+
+    def boom(*a):
+        raise RuntimeError("ui gone")
+
+    out = stt.transcribe(VID, progress=boom)
+    assert out["segments"] == 2
+    assert "ui gone" in capsys.readouterr().err

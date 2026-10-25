@@ -122,6 +122,31 @@ def run(main: Callable[[list[str]], Any], argv: list[str] | None = None) -> None
     emit(result)
 
 
+Progress = Callable[[str, float | None, str], None]
+"""수집 함수의 진행 콜백: (하위 구간 이름, 0~1 진행률 또는 측정 불가 None, 화면 한 줄 글)."""
+
+
+def safe_progress(progress: Progress | None) -> Progress | None:
+    """콜백 오류가 수집을 깨지 않게 감싼다. 진행 표시는 보조 정보라 오류는 stderr에 한 번만 남긴다.
+
+    콜백은 취소 통로가 아니다: 콜백에서 던진 예외는 삼켜지므로 취소는 작업(job) 단위에서 한다.
+    """
+    if progress is None:
+        return None
+    failed = False
+
+    def call(phase: str, fraction: float | None, text: str) -> None:
+        nonlocal failed
+        try:
+            progress(phase, fraction, text)
+        except Exception as e:  # noqa: BLE001 - 어떤 콜백 오류도 수집을 멈추면 안 된다
+            if not failed:
+                failed = True
+                print(f"진행 표시 콜백 오류(무시하고 계속): {type(e).__name__}: {e}", file=sys.stderr)
+
+    return call
+
+
 def work_root() -> Path:
     home = os.environ.get("YT_COACH_HOME")
     return Path(home) if home else Path.cwd()

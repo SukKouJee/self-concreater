@@ -205,6 +205,28 @@ code { background: var(--grid); padding: 1px 6px; border-radius: 4px; }
 .chip-done { color: var(--ok); border-color: var(--ok); }
 .chip-current { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); font-weight: 600; }
 
+/* Step rows: name, bar, time. Only text and widths change each second. */
+.steps { list-style: none; display: flex; flex-direction: column; gap: var(--sp-2); margin: var(--sp-2) 0 0; padding: 0; }
+.step-main { display: grid; grid-template-columns: 4.5em minmax(60px, 1fr) minmax(0, auto); gap: var(--sp-3); align-items: center; font-size: 13px; }
+.step-name { font-weight: 600; }
+.step-time { text-align: right; font-variant-numeric: tabular-nums; color: var(--ink2); }
+.row-done .step-time { color: var(--ok); }
+.row-failed .step-time { color: var(--danger); }
+.row-pending .step-name, .row-pending .step-time, .row-skipped .step-name, .row-skipped .step-time { color: var(--muted); }
+.bar { display: block; height: 8px; border-radius: 4px; background: var(--grid); overflow: hidden; }
+.bar-fill { display: block; height: 100%; width: 0; background: var(--accent); border-radius: 4px; transition: width 0.9s linear; }
+.row-done .bar-fill { background: var(--ok); }
+.is-over .bar-fill { background: var(--s4); }
+.bar-indet .bar-fill { width: 30% !important; animation: bar-slide 1.6s ease-in-out infinite alternate; }
+@keyframes bar-slide { from { margin-left: 0; } to { margin-left: 70%; } }
+@media (prefers-reduced-motion: reduce) {
+  .bar-fill { transition: none; }
+  .bar-indet .bar-fill { animation: none; margin-left: 35%; }
+}
+.step-sub { margin: 2px 0 0 calc(4.5em + var(--sp-3)); font-size: 12px; }
+.step-total { margin: var(--sp-2) 0 0; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+@media (max-width: 520px) { .step-main { grid-template-columns: 4em 1fr; } .step-time { grid-column: 1 / -1; text-align: left; } .step-sub { margin-left: 0; } }
+
 .confirm { margin-top: var(--sp-3); padding-top: var(--sp-3); border-top: 1px dashed var(--axis); }
 .confirm h3 { font-size: 13px; color: var(--ink2); margin: var(--sp-4) 0 var(--sp-2); }
 .confirm-title { font-weight: 600; font-size: 15px; margin-bottom: var(--sp-2); }

@@ -18,12 +18,21 @@ import json
 import os
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Callable
 
 import cv2
 import numpy as np
 
-from scripts.common import TEMPLATES_DIR, ArgParser, ScriptError, run, work_root, workspace_dir
+from scripts.common import (
+    TEMPLATES_DIR,
+    ArgParser,
+    Progress,
+    ScriptError,
+    run,
+    safe_progress,
+    work_root,
+    workspace_dir,
+)
 from scripts.fetch import wait_turn, parse_video_id, ytdlp_error, ytdlp_options
 
 _LIMITS = json.loads((TEMPLATES_DIR / "thresholds.json").read_text("utf-8"))
@@ -38,6 +47,11 @@ FLOW_SAMPLES = 4          # 장면당 flow를 재는 지점 수
 STATIC_PX = 0.5           # 평균 움직임이 이보다 작으면 static (FLOW_WIDTH 기준, 픽셀/샘플 간격)
 PAN_RATIO = 0.6           # 전체 움직임 중 한 방향 평행이동 비중
 ZOOM_RATIO = 0.5          # 전체 움직임 중 중심에서 퍼지거나 모이는 비중
+SCENE_REPORTS = 500       # 장면 감지 중 진행 보고 횟수(전체 프레임을 이만큼 나눠 알린다)
+UNKNOWN_TOTAL_EVERY = 30  # 전체 프레임 수를 모를 때 이 프레임마다 알린다
+
+if TYPE_CHECKING:
+    from scenedetect import ContentDetector, FrameTimecode
 
 
 # --- 다운로드 -----------------------------------------------------------------
@@ -63,7 +77,34 @@ def select_format(formats: list[dict]) -> dict:
     return max(candidates, key=key)
 
 
-def download_video(video_id: str, out_dir: Path, proxy: str | None) -> Path:
+def download_progress_hook(progress: Progress) -> Callable[[dict[str, Any]], None]:
+    """yt-dlp progress_hooks용 함수. 받은 바이트/전체(없으면 추정치)로 ("download", 0~1, 글)을 알린다.
+
+    전체를 모르면 진행률은 None. 추정치가 커져도 진행률·글은 뒤로 가지 않는다.
+    yt-dlp는 hook 예외로 다운로드를 멈추므로 콜백 오류는 safe_progress가 삼킨다.
+    """
+    report = safe_progress(progress)
+    assert report is not None
+    best = 0.0
+
+    def hook(d: dict[str, Any]) -> None:
+        nonlocal best
+        done = d.get("downloaded_bytes")
+        total = d.get("total_bytes") or d.get("total_bytes_estimate")
+        if d.get("status") == "finished":
+            best = 1.0
+        elif done is not None and total:
+            best = max(best, min(1.0, done / total))
+        elif best == 0.0:
+            mb = f" ({done / 1_000_000:.1f}MB)" if done else ""
+            report("download", None, f"영상 받는 중{mb}")
+            return
+        report("download", best, f"영상 받는 중 {int(best * 100)}%")
+
+    return hook
+
+
+def download_video(video_id: str, out_dir: Path, proxy: str | None, progress: Progress | None = None) -> Path:
     import yt_dlp
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -79,7 +120,8 @@ def download_video(video_id: str, out_dir: Path, proxy: str | None) -> Path:
             return
         yield chosen["format"]
 
-    opts = ytdlp_options(proxy, format=selector, outtmpl=str(out_dir / f"{video_id}.%(ext)s"))
+    extra: dict[str, Any] = {"progress_hooks": [download_progress_hook(progress)]} if progress else {}
+    opts = ytdlp_options(proxy, format=selector, outtmpl=str(out_dir / f"{video_id}.%(ext)s"), **extra)
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.extract_info(url, download=True)
@@ -156,14 +198,71 @@ def classify_camera(cap: cv2.VideoCapture, start: int, end: int, fps: float) -> 
     return "static"
 
 
-def analyze_video(path: Path, frames_dir: Path) -> dict:
-    from scenedetect import ContentDetector, detect
+def scene_progress_text(done: int, total: int | None) -> str:
+    if not total:
+        return f"장면 확인 중 ({done:,} 프레임)"
+    return f"장면 확인 중 ({done:,} / {total:,} 프레임)"
 
-    detected = detect(
-        str(path),
-        ContentDetector(threshold=SCENE_THRESHOLD, min_scene_len=MIN_SCENE_FRAMES),
-        start_in_scene=True,
-    )
+
+def camera_progress_text(done: int, total: int) -> str:
+    return f"카메라 움직임 확인 중 ({done:,} / {total:,} 장면)"
+
+
+def reporting_detector(report: Progress, total: int) -> ContentDetector:
+    """process_frame에서 읽은 프레임 수를 ("scenes", 읽은/전체, 글)로 알리는 ContentDetector.
+
+    scenedetect 0.6은 프레임 번호를 int로, 0.7은 FrameTimecode로 넘긴다. 둘 다 int()가 된다.
+    전체 프레임 수(컨테이너 값)를 모르거나 실제보다 작아 읽은 수가 넘어서면 100%에 멈추지 않도록
+    진행률을 None으로 보내고 글에는 실제 읽은 수만 쓴다(화면은 앞 값을 유지해 뒤로 가지 않는다).
+    """
+    from scenedetect import ContentDetector
+
+    every = max(1, total // SCENE_REPORTS) if total > 0 else UNKNOWN_TOTAL_EVERY
+
+    class _Reporting(ContentDetector):
+        def process_frame(self, timecode: FrameTimecode | int, frame_img: np.ndarray) -> list[FrameTimecode]:
+            found: list[FrameTimecode] = super().process_frame(timecode, frame_img)
+            read = int(timecode) + 1
+            if read % every == 0:
+                if 0 < total and read < total:
+                    report("scenes", read / total, scene_progress_text(read, total))
+                else:
+                    report("scenes", None, scene_progress_text(read, None))
+            return found
+
+    return _Reporting(threshold=SCENE_THRESHOLD, min_scene_len=MIN_SCENE_FRAMES)
+
+
+def detect_scenes(path: Path, progress: Progress | None = None) -> list[tuple[FrameTimecode, FrameTimecode]]:
+    """scenedetect.detect()와 같은 장면 목록. progress가 있으면 ("scenes", 읽은 프레임/전체, 글)을 알린다.
+
+    진행은 별도 스레드 없이, 감지기가 프레임을 처리하는 자리에서 프레임 번호를 읽어
+    전체의 1/SCENE_REPORTS마다 한 번만 알린다(프레임마다 정수 비교 한 번).
+    """
+    from scenedetect import ContentDetector, SceneManager, open_video
+
+    video = open_video(str(path))
+    report = safe_progress(progress)
+    detector: ContentDetector
+    if report is None:
+        detector = ContentDetector(threshold=SCENE_THRESHOLD, min_scene_len=MIN_SCENE_FRAMES)
+    else:
+        total = video.duration.frame_num if video.duration is not None else 0
+        detector = reporting_detector(report, total)
+
+    manager = SceneManager()
+    manager.add_detector(detector)
+    manager.detect_scenes(video=video)
+    scenes: list[tuple[FrameTimecode, FrameTimecode]] = manager.get_scene_list(start_in_scene=True)
+    if report is not None:
+        end = video.frame_number
+        report("scenes", 1.0, scene_progress_text(end, end))
+    return scenes
+
+
+def analyze_video(path: Path, frames_dir: Path, progress: Progress | None = None) -> dict:
+    report = safe_progress(progress)
+    detected = detect_scenes(path, report)
     cap = cv2.VideoCapture(str(path))
     try:
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -188,6 +287,8 @@ def analyze_video(path: Path, frames_dir: Path) -> dict:
                 "camera": classify_camera(cap, start, end, fps),
                 "frame": frame_name,
             })
+            if report is not None:
+                report("camera", (i + 1) / len(bounds), camera_progress_text(i + 1, len(bounds)))
     finally:
         cap.release()
     return {"duration_sec": round(bounds[-1][1] / fps, 2), "fps": round(fps, 2), "scenes": scenes}
@@ -238,7 +339,11 @@ def summarize_camera(scenes: list[dict]) -> dict:
 
 # --- 흐름 ---------------------------------------------------------------------
 
-def cut_stats(video_id: str, force: bool = False) -> dict:
+DOWNLOAD_START_TEXT = "영상 받는 중"
+
+
+def cut_stats(video_id: str, force: bool = False, progress: Progress | None = None) -> dict:
+    """progress가 있으면 wait → download → scenes → camera 순서로 하위 구간 진행을 알린다."""
     out_path = workspace_dir("cuts", f"{video_id}.json")
     if out_path.exists() and not force:
         return {**json.loads(out_path.read_text("utf-8")), "status": "cached"}
@@ -247,9 +352,14 @@ def cut_stats(video_id: str, force: bool = False) -> dict:
     shutil.rmtree(frames_dir, ignore_errors=True)
     tmp_dir = workspace_dir("tmp")
     try:
-        wait_turn()
-        video = download_video(video_id, tmp_dir, os.environ.get("YT_PROXY") or None)
-        analysis = analyze_video(video, frames_dir)
+        report = safe_progress(progress)
+        wait_turn(report)
+        if report is not None:
+            # 첫 progress hook은 extract_info가 끝난 뒤에야 온다: 그 사이를 대기로 남기지 않는다
+            report("download", None, DOWNLOAD_START_TEXT)
+        proxy = os.environ.get("YT_PROXY") or None
+        video = download_video(video_id, tmp_dir, proxy, progress=report)
+        analysis = analyze_video(video, frames_dir, report)
     finally:
         # 원본 영상은 어떤 경우에도 남기지 않는다
         for leftover in tmp_dir.glob(f"{video_id}.*") if tmp_dir.exists() else []:
