@@ -18,15 +18,19 @@ STEPS = ("fetch", "stt", "cuts", "analyze", "shots")
 KEEP = 20
 ENGINE_STEPS = ("analyze", "shots")
 MIN_EXPECTED = 1.0  # 예상 시간의 하한: 진행률 계산에서 0·음수로 나누지 않게
+# 단계의 처리 방식 버전. 방식이 바뀌어 예전 기록이 새 속도와 맞지 않으면 올린다.
+# 기록에 "method"로 남기고, 예상 시간은 지금 버전 기록만 쓴다(없는 기록은 1).
+# cuts 2: 카메라 판정을 장면마다 찾아가 읽던 것을 한 번 순차 읽기로 바꿈(2026-10-25).
+METHOD: dict[str, int] = {"cuts": 2}
 
-# 기본값(기록 없을 때). 컷(360p 받기 + PySceneDetect + 장면별 카메라 흐름): 2026-10-25 이 PC 실측 두 건,
-# 1208초 영상 -> 320초, 2611초 영상 -> 약 490초. 두 건의 최대 상대 오차가 가장 작은 값(약 0.216)을 반올림해
-# 0.22 * 길이 + 7 (1208초 -> 273초 -15%, 2611초 -> 581초 +19%). 장면 수에 따라 달라서 길이만으로는 이 정도가 한계다.
+# 기본값(기록 없을 때). 컷(360p 받기 + PySceneDetect + 장면별 카메라 흐름, 순차 읽기): 2026-10-25 이 PC 실측 두 건,
+# 1208초·508장면 -> 137초, 1113초·142장면 -> 107초. 0.10 * 길이 + 7 (128초 -7%, 118초 +11%).
+# 장면 수에 따라 달라서 길이만으로는 이 정도가 한계다. (바꾸기 전 방식은 1208초 영상이 320초였다)
 # stt는 보수적으로 영상 길이의 0.3배, analyze/shots는 Claude 호출이라 고정 추정값(가정).
 DEFAULTS: dict[str, dict[str, float]] = {
     "fetch": {"per_video_sec": 0.0, "fixed_sec": 5.0},
     "stt": {"per_video_sec": 0.3, "fixed_sec": 10.0},
-    "cuts": {"per_video_sec": 0.22, "fixed_sec": 7.0},
+    "cuts": {"per_video_sec": 0.10, "fixed_sec": 7.0},
     "analyze": {"per_video_sec": 0.0, "fixed_sec": 90.0},
     "shots": {"per_video_sec": 0.0, "fixed_sec": 60.0},
 }
@@ -70,6 +74,8 @@ def record(
     if elapsed is None:
         return  # 시계 점프·잘못된 값은 기록하지 않는다
     entry: dict[str, Any] = {"elapsed_sec": elapsed, "at": time.time()}
+    if step in METHOD:
+        entry["method"] = METHOD[step]
     length = _num(video_sec)
     if length is not None:
         entry["video_sec"] = length
@@ -116,7 +122,7 @@ def expected(step: str, *, video_sec: float | None, engine: str | None = None) -
 
     samples: list[float] = []
     for item in _load().get(_key(step, engine), []):
-        if not isinstance(item, dict):
+        if not isinstance(item, dict) or item.get("method", 1) != METHOD.get(step, 1):
             continue
         elapsed = _num(item.get("elapsed_sec"))
         if elapsed is None:

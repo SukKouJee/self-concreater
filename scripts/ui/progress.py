@@ -19,7 +19,7 @@ MIN_INTERVAL = 0.5
 # + 카메라 약 225초, 장면당 약 0.44초)으로 정한 기본값. 구간별 기록으로 고치는 것은 나중 일이다.
 # 마지막 가중 구간(camera)은 progress-utils.js의 LAST_PHASES와 맞춘다.
 PHASE_WEIGHTS: dict[str, dict[str, float]] = {
-    "cuts": {"wait": 0.0, "download": 0.03, "scenes": 0.30, "camera": 0.67},
+    "cuts": {"wait": 0.0, "download": 0.06, "scenes": 0.70, "camera": 0.24},
     "fetch": {"wait": 0.0, "meta": 0.0},
     "stt": {"stt": 1.0},
 }

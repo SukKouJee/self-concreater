@@ -26,11 +26,11 @@ def test_expected_uses_defaults_without_records():
 
 
 def test_default_cuts_matches_real_measurements():
-    # 2026-10-25 이 PC: 1208초 영상 -> 320초, 2611초 영상 -> 약 490초. 둘 다 상대 오차 20% 이내.
-    assert timings.DEFAULTS["cuts"] == {"per_video_sec": 0.22, "fixed_sec": 7.0}
-    for video_sec, measured in ((1208, 320), (2611, 490)):
+    # 2026-10-25 이 PC, 순차 읽기: 1208초 영상 -> 137초, 1113초 영상 -> 107초. 둘 다 상대 오차 15% 이내.
+    assert timings.DEFAULTS["cuts"] == {"per_video_sec": 0.10, "fixed_sec": 7.0}
+    for video_sec, measured in ((1208, 137), (1113, 107)):
         got = timings.expected("cuts", video_sec=video_sec)
-        assert abs(got - measured) / measured <= 0.2, (video_sec, got)
+        assert abs(got - measured) / measured <= 0.15, (video_sec, got)
 
 
 def test_expected_median_after_three_records():
@@ -43,6 +43,30 @@ def test_expected_blends_defaults_under_three_records():
     timings.record("cuts", elapsed_sec=100, video_sec=600)
     got = timings.expected("cuts", video_sec=600)
     assert got == pytest.approx((default_cuts(600) + 100) / 2)
+
+
+def test_cuts_records_carry_method_and_old_method_rows_are_ignored():
+    # 카메라 판정 방식이 바뀌기 전(method 없음 = 1) 기록은 느린 방식의 속도라 예상에 쓰지 않는다
+    path = workspace_dir("timings.json")
+    path.parent.mkdir(parents=True)
+    old = [{"elapsed_sec": 600, "video_sec": 600}] * 5
+    path.write_text(json.dumps({"cuts": old}), encoding="utf-8")
+    assert timings.expected("cuts", video_sec=600) == pytest.approx(default_cuts(600))
+
+    for elapsed in (120, 60, 90):
+        timings.record("cuts", elapsed_sec=elapsed, video_sec=600)
+    stored = json.loads(path.read_text(encoding="utf-8"))["cuts"]
+    assert [r.get("method") for r in stored] == [None] * 5 + [2] * 3
+    assert timings.expected("cuts", video_sec=1200) == pytest.approx(180)
+
+
+def test_steps_without_method_keep_old_rows():
+    path = workspace_dir("timings.json")
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"stt": [{"elapsed_sec": 60, "video_sec": 600}] * 3}), encoding="utf-8")
+    assert timings.expected("stt", video_sec=600) == pytest.approx(60)
+    timings.record("stt", elapsed_sec=60, video_sec=600)
+    assert "method" not in json.loads(path.read_text(encoding="utf-8"))["stt"][-1]
 
 
 def test_fixed_step_ignores_length():
@@ -132,6 +156,7 @@ def test_expected_skips_bad_samples_in_existing_file(bad):
     rows = [{"elapsed_sec": 120, "video_sec": 600}, {"elapsed_sec": 60, "video_sec": 600},
             {"elapsed_sec": 90, "video_sec": 600}, {"elapsed_sec": bad, "video_sec": 600},
             {"elapsed_sec": 50, "video_sec": bad}]
+    rows = [{**r, "method": timings.METHOD["cuts"]} for r in rows]
     path.write_text(json.dumps({"cuts": rows}), encoding="utf-8")  # json.dumps가 NaN/Infinity를 그대로 쓴다
     assert timings.expected("cuts", video_sec=1200) == pytest.approx(180)
 
@@ -146,7 +171,7 @@ def test_expected_never_below_floor(monkeypatch):
     path = workspace_dir("timings.json")
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps({"analyze": [{"elapsed_sec": 1e-9}] * 3,
-                                "cuts": [{"elapsed_sec": 1e-12, "video_sec": 1e6}] * 3}), encoding="utf-8")
+                                "cuts": [{"elapsed_sec": 1e-12, "video_sec": 1e6, "method": 2}] * 3}), encoding="utf-8")
     assert timings.expected("analyze", video_sec=None) == timings.MIN_EXPECTED
     assert timings.expected("cuts", video_sec=1) == timings.MIN_EXPECTED
 

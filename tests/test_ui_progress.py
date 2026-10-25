@@ -258,9 +258,10 @@ def test_pause_resume_without_publish(clock: Clock, recorded: list) -> None:
 
 
 def test_cuts_weights_are_measured_defaults() -> None:
-    # 2026-10-25 1208초 영상·508장면: 받기 약 5초, 장면 약 92초, 카메라 약 225초.
+    # 2026-10-25 순차 읽기로 바꾼 뒤 실측 두 건(받기/장면/카메라 비중):
+    # 1208초·508장면 0.08/0.65/0.28, 1113초·142장면 0.05/0.79/0.16
     w = progress.PHASE_WEIGHTS["cuts"]
-    assert w == {"wait": 0.0, "download": 0.03, "scenes": 0.30, "camera": 0.67}
+    assert w == {"wait": 0.0, "download": 0.06, "scenes": 0.70, "camera": 0.24}
     assert sum(w.values()) == pytest.approx(1.0)
     assert [k for k, v in w.items() if v > 0][-1] == "camera"   # progress-utils.js LAST_PHASES와 맞춘다
 
