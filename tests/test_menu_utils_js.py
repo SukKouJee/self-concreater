@@ -81,3 +81,16 @@ def test_expand_for_opens_only_the_current_group():
     assert run_js('m.expandFor(["모으기", "분석"], "모으기")') == ["분석"]   # 지금 보는 화면이 든 그룹은 펼친다
     assert run_js('m.expandFor(["분석"], "모으기")') == ["분석"]
     assert run_js('m.expandFor(["분석"], null)') == ["분석"]
+
+
+def test_enter_expand_only_when_moving_into_a_group():
+    got = run_js(
+        "["
+        "m.enterExpand(['모으기'], undefined, '모으기'),"   # 첫 화면(새로 고침): 접은 그대로
+        "m.enterExpand(['모으기'], '모으기', '모으기'),"    # 같은 그룹 안 이동: 접은 그대로
+        "m.enterExpand(['모으기'], '분석', '모으기'),"      # 다른 그룹에서 들어옴: 펼침
+        "m.enterExpand(['모으기'], null, '모으기'),"        # 홈 같은 맨 위 메뉴에서 들어옴: 펼침
+        "m.enterExpand(['모으기'], '모으기', null)"         # 그룹 밖으로 나감: 그대로
+        "]"
+    )
+    assert got == [["모으기"], ["모으기"], [], [], ["모으기"]]

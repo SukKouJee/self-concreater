@@ -100,6 +100,8 @@ code { background: var(--grid); padding: 1px 6px; border-radius: 4px; }
 .menu-group { background: var(--side-grp); border-radius: 9px; padding: var(--sp-1); margin-bottom: var(--sp-2); }
 .menu-list { list-style: none; margin: 0; padding: 0 0 2px; }
 .menu-group.closed .menu-list { display: none; }
+/* a collapsed group that holds the current screen keeps a cue on its header */
+.menu-group.closed:has([aria-current="page"]) .menu-group-toggle { background: var(--side-on-bg); }
 .menu-list .menu-link { position: relative; display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2);
   min-height: 34px; padding: 5px var(--sp-2) 5px 42px; border-radius: 6px; color: var(--side-sub); font-size: 14px; text-decoration: none; }
 .menu-list .menu-link:hover { background: var(--side-hover); color: var(--side-ink); }

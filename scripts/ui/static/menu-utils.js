@@ -34,3 +34,9 @@ export function toggleCollapsed(collapsed, group) {
 export function expandFor(collapsed, current) {
   return current && collapsed.includes(current) ? collapsed.filter((g) => g !== current) : collapsed;
 }
+
+// Expand only when the route moves into a group from elsewhere (prev is undefined before the first route), so a
+// group the user collapsed while its screen is open stays collapsed across reloads and within-group navigation.
+export function enterExpand(collapsed, prev, current) {
+  return prev !== undefined && current !== prev ? expandFor(collapsed, current) : collapsed;
+}

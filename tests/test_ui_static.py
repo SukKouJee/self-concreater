@@ -722,7 +722,7 @@ def test_sidebar_groups_are_collapsible_buttons_with_icons():
     menu_block = app.split("const MENU = [", 1)[1].split("];", 1)[0]
     assert menu_block.count("icon:") == 6                 # 홈, 모으기, 분석, 만들기, 성장, 가이드
     imports = re.search(r'import \{([^}]*)\} from "/static/menu-utils\.js"', app).group(1)
-    for name in ("activeGroup", "expandFor", "isActive", "parseCollapsed", "toggleCollapsed"):
+    for name in ("activeGroup", "enterExpand", "isActive", "parseCollapsed", "toggleCollapsed"):
         assert name in imports, name
     assert '"aria-expanded"' in app and '"aria-controls"' in app
     assert 'const SVG_NS = "http://www.w3.org/2000/svg"' in app and "createElementNS(SVG_NS" in app

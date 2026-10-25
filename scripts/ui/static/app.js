@@ -9,7 +9,7 @@
 import { api, showBanner } from "/static/api.js";
 import { h } from "/static/dom.js";
 import { createHelpPanel, helpPage } from "/static/help-panel.js";
-import { activeGroup, expandFor, isActive, parseCollapsed, toggleCollapsed } from "/static/menu-utils.js";
+import { activeGroup, enterExpand, isActive, parseCollapsed, toggleCollapsed } from "/static/menu-utils.js";
 
 const CATEGORY_KEY = "ytc.category";
 const MENU_KEY = "ytc.menu.collapsed";
@@ -211,14 +211,10 @@ function markActive() {
     if (isActive(a.dataset.href, hash)) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
   }
-  // Expand only when the user moves into a group from elsewhere: a group collapsed while its screen is open
-  // stays collapsed across reloads and within-group navigation.
   const group = activeGroup(MENU, hash, itemHref);
-  if (lastGroup !== undefined && group !== lastGroup) {
-    const collapsed = readCollapsed();
-    const expanded = expandFor(collapsed, group);
-    if (expanded !== collapsed) storeCollapsed(expanded);
-  }
+  const collapsed = readCollapsed();
+  const expanded = enterExpand(collapsed, lastGroup, group);
+  if (expanded !== collapsed) storeCollapsed(expanded);
   lastGroup = group;
   applyCollapsed();
 }
