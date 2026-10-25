@@ -12,10 +12,12 @@ import json
 import os
 import sys
 import tempfile
+import threading
+from datetime import date
 from pathlib import Path
 from typing import Any
 
-from scripts import claude_cli, conti, draft, library, llm, refstore
+from scripts import claude_cli, conti, draft, library, llm, refstore, status
 from scripts.common import ScriptError, work_root, workspace_dir
 from scripts.ui.api_conti import CONTI_SUFFIX, _rel, _safe_path
 from scripts.ui.api_refs import _body_parts
@@ -293,3 +295,35 @@ def _save(req: Request) -> dict:
         tmp.unlink(missing_ok=True)
     _mark_saved(req, body.get("job_id"), category)
     return {"path": saved["path"], "pacing": saved["pacing"], "compare": saved["compare"]}
+
+
+# ---- 촬영함 체크 ------------------------------------------------------------------------
+
+_FILMED_LOCK = threading.Lock()      # read hash -> compare -> write -> new hash must not interleave
+
+
+@route("POST", "/api/drafts/filmed")
+def _filmed(req: Request) -> dict:
+    body = req.json
+    category = _category(body.get("category"))
+    filmed = body.get("filmed")
+    if not isinstance(filmed, bool):
+        raise ScriptError("bad_request", "filmed는 true/false여야 합니다")
+    expected = body.get("hash")
+    if not isinstance(expected, str) or not expected:
+        raise ScriptError("bad_request", "hash가 필요합니다")
+    path = _safe_path(body.get("path"), conti_file=False)
+    with _FILMED_LOCK:
+        if not path.is_file():
+            raise ScriptError("draft_not_found", f"기획안을 찾을 수 없습니다: {body.get('path')}")
+        fm, _ = refstore.read_md(path)
+        if fm.get("category") != category:
+            raise ScriptError("draft_not_found", f"기획안을 찾을 수 없습니다: {body.get('path')}")
+        if conti.content_hash(path) != expected:
+            raise ScriptError("draft_changed", "화면을 연 뒤 기획안이 바뀌었습니다. 새로고침한 뒤 다시 눌러 주세요")
+        if filmed:
+            fm = refstore.update_frontmatter(path, {"filmed_at": date.today().isoformat()})
+        else:
+            fm = refstore.update_frontmatter(path, {}, remove=["filmed_at"])
+        return {"path": _rel(path), "filmed_at": status.filmed_date(fm.get("filmed_at")),
+                "hash": conti.content_hash(path)}

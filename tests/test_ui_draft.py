@@ -431,3 +431,62 @@ def test_sources_survive_any_library_failure_including_recursion(client, monkeyp
     monkeypatch.setattr(library, "search", lambda **kw: (_ for _ in ()).throw(RecursionError()))
     status, body = client.json("GET", f"/api/draft/sources?category={CAT}")
     assert status == 200 and "library_templates" not in body and "cards" in body
+
+
+# ---- 촬영함 체크 ------------------------------------------------------------------------
+
+def _filmed(client, path, filmed, hash_, category=CAT):
+    return client.json("POST", "/api/drafts/filmed",
+                       {"category": category, "path": path, "filmed": filmed, "hash": hash_})
+
+
+def test_filmed_toggle_round_trip(client, home):
+    from datetime import date
+    rel = _save(client)[1]["path"]
+    path = home / rel
+    fm0, body0 = refstore.read_md(path)
+
+    status, on = _filmed(client, rel, True, conti.content_hash(rel))
+    assert status == 200, on
+    assert on["path"] == rel and on["filmed_at"] == date.today().isoformat()
+    assert on["hash"] == conti.content_hash(rel)
+    fm1, body1 = refstore.read_md(path)
+    assert str(fm1["filmed_at"]) == on["filmed_at"] and body1 == body0
+    assert {k: v for k, v in fm1.items() if k != "filmed_at"} == fm0
+
+    status, off = _filmed(client, rel, False, on["hash"])
+    assert status == 200, off
+    assert off["filmed_at"] is None and off["hash"] == conti.content_hash(rel)
+    fm2, body2 = refstore.read_md(path)
+    assert "filmed_at" not in fm2 and fm2 == fm0 and body2 == body0
+    assert "## 내 메모" in body2
+
+
+def test_filmed_rejects_stale_hash(client, home):
+    rel = _save(client)[1]["path"]
+    before = (home / rel).read_bytes()
+    status, resp = _filmed(client, rel, True, "0" * 64)
+    assert status == 400 and resp["error"] == "draft_changed"
+    assert (home / rel).read_bytes() == before
+
+
+def test_filmed_rejects_bad_paths(client, home):
+    rel = _save(client)[1]["path"]
+    (home / "drafts" / "x-conti.md").write_text("---\ncategory: " + CAT + "\n---\n", encoding="utf-8")
+    (home / "drafts" / "other.md").write_text("---\ncategory: other\ntitle: t\n---\nbody\n", encoding="utf-8")
+    profile = home / "profile.md"
+    snapshot = {p: p.read_bytes() for p in [home / rel, home / "drafts" / "x-conti.md",
+                                            home / "drafts" / "other.md"] + ([profile] if profile.exists() else [])}
+    for bad in ["drafts/../profile.md", "drafts/x-conti.md", str(home / "drafts" / "other.md"),
+                "drafts/none.md", "drafts/other.md"]:
+        status, resp = _filmed(client, bad, True, "0" * 64)
+        assert status == 400, (bad, resp)
+    assert {p: p.read_bytes() for p in snapshot} == snapshot
+
+
+def test_filmed_requires_bool(client, home):
+    rel = _save(client)[1]["path"]
+    before = (home / rel).read_bytes()
+    status, resp = _filmed(client, rel, "yes", conti.content_hash(rel))
+    assert status == 400 and resp["error"] == "bad_request"
+    assert (home / rel).read_bytes() == before
