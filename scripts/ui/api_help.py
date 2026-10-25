@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +79,30 @@ def _rules() -> list[Path]:
     return [HELP_DIR / "_chatbot.md"]          # 허용 목록 밖이라 읽기 API로는 나가지 않는다
 
 
+# 사용자가 손으로 고치던 index.md·유형화 json이 깨져 있어도 챗봇은 답해야 한다(화면 API는 그대로 오류를 낸다).
+BROKEN_DATA = (ScriptError, ValueError, KeyError, TypeError, AttributeError, OSError)
+
+
+def _warn(what: str, category: str, e: Exception) -> None:
+    print(f"[help] {category} {what}를 읽지 못해 0개로 봅니다: {type(e).__name__}", file=sys.stderr)
+
+
+def _draft_counts(category: str) -> dict[str, int]:
+    """`draft.sources`의 개수. 유형화 json이 깨졌으면 아키타입 0개, index.md 카드까지 못 읽으면 카드도 0개로 본다."""
+    try:
+        sources = draft.sources(category)
+        return {k: len(sources[k]) for k in ("stars", "cards", "archetypes")}
+    except BROKEN_DATA as e:
+        _warn("기획안 출처", category, e)
+    try:
+        details = motif.card_details(category)
+    except BROKEN_DATA as e:
+        _warn("모티브 카드", category, e)
+        details = []
+    stars = sum(1 for c in details if c.get("starred"))
+    return {"stars": stars, "cards": len(details) - stars, "archetypes": 0}
+
+
 def gates(category: str, page: str) -> dict[str, Any]:
     """화면이 실제로 쓰는 문턱. 각 화면 API와 같은 함수로 계산한다(개수·참거짓·한국어 type 이름만).
 
@@ -85,9 +110,9 @@ def gates(category: str, page: str) -> dict[str, Any]:
     - typify_result: 유형화 결과(json)가 있는지. 저장(typified_at)과는 별개다.
     - diagnose: 진단 화면의 `similarity.typify_gate`(available, preliminary).
     - draft_sources: 기획안 화면 출처 개수(`draft.sources`). 기획안 화면이면 지인 틀 개수(연결 전 None)도 넣는다.
+      파일이 깨져 읽지 못한 개수는 0이다(`_draft_counts`).
     """
-    sources = draft.sources(category)
-    draft_sources: dict[str, Any] = {k: len(sources[k]) for k in ("stars", "cards", "archetypes")}
+    draft_sources: dict[str, Any] = dict(_draft_counts(category))
     if page == "draft":
         templates = _library_templates()
         draft_sources["library_templates"] = None if templates is None else len(templates)

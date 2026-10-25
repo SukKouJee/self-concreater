@@ -406,3 +406,25 @@ def test_chat_checks_engine_before_building_situation(client, monkeypatch):
     status, res = ask(client)
     assert status == 400 and res["error"] == "claude_missing"
     assert calls == []
+
+
+@pytest.mark.parametrize("broken", ["{}", "{not json", '{"status": "formal", "archetypes": [{"id": "A1"}]}'],
+                         ids=["empty_object", "invalid_json", "missing_axes"])
+@pytest.mark.parametrize("page", ["motif", "draft"])
+def test_chat_survives_broken_typify_json(client, fake, home, broken, page):
+    _typified(home)
+    (home / "workspace" / "typify" / f"{CAT}.json").write_text(broken, encoding="utf-8")
+    job, payload = run_chat(client, fake, category=CAT, page=page)
+    assert job["status"] == "done"
+    gates = payload["situation"]["categories"][0]["gates"]
+    assert gates["draft_sources"]["archetypes"] == 0
+    assert gates["typify_result"] is True                       # the file exists, only its content is broken
+    assert gates["diagnose"]["available"] is (broken.startswith('{"status"'))
+
+
+def test_chat_survives_broken_index_md(client, fake, home):
+    _typified(home)
+    (home / "refs" / f"ref_{CAT}" / "index.md").write_text("---\ncards: [unclosed\n---\n", encoding="utf-8")
+    job, payload = run_chat(client, fake, category=CAT)
+    assert job["status"] == "done"
+    assert payload["situation"]["categories"][0]["gates"]["draft_sources"] == {"stars": 0, "cards": 0, "archetypes": 0}
