@@ -449,3 +449,23 @@ def test_reporting_detector_does_not_pin_100_when_total_is_short(plain_super):
     calls = rec.of("scenes")
     assert [c[1] for c in calls] == [1 / 3, 2 / 3, None, None, None]
     assert calls[-1][2] == "장면 확인 중 (5 프레임)"
+
+
+def test_cut_stats_reports_download_start_right_after_wait(home, fake_download, monkeypatch):
+    """yt-dlp의 첫 progress hook 전(extract_info) 구간이 차단 방지 대기로 남지 않게 한다."""
+    from scripts import fetch
+
+    monkeypatch.setenv("YT_FETCH_INTERVAL", "3")
+    monkeypatch.setattr(fetch.time, "sleep", lambda s: None)
+    (home / "workspace").mkdir(exist_ok=True)
+    (home / "workspace" / ".last_fetch").write_text(str(fetch.time.time()), encoding="utf-8")
+    rec = Recorder()
+    cuts.cut_stats(VID, progress=rec)
+    last_wait = max(i for i, c in enumerate(rec.calls) if c[0] == "wait")
+    assert rec.calls[last_wait + 1] == ("download", None, cuts.DOWNLOAD_START_TEXT)
+
+
+def test_cut_stats_reports_download_start_without_wait(home, fake_download):
+    rec = Recorder()
+    cuts.cut_stats(VID, progress=rec)
+    assert rec.calls[0] == ("download", None, cuts.DOWNLOAD_START_TEXT)

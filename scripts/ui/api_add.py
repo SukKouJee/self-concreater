@@ -172,7 +172,8 @@ def _link_length(link: str) -> float | None:
 class _StepClock:
     """한 항목의 ItemTiming을 감싼다. 진행 표시는 보조 정보라 여기서 난 오류는 stderr에 한 번 남기고 계속한다.
 
-    - 지금 달리는 줄을 직접 기억해, 실패·취소 때 `fail_running()`으로 그 줄을 실패로 둔다.
+    - 지금 달리는 줄과 끝난 줄을 직접 기억해, 실패·취소 때 `fail_running()`으로 달리던 줄을 실패로,
+      항목이 끝날 때 `skip_pending()`으로 시작하지 않은 줄을 건너뜀으로 둔다(끝난 카드에 남은 시간이 남지 않게).
     - 영상 길이는 처음 알게 된 값만 쓴다(`offer_video_sec`): raw 캐시 → no_transcript 정보 → 메타 → 컷 통계 순으로 부른다.
     - `progress()`는 수집 함수에 넘길 콜백이다. 차단 방지 대기("wait") 동안은 줄을 멈춰 걸린 시간에서 빼고,
       대기 글은 그대로 보여 준다.
@@ -180,7 +181,9 @@ class _StepClock:
 
     def __init__(self, job: Job, index: int, rows: list[str], engine: str | None) -> None:
         self._timing: ItemTiming | None = None
+        self._rows = list(rows)
         self._running: str | None = None
+        self._settled: set[str] = set()
         self._video_sec: float | None = None
         self._warned = False
         try:
@@ -196,27 +199,37 @@ class _StepClock:
 
     def start(self, row: str, sub: str | None = None) -> None:
         self._running = row
+        self._settled.discard(row)
         self._call(lambda t: t.start(row, sub))
 
     def done(self, row: str, *, cached: bool = False, **record_kw: Any) -> None:
-        if self._running == row:
-            self._running = None
+        self._settle(row)
         self._call(lambda t: t.done(row, cached=cached, **record_kw))
 
     def fail(self, row: str) -> None:
-        if self._running == row:
-            self._running = None
+        """오류로 끝난 줄."""
+        self._settle(row)
         self._call(lambda t: t.fail(row))
+
+    def skip(self, row: str) -> None:
+        """오류가 아니라 하지 않은 줄(STT 없음, 프레임 없음)."""
+        self._settle(row)
+        self._call(lambda t: t.skip(row))
 
     def fail_running(self) -> None:
         if self._running is not None:
             self.fail(self._running)
 
-    def pause(self) -> None:
-        self._call(lambda t: t.pause())
+    def skip_pending(self) -> None:
+        for row in self._rows:
+            if row not in self._settled and row != self._running:
+                self.skip(row)
 
-    def resume(self) -> None:
-        self._call(lambda t: t.resume())
+    def pause(self, *, publish: bool = True) -> None:
+        self._call(lambda t: t.pause(publish=publish))
+
+    def resume(self, *, publish: bool = True) -> None:
+        self._call(lambda t: t.resume(publish=publish))
 
     @contextmanager
     def progress(self) -> Iterator[Progress]:
@@ -225,12 +238,13 @@ class _StepClock:
 
         def report(phase: str, fraction: float | None, text: str) -> None:
             nonlocal waiting
+            # 바로 뒤의 phase()가 구간 이름이 바뀌어 게시하므로 pause/resume은 따로 게시하지 않는다
             if phase == WAIT_PHASE and not waiting:
                 waiting = True
-                self.pause()
+                self.pause(publish=False)
             elif phase != WAIT_PHASE and waiting:
                 waiting = False
-                self.resume()
+                self.resume(publish=False)
             self._call(lambda t: t.phase(phase, fraction, text))
 
         try:
@@ -238,6 +252,11 @@ class _StepClock:
         finally:
             if waiting:
                 self.resume()
+
+    def _settle(self, row: str) -> None:
+        self._settled.add(row)
+        if self._running == row:
+            self._running = None
 
     def _call(self, action: Callable[[ItemTiming], None]) -> None:
         if self._timing is None:
@@ -298,6 +317,8 @@ class Collector:
         except BaseException:
             clock.fail_running()   # 실패·취소: 달리던 줄은 기록하지 않고 실패로 둔다
             raise
+        finally:
+            clock.skip_pending()   # 항목이 끝났으니 시작하지 않은 줄은 건너뜀
 
     def _collect(self, job: Job, index: int, clock: _StepClock) -> None:
         opts = self.opts
@@ -317,7 +338,7 @@ class Collector:
             clock.offer_video_sec(e.details.get("duration_sec"))
             video_id = self._identify(job, index, e.details.get("id"), e.details.get("title"))
             choice = self._wait(job, index, clock, ask="no_transcript", message=e.message)["action"]
-            clock.done("fetch", cached=e.details.get("status") == "cached")
+            clock.done("fetch", cached=e.details.get("raw_status") == "cached")
             if choice == "skip":
                 job.update(index, state="skipped", step="done", ask=None, message=MSG_SKIPPED)
                 return
@@ -384,9 +405,10 @@ class Collector:
             with clock.progress() as report:
                 result = stt.transcribe(video_id, progress=report)
         except ScriptError as e:
-            clock.fail("fetch")
             if e.code != "stt_unavailable":
+                clock.fail("fetch")
                 raise
+            clock.skip("fetch")   # STT가 없을 뿐 오류가 아니다: 화면 분석으로 간다
             notes.append(f"{e.message} — 화면만 보고 분석합니다")
             return False
         clock.done("fetch", cached=result.get("status") == "exists")
@@ -482,7 +504,10 @@ class Collector:
         try:
             _classify_shots(video_id, self.opts.category)
         except ScriptError as e:
-            clock.fail(SHOTS_ROW)
+            if e.code == "no_frames":
+                clock.skip(SHOTS_ROW)
+            else:
+                clock.fail(SHOTS_ROW)
             message = MSG_NO_FRAMES if e.code == "no_frames" else f"샷 분류 실패: {e.message}"
             prior = job.item(index)["message"]
             job.update(index, message=f"{prior} / {message}" if prior else message)
@@ -509,10 +534,11 @@ def run_shots_only(category: str) -> Any:
             try:
                 _classify_shots(item["id"], category)
             except ScriptError as e:
-                clock.fail(SHOTS_ROW)
                 if e.code == "no_frames":
+                    clock.skip(SHOTS_ROW)
                     job.update(index, state="skipped", step="done", message=MSG_NO_FRAMES)
                     continue
+                clock.fail(SHOTS_ROW)
                 job.update(index, state="failed", message=e.message)
                 if e.code in CLAUDE_CODES:
                     job.skip_rest(index + 1, MSG_CLAUDE_STOP)

@@ -92,7 +92,8 @@ class ItemTiming:
             if changed or time.monotonic() - self._last_publish >= MIN_INTERVAL:
                 self._publish()
 
-    def pause(self) -> None:
+    def pause(self, *, publish: bool = True) -> None:
+        """지금 줄의 시계를 멈춘다. publish=False면 바로 이어질 게시(phase 등)에 맡긴다."""
         with self._lock:
             if self._current is None:
                 return
@@ -100,9 +101,10 @@ class ItemTiming:
             if "paused_at" in data:
                 return
             data["paused_at"] = time.time()
-            self._publish()
+            if publish:
+                self._publish()
 
-    def resume(self) -> None:
+    def resume(self, *, publish: bool = True) -> None:
         with self._lock:
             if self._current is None:
                 return
@@ -111,7 +113,8 @@ class ItemTiming:
             if paused_at is None:
                 return
             data["started_at"] += time.time() - paused_at
-            self._publish()
+            if publish:
+                self._publish()
 
     def done(self, row: str, *, cached: bool = False, **record_kw: Any) -> None:
         with self._lock:
@@ -131,6 +134,17 @@ class ItemTiming:
                     engine=self._engine,
                     **record_kw,
                 )
+            self._publish()
+
+    def skip(self, row: str) -> None:
+        """오류가 아니라 하지 않은 줄(STT 없음·프레임 없음·항목이 먼저 끝남). 기록하지 않고 예상을 0으로 둔다."""
+        with self._lock:
+            data = self._timing["steps"][row]
+            data["state"] = "skipped"
+            data["expected"] = 0.0
+            data.pop("paused_at", None)
+            if self._current == row:
+                self._current = None
             self._publish()
 
     def fail(self, row: str) -> None:

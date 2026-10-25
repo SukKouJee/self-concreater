@@ -349,7 +349,8 @@ def fetch(url: str, category: str | None = None, role: str = "ref", force: bool 
             "no_transcript",
             "이 영상에는 쓸 수 있는 자막이 없습니다. 음성 인식(STT)으로 만들 수 있습니다: "
             f"python -m scripts.stt {video_id}",
-            **{k: summary[k] for k in ["id", "status", "raw", "title", "duration_sec", "format"]},
+            raw_status=status,
+            **{k: summary[k] for k in ["id", "raw", "title", "duration_sec", "format"]},
         )
     return summary
 

@@ -222,3 +222,34 @@ def test_concurrent_phase_and_start_done_do_not_raise(recorded: list) -> None:
         th.join()
     assert errors == []
     assert real.item(0)["timing"]["steps"]["cuts"]["state"] == "done"
+
+
+def test_skip_sets_skipped_without_record(clock: Clock, recorded: list) -> None:
+    job, t = make()
+    t.start("fetch")
+    t.pause()
+    t.skip("fetch")
+    row = job.timing["steps"]["fetch"]
+    assert row["state"] == "skipped" and row["expected"] == 0.0 and "paused_at" not in row
+    assert recorded == []
+    t.phase("stt", 0.5, "음성 인식 중")              # 지금 달리는 줄이 없다
+    assert job.timing["steps"]["fetch"].get("phase") is None
+
+
+def test_skip_pending_row(clock: Clock, recorded: list) -> None:
+    job, t = make()
+    t.skip("analyze")
+    assert job.timing["steps"]["analyze"] == {"state": "skipped", "expected": 0.0}
+
+
+def test_pause_resume_without_publish(clock: Clock, recorded: list) -> None:
+    job, t = make()
+    t.start("cuts")
+    before = len(job.calls)
+    t.pause(publish=False)
+    clock.advance(30)
+    t.resume(publish=False)
+    assert len(job.calls) == before
+    clock.advance(2)
+    t.done("cuts")
+    assert job.timing["steps"]["cuts"]["elapsed"] == pytest.approx(2)

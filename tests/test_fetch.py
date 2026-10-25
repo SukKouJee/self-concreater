@@ -423,11 +423,11 @@ def test_fetch_cached_does_not_report_progress(home, net):
     assert calls == []
 
 
-def test_no_transcript_details_carry_fetch_status(home, net):
+def test_no_transcript_details_carry_raw_status(home, net):
     net["transcript_value"] = None
     with pytest.raises(ScriptError) as exc:
         fetch.fetch(VID)
-    assert exc.value.details["status"] == "fetched"
+    assert exc.value.details["raw_status"] == "fetched"
     with pytest.raises(ScriptError) as exc:
         fetch.fetch(VID)
-    assert exc.value.details["status"] == "cached"
+    assert exc.value.details["raw_status"] == "cached"

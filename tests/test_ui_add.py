@@ -831,7 +831,7 @@ def test_fetch_gets_progress_callback(client, fakes):
 
 def test_no_transcript_wait_paused_then_stt_is_new_fetch_run(client, fakes, tmp_path):
     fakes.fetch_errors[A] = ScriptError("no_transcript", "자막이 없습니다", id=A, title="무자막",
-                                        duration_sec=120, status="fetched")
+                                        duration_sec=120, raw_status="fetched")
     fakes.raw_cached = False                         # 길이는 no_transcript 정보에서 얻는다
     job = start_add(client, [url(A)])
     job = wait_for(client, job["id"], item_state(0, "awaiting"))
@@ -848,14 +848,14 @@ def test_no_transcript_wait_paused_then_stt_is_new_fetch_run(client, fakes, tmp_
     assert data["stt"][0]["video_sec"] == 120
 
 
-def test_stt_unavailable_marks_fetch_row_failed(client, fakes, tmp_path):
+def test_stt_unavailable_marks_fetch_row_skipped(client, fakes, tmp_path):
     fakes.fetch_errors[A] = ScriptError("no_transcript", "자막이 없습니다", id=A, title="무자막")
     fakes.stt_error = ScriptError("stt_unavailable", "faster-whisper가 없습니다")
     job = start_add(client, [url(A)])
     wait_for(client, job["id"], item_state(0, "awaiting"))
     decide(client, job["id"], A, action="stt")
     job = wait_for(client, job["id"], lambda j: j["items"][0]["preview"] is not None)
-    assert steps(job)["fetch"]["state"] == "failed"
+    assert steps(job)["fetch"]["state"] == "skipped"
     assert "stt" not in records(tmp_path)
 
 
@@ -895,3 +895,90 @@ def test_engine_falls_back_to_none_when_llm_config_broken(monkeypatch):
 
     monkeypatch.setattr(llm, "config", broken)
     assert api_add._timing_engine() is None
+
+
+
+def test_shots_no_frames_marks_shots_row_skipped(client, fakes, monkeypatch, tmp_path):
+    def no_frames(vid, category):
+        raise ScriptError("no_frames", "대표 프레임이 없습니다")
+    monkeypatch.setattr(shots, "context", no_frames)
+    job = start_add(client, [url(A)], shots=True)
+    wait_for(client, job["id"], item_state(0, "awaiting"))
+    decide(client, job["id"], A, action="save")
+    job = wait_for(client, job["id"], finished)
+    assert steps(job)["shots"]["state"] == "skipped" and steps(job)["shots"]["expected"] == 0
+
+
+def test_shots_only_no_frames_marks_row_skipped(client, fakes, monkeypatch):
+    def no_frames(vid, category):
+        raise ScriptError("no_frames", "대표 프레임이 없습니다")
+    monkeypatch.setattr(shots, "context", no_frames)
+    fakes.pending = [A]
+    status, body = client.json("POST", "/api/add/shots-only", {"category": CAT})
+    job = wait_for(client, body["job"]["id"], finished)
+    assert job["items"][0]["state"] == "skipped"
+    assert steps(job)["shots"]["state"] == "skipped"
+
+
+def test_exists_skips_remaining_rows(client, fakes):
+    fakes.fetch_status[A] = "exists"
+    job = start_add(client, [url(A)])
+    job = wait_for(client, job["id"], finished)
+    assert [s["state"] for s in steps(job).values()] == ["done", "skipped", "skipped"]
+
+
+def test_skip_at_confirm_skips_shots_row(client, fakes):
+    job = start_add(client, [url(A)], shots=True)
+    wait_for(client, job["id"], item_state(0, "awaiting"))
+    decide(client, job["id"], A, action="skip")
+    job = wait_for(client, job["id"], finished)
+    assert steps(job)["shots"]["state"] == "skipped"
+
+
+def test_failed_item_skips_pending_rows(client, fakes):
+    fakes.ask_errors = [ScriptError("claude_failed", "실패")]
+    job = start_add(client, [url(A)], shots=True)
+    job = wait_for(client, job["id"], finished)
+    assert steps(job)["analyze"]["state"] == "failed" and steps(job)["shots"]["state"] == "skipped"
+
+
+def test_no_transcript_skip_skips_remaining_rows(client, fakes):
+    fakes.fetch_errors[A] = ScriptError("no_transcript", "자막이 없습니다", id=A, title="무자막")
+    job = start_add(client, [url(A)])
+    wait_for(client, job["id"], item_state(0, "awaiting"))
+    decide(client, job["id"], A, action="skip")
+    job = wait_for(client, job["id"], finished)
+    assert [s["state"] for s in steps(job).values()] == ["done", "skipped", "skipped"]
+
+
+def test_no_transcript_raw_status_detail_skips_record(client, fakes, tmp_path):
+    fakes.fetch_errors[A] = ScriptError("no_transcript", "자막이 없습니다", id=A, title="무자막", raw_status="cached")
+    job = start_add(client, [url(A)])
+    wait_for(client, job["id"], item_state(0, "awaiting"))
+    decide(client, job["id"], A, action="screen")
+    job = wait_for(client, job["id"], lambda j: j["items"][0]["preview"] is not None)
+    assert steps(job)["fetch"]["expected"] == 0
+    assert "fetch" not in records(tmp_path)
+
+
+class _CountingJob:
+    def __init__(self):
+        self.updates = []
+
+    def update(self, index, **fields):
+        self.updates.append(fields)
+
+
+def test_wait_phase_publishes_once_per_report(tmp_path, monkeypatch):
+    monkeypatch.setenv("YT_COACH_HOME", str(tmp_path))
+    job = _CountingJob()
+    clock = api_add._StepClock(job, 0, ["cuts"], None)
+    clock.start("cuts")
+    before = len(job.updates)
+    with clock.progress() as report:
+        report("wait", None, "차단 방지 대기 3초")
+        assert len(job.updates) == before + 1           # pause와 phase가 한 번에 게시된다
+        assert "paused_at" in job.updates[-1]["timing"]["steps"]["cuts"]
+        report("download", None, "영상 받는 중")
+        assert len(job.updates) == before + 2
+        assert "paused_at" not in job.updates[-1]["timing"]["steps"]["cuts"]

@@ -339,6 +339,9 @@ def summarize_camera(scenes: list[dict]) -> dict:
 
 # --- 흐름 ---------------------------------------------------------------------
 
+DOWNLOAD_START_TEXT = "영상 받는 중"
+
+
 def cut_stats(video_id: str, force: bool = False, progress: Progress | None = None) -> dict:
     """progress가 있으면 wait → download → scenes → camera 순서로 하위 구간 진행을 알린다."""
     out_path = workspace_dir("cuts", f"{video_id}.json")
@@ -351,6 +354,9 @@ def cut_stats(video_id: str, force: bool = False, progress: Progress | None = No
     try:
         report = safe_progress(progress)
         wait_turn(report)
+        if report is not None:
+            # 첫 progress hook은 extract_info가 끝난 뒤에야 온다: 그 사이를 대기로 남기지 않는다
+            report("download", None, DOWNLOAD_START_TEXT)
         proxy = os.environ.get("YT_PROXY") or None
         video = download_video(video_id, tmp_dir, proxy, progress=report)
         analysis = analyze_video(video, frames_dir, report)
