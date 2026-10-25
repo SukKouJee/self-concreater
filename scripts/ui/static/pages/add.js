@@ -1,7 +1,7 @@
 // 레퍼런스 추가 화면: 링크 입력 → 1초 폴링 진행 표시 → 영상별 확인 카드 → 마무리 요약.
 // 서버 작업(kind "collect")이 이미 있으면 화면에 들어올 때 그 작업을 이어서 보여 준다.
 import { h, filesUrl } from "/static/dom.js";
-import { fmtDur, fmtClock, fmtRemain, spokenDur, rowView, itemRemaining } from "/static/progress-utils.js";
+import { fmtDur, fmtClock, fmtRemain, spokenDur, rowView, itemRemaining, monotonicFraction } from "/static/progress-utils.js";
 
 const POLL_MS = 1000;
 const LABELS = ["hook", "intro", "body", "demo", "transition", "cta", "outro"];
@@ -291,10 +291,10 @@ function renderJobFoot(job) {
 
 // ---- rendering: items -------------------------------------------------------
 
-// Structure only (row set, states, clock anchors). Fractions, texts and estimates are patched in place by the clock.
+// Structure only (row set and each row start; state and pause are repainted by the clock). Fractions, texts and estimates are patched in place by the clock.
 function timingSig(timing) {
   if (!timing || !timing.steps) return null;
-  return Object.entries(timing.steps).map(([k, r]) => [k, r.state, r.started_at ?? null, r.paused_at ?? null]);
+  return Object.entries(timing.steps).map(([k, r]) => [k, r.started_at ?? null]);
 }
 
 function itemSig(item) {
@@ -366,9 +366,10 @@ function pctOf(row) {
 
 function rowText(row, v) {
   const exp = v.expected;
+  const hasExp = exp !== null && exp !== undefined;
   switch (row.state) {
     case "done":
-      return `✓ ${fmtDur(v.elapsed)} 걸림${exp ? ` (예상 ${fmtDur(exp)})` : ""}`;
+      return `✓ ${fmtDur(v.elapsed)} 걸림${hasExp ? ` (예상 ${fmtDur(exp)})` : ""}`;
     case "failed":
       return v.elapsed !== null ? `실패 ${fmtDur(v.elapsed)}` : "실패";
     case "skipped":
@@ -376,10 +377,10 @@ function rowText(row, v) {
     case "running": {
       const p = pctOf(row);
       const pct = p === null ? "" : `${p}% · `;
-      return exp ? `${pct}${fmtDur(v.elapsed)} / 예상 ${fmtDur(exp)}` : `${pct}${fmtDur(v.elapsed)} · 예상 계산 중`;
+      return hasExp ? `${pct}${fmtDur(v.elapsed)} / 예상 ${fmtDur(exp)}` : `${pct}${fmtDur(v.elapsed)} · 예상 계산 중`;
     }
     default:
-      return exp ? `예상 ${fmtDur(exp)}` : "예상 계산 중";
+      return hasExp ? `예상 ${fmtDur(exp)}` : "예상 계산 중";
   }
 }
 
@@ -390,7 +391,7 @@ function buildStepRow(key) {
   const bar = h("span", { class: "bar" }, fill);
   const sub = h("div", { class: "step-sub muted", hidden: true });
   const li = h("li", { class: "step-row" }, h("div", { class: "step-main" }, name, bar, time), sub);
-  return { li, bar, fill, time, sub };
+  return { li, bar, fill, time, sub, maxFrac: null };
 }
 
 function paintStepRow(r, key, row, nowS, frozen) {
@@ -398,8 +399,11 @@ function paintStepRow(r, key, row, nowS, frozen) {
   const running = row.state === "running";
   r.li.className = `step-row step-${row.state}${running && v.over ? " is-over" : ""}`;
   r.time.textContent = rowText(row, v);
-  r.fill.style.width = `${v.fraction === null ? 0 : Math.round(v.fraction * 100)}%`;
-  r.bar.classList.toggle("bar-indet", running && v.fraction === null && !frozen);
+  // The shown bar never moves backward (estimate-based value -> measured fraction, or a grown estimate).
+  if (running) r.maxFrac = monotonicFraction(r.maxFrac, v.fraction);
+  const shown = running ? r.maxFrac : v.fraction;
+  r.fill.style.width = `${shown === null ? 0 : Math.round(shown * 100)}%`;
+  r.bar.classList.toggle("bar-indet", running && shown === null && !frozen && row.paused_at == null);
   if (!running) {
     for (const a of ["role", "aria-label", "aria-valuemin", "aria-valuemax", "aria-valuenow", "aria-valuetext"]) r.bar.removeAttribute(a);
     r.bar.setAttribute("aria-hidden", "true");
@@ -418,7 +422,7 @@ function paintStepRow(r, key, row, nowS, frozen) {
     r.bar.removeAttribute("aria-valuetext");
   } else {
     r.bar.removeAttribute("aria-valuenow");
-    r.bar.setAttribute("aria-valuetext", v.expected
+    r.bar.setAttribute("aria-valuetext", v.expected !== null
       ? `${spokenDur(v.elapsed)} 경과, 예상 ${spokenDur(v.expected)}`
       : `${spokenDur(v.elapsed)} 경과`);
   }

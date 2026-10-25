@@ -106,3 +106,8 @@ def test_fmt_remain():
 
 def test_spoken_dur():
     assert run_js("[302, 490, 3723, 0, 60].map(m.spokenDur)") == ["5분 2초", "8분 10초", "1시간 2분 3초", "0초", "1분"]
+
+
+def test_monotonic_fraction_never_decreases():
+    assert run_js("[[null, null], [null, 0.3], [0.3, 0.04], [0.3, null], [0.3, 0.5]].map(a => m.monotonicFraction(a[0], a[1]))") == [
+        None, 0.3, 0.3, 0.3, 0.5]

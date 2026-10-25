@@ -87,3 +87,12 @@ export function spokenDur(sec) {
   const ss = s % 60;
   return [hh ? `${hh}시간` : "", mm ? `${mm}분` : "", ss || (!hh && !mm) ? `${ss}초` : ""].filter(Boolean).join(" ");
 }
+
+// 막대 값은 줄어들지 않는다: 이전 최대값과 현재 값 중 큰 쪽(둘 다 null이면 null).
+export function monotonicFraction(prevMax, current) {
+  const a = num(prevMax);
+  const b = num(current);
+  if (a === null) return b;
+  if (b === null) return a;
+  return Math.max(a, b);
+}
