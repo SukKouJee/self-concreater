@@ -148,6 +148,73 @@ def test_summarize_camera_is_duration_weighted():
     assert cuts.summarize_camera(scenes) == {"static": 0.75, "pan": 0.25, "zoom": 0.0}
 
 
+def test_flow_pairs_spread_over_scene():
+    # 30fps -> 간격 3프레임, 첫 지점 start+2, 마지막 지점 end-2-3
+    assert cuts.flow_pairs(0, 60, 30) == [(2, 5), (20, 23), (37, 40), (55, 58)]
+    assert cuts.flow_pairs(100, 104, 30) == []          # 너무 짧은 장면
+
+
+def _seek_gray(path, index):
+    cap = cv2.VideoCapture(str(path))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, index)
+    ok, frame = cap.read()
+    cap.release()
+    assert ok
+    return cuts._gray(frame), frame
+
+
+def test_read_scene_frames_returns_the_same_frames_as_seeking(sample_video):
+    plans = [([(2, 5), (20, 23)], 30), ([(70, 73)], None), ([], 150)]
+    cap = cv2.VideoCapture(str(sample_video))
+    try:
+        got = list(cuts.read_scene_frames(cap, plans))
+    finally:
+        cap.release()
+
+    assert [sorted(grays) for grays, _ in got] == [[2, 5, 20, 23], [70, 73], []]
+    for grays, _ in got:
+        for index, gray in grays.items():
+            assert np.array_equal(gray, _seek_gray(sample_video, index)[0])
+    assert np.array_equal(got[0][1], _seek_gray(sample_video, 30)[1])
+    assert got[1][1] is None
+    assert np.array_equal(got[2][1], _seek_gray(sample_video, 150)[1])
+
+
+def test_read_scene_frames_past_the_end_leaves_frames_out(sample_video):
+    # 컨테이너 프레임 수가 실제보다 클 때: 없는 프레임은 빠지고 장면마다 하나씩은 꼭 낸다
+    plans = [([(170, 173)], 175), ([(500, 503)], 600)]
+    cap = cv2.VideoCapture(str(sample_video))
+    try:
+        got = list(cuts.read_scene_frames(cap, plans))
+    finally:
+        cap.release()
+    assert [sorted(grays) for grays, _ in got] == [[170, 173], []]
+    assert got[0][1] is not None and got[1][1] is None
+
+
+def test_analyze_video_reads_frames_in_one_pass_without_seeking(sample_video, tmp_path, monkeypatch):
+    seeks = []
+    real = cv2.VideoCapture
+
+    class Spy:
+        def __init__(self, *a):
+            self._cap = real(*a)
+
+        def set(self, prop, value):
+            if prop == cv2.CAP_PROP_POS_FRAMES:
+                seeks.append(value)
+            return self._cap.set(prop, value)
+
+        def __getattr__(self, name):
+            return getattr(self._cap, name)
+
+    monkeypatch.setattr(cuts.cv2, "VideoCapture", Spy)
+    result = cuts.analyze_video(sample_video, tmp_path / "frames")
+    assert seeks == []
+    assert [s["camera"] for s in result["scenes"]] == ["static", "pan", "zoom"]
+    assert len(list((tmp_path / "frames").glob("*.jpg"))) == 3
+
+
 # --- 전체 흐름 ----------------------------------------------------------------
 
 def test_cut_stats_writes_json_frames_and_deletes_video(home, fake_download):

@@ -18,7 +18,7 @@ import json
 import os
 import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Iterator
 
 import cv2
 import numpy as np
@@ -148,11 +148,7 @@ def pick_frame_scenes(n: int, cap: int) -> list[int]:
     return sorted({round(i * (n - 1) / (cap - 1)) for i in range(cap)})
 
 
-def _read_gray(cap: cv2.VideoCapture, index: int) -> np.ndarray | None:
-    cap.set(cv2.CAP_PROP_POS_FRAMES, index)
-    ok, frame = cap.read()
-    if not ok:
-        return None
+def _gray(frame: np.ndarray) -> np.ndarray:
     h, w = frame.shape[:2]
     small = cv2.resize(frame, (FLOW_WIDTH, max(1, round(h * FLOW_WIDTH / w))))
     return cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
@@ -177,25 +173,64 @@ def _classify_flow(flow: np.ndarray) -> str:
     return "static"  # 방향이 제각각인 움직임 = 카메라는 고정, 피사체가 움직임
 
 
-def classify_camera(cap: cv2.VideoCapture, start: int, end: int, fps: float) -> str:
+def flow_pairs(start: int, end: int, fps: float) -> list[tuple[int, int]]:
+    """장면 [start, end)에서 optical flow를 잴 프레임 쌍(앞, 0.1초 뒤). 장면이 너무 짧으면 빈 목록."""
     step = max(1, round(fps / 10))
     first, last = start + 2, end - 2 - step
     if last < first:
-        return "static"
+        return []
     positions = sorted({round(first + i * (last - first) / max(1, FLOW_SAMPLES - 1))
                         for i in range(FLOW_SAMPLES)})
+    return [(pos, pos + step) for pos in positions]
+
+
+def classify_camera(grays: dict[int, np.ndarray], pairs: list[tuple[int, int]]) -> str:
     labels = []
-    for pos in positions:
-        a, b = _read_gray(cap, pos), _read_gray(cap, pos + step)
-        if a is None or b is None:
+    for a, b in pairs:
+        if a not in grays or b not in grays:
             continue
-        flow = cv2.calcOpticalFlowFarneback(a, b, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+        flow = cv2.calcOpticalFlowFarneback(grays[a], grays[b], None, 0.5, 3, 15, 3, 5, 1.2, 0)
         labels.append(_classify_flow(flow))
     # 카메라 움직임은 장면 내내 이어진다. 손·음식처럼 잠깐 움직이는 피사체를 걸러내려고
     # 모든 지점이 같은 판정일 때만 pan/zoom으로 본다 (다수결은 고정 카메라 먹방을 pan 29%로 오판)
     if len(labels) >= 2 and len(set(labels)) == 1:
         return labels[0]
     return "static"
+
+
+def read_scene_frames(
+    cap: cv2.VideoCapture, plans: list[tuple[list[tuple[int, int]], int | None]],
+) -> Iterator[tuple[dict[int, np.ndarray], np.ndarray | None]]:
+    """장면 순서대로 (flow용 흑백 프레임 {번호: 프레임}, 대표 프레임 또는 None)을 하나씩 낸다.
+
+    plans는 장면마다 (flow_pairs, 대표 프레임 번호 또는 None)이고 장면 구간은 겹치지 않고 순서대로다.
+    번호로 찾아가면(CAP_PROP_POS_FRAMES) 매번 앞 키프레임부터 다시 풀어서 느리다(8분 영상 장면 65개:
+    25초). 그래서 처음부터 한 번만 읽고(grab) 필요한 번호에서만 꺼낸다(retrieve, 같은 영상 6.6초).
+    한 장면 프레임만 들고 있다가 내보낸다. 영상이 컨테이너 프레임 수보다 일찍 끝나면 못 읽은 프레임은 빠진다.
+    """
+    index = -1  # 마지막으로 읽은 프레임 번호
+    ended = False
+    for pairs, picture_at in plans:
+        wanted = {n for pair in pairs for n in pair}
+        targets = sorted(wanted | ({picture_at} if picture_at is not None else set()))
+        grays: dict[int, np.ndarray] = {}
+        picture = None
+        for target in targets:
+            while not ended and index < target:
+                if not cap.grab():
+                    ended = True
+                    break
+                index += 1
+            if ended or index != target:
+                continue
+            ok, frame = cap.retrieve()
+            if not ok:
+                continue
+            if target in wanted:
+                grays[target] = _gray(frame)
+            if target == picture_at:
+                picture = frame
+        yield grays, picture
 
 
 def scene_progress_text(done: int, total: int | None) -> str:
@@ -271,20 +306,19 @@ def analyze_video(path: Path, frames_dir: Path, progress: Progress | None = None
 
         frames_dir.mkdir(parents=True, exist_ok=True)
         with_frame = set(pick_frame_scenes(len(bounds), MAX_FRAMES))
+        plans = [(flow_pairs(start, end, fps), (start + end) // 2 if i in with_frame else None)
+                 for i, (start, end) in enumerate(bounds)]
         scenes = []
-        for i, (start, end) in enumerate(bounds):
+        frames = read_scene_frames(cap, plans)
+        for i, ((start, end), (pairs, mid), (grays, picture)) in enumerate(zip(bounds, plans, frames)):
             frame_name = None
-            if i in with_frame:
-                mid = (start + end) // 2
-                cap.set(cv2.CAP_PROP_POS_FRAMES, mid)
-                ok, frame = cap.read()
-                if ok:
-                    frame_name = f"scene{i + 1:03d}_{mid / fps:.1f}s.jpg"
-                    cv2.imwrite(str(frames_dir / frame_name), frame)
+            if picture is not None and mid is not None:
+                frame_name = f"scene{i + 1:03d}_{mid / fps:.1f}s.jpg"
+                cv2.imwrite(str(frames_dir / frame_name), picture)
             scenes.append({
                 "start": round(start / fps, 2),
                 "end": round(end / fps, 2),
-                "camera": classify_camera(cap, start, end, fps),
+                "camera": classify_camera(grays, pairs),
                 "frame": frame_name,
             })
             if report is not None:
