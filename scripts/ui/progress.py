@@ -1,7 +1,8 @@
 """작업 항목의 줄(행)별 진행 상태를 job 항목의 `timing`에 게시한다.
 
 화면은 `timing.steps[row]`의 state/expected/started_at/elapsed/fraction/phase/phase_text와 스냅샷의 `now`로
-경과·예상·진행률을 그린다. 전체 `timing` dict를 매번 새 사본으로 `job.update`에 넘겨,
+경과·예상·진행률을 그린다. phase_started_at/phase_fraction은 마지막 가중 구간의 남은 시간을,
+prior_elapsed/prior_expected는 같은 줄의 앞 회차(자막 받기 -> 음성 인식)를 화면에 합쳐 보이는 데 쓴다. 전체 `timing` dict를 매번 새 사본으로 `job.update`에 넘겨,
 스냅샷이 복사하는 동안 우리가 가진 dict가 바뀌지 않게 한다.
 """
 from __future__ import annotations
@@ -14,8 +15,11 @@ from typing import Any, Protocol
 from scripts import timings
 
 MIN_INTERVAL = 0.5
+# 컷 가중치: 2026-10-25 이 PC 실측(1208초 영상·508장면, 컷 320초 = 받기 약 5초 + 장면 감지 약 92초
+# + 카메라 약 225초, 장면당 약 0.44초)으로 정한 기본값. 구간별 기록으로 고치는 것은 나중 일이다.
+# 마지막 가중 구간(camera)은 progress-utils.js의 LAST_PHASES와 맞춘다.
 PHASE_WEIGHTS: dict[str, dict[str, float]] = {
-    "cuts": {"wait": 0.0, "download": 0.2, "scenes": 0.6, "camera": 0.2},
+    "cuts": {"wait": 0.0, "download": 0.03, "scenes": 0.30, "camera": 0.67},
     "fetch": {"wait": 0.0, "meta": 0.0},
     "stt": {"stt": 1.0},
 }
@@ -57,7 +61,16 @@ class ItemTiming:
         with self._lock:
             if self._current is not None:
                 self._timing["steps"][self._current].pop("paused_at", None)
-            self._keys[row] = sub or row
+            key = sub or row
+            prev = self._timing["steps"].get(row, {})
+            prior: dict[str, float] = {}
+            if key != self._keys.get(row) and prev.get("state") == "done":
+                # 같은 줄의 다른 기록(자막 받기 -> 음성 인식): 화면은 합쳐 보이고, 기록은 따로 남는다.
+                prior = {
+                    "prior_elapsed": (prev.get("prior_elapsed") or 0.0) + (prev.get("elapsed") or 0.0),
+                    "prior_expected": (prev.get("prior_expected") or 0.0) + (prev.get("expected") or 0.0),
+                }
+            self._keys[row] = key
             self._timing["steps"][row] = {
                 "state": "running",
                 "expected": self._expected(row),
@@ -66,6 +79,9 @@ class ItemTiming:
                 "fraction": None,
                 "phase": None,
                 "phase_text": None,
+                "phase_started_at": None,
+                "phase_fraction": None,
+                **prior,
             }
             self._current = row
             self._publish()
@@ -87,6 +103,12 @@ class ItemTiming:
                     before += w
                 value = min(1.0, before + weight * min(1.0, max(0.0, fraction)))
                 data["fraction"] = max(data["fraction"] or 0.0, value)
+            if changed:
+                # 멈춘 동안 바뀌면 멈춘 시각에서 시작한 것으로 둔다(재개 때 started_at처럼 밀린다).
+                data["phase_started_at"] = data.get("paused_at") or time.time()
+                data["phase_fraction"] = None
+            if fraction is not None:
+                data["phase_fraction"] = min(1.0, max(0.0, fraction))
             data["phase"] = name
             data["phase_text"] = text
             if changed or time.monotonic() - self._last_publish >= MIN_INTERVAL:
@@ -112,7 +134,10 @@ class ItemTiming:
             paused_at = data.pop("paused_at", None)
             if paused_at is None:
                 return
-            data["started_at"] += time.time() - paused_at
+            shift = time.time() - paused_at
+            data["started_at"] += shift
+            if data.get("phase_started_at") is not None:
+                data["phase_started_at"] += shift
             if publish:
                 self._publish()
 

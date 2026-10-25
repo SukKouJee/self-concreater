@@ -111,3 +111,54 @@ def test_spoken_dur():
 def test_monotonic_fraction_never_decreases():
     assert run_js("[[null, null], [null, 0.3], [0.3, 0.04], [0.3, null], [0.3, 0.5]].map(a => m.monotonicFraction(a[0], a[1]))") == [
         None, 0.3, 0.3, 0.3, 0.5]
+
+
+def test_row_view_measured_over():
+    r = run_js('m.rowView({state: "running", started_at: 0, expected: 230, fraction: 0.65}, 247)')
+    assert r["over"] is True and r["byFraction"] is True
+    assert abs(r["remaining"] - 247 * 0.35 / 0.65) < 0.01
+
+
+def test_row_view_unmeasured_over_not_by_fraction():
+    r = run_js('m.rowView({state: "running", started_at: 0, expected: 150, fraction: 0.05}, 220)')
+    assert r["over"] is True and r["byFraction"] is False and r["remaining"] == 0
+
+
+def test_row_view_last_phase_uses_phase_clock():
+    # 카메라 구간: 시작 100초 뒤 그 구간의 40% -> 남은 150초(단계 전체 진행률 0.6으로는 133초)
+    row = ('{state: "running", started_at: 0, expected: 400, fraction: 0.6, phase: "camera",'
+           ' phase_started_at: 100, phase_fraction: 0.4}')
+    r = run_js(f"m.rowView({row}, 200)")
+    assert abs(r["remaining"] - 150) < 0.01 and r["byFraction"] is True
+    timing = "{steps: {cuts: " + row + ', analyze: {state: "pending", expected: 90}}}'
+    assert abs(run_js(f"m.itemRemaining({timing}, 200)") - 240) < 0.01
+
+
+def test_row_view_last_phase_early_falls_back():
+    row = ('{state: "running", started_at: 0, expected: 400, fraction: 0.4, phase: "camera",'
+           ' phase_started_at: 100, phase_fraction: 0.05}')
+    r = run_js(f"m.rowView({row}, 110)")
+    assert abs(r["remaining"] - 110 * 0.6 / 0.4) < 0.01
+
+
+def test_row_view_last_phase_paused_uses_paused_at():
+    row = ('{state: "running", started_at: 0, paused_at: 200, expected: 400, fraction: 0.6, phase: "camera",'
+           ' phase_started_at: 100, phase_fraction: 0.5}')
+    assert abs(run_js(f"m.rowView({row}, 900)")["remaining"] - 100) < 0.01
+
+
+def test_row_view_other_phase_ignores_phase_clock():
+    row = ('{state: "running", started_at: 0, expected: 400, fraction: 0.5, phase: "scenes",'
+           ' phase_started_at: 90, phase_fraction: 0.9}')
+    assert abs(run_js(f"m.rowView({row}, 100)")["remaining"] - 100) < 0.01
+
+
+def test_done_row_adds_prior_run():
+    r = run_js('m.rowView({state: "done", elapsed: 30, expected: 20, prior_elapsed: 6, prior_expected: 5}, 9999)')
+    assert r["elapsed"] == 36 and r["expected"] == 25
+
+
+def test_last_phases_match_server_weights():
+    from scripts.ui import progress
+    last = [k for k, v in progress.PHASE_WEIGHTS["cuts"].items() if v > 0][-1]
+    assert f'LAST_PHASES = ["{last}"]' in UTILS.read_text(encoding="utf-8")

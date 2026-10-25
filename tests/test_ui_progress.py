@@ -76,7 +76,8 @@ def test_fraction_never_decreases(clock: Clock, recorded: list) -> None:
     t.phase("scenes", 0.3, "장면 찾는 중")
     clock.advance(1)
     t.phase("scenes", 0.31, "장면 찾는 중")
-    assert t._timing["steps"]["cuts"]["fraction"] == pytest.approx(0.2 + 0.6 * 0.5)
+    w = progress.PHASE_WEIGHTS["cuts"]
+    assert t._timing["steps"]["cuts"]["fraction"] == pytest.approx(w["download"] + w["scenes"] * 0.5)
 
 
 def test_zero_weight_phase_keeps_fraction(clock: Clock, recorded: list) -> None:
@@ -108,7 +109,8 @@ def test_throttled_value_not_lost(clock: Clock, recorded: list) -> None:
     t.phase("scenes", 0.1, "a")
     clock.advance(0.1)
     t.phase("scenes", 0.8, "b")  # skipped
-    assert job.timing["steps"]["cuts"]["fraction"] == pytest.approx(0.2 + 0.06)
+    w = progress.PHASE_WEIGHTS["cuts"]
+    assert job.timing["steps"]["cuts"]["fraction"] == pytest.approx(w["download"] + w["scenes"] * 0.1)
     t.done("cuts")
     assert job.timing["steps"]["cuts"]["fraction"] == 1.0
 
@@ -253,3 +255,84 @@ def test_pause_resume_without_publish(clock: Clock, recorded: list) -> None:
     clock.advance(2)
     t.done("cuts")
     assert job.timing["steps"]["cuts"]["elapsed"] == pytest.approx(2)
+
+
+def test_cuts_weights_are_measured_defaults() -> None:
+    # 2026-10-25 1208초 영상·508장면: 받기 약 5초, 장면 약 92초, 카메라 약 225초.
+    w = progress.PHASE_WEIGHTS["cuts"]
+    assert w == {"wait": 0.0, "download": 0.03, "scenes": 0.30, "camera": 0.67}
+    assert sum(w.values()) == pytest.approx(1.0)
+    assert [k for k, v in w.items() if v > 0][-1] == "camera"   # progress-utils.js LAST_PHASES와 맞춘다
+
+
+def test_phase_records_start_and_own_fraction(clock: Clock, recorded: list) -> None:
+    job, t = make()
+    t.start("cuts")
+    row = job.timing["steps"]["cuts"]
+    assert row["phase_started_at"] is None and row["phase_fraction"] is None
+    t.phase("scenes", 0.5, "장면")
+    scenes_start = clock.now
+    clock.advance(10)
+    t.phase("camera", 0.0, "카메라")
+    cam_start = clock.now
+    clock.advance(1)
+    t.phase("camera", 0.25, "카메라")
+    row = t._timing["steps"]["cuts"]
+    assert row["phase_started_at"] == cam_start != scenes_start
+    assert row["phase_fraction"] == pytest.approx(0.25)
+    t.phase("camera", None, "카메라")                 # 측정 불가 값은 그 구간 진행률을 지우지 않는다
+    assert t._timing["steps"]["cuts"]["phase_fraction"] == pytest.approx(0.25)
+
+
+def test_resume_shifts_phase_started_at(clock: Clock, recorded: list) -> None:
+    job, t = make()
+    t.start("cuts")
+    t.phase("camera", 0.1, "카메라")
+    cam_start = clock.now
+    clock.advance(5)
+    t.pause()
+    clock.advance(100)
+    t.resume()
+    row = job.timing["steps"]["cuts"]
+    assert row["phase_started_at"] == pytest.approx(cam_start + 100)
+    assert row["started_at"] == pytest.approx(cam_start + 100)
+
+
+def test_phase_change_while_paused_starts_at_pause(clock: Clock, recorded: list) -> None:
+    job, t = make()
+    t.start("cuts")
+    clock.advance(3)
+    t.pause(publish=False)
+    clock.advance(20)
+    t.phase("wait", None, "차단 방지 대기")
+    clock.advance(10)
+    t.resume()
+    # 활성 시간 기준으로 이 구간은 재개 시각에 막 시작한 것과 같다.
+    assert job.timing["steps"]["cuts"]["phase_started_at"] == pytest.approx(clock.now)
+
+
+def test_restart_with_other_sub_keeps_prior_elapsed(clock: Clock, recorded: list) -> None:
+    job, t = make()
+    t.start("fetch")
+    clock.advance(6)
+    t.done("fetch")
+    t.set_video_sec(60)
+    t.start("fetch", sub="stt")
+    row = job.timing["steps"]["fetch"]
+    assert row["prior_elapsed"] == pytest.approx(6)
+    assert row["prior_expected"] == 5.0
+    clock.advance(30)
+    t.done("fetch")
+    row = job.timing["steps"]["fetch"]
+    assert row["elapsed"] == pytest.approx(30) and row["prior_elapsed"] == pytest.approx(6)
+    assert [s for s, _ in recorded] == ["fetch", "stt"]
+    assert [kw["elapsed_sec"] for _, kw in recorded] == [pytest.approx(6), pytest.approx(30)]
+
+
+def test_restart_same_sub_has_no_prior_elapsed(clock: Clock, recorded: list) -> None:
+    job, t = make()
+    t.start("analyze")
+    clock.advance(3)
+    t.done("analyze")
+    t.start("analyze")
+    assert "prior_elapsed" not in job.timing["steps"]["analyze"]

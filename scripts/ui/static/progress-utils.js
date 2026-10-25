@@ -1,6 +1,9 @@
 // 레퍼런스 추가 화면의 시간 계산. 순수 함수만 두고 import는 쓰지 않는다(node 테스트용).
 
 const FRACTION_MIN = 0.1; // 이 미만이면 진행률로 남은 시간을 추정하지 않는다
+// 단계의 마지막 가중 구간(progress.py PHASE_WEIGHTS와 맞춘다). 이 구간에서는 그 구간의 시계와 진행률로
+// 남은 시간을 잰다: 앞 구간 가중치의 오차가 남은 시간에 섞이지 않는다.
+const LAST_PHASES = ["camera"];
 
 function num(v) {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
@@ -22,7 +25,19 @@ export function fmtClock(epochSec, tzOffsetMin) {
   return `${String(Math.floor(day / 60)).padStart(2, "0")}:${String(day % 60).padStart(2, "0")}`;
 }
 
-// -> { elapsed, expected, fraction, over, remaining }  (fraction: 막대값 0..1, 계산할 수 없으면 null)
+// 마지막 가중 구간이면 그 구간 기준 남은 시간, 아니면 null.
+function phaseRemaining(row, end) {
+  if (!LAST_PHASES.includes(row.phase)) return null;
+  const pf = num(row.phase_fraction);
+  const ps = num(row.phase_started_at);
+  if (pf === null || ps === null || pf < FRACTION_MIN) return null;
+  const p = Math.min(1, pf);
+  return Math.max(0, ((Math.max(0, end - ps)) * (1 - p)) / p);
+}
+
+// -> { elapsed, expected, fraction, over, remaining, byFraction }
+//    fraction: 막대값 0..1(계산할 수 없으면 null). byFraction: 남은 시간을 측정 진행률로 셌는지.
+//    예상을 넘겨도 측정 진행률이 있으면 그 값으로 남은 시간을 센다. 측정 불가 구간만 넘으면 0.
 export function rowView(row, nowSec) {
   const expected = num(row && row.expected);
   const state = row && row.state;
@@ -34,19 +49,26 @@ export function rowView(row, nowSec) {
     const measured = f !== null;
     const fraction = measured ? Math.min(1, Math.max(0, f)) : (expected ? Math.min(1, elapsed / expected) : null);
     const over = expected !== null && elapsed > expected;
+    const byPhase = measured ? phaseRemaining(row, end) : null;
+    const byFraction = byPhase !== null || (measured && f >= FRACTION_MIN);
     let remaining = null;
-    if (over) remaining = 0;
-    else if (measured && f >= FRACTION_MIN) remaining = Math.max(0, (elapsed * (1 - f)) / f);
+    if (byPhase !== null) remaining = byPhase;
+    else if (byFraction) remaining = Math.max(0, (elapsed * (1 - f)) / f);
+    else if (over) remaining = 0;
     else if (expected !== null) remaining = Math.max(0, expected - elapsed);
-    return { elapsed, expected, fraction, over, remaining };
+    return { elapsed, expected, fraction, over, remaining, byFraction };
   }
   if (state === "done" || state === "failed") {
-    const elapsed = num(row.elapsed) !== null ? Math.max(0, row.elapsed) : null;
-    return { elapsed, expected, fraction: state === "done" ? 1 : null, over: false, remaining: 0 };
+    // 같은 줄의 앞 회차(자막 받기 -> 음성 인식)를 합쳐 보인다. 기록은 서버에서 따로 남는다.
+    const prior = Math.max(0, num(row.prior_elapsed) || 0);
+    const priorExp = Math.max(0, num(row.prior_expected) || 0);
+    const elapsed = num(row.elapsed) !== null ? Math.max(0, row.elapsed) + prior : null;
+    const exp = expected !== null ? expected + priorExp : null;
+    return { elapsed, expected: exp, fraction: state === "done" ? 1 : null, over: false, remaining: 0, byFraction: false };
   }
-  if (state === "skipped") return { elapsed: null, expected, fraction: null, over: false, remaining: 0 };
+  if (state === "skipped") return { elapsed: null, expected, fraction: null, over: false, remaining: 0, byFraction: false };
   // pending
-  return { elapsed: 0, expected, fraction: 0, over: false, remaining: expected };
+  return { elapsed: 0, expected, fraction: 0, over: false, remaining: expected, byFraction: false };
 }
 
 // 항목 전체 남은 시간(초). 하나라도 모르면 null.
