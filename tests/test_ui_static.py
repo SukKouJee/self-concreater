@@ -20,7 +20,7 @@ def test_index_loads_modules(client):
 
 def test_static_files_served(client):
     for rel in ["app.css", "app.js", "api.js", "pages/home.js", "pages/placeholder.js", "pages/add.js",
-                "help-panel.js", "help-utils.js", "pages/guide.js"]:
+                "help-panel.js", "help-utils.js", "progress-utils.js", "pages/guide.js"]:
         status, headers, _ = client.call("GET", f"/static/{rel}")
         assert status == 200, rel
     status, headers, _ = client.call("GET", "/static/app.js")
@@ -655,3 +655,13 @@ def test_help_panel_sits_at_right_edge():
     css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
     rule = re.search(r"\.help-panel \{([^}]*)\}", css).group(1)
     assert "margin-left: auto" in rule
+
+
+def test_add_page_step_progress_wiring():
+    js = (STATIC_DIR / "pages" / "add.js").read_text(encoding="utf-8")
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    assert "/static/progress-utils.js" in js
+    assert "clearInterval" in js and "stopClock()" in js
+    for needle in ['"progressbar"', "aria-valuenow", "aria-valuetext", "확인을 기다리는 중", "예상보다 길어지는 중", "곧 끝날 예정"]:
+        assert needle in js, needle
+    assert ".is-over .bar-fill" in css and "prefers-reduced-motion" in css

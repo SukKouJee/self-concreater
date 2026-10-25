@@ -1,6 +1,7 @@
 // 레퍼런스 추가 화면: 링크 입력 → 1초 폴링 진행 표시 → 영상별 확인 카드 → 마무리 요약.
 // 서버 작업(kind "collect")이 이미 있으면 화면에 들어올 때 그 작업을 이어서 보여 준다.
 import { h, filesUrl } from "/static/dom.js";
+import { fmtDur, fmtClock, fmtRemain, spokenDur, rowView, itemRemaining } from "/static/progress-utils.js";
 
 const POLL_MS = 1000;
 const LABELS = ["hook", "intro", "body", "demo", "transition", "cta", "outro"];
@@ -10,6 +11,8 @@ const STEPS = [
   { key: "analyze", name: "분석" },
   { key: "confirm", name: "확인" },
 ];
+const ROW_NAMES = { fetch: "자막", cuts: "컷", analyze: "분석", shots: "샷 분류" };
+const CLOCK_MS = 1000;
 const STATE_TEXT = {
   waiting: "대기", running: "진행 중", awaiting: "확인 필요", saved: "저장됨", skipped: "건너뜀", failed: "실패",
 };
@@ -37,7 +40,7 @@ let S = null;
 
 function freshState(el, ctx) {
   return {
-    el, ctx, timer: null, job: null, view: null,
+    el, ctx, timer: null, clock: null, offset: 0, job: null, view: null,
     rows: new Map(),       // item key -> { li, sig }
     edits: new Map(),      // item id -> edited analysis (deep copy of preview)
     openFeedback: new Set(), // item ids whose feedback input is open
@@ -50,6 +53,33 @@ function freshState(el, ctx) {
 
 function stopPolling() {
   if (S && S.timer) { clearTimeout(S.timer); S.timer = null; }
+}
+
+function stopClock() {
+  if (S && S.clock) { clearInterval(S.clock); S.clock = null; }
+}
+
+// Browser time corrected by the server clock offset (refreshed on every poll).
+function nowSec() {
+  return Date.now() / 1000 + S.offset;
+}
+
+function startClock() {
+  if (S.clock) return;
+  const mine = S;
+  mine.clock = setInterval(() => {
+    if (S !== mine || !mine.ctx.isCurrent() || !isActive(mine.job)) { clearInterval(mine.clock); mine.clock = null; return; }
+    tickClock();
+  }, CLOCK_MS);
+}
+
+// Updates only text and bar widths of the step rows; cards are never rebuilt here.
+function tickClock() {
+  if (!S.job) return;
+  S.job.items.forEach((item, idx) => {
+    const row = S.rows.get(String(idx));
+    if (row && row.li._tick) row.li._tick(item);
+  });
 }
 
 // ---- API --------------------------------------------------------------------
@@ -173,6 +203,7 @@ async function decide(item, payload) {
 
 function applyJob(job) {
   S.job = job;
+  if (typeof job.now === "number") S.offset = job.now - Date.now() / 1000;
   renderJobView();
 }
 
@@ -188,6 +219,7 @@ function renderJobView() {
   const job = S.job;
   if (!job) { renderForm(); return; }
   const fresh = setView("job");
+  if (isActive(job)) startClock(); else stopClock();
   if (fresh) {
     S.el.append(h("h1", {}, "레퍼런스 추가"));
     S.head = h("div", { class: "job-head" });
@@ -199,6 +231,7 @@ function renderJobView() {
   }
   renderJobHead(job);
   syncItems(job);
+  tickClock();
   renderJobFoot(job);
   announce(job);
 }
@@ -244,6 +277,7 @@ function renderJobFoot(job) {
   const again = h("button", { type: "button", class: "btn btn-primary" }, "새로 추가");
   again.addEventListener("click", () => {
     stopPolling();
+    stopClock();
     S.job = null;
     S.rows.clear();
     S.edits.clear();
@@ -257,9 +291,16 @@ function renderJobFoot(job) {
 
 // ---- rendering: items -------------------------------------------------------
 
+// Structure only (row set, states, clock anchors). Fractions, texts and estimates are patched in place by the clock.
+function timingSig(timing) {
+  if (!timing || !timing.steps) return null;
+  return Object.entries(timing.steps).map(([k, r]) => [k, r.state, r.started_at ?? null, r.paused_at ?? null]);
+}
+
 function itemSig(item) {
   return JSON.stringify([item.id, item.title, item.step, item.state, item.message, item.ask,
-    JSON.stringify(item.preview), (item.frames || []).length, S.busy.has(item.id), S.openFeedback.has(item.id)]);
+    JSON.stringify(item.preview), (item.frames || []).length, S.busy.has(item.id), S.openFeedback.has(item.id),
+    timingSig(item.timing)]);
 }
 
 function releaseBusy(job) {
@@ -317,6 +358,110 @@ function stepChips(item) {
   return ol;
 }
 
+// ---- step rows (progress bars, remaining time) --------------------------------
+
+function pctOf(row) {
+  return typeof row.fraction === "number" ? Math.round(Math.min(1, Math.max(0, row.fraction)) * 100) : null;
+}
+
+function rowText(row, v) {
+  const exp = v.expected;
+  switch (row.state) {
+    case "done":
+      return `✓ ${fmtDur(v.elapsed)} 걸림${exp ? ` (예상 ${fmtDur(exp)})` : ""}`;
+    case "failed":
+      return v.elapsed !== null ? `실패 ${fmtDur(v.elapsed)}` : "실패";
+    case "skipped":
+      return "건너뜀";
+    case "running": {
+      const p = pctOf(row);
+      const pct = p === null ? "" : `${p}% · `;
+      return exp ? `${pct}${fmtDur(v.elapsed)} / 예상 ${fmtDur(exp)}` : `${pct}${fmtDur(v.elapsed)} · 예상 계산 중`;
+    }
+    default:
+      return exp ? `예상 ${fmtDur(exp)}` : "예상 계산 중";
+  }
+}
+
+function buildStepRow(key) {
+  const name = h("span", { class: "step-name" }, ROW_NAMES[key] || key);
+  const time = h("span", { class: "step-time" });
+  const fill = h("span", { class: "bar-fill" });
+  const bar = h("span", { class: "bar" }, fill);
+  const sub = h("div", { class: "step-sub muted", hidden: true });
+  const li = h("li", { class: "step-row" }, h("div", { class: "step-main" }, name, bar, time), sub);
+  return { li, bar, fill, time, sub };
+}
+
+function paintStepRow(r, key, row, nowS, frozen) {
+  const v = rowView(row, nowS);
+  const running = row.state === "running";
+  r.li.className = `step-row step-${row.state}${running && v.over ? " is-over" : ""}`;
+  r.time.textContent = rowText(row, v);
+  r.fill.style.width = `${v.fraction === null ? 0 : Math.round(v.fraction * 100)}%`;
+  r.bar.classList.toggle("bar-indet", running && v.fraction === null && !frozen);
+  if (!running) {
+    for (const a of ["role", "aria-label", "aria-valuemin", "aria-valuemax", "aria-valuenow", "aria-valuetext"]) r.bar.removeAttribute(a);
+    r.bar.setAttribute("aria-hidden", "true");
+    r.sub.hidden = true;
+    r.sub.textContent = "";
+    return;
+  }
+  r.bar.removeAttribute("aria-hidden");
+  r.bar.setAttribute("role", "progressbar");
+  r.bar.setAttribute("aria-label", `${ROW_NAMES[key] || key} 진행률`);
+  r.bar.setAttribute("aria-valuemin", "0");
+  r.bar.setAttribute("aria-valuemax", "100");
+  const p = pctOf(row);
+  if (p !== null) {
+    r.bar.setAttribute("aria-valuenow", String(p));
+    r.bar.removeAttribute("aria-valuetext");
+  } else {
+    r.bar.removeAttribute("aria-valuenow");
+    r.bar.setAttribute("aria-valuetext", v.expected
+      ? `${spokenDur(v.elapsed)} 경과, 예상 ${spokenDur(v.expected)}`
+      : `${spokenDur(v.elapsed)} 경과`);
+  }
+  const parts = [];
+  if (row.phase_text) parts.push(row.phase_text);
+  if (!frozen) {
+    if (v.over) parts.push("예상보다 길어지는 중", "곧 끝날 예정");
+    else if (v.remaining !== null) parts.push(`${fmtRemain(v.remaining, false)} 남음`, `${fmtClock(nowS + v.remaining)}쯤 끝`);
+  }
+  r.sub.textContent = parts.join(" · ");
+  r.sub.hidden = parts.length === 0;
+}
+
+// Builds the step list once per structural change; card._tick(item) patches times and widths in place.
+function stepRows(card, item) {
+  const keys = Object.keys(item.timing.steps);
+  const ol = h("ol", { class: "steps", "aria-label": "단계" });
+  const rows = new Map(keys.map((k) => [k, buildStepRow(k)]));
+  rows.forEach((r) => ol.append(r.li));
+  const total = h("p", { class: "step-total muted", hidden: true });
+  card._tick = (cur) => {
+    const timing = cur.timing;
+    if (!timing || !timing.steps) return;
+    const waiting = cur.state === "awaiting";
+    // While the user decides, the clock stays at the last server snapshot.
+    const nowS = waiting && S.job && typeof S.job.now === "number" ? S.job.now : nowSec();
+    for (const [k, r] of rows) {
+      const row = timing.steps[k];
+      if (row) paintStepRow(r, k, row, nowS, waiting);
+    }
+    if (waiting) {
+      total.textContent = "확인을 기다리는 중";
+      total.hidden = false;
+      return;
+    }
+    const rem = cur.state === "running" ? itemRemaining(timing, nowS) : null;
+    total.hidden = rem === null;
+    if (rem !== null) total.textContent = `이 영상 전체: ${fmtRemain(rem, true)} 남음 · 예상 완료 ${fmtClock(nowS + rem)}`;
+  };
+  card._tick(item);
+  return h("div", { class: "step-block" }, ol, total);
+}
+
 function buildItem(item) {
   const li = h("li", { class: `job-item is-${item.state}` });
   const line = h("div", { class: "item-line" });
@@ -325,7 +470,8 @@ function buildItem(item) {
     h("span", { class: `state state-${item.state}` }, STATE_TEXT[item.state] || item.state),
   );
   li.append(line);
-  if (item.state === "running" || item.state === "awaiting" || item.state === "waiting") li.append(stepChips(item));
+  if (item.timing && item.timing.steps) li.append(stepRows(li, item));
+  else if (item.state === "running" || item.state === "awaiting" || item.state === "waiting") li.append(stepChips(item));
   if (item.message) li.append(h("p", { class: item.state === "failed" ? "error item-msg" : "muted item-msg" }, item.message));
   if (item.state === "awaiting") {
     if (item.ask === "no_transcript") li.append(noTranscriptCard(item));
@@ -593,6 +739,7 @@ function renderForm() {
 
 export async function mount(el, params, ctx) {
   stopPolling();
+  stopClock();
   S = freshState(el, ctx);
   el.replaceChildren(h("h1", {}, "레퍼런스 추가"), h("p", { class: "muted", role: "status" }, "불러오는 중…"));
   const mine = S;
@@ -620,6 +767,7 @@ export async function mount(el, params, ctx) {
 
 export function unmount() {
   stopPolling();
+  stopClock();
   S = null;
 }
 
