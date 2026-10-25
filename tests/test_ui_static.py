@@ -760,7 +760,7 @@ def test_refs_card_shows_chips_tags_stats_and_flow():
     for token in ["formatName(v.format)", 'VIEW.role === "all"', "직접 고침", "fmtTime(v.duration_sec)",
                   "hookName(v.hook_type)", "narrativeName(v.narrative_type)", "fmtCut(v.avg_cut_sec)",
                   "topCamera(v.camera)", "bandCaption(v.sections)", '"dl"', '"aria-labelledby": tid',
-                  '"aria-describedby"', 'band.setAttribute("aria-hidden", "true")']:
+                  '"aria-describedby": `${tid}-d ${tid}-b`', 'band.setAttribute("aria-hidden", "true")']:
         assert token in card, token
     css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
     assert re.search(r"@media \(forced-colors: active\) \{[^}]*aria-pressed", css)
@@ -791,4 +791,5 @@ def test_pages_show_korean_section_names():
         # 섹션 라벨·세부 유형을 글자로 찍는 곳은 이름 함수를 거친다 (lb-<label> 색 클래스만 코드 그대로)
         text = js.replace("lb-${s.label}", "")
         assert "${s.label}" not in text and "${s.sub}" not in text, name
+        assert "cut.label}" not in text, name                    # 콘티 음성 안내도 이름 함수를 거친다
     assert "LABEL_KO" not in (pages / "diagnose.js").read_text(encoding="utf-8")   # 한 곳(labels.js)에서만 정의

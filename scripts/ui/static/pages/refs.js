@@ -269,19 +269,21 @@ function bandWithCaption(v) {
   return h("div", { class: "ref-flow" }, band, caption ? h("p", { class: "ref-flow-cap" }, caption) : null);
 }
 
-// The link is named by the title alone (screen-reader link lists stay scannable); chips and the rest of the
-// card are its description. Ids come from the card index: video ids are file stems and need no escaping this way.
+// The link is named by the title alone (screen-reader link lists stay scannable); the chips and the rest of the
+// card (channel, tags, numbers, flow caption) are its description. Both wrappers are display: contents, so the
+// layout is the same as without them. Ids come from the card index: video ids are file stems and need no escaping.
 function videoCard(v, i) {
   const tid = `ref-card-${i}`;
   return h("li", { class: "ref-card" },
-    h("a", { class: "ref-link", href: refsHref(v.id), "aria-labelledby": tid, "aria-describedby": `${tid}-d` },
+    h("a", { class: "ref-link", href: refsHref(v.id), "aria-labelledby": tid, "aria-describedby": `${tid}-d ${tid}-b` },
       h("div", { id: `${tid}-d`, class: "ref-desc" }, thumb(v)),
       h("div", { class: "ref-body" },
         h("h2", { class: "ref-title", id: tid }, displayTitle(v)),
-        v.channel ? h("p", { class: "ref-meta" }, v.channel) : null,
-        typeTags(v),
-        stats(v),
-        bandWithCaption(v))));
+        h("div", { id: `${tid}-b`, class: "ref-desc" },
+          v.channel ? h("p", { class: "ref-meta" }, v.channel) : null,
+          typeTags(v),
+          stats(v),
+          bandWithCaption(v)))));
 }
 
 // ---- detail --------------------------------------------------------------------

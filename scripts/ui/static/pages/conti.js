@@ -1008,7 +1008,7 @@ function selectCut(n) {
     }
     renderPanel();
     const cut = currentCut();
-    announce(`컷 ${n} · ${cut ? cut.label : ""}`);
+    announce(`컷 ${n} · ${cut ? sectionLabelName(cut.label) : ""}`);
   }
   if (narrow) {
     const title = S.nodes.panel.querySelector("#panel-title");
