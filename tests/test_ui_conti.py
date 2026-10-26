@@ -490,3 +490,48 @@ def test_caption_video_render_failure_fails_job_with_message(client, home, draft
     status, body = client.json("POST", "/api/conti/caption-video", {"path": rel(home, saved)})
     job = wait_for(client, body["job"]["id"], lambda j: j["status"] != "running")
     assert job["status"] == "failed" and "boom" in job["message"] and job["items"][0]["state"] == "failed"
+
+
+def test_trash_route_moves_files_and_list_updates(client, home, draft_md):
+    saved = saved_conti(home, draft_md)
+    status, body = client.json("POST", "/api/conti/trash", {"path": rel(home, saved)})
+    assert status == 200, body
+    assert body["trash"].startswith("workspace/trash/") and len(body["moved"]) == 2
+    assert not saved.exists() and draft_md.exists()
+    [d] = client.json("GET", "/api/drafts")[1]["drafts"]
+    assert d["conti"] is None and d["html"] is None
+
+
+@pytest.mark.parametrize("bad", ["../secret.md", "drafts/a.txt"])
+def test_trash_route_rejects_bad_paths(client, home, draft_md, bad):
+    status, resp = client.json("POST", "/api/conti/trash", {"path": bad})
+    assert status == 400 and resp["error"] == "bad_path"
+
+
+def test_trash_route_refuses_a_draft(client, home, draft_md):
+    status, resp = client.json("POST", "/api/conti/trash", {"path": rel(home, draft_md)})
+    assert status == 400 and resp["error"] == "bad_path" and draft_md.exists()
+
+
+def test_trash_route_refuses_while_a_job_uses_the_conti(client, home, draft_md, monkeypatch):
+    from scripts import captions
+    import threading
+    gate = threading.Event()
+    monkeypatch.setattr(captions, "check_setup", lambda: {"ready": True})
+
+    def render(conti_path, video=None, track="caption", progress=None, cancel=None, timeout=900, step=None):
+        gate.wait(5)
+        return {"path": "drafts/x-captions.mp4", "count": 1, "duration_sec": 1.0, "width": 1, "height": 1}
+
+    monkeypatch.setattr(captions, "render", render)
+    saved = saved_conti(home, draft_md)
+    status, body = client.json("POST", "/api/conti/caption-video", {"path": rel(home, saved)})
+    assert status == 200, body
+    try:
+        status, resp = client.json("POST", "/api/conti/trash", {"path": rel(home, saved)})
+        assert status == 400 and resp["error"] == "conti_busy" and saved.exists()
+    finally:
+        gate.set()
+    wait_for(client, body["job"]["id"], lambda j: j["status"] == "done")
+    status, _ = client.json("POST", "/api/conti/trash", {"path": rel(home, saved)})
+    assert status == 200 and not saved.exists()

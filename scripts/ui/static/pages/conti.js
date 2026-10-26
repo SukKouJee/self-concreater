@@ -11,6 +11,7 @@ const POLL_MAX_MS = 15000;
 const ALT_COUNT = 3;
 const NARROW = "(max-width: 900px)";
 const HANDLED_KEY = "ytc.conti.handled";
+const TRASH_WARNING = "콘티와 스토리보드 HTML, 이 콘티로 만든 자막 파일(SRT·자막 영상)을 휴지통 폴더(workspace/trash/)로 옮깁니다. 기획안은 그대로 둡니다";
 const RECREATE_WARNING = "다시 만들면 화면에서 바꾼 대사·가이드·고정한 참고 프레임이 사라지고 내 메모만 남습니다";
 const SAVED_TOAST = "저장했습니다 · 스토리보드도 다시 그렸습니다";
 const CHANGED_TEXT = "파일이 밖에서 바뀌었습니다 — 다시 불러오기";
@@ -94,7 +95,7 @@ let S = null;
 function freshState(el, params, ctx) {
   return {
     el, params, ctx, timer: null, pollErrors: 0,
-    drafts: [], job: null, creating: false, saving: false, forceSave: false, recreateOpen: null,
+    drafts: [], job: null, creating: false, saving: false, forceSave: false, recreateOpen: null, trashOpen: null, trashing: false,
     data: null, hash: null, sel: null, conflict: false,
     scenes: new Map(), alts: new Map(), forms: new Map(),
     nodes: {}, live: null, lastAnnounce: "",
@@ -225,7 +226,7 @@ function renderDraftList() {
 function draftCard(d) {
   const busy = S.creating || isActive(S.job);
   const titleId = `draft-${S.drafts.indexOf(d)}`;
-  const li = h("li", { class: "card draft-card", "aria-labelledby": titleId });
+  const li = h("li", { class: "card draft-card", "aria-labelledby": titleId, "data-draft": d.path });
   li.append(h("div", { class: "card-head" },
     h("h2", { id: titleId }, d.title),
     h("span", { class: `state ${d.conti ? "state-saved" : ""}` }, d.conti ? "콘티 있음" : "콘티 없음")));
@@ -242,20 +243,30 @@ function draftCard(d) {
   } else {
     row.append(h("a", { class: "btn", href: contiHref(d.conti) }, "열기"));
     if (d.html) row.append(h("a", { class: "btn", href: filesUrl(d.html), target: "_blank", rel: "noopener" }, "스토리보드 HTML"));
-    const redo = h("button", { type: "button", class: "btn", disabled: busy, "aria-expanded": String(S.recreateOpen === d.path) }, "다시 만들기");
+    const redo = h("button", { type: "button", class: "btn", disabled: busy || S.trashing, "aria-expanded": String(S.recreateOpen === d.path) }, "다시 만들기");
     redo.addEventListener("click", () => {
       S.recreateOpen = S.recreateOpen === d.path ? null : d.path;
+      S.trashOpen = null;
       renderDraftList();
       const yes = S.el.querySelector("[data-recreate-yes]");
       if (yes) yes.focus();
     });
-    row.append(redo);
+    const del = h("button", { type: "button", class: "btn", disabled: busy || S.trashing,
+      "aria-expanded": String(S.trashOpen === d.path), "data-trash": d.path }, "콘티 삭제");
+    del.addEventListener("click", () => {
+      S.trashOpen = S.trashOpen === d.path ? null : d.path;
+      S.recreateOpen = null;
+      renderDraftList();
+      const yes = S.el.querySelector("[data-trash-yes]");
+      if (yes) yes.focus();
+    });
+    row.append(redo, del);
   }
   if (busy && isActive(S.job)) row.append(h("span", { class: "muted hint" }, "다른 콘티를 만드는 중입니다"));
   li.append(row);
 
   if (d.conti && S.recreateOpen === d.path) {
-    const yes = h("button", { type: "button", class: "btn btn-danger", "data-recreate-yes": "", disabled: busy }, "다시 만들기");
+    const yes = h("button", { type: "button", class: "btn btn-danger", "data-recreate-yes": "", disabled: busy || S.trashing }, "다시 만들기");
     const no = h("button", { type: "button", class: "btn" }, "취소");
     yes.addEventListener("click", () => { S.recreateOpen = null; startCreate(d, true); });
     no.addEventListener("click", () => {
@@ -269,14 +280,63 @@ function draftCard(d) {
       h("p", { class: "muted hint" }, "Claude 호출이 한 번 일어나고, 미리보기를 확인한 뒤 저장할 때 덮어씁니다."),
       h("div", { class: "btn-row" }, yes, no)));
   }
+  if (d.conti && S.trashOpen === d.path) {
+    const yes = h("button", { type: "button", class: "btn btn-danger", "data-trash-yes": "", disabled: busy || S.trashing }, "삭제");
+    const no = h("button", { type: "button", class: "btn", disabled: S.trashing }, "취소");
+    yes.addEventListener("click", () => trashConti(d));
+    no.addEventListener("click", () => {
+      S.trashOpen = null;
+      renderDraftList();
+      focusCardButton(d.path, "[data-trash]");
+    });
+    li.append(h("div", { class: "inline-confirm", role: "alert" },
+      h("p", { class: "warn-text" }, TRASH_WARNING),
+      h("p", { class: "muted hint" }, "잘못 지웠으면 그 폴더에서 drafts/로 파일을 다시 옮기면 됩니다."),
+      h("div", { class: "btn-row" }, yes, no)));
+  }
   return li;
+}
+
+function focusCardButton(path, selector) {
+  const card = [...S.el.querySelectorAll(".draft-card")].find((c) => c.dataset.draft === path);
+  const target = card && card.querySelector(selector);
+  if (target) target.focus();
+}
+
+// Moves the conti and its outputs to workspace/trash/ (server side); the draft stays.
+async function trashConti(d) {
+  const mine = S;
+  if (mine.trashing) return;
+  mine.trashing = true;
+  renderDraftList();
+  try {
+    const res = await mine.ctx.api("POST", "/api/conti/trash", { path: d.conti });
+    if (!alive(mine)) return;
+    mine.trashOpen = null;
+    mine.ctx.toast(`콘티를 휴지통 폴더로 옮겼습니다: ${res.trash}`);
+  } catch (e) {
+    if (!alive(mine) || e.error === "aborted") return;
+    mine.ctx.toast(e.message, "error");
+    if (e.error === "not_found") mine.trashOpen = null;      // already gone outside the UI
+  }
+  // The list is reloaded whether or not the move worked, so it never shows a file that is gone.
+  try {
+    const fresh = await mine.ctx.api("GET", "/api/drafts");
+    if (alive(mine)) mine.drafts = fresh.drafts || [];
+  } catch { /* keep the old list */ } finally {
+    if (alive(mine)) {
+      mine.trashing = false;
+      renderDraftList();
+      focusCardButton(d.path, mine.trashOpen === d.path ? "[data-trash-yes]" : "button, a");
+    }
+  }
 }
 
 // ---- create job -------------------------------------------------------------------
 
 async function startCreate(d, force) {
   const mine = S;
-  if (mine.creating || isActive(mine.job)) return;
+  if (mine.creating || mine.trashing || isActive(mine.job)) return;
   mine.creating = true;
   mine.forceSave = false;
   renderDraftList();

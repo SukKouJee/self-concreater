@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -668,3 +669,63 @@ def test_retime_fallback_is_clamped_below_the_end():
 def test_srt_blocks_skip_zero_length_spans():
     blocks = conti._srt_blocks([{"caption": "A"}, {"caption": "B"}], "caption", [(0, 1000), (1000, 1000)])
     assert [(a, b, t) for a, b, t in blocks] == [(0, 1000, "A")]
+
+
+def test_trash_moves_conti_and_its_outputs_keeps_draft(saved, draft_md, home):
+    stem = draft_md.stem
+    extras = [draft_md.with_name(f"{stem}-captions.srt"), draft_md.with_name(f"{stem}-lines.srt"),
+              draft_md.with_name(f"{stem}-captions.mp4")]
+    for p in extras:
+        p.write_bytes(b"x")
+    other = draft_md.with_name("other-captions.srt")           # 다른 기획안의 파일은 건드리지 않는다
+    other.write_bytes(b"y")
+    html_path = saved.with_suffix(".html")
+    result = conti.trash(saved)
+    trash = home / result["trash"]
+    assert trash.is_dir() and trash.is_relative_to(home / "workspace" / "trash")
+    names = sorted(Path(p).name for p in result["moved"])
+    assert names == sorted([saved.name, html_path.name, *(p.name for p in extras)])
+    assert not saved.exists() and not html_path.exists() and not any(p.exists() for p in extras)
+    assert all((trash / n).exists() for n in names)
+    assert draft_md.exists() and other.exists()
+
+
+def test_trash_twice_in_a_row_uses_separate_folders(draft_md, home):
+    first = conti.trash(conti.save(draft_md, conti_file(home))["path"])
+    second = conti.trash(conti.save(draft_md, conti_file(home), force=True)["path"])
+    assert first["trash"] != second["trash"]
+    assert (home / first["trash"]).is_dir() and (home / second["trash"]).is_dir()
+
+
+def test_trash_missing_conti(draft_md, home):
+    with pytest.raises(ScriptError) as e:
+        conti.trash(conti.conti_path(draft_md))
+    assert e.value.code == "not_found"
+
+
+def test_trash_rolls_back_when_a_file_is_locked(saved, draft_md, home, monkeypatch):
+    video = draft_md.with_name(f"{draft_md.stem}-captions.mp4")
+    video.write_bytes(b"x")
+    real_move = conti.shutil.move
+
+    def move(src, dst):
+        if str(src).endswith(".mp4"):
+            raise PermissionError("locked")
+        return real_move(src, dst)
+
+    monkeypatch.setattr(conti.shutil, "move", move)
+    with pytest.raises(ScriptError) as e:
+        conti.trash(saved)
+    assert e.value.code == "trash_failed"
+    assert saved.exists() and saved.with_suffix(".html").exists() and video.exists()
+    trash_root = home / "workspace" / "trash"
+    assert not trash_root.exists() or not any(trash_root.iterdir())
+
+
+def test_trash_refuses_a_draft_whose_name_ends_with_conti(home):
+    fake = home / "drafts" / "2026-10-26-라면-conti.md"
+    fake.parent.mkdir(parents=True, exist_ok=True)
+    fake.write_text("---\ntitle: 라면 conti\n---\n본문\n", encoding="utf-8")
+    with pytest.raises(ScriptError) as e:
+        conti.trash(fake)
+    assert e.value.code == "not_conti" and fake.exists()

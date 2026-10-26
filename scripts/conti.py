@@ -8,6 +8,7 @@
                           [--ref-frame S] [--expect-hash H]           컷 하나 고치기 (--ref-frame ""은 고정 해제)
   python -m scripts.conti scenes <conti.md> --cut N [--limit 6]       그 컷에 쓸 참고 장면 후보
   python -m scripts.conti cut-context <conti.md> --cut N              컷 하나의 앞뒤 대사·섹션·글자 수 한도
+  python -m scripts.conti trash <conti.md>                             콘티와 그 산출물을 workspace/trash/로 옮긴다
 
 conti JSON (yt-conti 규칙)
   {"script": [{"text"}],                                      draft 섹션마다 하나, 같은 순서 (전체 대사)
@@ -24,9 +25,10 @@ import hashlib
 import html
 import json
 import re
+import shutil
 import statistics
 from collections.abc import Callable
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -837,6 +839,48 @@ def export_srt(conti: str | Path, track: str = "caption", video: str | Path | No
     return result
 
 
+def conti_outputs(path: Path) -> list[Path]:
+    """콘티 md와 그 콘티로 만든 파일(스토리보드 HTML, SRT 두 종류, 자막 영상) 중 있는 것. 기획안은 넣지 않는다."""
+    base = path.stem[: -len(CONTI_SUFFIX)]
+    names = [path.name, path.with_suffix(".html").name,
+             *(f"{base}-{suffix}.srt" for _, suffix in SRT_TRACKS.values()), f"{base}-captions.mp4"]
+    return [path.with_name(n) for n in names if path.with_name(n).is_file()]
+
+
+def trash(conti: str | Path) -> dict:
+    """콘티를 지운다: 콘티 md와 그 산출물을 `workspace/trash/<시각>/`으로 옮긴다(되돌릴 수 있게). 기획안은 그대로."""
+    path = safe_draft_path(str(conti), conti_file=True)       # drafts/ 안의 콘티 파일만
+    if not path.is_file():
+        raise ScriptError("not_found", f"콘티 파일이 없습니다: {_rel(path)}")
+    # 이름만 -conti로 끝나는 기획안을 옮기지 않도록, 콘티 프런트매터(script·cuts)가 있는지 본다.
+    fm, _ = refstore.read_md(path)
+    if "cuts" not in fm or "script" not in fm:
+        raise ScriptError("not_conti", f"콘티 파일이 아닙니다(프런트매터에 script·cuts가 없음): {_rel(path)}")
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    n = 1
+    while True:                                  # 같은 초에 두 번 지워도 서로 덮지 않는다
+        folder = workspace_dir("trash", stamp if n == 1 else f"{stamp}-{n}")
+        try:
+            folder.mkdir(parents=True)
+            break
+        except FileExistsError:
+            n += 1
+    # 콘티 md를 마지막에 옮긴다: 중간에 실패해도 되돌린 뒤 md가 남아 있어 화면에서 다시 지울 수 있다.
+    files = sorted(conti_outputs(path), key=lambda p: p == path)
+    done: list[tuple[Path, Path]] = []
+    try:
+        for src in files:
+            dst = folder / src.name
+            shutil.move(str(src), str(dst))
+            done.append((src, dst))
+    except OSError as e:
+        for src, dst in reversed(done):
+            shutil.move(str(dst), str(src))
+        folder.rmdir()
+        raise ScriptError("trash_failed", f"파일을 옮기지 못했습니다(다른 프로그램이 열어 두었는지 확인하세요): {e}") from e
+    return {"trash": _rel(folder), "moved": [_rel(src) for src, _ in done]}
+
+
 def main(argv: list[str]) -> Any:
     parser = ArgParser(prog="python -m scripts.conti")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -863,7 +907,10 @@ def main(argv: list[str]) -> Any:
     sr.add_argument("conti")
     sr.add_argument("--track", choices=sorted(SRT_TRACKS), default="caption")
     sr.add_argument("--video", default=None)
+    sub.add_parser("trash").add_argument("conti")
     args = parser.parse_args(argv)
+    if args.cmd == "trash":
+        return trash(args.conti)
     if args.cmd == "srt":
         return export_srt(args.conti, args.track, args.video)
     if args.cmd == "context":

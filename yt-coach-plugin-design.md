@@ -152,6 +152,7 @@ yt-coach/
 - 시각화: 컷마다 샷 크기 도식(SVG) + 같은 샷 크기·섹션의 레퍼런스 대표 프레임(참고용, 구도만)
 - `drafts/{draft}-conti.md`(프런트매터 `script`·`cuts`가 원본) + 같은 이름 `.html`(외부 자원 없는 한 파일, 인쇄·폰 보기)
 - 사용자가 md를 고치면 `/yt-conti <conti.md>`로 HTML만 다시 그린다. AI 이미지 생성은 하지 않는다
+- 삭제는 지우지 않고 옮긴다: 콘티 md·HTML과 그 콘티의 SRT·자막 영상을 `workspace/trash/<시각>/`으로(`conti trash`, UI "콘티 삭제"). 기획안은 남긴다
 
 ### `/yt-ui [stop]`
 - 작업 폴더를 로컬 전용 브라우저 화면으로 연다(1.5절). `ytc ui --detach`로 세션과 분리해 띄우고 주소를 알린다. `stop`이면 `ytc ui --stop`

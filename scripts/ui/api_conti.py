@@ -1,4 +1,4 @@
-"""콘티 API: draft 목록, 콘티 만들기(작업) · 저장, 불러오기, 장면 후보, 컷 대사 대안, 컷 고치기.
+"""콘티 API: draft 목록, 콘티 만들기(작업) · 저장, 불러오기, 장면 후보, 컷 대사 대안, 컷 고치기, 삭제(휴지통).
 
 콘티 만들기 작업(kind "conti")의 생애
 - 항목은 draft 하나(id = draft 상대 경로). Claude 호출이 끝나면 항목을 `state="awaiting", step="preview",
@@ -141,6 +141,23 @@ def _save(req: Request) -> dict:
     finally:
         tmp.unlink(missing_ok=True)
     return {**result, "hash": conti.content_hash(result["path"])}
+
+
+# ---- 삭제(휴지통) ------------------------------------------------------------------------
+
+FILE_JOB_KINDS = ("srtfit", "caption_video")      # 콘티 파일을 읽어 산출물을 쓰는 작업
+
+
+@route("POST", "/api/conti/trash")
+def _trash(req: Request) -> dict:
+    path = _safe_path(req.json.get("path"), conti_file=True)
+    rel = _rel(path)
+    # 검사와 이동 사이에 잠금은 없다(로컬 한 사람용이라 그 사이에 자막 작업을 시작할 일은 드물다).
+    for kind in FILE_JOB_KINDS:
+        job = req.app.jobs.current(kind)
+        if job is not None and job.is_active() and any(it.get("id") == rel for it in job.items):
+            raise ScriptError("conti_busy", "이 콘티로 자막을 만드는 중입니다. 끝나거나 멈춘 뒤에 삭제하세요")
+    return conti.trash(rel)
 
 
 # ---- 불러오기 -------------------------------------------------------------------------
