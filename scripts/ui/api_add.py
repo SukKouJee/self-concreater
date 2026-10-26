@@ -79,6 +79,54 @@ def parse_links(links: str | Iterable[str]) -> list[str]:
     return list(seen)
 
 
+def _row_id(link: str) -> str | None:
+    """줄 하나의 영상 id. 영상 링크가 아니면(채널·재생목록 등) None."""
+    try:
+        return fetch.parse_video_id(link)
+    except ScriptError:
+        return None
+
+
+def _md_title(md: str) -> str | None:
+    """저장된 md 프런트매터의 title. 읽을 수 없거나 문자열이 아니면 None."""
+    try:
+        title = refstore.read_md(work_root() / md)[0].get("title")
+    except (ScriptError, OSError):
+        return None
+    return title if isinstance(title, str) and title else None
+
+
+def check_links(links: str | Iterable[str], category: str, role: str, force: bool) -> dict:
+    """붙여넣은 링크를 줄마다 new/exists/other_role/dup/invalid/reanalyze로 가른다(입력 순서, 빈 줄 제외)."""
+    chunks = [links] if isinstance(links, str) else list(links)
+    lines: list[str] = []
+    for chunk in chunks:
+        if not isinstance(chunk, str):
+            raise ScriptError("bad_request", "links는 문자열 목록이어야 합니다")
+        lines.extend(chunk.split())
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for link in lines:
+        video_id = _row_id(link)
+        title: str | None = None
+        if video_id is None:
+            status = "invalid"
+        elif video_id in seen:
+            status = "dup"
+        else:
+            seen.add(video_id)
+            status = "new"
+            found = [v for v in refstore.find_video(video_id) if v["category"] == category]
+            if found:
+                if found[0]["role"] == role:
+                    status = "reanalyze" if force else "exists"
+                else:
+                    status = "other_role"
+                title = _md_title(found[0]["md"])
+        rows.append({"link": link, "id": video_id, "status": status, "title": title})
+    return {"rows": rows, "count": sum(1 for r in rows if r["status"] in {"new", "reanalyze"})}
+
+
 @dataclass(frozen=True)
 class AddOptions:
     category: str
@@ -593,6 +641,23 @@ def _add(req: Request) -> dict:
     items = [new_item(link, url=link) for link in links]
     job = req.app.jobs.start(KIND, Collector(opts), items=items, category=category)
     return {"job": job.snapshot()}
+
+
+@route("POST", "/api/add/check")
+def _check(req: Request) -> dict:
+    """링크를 받기 전에 줄마다 상태를 알려 준다(Claude·네트워크를 쓰지 않는다)."""
+    body = req.json
+    role = body.get("role", "ref")
+    if role not in ROLES:
+        raise ScriptError("bad_request", f"role은 {'/'.join(ROLES)} 중 하나여야 합니다")
+    category = _category(body)
+    return check_links(body.get("links") or [], category, role, _flag(body, "force"))
+
+
+@route("GET", "/api/add/shots-pending")
+def _shots_pending(req: Request) -> dict:
+    category = _category({"category": req.query.get("category")})
+    return {"count": len(shots.pending(category)["pending"])}
 
 
 @route("POST", "/api/add/shots-only")

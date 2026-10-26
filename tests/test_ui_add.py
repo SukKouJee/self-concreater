@@ -982,3 +982,74 @@ def test_wait_phase_publishes_once_per_report(tmp_path, monkeypatch):
         report("download", None, "영상 받는 중")
         assert len(job.updates) == before + 2
         assert "paused_at" not in job.updates[-1]["timing"]["steps"]["cuts"]
+
+
+# ---- 링크 미리 확인 · 샷 분류 보강 개수 -----------------------------------------------------
+
+D, E, F = "DDDDDDDDDDD", "EEEEEEEEEEE", "FFFFFFFFFFF"
+
+
+def put_md(home, vid, *, role="ref", category=CAT, title=None):
+    path = home / "refs" / f"ref_{category}" / "videos" / f"{vid}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fm = {"id": vid, "role": role, "title": title or f"제목 {vid}"}
+    path.write_bytes(refstore.join_frontmatter(fm, "## 내 메모\n").encode("utf-8"))
+    return path
+
+
+def test_check_links_classifies_rows(client, fakes, tmp_path):
+    put_md(tmp_path, A, role="ref")
+    put_md(tmp_path, C, role="mine")
+    links = f"{url(A)}\n{url(B)}\n{url(B)}\nhttps://www.youtube.com/@channel\n{url(C)}\n\n"
+    status, data = client.json("POST", "/api/add/check", {"category": CAT, "role": "ref", "links": links})
+    assert status == 200
+    assert [r["status"] for r in data["rows"]] == ["exists", "new", "dup", "invalid", "other_role"]
+    assert data["rows"][0]["title"] == f"제목 {A}" and data["rows"][4]["title"] == f"제목 {C}"
+    assert data["rows"][1]["id"] == B and data["rows"][1]["title"] is None
+    assert data["rows"][3]["id"] is None and data["rows"][2]["id"] == B
+    assert data["rows"][0]["link"] == url(A)
+    assert data["count"] == 1
+
+
+def test_check_links_force_turns_exists_into_reanalyze(client, fakes, tmp_path):
+    put_md(tmp_path, A, role="ref")
+    put_md(tmp_path, C, role="mine")
+    body = {"category": CAT, "role": "ref", "links": [url(A), url(C)], "force": True}
+    status, data = client.json("POST", "/api/add/check", body)
+    assert [r["status"] for r in data["rows"]] == ["reanalyze", "other_role"]
+    assert data["count"] == 1
+
+
+def test_check_links_other_category_counts_as_new(client, fakes, tmp_path):
+    put_md(tmp_path, D, role="ref", category="travel")
+    status, data = client.json("POST", "/api/add/check", {"category": CAT, "role": "ref", "links": [url(D)]})
+    assert data["rows"][0]["status"] == "new" and data["count"] == 1
+
+
+def test_check_links_md_without_title_gives_no_title(client, fakes, tmp_path):
+    path = tmp_path / "refs" / f"ref_{CAT}" / "videos" / f"{E}.md"
+    path.write_bytes(refstore.join_frontmatter({"id": E, "role": "ref"}, "## 내 메모\n").encode("utf-8"))
+    status, data = client.json("POST", "/api/add/check", {"category": CAT, "role": "ref", "links": [url(E)]})
+    assert status == 200
+    assert data["rows"][0]["status"] == "exists" and data["rows"][0]["title"] is None
+
+
+def test_check_links_rejects_bad_category(client):
+    status, data = client.json("POST", "/api/add/check", {"category": "../x", "links": []})
+    assert status == 400
+
+
+def test_check_links_rejects_bad_role(client):
+    status, data = client.json("POST", "/api/add/check", {"category": CAT, "role": "x", "links": []})
+    assert status == 400
+
+
+def test_shots_pending_count(client, fakes):
+    fakes.pending = [A, B]
+    status, data = client.json("GET", f"/api/add/shots-pending?category={CAT}")
+    assert status == 200 and data == {"count": 2}
+
+
+def test_shots_pending_rejects_bad_category(client):
+    status, data = client.json("GET", "/api/add/shots-pending?category=nope")
+    assert status == 400
