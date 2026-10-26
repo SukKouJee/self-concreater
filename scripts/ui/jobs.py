@@ -276,6 +276,12 @@ class JobManager:
         with self._lock:
             return self._latest.get(kind)
 
+    def active(self, kind: str) -> list[Job]:
+        """그 kind의 아직 도는 작업 전부(콘티 만들기처럼 동시에 여러 개가 돌 수 있는 kind도 빠짐없이)."""
+        with self._lock:
+            jobs = [j for j in self._jobs.values() if j.kind == kind]
+        return [j for j in jobs if j.is_active()]
+
     def shutdown(self, timeout: float | None = None) -> None:
         """진행 중인 작업을 모두 멈추고 스레드가 끝나기를 기다린다."""
         with self._lock:

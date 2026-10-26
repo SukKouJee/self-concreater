@@ -19,7 +19,7 @@ from typing import Any
 
 from scripts import claude_cli, conti, draft, library, llm, refstore, status
 from scripts.common import ScriptError, work_root, workspace_dir
-from scripts.ui.api_conti import CONTI_SUFFIX, _rel, _safe_path
+from scripts.ui.api_conti import CONTI_SUFFIX, FILE_JOB_KINDS, _rel, _safe_path, job_running_on
 from scripts.ui.api_refs import _body_parts
 from scripts.ui.jobs import Job, new_item
 from scripts.ui.server import Request, route
@@ -332,3 +332,17 @@ def _filmed(req: Request) -> dict:
             fm = refstore.update_frontmatter(path, {}, remove=["filmed_at"])
         return {"path": _rel(path), "filmed_at": status.filmed_date(fm.get("filmed_at")),
                 "hash": conti.content_hash(path)}
+
+
+# ---- 삭제(휴지통) ------------------------------------------------------------------------
+
+@route("POST", "/api/draft/trash")
+def _trash(req: Request) -> dict:
+    path = _safe_path(req.json.get("path"), conti_file=False)
+    rel = _rel(path)
+    # 다듬기·콘티 만들기는 기획안을, 자막 작업은 그 콘티를 읽는다.
+    conti_rel = _rel(conti.conti_path(path))
+    if job_running_on(req.app, ("polish", "conti"), rel) or job_running_on(req.app, FILE_JOB_KINDS, conti_rel):
+        raise ScriptError("draft_busy", "이 기획안으로 작업하는 중입니다(다듬기·콘티·자막). 끝나거나 멈춘 뒤에 삭제하세요")
+    with _FILMED_LOCK:                   # 촬영함 체크가 같은 파일을 쓰는 중이면 기다린다
+        return draft.trash(rel)

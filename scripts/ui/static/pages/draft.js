@@ -107,7 +107,7 @@ function freshState(el, ctx, category, params) {
     el, ctx, category, mode: params.mode || "list", path: params.path || null, wantSource: params.source || null,
     sources: null, source: params.source || "", topic: "", target: "", targetBad: false, sourceNote: null,
     job: null, jobId: null, preview: null, edit: null, dirty: false,
-    timer: null, pollErrors: 0, running: false, saving: false,
+    timer: null, pollErrors: 0, running: false, saving: false, trashing: false,
     runError: null, saveError: null, confirmRerun: false, confirmDiscard: false,
     runSig: null, alertSig: null, nodes: {},
     detail: null, pl: freshPolish(), plWarnings: [],
@@ -340,14 +340,59 @@ function renderView(mine, d) {
   }
   const copy = h("button", { type: "button", class: "btn" }, "경로 복사");
   copy.addEventListener("click", () => copyText(mine, d.path, "경로를 복사했습니다"));
+  const trash = trashControls(mine, d);
   kids.push(
     h("div", { class: "btn-row" },
-      h("a", { class: "btn btn-primary", href: contiHref(d.path) }, d.conti ? "콘티 보기" : "콘티 만들기")),
+      h("a", { class: "btn btn-primary", href: contiHref(d.path) }, d.conti ? "콘티 보기" : "콘티 만들기"), trash.button),
+    trash.panel,
     h("div", { class: "ref-path" }, h("span", { class: "muted small" }, "md 파일"), h("code", {}, d.path), copy));
   fill(mine.el, ...kids);
   mine.pl.barSig = null;
   renderPolishBar(mine);
   renderPolishBody(mine);
+}
+
+// ---- delete (moves to workspace/trash/) ------------------------------------------
+
+// "기획안 삭제" button + inline confirm. The panel is shown and hidden in place (no page rebuild), so focus stays put.
+function trashControls(mine, d) {
+  const button = h("button", { type: "button", class: "btn", "aria-expanded": "false", "aria-controls": "dr-trash" },
+    "기획안 삭제");
+  const yes = h("button", { type: "button", class: "btn btn-danger" }, "삭제");
+  const no = h("button", { type: "button", class: "btn" }, "취소");
+  const what = d.conti
+    ? "기획안과 그 콘티(스토리보드 HTML, SRT·자막 영상 포함)를 휴지통 폴더(workspace/trash/)로 옮깁니다"
+    : "기획안을 휴지통 폴더(workspace/trash/)로 옮깁니다";
+  const panel = h("div", { class: "inline-confirm", id: "dr-trash", hidden: true },
+    h("p", { class: "warn-text" }, what),
+    h("p", { class: "muted hint" }, "잘못 지웠으면 그 폴더의 파일을 drafts/로 다시 옮기면 됩니다."),
+    h("div", { class: "btn-row" }, yes, no));
+  const open = (on) => {
+    panel.hidden = !on;
+    button.setAttribute("aria-expanded", String(on));
+    (on ? yes : button).focus();
+  };
+  button.addEventListener("click", () => open(panel.hidden));
+  no.addEventListener("click", () => open(false));
+  yes.addEventListener("click", async () => {
+    if (mine.trashing) return;
+    mine.trashing = true;
+    for (const b of [button, yes, no]) b.disabled = true;
+    try {
+      const res = await mine.ctx.api("POST", "/api/draft/trash", { path: d.path });
+      mine.ctx.toast(`기획안을 휴지통 폴더로 옮겼습니다: ${res.trash}`, "info");     // even if the user already left
+      if (!alive(mine)) return;
+      location.hash = "#/draft";      // hashchange remounts the list page
+    } catch (e) {
+      if (!alive(mine) || ignorable(e)) return;
+      mine.ctx.toast(e.message, "error");
+      if (e.error === "draft_not_found") { location.hash = "#/draft"; return; }
+      mine.trashing = false;
+      for (const b of [button, yes, no]) b.disabled = false;
+      yes.focus();
+    }
+  });
+  return { button, panel };
 }
 
 // ---- new: run box -------------------------------------------------------------

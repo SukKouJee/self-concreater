@@ -856,6 +856,12 @@ def trash(conti: str | Path) -> dict:
     fm, _ = refstore.read_md(path)
     if "cuts" not in fm or "script" not in fm:
         raise ScriptError("not_conti", f"콘티 파일이 아닙니다(프런트매터에 script·cuts가 없음): {_rel(path)}")
+    return move_to_trash(conti_outputs(path), last=path)
+
+
+def move_to_trash(files: list[Path], last: Path) -> dict:
+    """files를 `workspace/trash/<시각>/`으로 옮긴다. last(지울 대상의 md)는 마지막에 옮겨서, 중간에 실패하면
+    옮긴 것을 되돌리고 md가 남아 화면에서 다시 지울 수 있게 한다. -> {"trash", "moved"}"""
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     n = 1
     while True:                                  # 같은 초에 두 번 지워도 서로 덮지 않는다
@@ -865,8 +871,7 @@ def trash(conti: str | Path) -> dict:
             break
         except FileExistsError:
             n += 1
-    # 콘티 md를 마지막에 옮긴다: 중간에 실패해도 되돌린 뒤 md가 남아 있어 화면에서 다시 지울 수 있다.
-    files = sorted(conti_outputs(path), key=lambda p: p == path)
+    files = sorted(files, key=lambda p: p == last)
     done: list[tuple[Path, Path]] = []
     try:
         for src in files:

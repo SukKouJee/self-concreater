@@ -535,3 +535,88 @@ def test_trash_route_refuses_while_a_job_uses_the_conti(client, home, draft_md, 
     wait_for(client, body["job"]["id"], lambda j: j["status"] == "done")
     status, _ = client.json("POST", "/api/conti/trash", {"path": rel(home, saved)})
     assert status == 200 and not saved.exists()
+
+
+def test_draft_trash_route(client, home, draft_md):
+    saved = saved_conti(home, draft_md)
+    status, body = client.json("POST", "/api/draft/trash", {"path": rel(home, draft_md)})
+    assert status == 200, body
+    assert body["trash"].startswith("workspace/trash/") and len(body["moved"]) == 3
+    assert not draft_md.exists() and not saved.exists()
+    assert client.json("GET", "/api/drafts")[1]["drafts"] == []
+    status, resp = client.json("POST", "/api/draft/trash", {"path": rel(home, draft_md)})
+    assert status == 400 and resp["error"] == "draft_not_found"
+
+
+@pytest.mark.parametrize("bad", ["../secret.md", "drafts/a.txt", "refs/x.md"])
+def test_draft_trash_route_rejects_bad_paths(client, home, draft_md, bad):
+    status, resp = client.json("POST", "/api/draft/trash", {"path": bad})
+    assert status == 400 and resp["error"] == "bad_path" and draft_md.exists()
+
+
+def test_draft_trash_route_refuses_while_its_conti_renders(client, home, draft_md, monkeypatch):
+    import threading
+    from scripts import captions
+    gate = threading.Event()
+    monkeypatch.setattr(captions, "check_setup", lambda: {"ready": True})
+
+    def render(conti_path, video=None, track="caption", progress=None, cancel=None, timeout=900, step=None):
+        gate.wait(5)
+        return {"path": "drafts/x-captions.mp4", "count": 1, "duration_sec": 1.0, "width": 1, "height": 1}
+
+    monkeypatch.setattr(captions, "render", render)
+    saved = saved_conti(home, draft_md)
+    status, body = client.json("POST", "/api/conti/caption-video", {"path": rel(home, saved)})
+    assert status == 200, body
+    try:
+        status, resp = client.json("POST", "/api/draft/trash", {"path": rel(home, draft_md)})
+        assert status == 400 and resp["error"] == "draft_busy" and draft_md.exists()
+    finally:
+        gate.set()
+    wait_for(client, body["job"]["id"], lambda j: j["status"] == "done")
+
+
+def test_draft_trash_route_refuses_while_conti_is_being_made(client, home, draft_md, fakes, monkeypatch):
+    import threading
+    gate = threading.Event()
+    real = fakes.ask_validated
+
+    def slow(*a, **k):
+        gate.wait(5)
+        return real(*a, **k)
+
+    monkeypatch.setattr(llm, "ask_validated", slow)
+    status, body = client.json("POST", "/api/conti/create", {"draft": rel(home, draft_md)})
+    assert status == 200, body
+    try:
+        status, resp = client.json("POST", "/api/draft/trash", {"path": rel(home, draft_md)})
+        assert status == 400 and resp["error"] == "draft_busy" and draft_md.exists()
+    finally:
+        gate.set()
+    wait_for(client, body["job"]["id"], lambda j: j["status"] == "done")
+
+
+def test_draft_trash_sees_every_running_conti_job(client, home, draft_md, fakes, monkeypatch):
+    # 기획안 A의 콘티를 만드는 동안 B의 콘티도 시작해도, A의 삭제는 막힌다(최근 작업만 보면 놓친다)
+    import threading
+    other = draft_md.with_name("2026-10-27-other.md")
+    other.write_text(draft_md.read_text(encoding="utf-8"), encoding="utf-8")
+    gate = threading.Event()
+    real = fakes.ask_validated
+
+    def slow(*a, **k):
+        gate.wait(5)
+        return real(*a, **k)
+
+    monkeypatch.setattr(llm, "ask_validated", slow)
+    first = client.json("POST", "/api/conti/create", {"draft": rel(home, draft_md)})[1]["job"]["id"]
+    second = client.json("POST", "/api/conti/create", {"draft": rel(home, other)})[1]["job"]["id"]
+    try:
+        status, resp = client.json("POST", "/api/draft/trash", {"path": rel(home, draft_md)})
+        assert status == 400 and resp["error"] == "draft_busy" and draft_md.exists()
+    finally:
+        gate.set()
+    for job_id in (first, second):
+        wait_for(client, job_id, lambda j: j["status"] == "done")
+    status, _ = client.json("POST", "/api/draft/trash", {"path": rel(home, draft_md)})
+    assert status == 200 and other.exists()

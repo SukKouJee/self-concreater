@@ -376,7 +376,8 @@ def test_draft_shot_sizes_match_server_and_invalid_input_is_blocked():
     js = (STATIC_DIR / "pages" / "draft.js").read_text(encoding="utf-8")
     literal = re.search(r"const SHOT_SIZES = (\[[^\]]*\]);", js).group(1)
     assert json.loads(literal) == SHOT_SIZES
-    for token in ["크기 선택", "의 크기를 고르세요", "목표 길이는 숫자로 적어 주세요", "validity.badInput"]:
+    for token in ["크기 선택", "의 크기를 고르세요", "목표 길이는 숫자로 적어 주세요", "validity.badInput",
+                  "/api/draft/trash", "기획안 삭제", "workspace/trash/", "aria-expanded"]:
         assert token in js, token
     css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
     assert ".dr-sec .table-wrap { max-height: none; }" in css

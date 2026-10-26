@@ -3,6 +3,7 @@
 사용법 (작업 폴더에서):
   python -m scripts.draft context <category> <motif-id | archetype-id> [--topic <주제>]
   python -m scripts.draft save <category> --draft <json>          → drafts/{date}-{slug}.md
+  python -m scripts.draft trash <draft.md>                         기획안과 그 콘티·산출물을 workspace/trash/로 옮긴다
 
 draft JSON (yt-draft 규칙)
   {"title", "topic", "source", "archetype"?, "hook_type", "narrative_type",
@@ -20,7 +21,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from scripts import motif, refstore
+from scripts import conti, motif, refstore
 from scripts.features import SHOT_SIZES
 from scripts.common import DATA_NOTICE, ArgParser, ScriptError, run, work_root
 from scripts.videomd import BODY_SUBS, HOOK_TYPES, LABELS, NARRATIVE_TYPES, fmt_time, title_patterns
@@ -366,6 +367,14 @@ def save(category: str, draft_path: Path) -> dict:
     return {"status": "saved", "path": path.relative_to(work_root()).as_posix(), "pacing": pacing, "compare": comp}
 
 
+def trash(draft_md: str | Path) -> dict:
+    """기획안을 지운다: 기획안 md와 그 콘티(md·HTML·SRT·자막 영상)를 `workspace/trash/<시각>/`으로 옮긴다."""
+    path = conti.safe_draft_path(str(draft_md), conti_file=False)     # drafts/ 안의 기획안만
+    if not path.is_file():
+        raise ScriptError("draft_not_found", f"기획안을 찾을 수 없습니다: {draft_md}")
+    return conti.move_to_trash([path, *conti.conti_outputs(conti.conti_path(path))], last=path)
+
+
 def main(argv: list[str]) -> Any:
     parser = ArgParser(prog="python -m scripts.draft")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -376,7 +385,10 @@ def main(argv: list[str]) -> Any:
     s = sub.add_parser("save")
     s.add_argument("category")
     s.add_argument("--draft", required=True)
+    sub.add_parser("trash").add_argument("draft")
     args = parser.parse_args(argv)
+    if args.cmd == "trash":
+        return trash(args.draft)
     if args.cmd == "context":
         return context(args.category, args.source, args.topic)
     path = Path(args.draft)

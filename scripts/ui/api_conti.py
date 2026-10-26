@@ -148,15 +148,18 @@ def _save(req: Request) -> dict:
 FILE_JOB_KINDS = ("srtfit", "caption_video")      # 콘티 파일을 읽어 산출물을 쓰는 작업
 
 
+def job_running_on(app: Any, kinds: tuple[str, ...], item_id: str) -> bool:
+    """그 kind들의 최근 작업 중 item_id(작업 폴더 기준 상대 경로)를 다루며 아직 도는 것이 있는지.
+    검사와 이동 사이에 잠금은 없다(로컬 한 사람용이라 그 사이에 작업을 시작할 일은 드물다)."""
+    return any(any(it.get("id") == item_id for it in job.items) for kind in kinds for job in app.jobs.active(kind))
+
+
 @route("POST", "/api/conti/trash")
 def _trash(req: Request) -> dict:
     path = _safe_path(req.json.get("path"), conti_file=True)
     rel = _rel(path)
-    # 검사와 이동 사이에 잠금은 없다(로컬 한 사람용이라 그 사이에 자막 작업을 시작할 일은 드물다).
-    for kind in FILE_JOB_KINDS:
-        job = req.app.jobs.current(kind)
-        if job is not None and job.is_active() and any(it.get("id") == rel for it in job.items):
-            raise ScriptError("conti_busy", "이 콘티로 자막을 만드는 중입니다. 끝나거나 멈춘 뒤에 삭제하세요")
+    if job_running_on(req.app, FILE_JOB_KINDS, rel):
+        raise ScriptError("conti_busy", "이 콘티로 자막을 만드는 중입니다. 끝나거나 멈춘 뒤에 삭제하세요")
     return conti.trash(rel)
 
 

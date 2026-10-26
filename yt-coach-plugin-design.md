@@ -138,6 +138,7 @@ yt-coach/
 - 섹션별 대본 + 샷 리스트(샷 크기·앵글·길이·컷 수)
 - profile의 피하고 싶은 스타일 반영
 - `drafts/`에 저장
+- 삭제는 지우지 않고 옮긴다: 기획안 md와 그 콘티(md·HTML·SRT·자막 영상)를 `workspace/trash/<시각>/`으로(`draft trash`, UI 기획안 보기의 "기획안 삭제")
 - 프런트매터 `filmed_at`(YYYY-MM-DD, 선택 항목): 홈 화면에서 촬영함을 체크하면 오늘 날짜로 들어가고 해제하면 키가 지워진다. 사용자가 직접 고쳐도 된다. 계산 입력이 아니며 `schema_version`은 그대로다
 
 ### `/yt-polish <draft파일 | latest>`

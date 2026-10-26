@@ -729,3 +729,29 @@ def test_trash_refuses_a_draft_whose_name_ends_with_conti(home):
     with pytest.raises(ScriptError) as e:
         conti.trash(fake)
     assert e.value.code == "not_conti" and fake.exists()
+
+
+def test_draft_trash_moves_draft_with_its_conti(saved, draft_md, home):
+    srt = draft_md.with_name(f"{draft_md.stem}-captions.srt")
+    srt.write_bytes(b"x")
+    other = home / "drafts" / "2026-01-01-other.md"
+    other.write_text("---\ntitle: other\n---\n", encoding="utf-8")
+    result = draft.trash(draft_md)
+    trash = home / result["trash"]
+    names = sorted(Path(p).name for p in result["moved"])
+    assert names == sorted([draft_md.name, saved.name, saved.with_suffix(".html").name, srt.name])
+    assert all((trash / n).exists() for n in names)
+    assert not draft_md.exists() and not saved.exists() and other.exists()
+
+
+def test_draft_trash_without_conti_then_missing(draft_md, home):
+    assert [Path(p).name for p in draft.trash(draft_md)["moved"]] == [draft_md.name]
+    with pytest.raises(ScriptError) as e:
+        draft.trash(draft_md)
+    assert e.value.code == "draft_not_found"
+
+
+def test_draft_trash_refuses_a_conti_file(saved):
+    with pytest.raises(ScriptError) as e:
+        draft.trash(saved)
+    assert e.value.code == "bad_path" and saved.exists()
