@@ -67,16 +67,20 @@ def _shots_rules() -> list[Path]:
     return [claude_cli.SKILLS_DIR / "yt-shots" / "SKILL.md"]
 
 
-def parse_links(links: str | Iterable[str]) -> list[str]:
-    """공백·줄바꿈으로 나누고 빈 값과 중복을 뺀다(처음 나온 순서 유지)."""
+def _split_links(links: str | Iterable[str]) -> list[str]:
+    """공백·줄바꿈으로 나눈 모든 조각(빈 값 제외, 중복 유지)."""
     chunks = [links] if isinstance(links, str) else list(links)
-    seen: dict[str, None] = {}
+    pieces: list[str] = []
     for chunk in chunks:
         if not isinstance(chunk, str):
             raise ScriptError("bad_request", "links는 문자열 목록이어야 합니다")
-        for link in chunk.split():
-            seen.setdefault(link, None)
-    return list(seen)
+        pieces.extend(chunk.split())
+    return pieces
+
+
+def parse_links(links: str | Iterable[str]) -> list[str]:
+    """공백·줄바꿈으로 나누고 빈 값과 중복을 뺀다(처음 나온 순서 유지)."""
+    return list(dict.fromkeys(_split_links(links)))
 
 
 def _row_id(link: str) -> str | None:
@@ -87,23 +91,27 @@ def _row_id(link: str) -> str | None:
         return None
 
 
-def _md_title(md: str) -> str | None:
-    """저장된 md 프런트매터의 title. 읽을 수 없거나 문자열이 아니면 None."""
-    try:
-        title = refstore.read_md(work_root() / md)[0].get("title")
-    except (ScriptError, OSError):
+def _saved_state(category: str, video_id: str, role: str) -> tuple[str, str | None] | None:
+    """요청한 카테고리의 md만 본다. 없으면 None, 있으면 (exists|other_role, title).
+
+    프런트매터를 못 읽거나 role이 없으면 같은 role로 보고(exists) title은 None.
+    """
+    path = refstore.category_dir(category) / "videos" / f"{video_id}.md"
+    if not path.is_file():
         return None
-    return title if isinstance(title, str) and title else None
+    try:
+        fm = refstore.read_md(path)[0]
+    except (ScriptError, OSError):
+        return "exists", None
+    title = fm.get("title")
+    saved_role = fm.get("role")
+    status = "other_role" if saved_role and saved_role != role else "exists"
+    return status, title if isinstance(title, str) and title else None
 
 
 def check_links(links: str | Iterable[str], category: str, role: str, force: bool) -> dict:
     """붙여넣은 링크를 줄마다 new/exists/other_role/dup/invalid/reanalyze로 가른다(입력 순서, 빈 줄 제외)."""
-    chunks = [links] if isinstance(links, str) else list(links)
-    lines: list[str] = []
-    for chunk in chunks:
-        if not isinstance(chunk, str):
-            raise ScriptError("bad_request", "links는 문자열 목록이어야 합니다")
-        lines.extend(chunk.split())
+    lines = _split_links(links)
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     for link in lines:
@@ -116,13 +124,11 @@ def check_links(links: str | Iterable[str], category: str, role: str, force: boo
         else:
             seen.add(video_id)
             status = "new"
-            found = [v for v in refstore.find_video(video_id) if v["category"] == category]
-            if found:
-                if found[0]["role"] == role:
-                    status = "reanalyze" if force else "exists"
-                else:
-                    status = "other_role"
-                title = _md_title(found[0]["md"])
+            saved = _saved_state(category, video_id, role)
+            if saved is not None:
+                status, title = saved
+                if status == "exists" and force:
+                    status = "reanalyze"
         rows.append({"link": link, "id": video_id, "status": status, "title": title})
     return {"rows": rows, "count": sum(1 for r in rows if r["status"] in {"new", "reanalyze"})}
 

@@ -1053,3 +1053,23 @@ def test_shots_pending_count(client, fakes):
 def test_shots_pending_rejects_bad_category(client):
     status, data = client.json("GET", "/api/add/shots-pending?category=nope")
     assert status == 400
+
+
+def test_check_links_broken_md_does_not_fail_other_rows(client, fakes, tmp_path):
+    same = tmp_path / "refs" / f"ref_{CAT}" / "videos" / f"{E}.md"
+    same.write_text("프런트매터 없음\n", encoding="utf-8")
+    other = tmp_path / "refs" / "ref_travel" / "videos" / f"{F}.md"
+    other.parent.mkdir(parents=True)
+    other.write_text("프런트매터 없음\n", encoding="utf-8")
+    links = [url(E), url(F), url(B)]
+    status, data = client.json("POST", "/api/add/check", {"category": CAT, "role": "ref", "links": links})
+    assert status == 200
+    assert [r["status"] for r in data["rows"]] == ["exists", "new", "new"]
+    assert data["rows"][0]["title"] is None and data["count"] == 2
+
+
+def test_check_links_missing_role_counts_as_exists(client, fakes, tmp_path):
+    path = tmp_path / "refs" / f"ref_{CAT}" / "videos" / f"{E}.md"
+    path.write_bytes(refstore.join_frontmatter({"id": E, "title": "역할 없음"}, "## 내 메모\n").encode("utf-8"))
+    status, data = client.json("POST", "/api/add/check", {"category": CAT, "role": "mine", "links": [url(E)]})
+    assert data["rows"][0]["status"] == "exists" and data["rows"][0]["title"] == "역할 없음"
