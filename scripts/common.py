@@ -12,7 +12,9 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -154,6 +156,49 @@ def work_root() -> Path:
 
 def workspace_dir(*parts: str) -> Path:
     return work_root().joinpath("workspace", *parts)
+
+
+def move_to_trash(files: list[Path], last: Path) -> dict:
+    """files(파일이나 폴더, 작업 폴더 안)를 `workspace/trash/<시각>/` 아래 같은 상대 경로로 옮긴다.
+    되돌릴 때는 그 경로 그대로 작업 폴더에 다시 놓으면 된다. last(지울 대상의 md)는 마지막에 옮겨서,
+    중간에 실패하면 옮긴 것을 되돌리고 md가 남아 화면에서 다시 지울 수 있게 한다. -> {"trash", "moved"}"""
+    root = work_root().resolve()
+    try:
+        rels = [Path(f).resolve().relative_to(root) for f in files]
+        last_rel = Path(last).resolve().relative_to(root)
+    except ValueError as e:
+        raise ScriptError("bad_path", f"작업 폴더 밖의 파일은 옮길 수 없습니다: {e}") from e
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    n = 1
+    while True:                                  # 같은 초에 두 번 지워도 서로 덮지 않는다
+        folder = workspace_dir("trash", stamp if n == 1 else f"{stamp}-{n}")
+        try:
+            folder.mkdir(parents=True)
+            break
+        except FileExistsError:
+            n += 1
+    rels.sort(key=lambda r: r == last_rel)
+    done: list[tuple[Path, Path]] = []
+    try:
+        for rel in rels:
+            src, dst = root / rel, folder / rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dst))
+            done.append((src, dst))
+    except OSError as e:
+        stuck = []
+        for src, dst in reversed(done):
+            try:
+                shutil.move(str(dst), str(src))
+            except OSError:
+                stuck.append(dst.relative_to(work_root()).as_posix())
+        if not stuck:
+            shutil.rmtree(folder, ignore_errors=True)  # 되돌리기가 다 끝났으면 남은 것은 빈 폴더뿐이다
+        more = f" 되돌리지 못한 파일은 휴지통에 남아 있습니다: {', '.join(stuck)}" if stuck else ""
+        raise ScriptError("trash_failed",
+                          f"파일을 옮기지 못했습니다(다른 프로그램이 열어 두었는지 확인하세요): {e}.{more}") from e
+    return {"trash": folder.relative_to(work_root()).as_posix(),
+            "moved": [rel.as_posix() for rel in rels[: len(done)]]}
 
 
 def category_dir(category: str) -> Path:

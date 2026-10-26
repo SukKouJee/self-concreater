@@ -183,7 +183,8 @@ def test_refs_page_contract_and_safety():
     # "signal" is not asserted: ctx.api (bound per page in app.js) already carries ctx.signal, so using it is the contract.
     for token in ["export async function mount", "export function unmount", "export function onCategory",
                   "isCurrent()", "ctx.api(", "/api/refs", "레퍼런스 추가로 가기", "경로 복사",
-                  "최근 추가순", "길이순", "제목순", "noopener", "lb-"]:
+                  "최근 추가순", "길이순", "제목순", "noopener", "lb-",
+                  "/trash?category=", "레퍼런스", "aria-expanded", "workspace/trash/"]:
         assert token in js, token
     for bad in ["innerHTML", "insertAdjacentHTML", "outerHTML"]:
         assert bad not in js, bad

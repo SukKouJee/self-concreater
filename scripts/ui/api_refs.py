@@ -256,3 +256,25 @@ def _labels(req: Request, video_id: str) -> dict:
     except (ScriptError, ValueError, TypeError, AttributeError, OSError):
         video = None                      # 저장은 끝났다. 화면은 상세를 다시 불러온다
     return {**result, "video": video}
+
+
+# ---- 삭제(휴지통) ------------------------------------------------------------------------
+
+
+
+@route("POST", r"/api/refs/(?P<video_id>[^/?]+)/trash")
+def _trash(req: Request, video_id: str) -> dict:
+    if not ID_RE.fullmatch(video_id):
+        raise ScriptError("bad_request", f"잘못된 영상 id입니다: {video_id!r}")
+    category = _category(req)
+    path = videomd.video_md_path(video_id, category)          # 없는 카테고리는 여기서 category_not_found
+    rel = path.relative_to(work_root()).as_posix()
+    # 검사와 이동 사이에 잠금은 없다(로컬 한 사람용이라 그 사이에 작업을 시작할 일은 드물다).
+    # 수집은 카테고리가 달라도 같은 영상의 workspace 데이터를 쓸 수 있으니 하나라도 돌면 막는다.
+    busy = bool(req.app.jobs.active("collect"))
+    busy = busy or any(job.category == category for job in req.app.jobs.active("typify"))
+    busy = busy or any(any(it.get("id") == rel for it in job.items) for job in req.app.jobs.active("diagnose"))
+    if busy:
+        raise ScriptError("refs_busy", "레퍼런스 수집이나 이 카테고리의 유형화·진단이 진행 중입니다. 끝나거나 멈춘 뒤에 삭제하세요")
+    return videomd.trash_video(video_id, category)
+

@@ -686,7 +686,7 @@ def test_trash_moves_conti_and_its_outputs_keeps_draft(saved, draft_md, home):
     names = sorted(Path(p).name for p in result["moved"])
     assert names == sorted([saved.name, html_path.name, *(p.name for p in extras)])
     assert not saved.exists() and not html_path.exists() and not any(p.exists() for p in extras)
-    assert all((trash / n).exists() for n in names)
+    assert all((trash / "drafts" / n).exists() for n in names)     # 같은 상대 경로로 옮긴다
     assert draft_md.exists() and other.exists()
 
 
@@ -706,14 +706,15 @@ def test_trash_missing_conti(draft_md, home):
 def test_trash_rolls_back_when_a_file_is_locked(saved, draft_md, home, monkeypatch):
     video = draft_md.with_name(f"{draft_md.stem}-captions.mp4")
     video.write_bytes(b"x")
-    real_move = conti.shutil.move
+    from scripts import common
+    real_move = common.shutil.move
 
     def move(src, dst):
         if str(src).endswith(".mp4"):
             raise PermissionError("locked")
         return real_move(src, dst)
 
-    monkeypatch.setattr(conti.shutil, "move", move)
+    monkeypatch.setattr(common.shutil, "move", move)
     with pytest.raises(ScriptError) as e:
         conti.trash(saved)
     assert e.value.code == "trash_failed"
@@ -740,7 +741,7 @@ def test_draft_trash_moves_draft_with_its_conti(saved, draft_md, home):
     trash = home / result["trash"]
     names = sorted(Path(p).name for p in result["moved"])
     assert names == sorted([draft_md.name, saved.name, saved.with_suffix(".html").name, srt.name])
-    assert all((trash / n).exists() for n in names)
+    assert all((trash / "drafts" / n).exists() for n in names)     # 같은 상대 경로로 옮긴다
     assert not draft_md.exists() and not saved.exists() and other.exists()
 
 

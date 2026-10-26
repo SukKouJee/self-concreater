@@ -317,3 +317,130 @@ def test_list_carries_avg_cut_and_camera_shares(client, home):  # noqa: F811
     assert vids["a01"]["camera"] is None                     # 0~1 밖, NaN, 모르는 키, bool은 버린다 → 남는 게 없다
     assert vids["a02"]["avg_cut_sec"] is None and vids["a02"]["camera"] is None
     assert vids["a03"]["avg_cut_sec"] is None                # 한 시간을 넘는 평균 컷은 손으로 잘못 고친 값
+
+
+def _data(home, vid):
+    ws = home / "workspace"
+    (ws / "raw").mkdir(parents=True, exist_ok=True)
+    (ws / "raw" / f"{vid}.json").write_text("{}", encoding="utf-8")
+    (ws / "cuts").mkdir(parents=True, exist_ok=True)
+    (ws / "cuts" / f"{vid}.json").write_text("{}", encoding="utf-8")
+    make_frames(home, vid, n=2)
+    return [ws / "raw" / f"{vid}.json", ws / "cuts" / f"{vid}.json", ws / "frames" / vid]
+
+
+def test_trash_video_moves_md_and_data_keeping_layout(client, home):  # noqa: F811
+    from scripts import videomd
+    data = _data(home, "a00")
+    other = _data(home, "a01")
+    md = video_path(home, "a00")
+    tech = home / "refs" / f"ref_{CAT}" / "techniques.md"
+    fm, body = refstore.read_md(tech)
+    tech.write_bytes(refstore.join_frontmatter(fm, body + "\n## 훅\n- **결과 먼저**: 설명 — [a00](videos/a00.md), [a01](videos/a01.md)\n"
+                                               "- **혼자만**: 설명 — [a00](videos/a00.md)\n").encode("utf-8"))
+    result = videomd.trash_video("a00", CAT)
+    trash = home / result["trash"]
+    assert (trash / "refs" / f"ref_{CAT}" / "videos" / "a00.md").is_file()
+    assert (trash / "workspace" / "frames" / "a00").is_dir() and (trash / "workspace" / "cuts" / "a00.json").is_file()
+    assert not md.exists() and not any(p.exists() for p in data) and all(p.exists() for p in other)
+    assert result["kept_data"] is False and result["moved"][-1] == f"refs/ref_{CAT}/videos/a00.md"
+    text = tech.read_text(encoding="utf-8")
+    assert "혼자만" not in text and "[a00]" not in text and "결과 먼저**: 설명 — [a01](videos/a01.md)" in text
+
+
+def test_trash_video_keeps_shared_data_and_reports_typify(client, home):  # noqa: F811
+    from scripts import videomd
+    data = _data(home, "a00")
+    second = home / "refs" / "ref_other" / "videos"
+    second.mkdir(parents=True)
+    (second / "a00.md").write_text(video_path(home, "a00").read_text(encoding="utf-8"), encoding="utf-8")
+    ws = home / "workspace" / "typify"
+    ws.mkdir(parents=True, exist_ok=True)
+    (ws / f"{CAT}.json").write_text(json.dumps({"archetypes": [{"members": ["a00", "a01"]}], "outliers": [], "axes": {}}),
+                                    encoding="utf-8")
+    result = videomd.trash_video("a00", CAT)
+    assert result["kept_data"] is True and result["typified"] is True and len(result["moved"]) == 1
+    assert all(p.exists() for p in data) and (second / "a00.md").exists()
+
+
+def test_trash_route_and_errors(client, home):  # noqa: F811
+    code, body = client.json("POST", "/api/refs/a00/trash?category=mukbang", {})
+    assert code == 200, body
+    assert body["trash"].startswith("workspace/trash/") and not video_path(home, "a00").exists()
+    assert "a00" not in {v["id"] for v in get(client, "/api/refs?category=mukbang")["videos"]}
+    code, body = client.json("POST", "/api/refs/a00/trash?category=mukbang", {})
+    assert code == 400 and body["error"] == "video_not_found"
+    code, body = client.json("POST", "/api/refs/..%2Fx/trash?category=mukbang", {})
+    assert code == 400 and body["error"] == "bad_request"
+    code, body = client.json("POST", "/api/refs/a01/trash?category=nope", {})
+    assert code == 400 and body["error"] == "category_not_found" and video_path(home, "a01").exists()
+
+
+def test_trash_route_refuses_while_category_is_collecting(client, home, monkeypatch):  # noqa: F811
+    import threading
+    from scripts.ui.jobs import new_item
+    gate = threading.Event()
+
+    def target(job):
+        gate.wait(5)
+        job.finish("done")
+
+    job = client.app.jobs.start("collect", target, items=[new_item("https://youtu.be/zz")], category=CAT)
+    try:
+        code, body = client.json("POST", "/api/refs/a00/trash?category=mukbang", {})
+        assert code == 400 and body["error"] == "refs_busy" and video_path(home, "a00").exists()
+        code, body = client.json("POST", "/api/refs/a00/trash?category=other", {})
+        assert body["error"] == "category_not_found"           # 다른 카테고리 작업은 막는 이유가 아니다(여기선 없는 카테고리)
+    finally:
+        gate.set()
+    job.join(5)
+    code, _ = client.json("POST", "/api/refs/a00/trash?category=mukbang", {})
+    assert code == 200
+
+
+def test_trash_video_rolls_back_a_moved_folder(client, home, monkeypatch):  # noqa: F811
+    from scripts import common, videomd
+    data = _data(home, "a00")
+    real_move = common.shutil.move
+
+    def move(src, dst):
+        if str(src).endswith(".md"):
+            raise PermissionError("locked")
+        return real_move(src, dst)
+
+    monkeypatch.setattr(common.shutil, "move", move)
+    with pytest.raises(refstore.ScriptError) as e:
+        videomd.trash_video("a00", CAT)
+    assert e.value.code == "trash_failed"
+    assert video_path(home, "a00").exists() and all(p.exists() for p in data)
+    assert (home / "workspace" / "frames" / "a00" / "scene001.jpg").exists()
+    trash = home / "workspace" / "trash"
+    assert not trash.exists() or not any(trash.iterdir())
+
+
+def test_trash_mine_video_updates_stage(client, home, monkeypatch):  # noqa: F811
+    from scripts import videomd
+    write_video(home, "m00", role="mine", title="내 라면")
+    called = []
+    real = refstore.update_stage
+    monkeypatch.setattr(refstore, "update_stage", lambda category: called.append(category) or real(category))
+    result = videomd.trash_video("m00", CAT)
+    assert called == [CAT] and not video_path(home, "m00").exists() and result["typified"] is False
+
+
+def test_trash_route_refuses_while_category_is_typifying(client, home):  # noqa: F811
+    import threading
+    from scripts.ui.jobs import new_item
+    gate = threading.Event()
+
+    def target(job):
+        gate.wait(5)
+        job.finish("done")
+
+    job = client.app.jobs.start("typify", target, items=[new_item(CAT)], category=CAT)
+    try:
+        code, body = client.json("POST", "/api/refs/a00/trash?category=mukbang", {})
+        assert code == 400 and body["error"] == "refs_busy"
+    finally:
+        gate.set()
+    job.join(5)

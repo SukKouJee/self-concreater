@@ -291,7 +291,7 @@ function draftCard(d) {
     });
     li.append(h("div", { class: "inline-confirm", role: "alert" },
       h("p", { class: "warn-text" }, TRASH_WARNING),
-      h("p", { class: "muted hint" }, "잘못 지웠으면 그 폴더에서 drafts/로 파일을 다시 옮기면 됩니다."),
+      h("p", { class: "muted hint" }, "잘못 지웠으면 휴지통 폴더 안의 파일을 같은 경로로 다시 옮기면 됩니다."),
       h("div", { class: "btn-row" }, yes, no)));
   }
   return li;

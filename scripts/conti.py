@@ -25,15 +25,14 @@ import hashlib
 import html
 import json
 import re
-import shutil
 import statistics
 from collections.abc import Callable
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from typing import Any
 
 from scripts import features, fetch, motif, refstore
-from scripts.common import TEMPLATES_DIR, ArgParser, ScriptError, run, work_root, workspace_dir
+from scripts.common import TEMPLATES_DIR, ArgParser, ScriptError, move_to_trash, run, work_root, workspace_dir
 from scripts.features import SHOT_SIZES
 from scripts.report import SLOTS, _vars
 from scripts.videomd import LABELS, _existing_memo, fmt_time, load_cuts
@@ -857,33 +856,6 @@ def trash(conti: str | Path) -> dict:
     if "cuts" not in fm or "script" not in fm:
         raise ScriptError("not_conti", f"콘티 파일이 아닙니다(프런트매터에 script·cuts가 없음): {_rel(path)}")
     return move_to_trash(conti_outputs(path), last=path)
-
-
-def move_to_trash(files: list[Path], last: Path) -> dict:
-    """files를 `workspace/trash/<시각>/`으로 옮긴다. last(지울 대상의 md)는 마지막에 옮겨서, 중간에 실패하면
-    옮긴 것을 되돌리고 md가 남아 화면에서 다시 지울 수 있게 한다. -> {"trash", "moved"}"""
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    n = 1
-    while True:                                  # 같은 초에 두 번 지워도 서로 덮지 않는다
-        folder = workspace_dir("trash", stamp if n == 1 else f"{stamp}-{n}")
-        try:
-            folder.mkdir(parents=True)
-            break
-        except FileExistsError:
-            n += 1
-    files = sorted(files, key=lambda p: p == last)
-    done: list[tuple[Path, Path]] = []
-    try:
-        for src in files:
-            dst = folder / src.name
-            shutil.move(str(src), str(dst))
-            done.append((src, dst))
-    except OSError as e:
-        for src, dst in reversed(done):
-            shutil.move(str(dst), str(src))
-        folder.rmdir()
-        raise ScriptError("trash_failed", f"파일을 옮기지 못했습니다(다른 프로그램이 열어 두었는지 확인하세요): {e}") from e
-    return {"trash": _rel(folder), "moved": [_rel(src) for src, _ in done]}
 
 
 def main(argv: list[str]) -> Any:

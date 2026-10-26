@@ -365,7 +365,7 @@ function trashControls(mine, d) {
     : "기획안을 휴지통 폴더(workspace/trash/)로 옮깁니다";
   const panel = h("div", { class: "inline-confirm", id: "dr-trash", hidden: true },
     h("p", { class: "warn-text" }, what),
-    h("p", { class: "muted hint" }, "잘못 지웠으면 그 폴더의 파일을 drafts/로 다시 옮기면 됩니다."),
+    h("p", { class: "muted hint" }, "잘못 지웠으면 휴지통 폴더 안의 파일을 같은 경로로 다시 옮기면 됩니다."),
     h("div", { class: "btn-row" }, yes, no));
   const open = (on) => {
     panel.hidden = !on;

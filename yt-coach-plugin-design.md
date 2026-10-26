@@ -117,6 +117,7 @@ yt-coach/
 - 이미 md가 있으면 재분석하지 않음 (`--force`로만)
 - `--shots-only <category>`: 기존 영상에 Vision 샷 분류만 보강 (후반, 5.4)
 - 처리 후 `techniques.md` 갱신, 카테고리 단계 안내(4절)
+- 삭제는 지우지 않고 옮긴다: 영상 md와 분석 데이터(workspace/raw·cuts·frames·shots, 다른 카테고리에 같은 영상이 없을 때만)를 `workspace/trash/<시각>/` 아래 같은 상대 경로로(`videomd trash`, UI "레퍼런스 삭제"). `techniques.md`에서 그 출처를 빼고, 유형화 결과는 다시 돌릴 때 반영된다
 
 ### `/yt-typify <category>`
 - **ref만 사용**, mine은 스크립트에서 필터 (끌 수 없음)

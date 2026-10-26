@@ -101,7 +101,7 @@ function syncView(category) {
 
 function freshState(el, params, ctx) {
   syncView(ctx.category);
-  return { el, params, ctx, seq: 0, videos: [], skipped: 0, nodes: {}, countTimer: null };
+  return { el, params, ctx, seq: 0, videos: [], skipped: 0, nodes: {}, countTimer: null, trashing: false };
 }
 
 function loading(title) {
@@ -348,7 +348,57 @@ function renderDetail(data) {
     S.el.append(block);
   }
 
-  S.el.append(pathRow(data.md));
+  const trash = trashControls(v);
+  S.el.append(h("div", { class: "btn-row" }, trash.button), trash.panel, pathRow(data.md));
+}
+
+// ---- delete (moves to workspace/trash/) ------------------------------------------
+
+// "레퍼런스 삭제" button + inline confirm, shown and hidden in place so focus stays put.
+function trashControls(v) {
+  const mine = S;
+  const what = v.role === "mine" ? "내 영상" : "레퍼런스";
+  const whatObj = v.role === "mine" ? "내 영상을" : "레퍼런스를";
+  const button = h("button", { type: "button", class: "btn", "aria-expanded": "false", "aria-controls": "ref-trash" },
+    `${what} 삭제`);
+  const yes = h("button", { type: "button", class: "btn btn-danger" }, "삭제");
+  const no = h("button", { type: "button", class: "btn" }, "취소");
+  const panel = h("div", { class: "inline-confirm", id: "ref-trash", hidden: true },
+    h("p", { class: "warn-text" },
+      `이 ${what}의 md와 분석 데이터(프레임·컷·샷 분류·자막)를 휴지통 폴더(workspace/trash/)로 옮깁니다`),
+    h("p", { class: "muted hint" },
+      "기법 모음에서도 이 영상 출처를 뺍니다. 다른 카테고리에 같은 영상이 있으면 분석 데이터는 그대로 둡니다. 잘못 지웠으면 휴지통 폴더 안의 파일을 같은 경로로 다시 옮기면 됩니다."),
+    h("div", { class: "btn-row" }, yes, no));
+  const open = (on) => {
+    panel.hidden = !on;
+    button.setAttribute("aria-expanded", String(on));
+    (on ? yes : button).focus();
+  };
+  button.addEventListener("click", () => open(panel.hidden));
+  no.addEventListener("click", () => open(false));
+  yes.addEventListener("click", async () => {
+    if (mine.trashing) return;
+    mine.trashing = true;
+    for (const b of [button, yes, no]) b.disabled = true;
+    try {
+      const res = await mine.ctx.api("POST",
+        `/api/refs/${encodeURIComponent(v.id)}/trash?category=${encodeURIComponent(mine.ctx.category)}`, {});
+      const notes = [`${whatObj} 휴지통 폴더로 옮겼습니다: ${res.trash}`];
+      if (res.typified) notes.push("유형화에 들어간 영상이라, 유형화를 다시 하면 결과에서 빠집니다");
+      if (res.techniques_stale) notes.push("기법 모음(techniques.md)에서는 출처를 빼지 못했습니다");
+      mine.ctx.toast(notes.join(" · "), "info");     // even if the user already left
+      if (!alive(mine)) return;
+      location.hash = "#/refs";      // hashchange remounts the list page
+    } catch (e) {
+      if (!alive(mine) || ignorable(e)) return;
+      mine.ctx.toast(e.message, "error");
+      if (e.error === "video_not_found") { location.hash = "#/refs"; return; }
+      mine.trashing = false;
+      for (const b of [button, yes, no]) b.disabled = false;
+      yes.focus();
+    }
+  });
+  return { button, panel };
 }
 
 // ---- section block (view / edit) -----------------------------------------------------

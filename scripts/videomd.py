@@ -4,6 +4,7 @@
   python -m scripts.videomd context <video_id> --category <cat>
   python -m scripts.videomd write <video_id> --category <cat> [--role ref|mine] --analysis <json> [--force]
   python -m scripts.videomd relabel <video_id> --category <cat> --changes <json> --hash <sha256>
+  python -m scripts.videomd trash <video_id> --category <cat>     영상 md와 분석 데이터를 workspace/trash/로 옮긴다
 
 역할 분담
 - Claude(yt-analyze 스킬): 섹션 나누기, 훅·서사 유형, 요약·시놉시스, 기법 → 분석 JSON
@@ -28,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from scripts import refstore
-from scripts.common import ArgParser, ScriptError, run, work_root, workspace_dir
+from scripts.common import ArgParser, ScriptError, move_to_trash, run, work_root, workspace_dir
 from scripts.fetch import check_duplicates, load_raw, speech_density
 
 # 설계서 5절 고정 라벨. 바꾸면 schema_version을 올리고 마이그레이션을 쓴다
@@ -490,6 +491,55 @@ def relabel(video_id: str, category: str, changes: dict, expected_hash: str) -> 
                 "pacing_stale": pacing_stale}
 
 
+# --- 삭제(휴지통) -------------------------------------------------------------------
+
+def video_data(video_id: str) -> list[Path]:
+    """영상 하나의 분석 데이터(workspace/) 중 있는 것: 자막·메타(raw), 컷, 장면 프레임 폴더, 샷 분류."""
+    paths = [workspace_dir("raw", f"{video_id}.json"), workspace_dir("cuts", f"{video_id}.json"),
+             workspace_dir("frames", video_id), workspace_dir("shots", f"{video_id}.json")]
+    return [p for p in paths if p.exists()]
+
+
+def _typified_ids(category: str) -> set[str]:
+    """저장된 유형화 결과에 들어간 영상 id(대표·이상치·축별 묶음 포함). 결과가 없거나 깨졌으면 빈 집합."""
+    try:
+        result = json.loads(workspace_dir("typify", f"{category}.json").read_text("utf-8"))
+        ids = {v for a in result.get("archetypes") or [] for v in a.get("members") or []}
+        ids |= {o.get("id") for o in result.get("outliers") or []}
+        ids |= {v for res in (result.get("axes") or {}).values() for c in res.get("clusters") or []
+                for v in c.get("members") or []}
+    except (OSError, ValueError, AttributeError, TypeError):
+        return set()
+    return ids
+
+
+def trash_video(video_id: str, category: str) -> dict:
+    """레퍼런스(또는 내 영상) 하나를 지운다: 영상 md를 `workspace/trash/<시각>/`으로 옮기고, 다른 카테고리에
+    같은 영상이 없으면 분석 데이터(workspace/raw·cuts·frames·shots)도 함께 옮긴다. 기법 카탈로그에서는
+    그 영상의 출처를 뺀다(다시 분석할 때와 같다). 유형화 결과는 건드리지 않고 typified로 알린다."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", video_id):
+        raise ScriptError("bad_request", f"잘못된 영상 id입니다: {video_id!r}")
+    path = video_md_path(video_id, category)
+    if not path.is_file():
+        raise ScriptError("video_not_found", f"영상 md가 없습니다: {video_id}")
+    elsewhere = [p for p in (work_root() / "refs").glob(f"ref_*/videos/{video_id}.md") if p.resolve() != path.resolve()]
+    data = [] if elsewhere else video_data(video_id)
+    result = move_to_trash([path, *data], last=path)
+    # 여기부터는 옮긴 뒤의 정리다. 실패해도 삭제는 끝났으니 오류 대신 표시만 남긴다.
+    techniques_stale = False
+    if (path.parent.parent / "techniques.md").is_file():
+        try:
+            drop_video_techniques(category, video_id)
+        except (ScriptError, OSError):
+            techniques_stale = True       # 카탈로그가 깨졌거나 다른 프로그램이 열어 두었다
+    try:
+        refstore.update_stage(category)   # index.md의 단계(영상 수 기준)를 줄어든 수에 맞춘다
+    except (ScriptError, OSError):
+        pass
+    return {**result, "kept_data": bool(elsewhere), "typified": video_id in _typified_ids(category),
+            "techniques_stale": techniques_stale}
+
+
 def main(argv: list[str]) -> Any:
     parser = ArgParser(prog="python -m scripts.videomd")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -507,7 +557,13 @@ def main(argv: list[str]) -> Any:
     rl.add_argument("--category", required=True)
     rl.add_argument("--changes", required=True)
     rl.add_argument("--hash", required=True)
+    tr = sub.add_parser("trash")
+    tr.add_argument("video_id")
+    tr.add_argument("--category", required=True)
     args = parser.parse_args(argv)
+
+    if args.cmd == "trash":
+        return trash_video(args.video_id, args.category)
 
     if args.cmd == "context":
         return context(args.video_id, args.category)
