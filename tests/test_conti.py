@@ -684,9 +684,10 @@ def test_trash_moves_conti_and_its_outputs_keeps_draft(saved, draft_md, home):
     trash = home / result["trash"]
     assert trash.is_dir() and trash.is_relative_to(home / "workspace" / "trash")
     names = sorted(Path(p).name for p in result["moved"])
-    assert names == sorted([saved.name, html_path.name, *(p.name for p in extras)])
+    assert names == sorted([saved.name, html_path.name, saved.stem, *(p.name for p in extras)])   # saved.stem = 이력 폴더
     assert not saved.exists() and not html_path.exists() and not any(p.exists() for p in extras)
-    assert all((trash / "drafts" / n).exists() for n in names)     # 같은 상대 경로로 옮긴다
+    assert all((trash / "drafts" / n).exists() for n in names if n != saved.stem)     # 같은 상대 경로로 옮긴다
+    assert (trash / "workspace" / "conti_history" / saved.stem).is_dir()
     assert draft_md.exists() and other.exists()
 
 
@@ -740,8 +741,9 @@ def test_draft_trash_moves_draft_with_its_conti(saved, draft_md, home):
     result = draft.trash(draft_md)
     trash = home / result["trash"]
     names = sorted(Path(p).name for p in result["moved"])
-    assert names == sorted([draft_md.name, saved.name, saved.with_suffix(".html").name, srt.name])
-    assert all((trash / "drafts" / n).exists() for n in names)     # 같은 상대 경로로 옮긴다
+    assert names == sorted([draft_md.name, saved.name, saved.with_suffix(".html").name, srt.name, saved.stem])
+    assert all((trash / "drafts" / n).exists() for n in names if n != saved.stem)     # 같은 상대 경로로 옮긴다
+    assert (trash / "workspace" / "conti_history" / saved.stem).is_dir()
     assert not draft_md.exists() and not saved.exists() and other.exists()
 
 

@@ -9,6 +9,10 @@
   python -m scripts.conti scenes <conti.md> --cut N [--limit 6]       그 컷에 쓸 참고 장면 후보
   python -m scripts.conti cut-context <conti.md> --cut N              컷 하나의 앞뒤 대사·섹션·글자 수 한도
   python -m scripts.conti trash <conti.md>                             콘티와 그 산출물을 workspace/trash/로 옮긴다
+  python -m scripts.conti history <conti.md>                           이력 목록(최신순)
+  python -m scripts.conti history-name <conti.md> --label S [--expect-hash H]   지금 상태에 이름 붙이기
+  python -m scripts.conti history-restore <conti.md> --n N [--expect-hash H]    그 버전으로 되돌리기
+  python -m scripts.conti history-diff <conti.md> --a N [--b M]        버전 비교(--b 생략 = 지금)
 
 conti JSON (yt-conti 규칙)
   {"script": [{"text"}],                                      draft 섹션마다 하나, 같은 순서 (전체 대사)
@@ -527,7 +531,9 @@ def _write_html(md_path: Path, fm: dict) -> Path:
     return out
 
 
-def save(draft: str | Path, conti_json: Path, force: bool = False) -> dict:
+def save(draft: str | Path, conti_json: Path, force: bool = False, now: float | None = None) -> dict:
+    from scripts import conti_history       # conti_history가 이 모듈을 쓰므로 함수 안에서 불러온다
+
     draft_path = _resolve(draft)
     d = parse_draft(draft_path)
     target = conti_path(draft_path)
@@ -544,12 +550,22 @@ def save(draft: str | Path, conti_json: Path, force: bool = False) -> dict:
           "category": d["fm"].get("category"), "title": d["title"], "format": video_format(total),
           "target_sec": total, "speech_cps": rate["cps"], "script": script, "cuts": cuts,
           "schema_version": SCHEMA_VERSION}
+    skipped = None
+    if target.exists():                                  # 다시 만들기: 덮어쓰기 전 상태를 이력에 남긴다
+        try:
+            conti_history.record(target, _load_conti(target), "before_recreate", now=now)
+        except ScriptError as e:
+            if e.code != "invalid_conti":
+                raise
+            skipped = e.message                          # 깨진 파일은 상태를 읽을 수 없어 이력만 건너뛴다(다시 만들기는 계속)
     memo = _existing_memo(target)
     target.write_bytes(refstore.join_frontmatter(fm, render_md(fm, memo)).encode("utf-8"))
     html_path = _write_html(target, fm)
     Path(conti_json).unlink(missing_ok=True)
+    conti_history.record(target, fm, "created", now=now)
     return {"status": "saved", "path": _rel(target), "html": _rel(html_path), "abs_html": str(html_path),
-            "cuts": len(cuts), "speech_cps": rate["cps"], "warnings": warnings(script, cuts, rate["cps"])}
+            "cuts": len(cuts), "speech_cps": rate["cps"], "warnings": warnings(script, cuts, rate["cps"]),
+            **({"history_skipped": skipped} if skipped else {})}
 
 
 def render(conti: str | Path) -> dict:
@@ -654,15 +670,20 @@ def ensure_ids(path: str | Path) -> bool:
     return True
 
 
-def update_cut(conti: str | Path, n: int, fields: dict, expected_hash: str | None = None) -> dict:
+def update_cut(conti: str | Path, n: int, fields: dict, expected_hash: str | None = None,
+               now: float | None = None) -> dict:
     """컷 하나의 line·guide·caption·sfx·ref_frame을 고친다. 본문은 다시 그리되 '## 내 메모'와 줄바꿈 방식은 보존."""
+    from scripts import conti_history
+
     path = _resolve(conti)
     if not path.exists():
         raise ScriptError("conti_not_found", f"콘티가 없습니다: {_rel(path)}")
-    raw = path.read_bytes()
-    if expected_hash is not None and hashlib.sha256(raw).hexdigest() != expected_hash:
+    if expected_hash is not None and hashlib.sha256(path.read_bytes()).hexdigest() != expected_hash:
         raise ScriptError("conti_changed", "파일이 밖에서 바뀌었습니다. 다시 불러오세요")
     edit = _check_edit(fields)
+    ensure_ids(path)                                     # 편집 전 상태를 이력에 남기려면 id가 파일에 있어야 한다
+    conti_history.check_external(path, _load_conti(path), now)
+    raw = path.read_bytes()
     fm = _load_conti(path)
     cut = _find_cut(fm["cuts"], n)
     for key, value in edit.items():
@@ -679,6 +700,7 @@ def update_cut(conti: str | Path, n: int, fields: dict, expected_hash: str | Non
     body = render_md(fm, memo).replace("\n", nl)
     path.write_bytes(refstore.join_frontmatter(fm, body, nl).encode("utf-8"))
     html_path = _write_html(path, fm)
+    conti_history.record(path, fm, "auto", now=now)
     return {"status": "updated", "path": _rel(path), "html": _rel(html_path), "abs_html": str(html_path),
             "hash": content_hash(path), "cut": _find_cut(fm["cuts"], n),
             "warnings": warnings(fm["script"], fm["cuts"], fm["speech_cps"])}
@@ -902,6 +924,14 @@ def conti_outputs(path: Path) -> list[Path]:
     return [path.with_name(n) for n in names if path.with_name(n).is_file()]
 
 
+def trash_targets(path: Path) -> list[Path]:
+    """콘티를 지울 때 함께 옮길 것: 산출물 + 이력 폴더(있으면)."""
+    from scripts import conti_history
+
+    history = conti_history.history_dir(path)
+    return [*conti_outputs(path), *([history] if history.is_dir() else [])]
+
+
 def trash(conti: str | Path) -> dict:
     """콘티를 지운다: 콘티 md와 그 산출물을 `workspace/trash/<시각>/`으로 옮긴다(되돌릴 수 있게). 기획안은 그대로."""
     path = safe_draft_path(str(conti), conti_file=True)       # drafts/ 안의 콘티 파일만
@@ -911,7 +941,7 @@ def trash(conti: str | Path) -> dict:
     fm, _ = refstore.read_md(path)
     if "cuts" not in fm or "script" not in fm:
         raise ScriptError("not_conti", f"콘티 파일이 아닙니다(프런트매터에 script·cuts가 없음): {_rel(path)}")
-    return move_to_trash(conti_outputs(path), last=path)
+    return move_to_trash(trash_targets(path), last=path)
 
 
 def main(argv: list[str]) -> Any:
@@ -941,9 +971,33 @@ def main(argv: list[str]) -> Any:
     sr.add_argument("--track", choices=sorted(SRT_TRACKS), default="caption")
     sr.add_argument("--video", default=None)
     sub.add_parser("trash").add_argument("conti")
+    sub.add_parser("history").add_argument("conti")
+    hn = sub.add_parser("history-name")
+    hn.add_argument("conti")
+    hn.add_argument("--label", required=True)
+    hn.add_argument("--expect-hash", dest="expect_hash", default=None)
+    hr = sub.add_parser("history-restore")
+    hr.add_argument("conti")
+    hr.add_argument("--n", type=int, required=True)
+    hr.add_argument("--expect-hash", dest="expect_hash", default=None)
+    hd = sub.add_parser("history-diff")
+    hd.add_argument("conti")
+    hd.add_argument("--a", type=int, required=True)
+    hd.add_argument("--b", type=int, default=None)
     args = parser.parse_args(argv)
     if args.cmd == "trash":
         return trash(args.conti)
+    if args.cmd.startswith("history"):
+        from scripts import conti_history
+
+        if args.cmd == "history":
+            conti_history.baseline(args.conti)
+            return conti_history.list_versions(args.conti)
+        if args.cmd == "history-name":
+            return conti_history.name(args.conti, args.label, args.expect_hash)
+        if args.cmd == "history-restore":
+            return conti_history.restore(args.conti, args.n, args.expect_hash)
+        return conti_history.diff_versions(args.conti, args.a, args.b)
     if args.cmd == "srt":
         return export_srt(args.conti, args.track, args.video)
     if args.cmd == "context":

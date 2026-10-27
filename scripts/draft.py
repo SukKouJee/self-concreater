@@ -372,7 +372,7 @@ def trash(draft_md: str | Path) -> dict:
     path = conti.safe_draft_path(str(draft_md), conti_file=False)     # drafts/ 안의 기획안만
     if not path.is_file():
         raise ScriptError("draft_not_found", f"기획안을 찾을 수 없습니다: {draft_md}")
-    return move_to_trash([path, *conti.conti_outputs(conti.conti_path(path))], last=path)
+    return move_to_trash([path, *conti.trash_targets(conti.conti_path(path))], last=path)
 
 
 def main(argv: list[str]) -> Any:

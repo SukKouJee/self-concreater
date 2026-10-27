@@ -496,7 +496,7 @@ def test_trash_route_moves_files_and_list_updates(client, home, draft_md):
     saved = saved_conti(home, draft_md)
     status, body = client.json("POST", "/api/conti/trash", {"path": rel(home, saved)})
     assert status == 200, body
-    assert body["trash"].startswith("workspace/trash/") and len(body["moved"]) == 2
+    assert body["trash"].startswith("workspace/trash/") and len(body["moved"]) == 3   # md, html, 이력 폴더
     assert not saved.exists() and draft_md.exists()
     [d] = client.json("GET", "/api/drafts")[1]["drafts"]
     assert d["conti"] is None and d["html"] is None
@@ -541,7 +541,7 @@ def test_draft_trash_route(client, home, draft_md):
     saved = saved_conti(home, draft_md)
     status, body = client.json("POST", "/api/draft/trash", {"path": rel(home, draft_md)})
     assert status == 200, body
-    assert body["trash"].startswith("workspace/trash/") and len(body["moved"]) == 3
+    assert body["trash"].startswith("workspace/trash/") and len(body["moved"]) == 4   # draft, md, html, 이력 폴더
     assert not draft_md.exists() and not saved.exists()
     assert client.json("GET", "/api/drafts")[1]["drafts"] == []
     status, resp = client.json("POST", "/api/draft/trash", {"path": rel(home, draft_md)})
