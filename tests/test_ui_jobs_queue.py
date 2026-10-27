@@ -350,3 +350,19 @@ def test_manager_queues_start_tasks_before_the_worker_runs() -> None:
     job.join(5)
 
     assert seen == [{"kind": "collect", "index": 0}]
+
+
+def test_manager_latest_where_scans_newest_first() -> None:
+    from scripts.ui.jobs import JobManager
+
+    mgr = JobManager()
+    first = mgr.start("collect", lambda j: None, items=[new_item("a")])
+    first.join(5)
+    second = mgr.start("collect", lambda j: None, items=[new_item("b")])
+    second.join(5)
+    other = mgr.start("conti", lambda j: None)
+    other.join(5)
+
+    assert mgr.latest_where("collect", lambda j: True) is second
+    assert mgr.latest_where("collect", lambda j: j.items[0]["id"] == "a") is first
+    assert mgr.latest_where("collect", lambda j: False) is None

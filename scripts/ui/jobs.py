@@ -436,6 +436,14 @@ class JobManager:
         with self._lock:
             return self._latest.get(kind)
 
+    def latest_where(self, kind: str, pred: Callable[[Job], bool]) -> Job | None:
+        """그 kind 중 pred를 만족하는 가장 최근 작업(최신부터 본다). pred는 매니저 잠금 아래에서 불린다."""
+        with self._lock:
+            for job in reversed(list(self._jobs.values())):
+                if job.kind == kind and pred(job):
+                    return job
+        return None
+
     def active(self, kind: str) -> list[Job]:
         """그 kind의 아직 도는 작업 전부(콘티 만들기처럼 동시에 여러 개가 돌 수 있는 kind도 빠짐없이)."""
         with self._lock:

@@ -538,6 +538,54 @@ def test_new_job_adopts_leftover_reviews(client, fakes):
     assert fakes.shot_ctx_calls == [A]
 
 
+def test_new_job_adopts_reviews_even_after_shots_only_job(client, fakes):
+    fakes.fetch_errors[B] = ScriptError("blocked", "유튜브가 요청을 막았습니다")
+    old = start_add(client, [url(A), url(B)])
+    old = wait_for(client, old["id"], finished)
+    assert old["status"] == "stopped" and in_review(0)(old)
+    fakes.pending = [C]
+    status, body = client.json("POST", "/api/add/shots-only", {"category": CAT})
+    assert status == 200
+    wait_for(client, body["job"]["id"], finished)
+
+    new = start_add(client, [url(D)])
+
+    assert [i["id"] for i in new["items"]] == [A, url(D)]
+    assert in_review(0)(new) and new["items"][0]["preview"]["summary"] == "한 줄 요약"
+    moved = snap(client, old["id"])["items"][0]
+    assert (moved["state"], moved["message"]) == ("skipped", "새 작업으로 옮김")
+
+
+def test_add_while_cancelled_job_winds_down_says_stopping(client, fakes):
+    entered, release = gate(fakes, A)
+    job = start_add(client, [url(A)])
+    assert entered.wait(5)
+    status, _ = client.json("POST", f"/api/jobs/{job['id']}/cancel", {})
+    assert status == 200
+
+    status, body = client.json("POST", "/api/add", {"category": CAT, "links": [url(B)]})
+
+    release.set()
+    assert status == 400 and body["error"] == "job_stopping"
+    assert body["message"] == "작업을 멈추는 중입니다. 잠시 뒤 다시 넣어 주세요"
+    wait_for(client, job["id"], finished)
+
+
+def test_broken_item_options_fail_only_that_video(client, fakes):
+    entered, release = gate(fakes, A)
+    job = start_add(client, [url(A), url(B)])
+    assert entered.wait(5)
+    live = client.app.jobs.get(job["id"])
+    broken = dict(jobs.new_item(url(C), url=url(C)), opts={"category": CAT, "bogus": True})
+    assert live.append_queued([broken], "collect", api_add._same_video) == [2]
+    release.set()
+
+    job = wait_for(client, job["id"], lambda j: j["items"][2]["state"] == "failed" and in_review(1)(j))
+
+    assert in_review(0)(job) and job["status"] == "awaiting"
+    assert job["items"][2]["message"].startswith("예상치 못한 오류: TypeError")
+
+
 def test_reanalyze_queues_and_returns_to_review(client, fakes):
     job = start_add(client, [url(A)])
     wait_for(client, job["id"], in_review(0))

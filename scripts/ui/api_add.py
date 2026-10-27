@@ -69,6 +69,7 @@ MSG_SHOTS_STOPPED = "샷 분류는 작업이 멈춰 건너뛰었어요"
 MSG_REANALYZE_STOPPED = "작업이 멈춰 다시 분석하지 못했습니다"
 MSG_REANALYZE_FAILED = "다시 분석하지 못했습니다"
 MSG_JOB_STOPPED = "작업이 멈춰 다시 분석할 수 없습니다. 링크를 다시 넣어 주세요"
+MSG_JOB_STOPPING = "작업을 멈추는 중입니다. 잠시 뒤 다시 넣어 주세요"
 MSG_USE_REVIEW = "레퍼런스 확인은 /api/add/<작업>/review/<항목> 경로로 보내 주세요"
 MSG_NO_FRAMES = "컷 통계가 없어 샷 분류를 건너뜁니다"
 COLLECT_ROWS = ("fetch", "cuts", "analyze")
@@ -501,23 +502,28 @@ class Collector:
                 job.update(index, state="skipped", message=message)
 
     def _collect_task(self, job: Job, index: int) -> ScriptError | None:
-        opts = AddOptions.of(job.item(index))
-        clock = self._new_clock(job, index, [*COLLECT_ROWS, *([SHOTS_ROW] if opts.shots else [])])
+        clock: _StepClock | None = None
+
+        def settle_failed() -> None:
+            if clock is not None:
+                clock.fail_running()   # 실패·취소: 달리던 줄은 기록하지 않고 실패로 둔다
+                clock.skip_pending()
+
         try:
+            # 옵션 읽기도 영상 하나의 일이다: 항목 하나의 opts가 깨져도 그 영상만 실패한다
+            opts = AddOptions.of(job.item(index))
+            clock = self._new_clock(job, index, [*COLLECT_ROWS, *([SHOTS_ROW] if opts.shots else [])])
             in_review = self._collect(job, index, clock, opts)
         except JobCancelled:
-            clock.fail_running()
-            clock.skip_pending()
+            settle_failed()
             raise
         except ScriptError as e:
-            clock.fail_running()   # 실패: 달리던 줄은 기록하지 않고 실패로 둔다
-            clock.skip_pending()
+            settle_failed()
             job.update(index, state="failed", message=e.message)
             return e if e.code in STOP_CODES else None
         except Exception as e:  # noqa: BLE001 - 한 영상의 버그가 남은 영상까지 막지 않게 한다
             traceback.print_exc(file=sys.stderr)
-            clock.fail_running()
-            clock.skip_pending()
+            settle_failed()
             job.update(index, state="failed", message=f"예상치 못한 오류: {type(e).__name__}: {e}")
             return None
         if not in_review:
@@ -824,9 +830,17 @@ def _collector(job: Job) -> Collector | None:
     return job.target if isinstance(job.target, Collector) else None
 
 
-def _start_collect(app: Any, previous: Job | None, items: list[dict], category: str) -> Job:
-    """새 collect 작업을 시작한다. 직전 collect 작업에 남은 확인 대기 영상은 새 작업 앞쪽으로 옮겨 온다."""
-    old = _collector(previous) if previous is not None and not previous.is_active() else None
+def _has_leftover_reviews(job: Job) -> bool:
+    return not job.is_active() and _collector(job) is not None and not job.review_done()
+
+
+def _start_collect(app: Any, items: list[dict], category: str) -> Job:
+    """새 collect 작업을 시작한다. 확인 대기가 남은 가장 최근의 멈춘 collect 작업에서 그 영상들을 앞쪽으로 옮겨 온다.
+
+    가장 최근 작업만 보지 않는 까닭: 그 사이에 샷 분류 보강(같은 kind)이 돌았어도 확인 대기를 잃지 않게.
+    """
+    previous = app.jobs.latest_where(KIND, _has_leftover_reviews)
+    old = _collector(previous) if previous is not None else None
     released = previous.release_reviews(MSG_MOVED) if previous is not None and old is not None else []
     adopted = [item for _, item in released]
     fresh = _fresh(items, adopted)
@@ -876,8 +890,11 @@ def _add(req: Request) -> dict:
         if indexes is not None:
             snapshot = current.snapshot()
             return {"job": snapshot, "appended": [snapshot["items"][i]["id"] for i in indexes]}
+        if current.is_active():
+            # 줄이 닫혔는데 아직 진행 중: 취소·중단 코드로 멈추는 중이다(곧 stopped가 된다)
+            raise ScriptError("job_stopping", MSG_JOB_STOPPING)
         # 그사이 작업이 끝났다: 새 작업으로 시작한다
-    job = _start_collect(req.app, current, items, category)
+    job = _start_collect(req.app, items, category)
     return {"job": job.snapshot()}
 
 
