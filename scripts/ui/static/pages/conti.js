@@ -1919,7 +1919,7 @@ function dropCut(id, place) {
 // it and gives the focus back to the button. Server calls: GET /api/conti/history (+ /diff), POST /name, /restore.
 
 const NAME_MAX = 30;
-const NAME_IDEAS = ["촬영 전", "편집 시작 전", "컷 순서 확정"];
+const NAME_IDEAS = ["기획 완료", "촬영 후", "편집 중"];
 const RESTORE_NOTE = "지금 상태도 이력에 남아 있어 다시 되돌릴 수 있어요";
 const BUSY_TEXT = "저장 중이에요. 잠시 뒤 다시 눌러 주세요";
 const STATUS_TEXT = { same: "", changed: "바뀜", moved: "옮김", removed: "빠짐", added: "새 컷" };
@@ -2033,7 +2033,7 @@ function refreshHistory() {
 
 function nameBox() {
   const H = S.hist;
-  const input = h("input", { type: "text", id: "hist-name", class: "hist-name", maxlength: String(NAME_MAX), autocomplete: "off", placeholder: "예: 촬영 전" });
+  const input = h("input", { type: "text", id: "hist-name", class: "hist-name", maxlength: String(NAME_MAX), autocomplete: "off", placeholder: "예: 촬영 후" });
   const save = h("button", { type: "submit", class: "btn btn-primary btn-sm" }, "이름 붙이기");
   const note = h("p", { class: "error hist-err", role: "alert" });
   const ideas = h("div", { class: "hist-ideas", role: "group", "aria-label": "이름 후보" },
