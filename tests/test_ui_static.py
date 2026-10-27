@@ -994,3 +994,40 @@ def test_topbar_fits_380px_phones():
     assert ".cat-select { min-width: 88px" not in css
     assert ".cat-select { min-width: 64px; flex: 0 1 auto; }" in css
     assert ".topbar .btn:not(.btn-icon) { padding: 6px var(--sp-3); }" in css
+
+
+def test_footage_area_contract_and_safety():
+    js = (STATIC_DIR / "footage-area.js").read_text(encoding="utf-8")
+    for token in [
+        "/api/footage?path=", "/api/footage/folders", "/api/footage/folders/remove", "/api/footage/process",
+        "/api/footage/choose", "/api/footage/not-filmed", "/api/footage/reset", "/api/footage/suggestions/hide",
+        "/api/footage/suggestions/insert", "/api/footage/remaining", "/api/footage/csv", "/api/footage/clips",
+        "/api/jobs/", "/cancel", "cut_not_linked", "conti_changed", "isCurrent()", "clearTimeout", "aria-live",
+        "aria-expanded", "aria-pressed", "filesUrl", "mediaUrl", "frameUrl",
+        # copy from the brief and controller rulings, verbatim
+        "촬영 영상", "폴더 더하기", "빼기", "새 파일 처리하고 맞추기", "멈추기", "지금 파일이 끝나면 멈춰요",
+        "전체", "남은 컷", "확인 필요", "이걸로", "재생", "못 찍음으로", "이 컷 뒤에 넣기", "숨기기",
+        "폰용 남은 컷 만들기", "CSV 받기", "컷 파일 만들기", "시작이 몇 초 앞당겨질 수 있어요",
+        "이 영상은 브라우저에서 재생할 수 없어요", "원본 없음", "새 컷 후보",
+    ]:
+        assert token in js, token
+    # a <video> that cannot play (HEVC in Chrome) falls back to the photo strip
+    assert 'h("video"' in js and '"error"' in js
+    for banned in ["innerHTML", "outerHTML", "insertAdjacentHTML", "window.confirm", "confirm(", "alert(", "prompt(",
+                   "http://", "https://", "localStorage"]:
+        assert banned not in js, banned
+
+
+def test_conti_editor_mounts_footage_area_and_shows_verdict_dots():
+    js = (STATIC_DIR / "pages" / "conti.js").read_text(encoding="utf-8")
+    for token in ['from "/static/footage-area.js"', "mountFootageArea", "verdict-dot", "sr-only"]:
+        assert token in js, token
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    for cls in [".footage", ".verdict-dot", ".v-badge", ".fc-card", ".fc-strip", ".fc-filter"]:
+        assert cls in css, cls
+
+
+def test_footage_files_served(client):
+    for rel in ["footage-area.js", "footage-utils.js"]:
+        status, headers, _ = client.call("GET", f"/static/{rel}")
+        assert status == 200 and "javascript" in headers["Content-Type"], rel

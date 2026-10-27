@@ -9,6 +9,8 @@ import {
   SHOT_SIZES, alignCuts, canRemove, changeText, collapseChanges, dropTarget, fieldText, fmtClock, fmtDelta, fmtWhen, snapSec, stepMove,
   versionLabel,
 } from "/static/conti-utils.js";
+import { mountFootageArea } from "/static/footage-area.js";
+import { KIND_TEXT, kindGroup } from "/static/footage-utils.js";
 
 const POLL_MS = 1000;
 const POLL_MAX_MS = 15000;
@@ -114,6 +116,7 @@ function freshState(el, params, ctx) {
     scenes: new Map(), alts: new Map(), forms: new Map(),
     nodes: {}, live: null, lastAnnounce: "",
     editing: false, undo: null, menu: null, drag: null, hist: freshHist(),
+    footage: null, verdicts: new Map(),
   };
 }
 
@@ -539,7 +542,7 @@ async function loadEditor(keep = false) {
     mine.conflict = false;
     if (mine.sel !== null && !data.cuts.some((c) => c.n === mine.sel)) mine.sel = null;
     if (!keep || !mine.nodes.board) renderEditor();
-    else { renderHeader(); renderCutList(); renderPanel(); }
+    else { renderHeader(); renderCutList(); renderPanel(); if (mine.footage) mine.footage.refresh(); }
     if (!mine.fitChecked) { mine.fitChecked = true; resumeFit(); }
     if (!mine.cvChecked) { mine.cvChecked = true; loadCaptionVideo(); }
     refreshHistory();
@@ -572,7 +575,7 @@ function renderEditor() {
   S.nodes.panel = h("section", { class: "cut-panel", "aria-labelledby": "panel-title" });
   S.nodes.board = h("div", { class: `conti-board ${vertical ? "is-vertical" : "is-wide"}` },
     h("div", { class: "cut-col" }, S.nodes.tools, S.nodes.list), S.nodes.panel);
-  S.el.append(S.nodes.header, S.nodes.conflict, S.nodes.board);
+  S.el.append(S.nodes.header, S.nodes.conflict, footageArea().el, S.nodes.board);
   S.nodes.list.addEventListener("keydown", onListKey);
   wireDrag(S.nodes.list);
   S.nodes.list.parentElement.addEventListener("scroll", closeMenu, { passive: true });
@@ -588,6 +591,51 @@ function renderEditor() {
   renderCutList();
   renderPanel();
   mountHistory();
+}
+
+// ---- footage area (촬영 영상) -------------------------------------------------------------
+// Mounted once per editor visit; renderEditor re-appends the same element. The area reports verdicts per cut id
+// (dots in the cut list) and asks for an editor reload after it inserted a suggested cut.
+
+function footageArea() {
+  if (S.footage) return S.footage;
+  const mine = S;
+  S.footage = mountFootageArea(S.ctx, {
+    path: S.data.path,
+    getConti: () => mine.data,
+    getHash: () => mine.hash,
+    onVerdicts: (map) => {
+      mine.verdicts = map;
+      if (alive(mine) && mine.nodes.list) renderCutList();
+    },
+    onContiChanged: async ({ cutId } = {}) => {
+      if (!alive(mine)) return;
+      await loadEditor(true);
+      if (!alive(mine) || !cutId) return;
+      const cut = mine.data.cuts.find((c) => c.id === cutId);
+      if (cut) showEdited(cut.id, true);
+    },
+    onSelectCut: (id) => {
+      if (!alive(mine)) return;
+      const cut = mine.data.cuts.find((c) => c.id === id);
+      if (!cut) return;
+      selectCut(cut.n);
+      const row = mine.nodes.list.querySelector(`[data-nav="cut:${CSS.escape(id)}"]`);
+      if (row) { row.scrollIntoView({ block: "nearest" }); if (!window.matchMedia(NARROW).matches) row.focus({ preventScroll: true }); }
+    },
+  });
+  return S.footage;
+}
+
+const DOT_TEXT = { filmed: "촬영: 찍음", review: "촬영: 확인 필요", remaining: "촬영: 남은 컷" };
+
+function verdictDot(c) {
+  const v = S.verdicts.get(c.id);
+  if (!v) return null;
+  const group = kindGroup(v.kind);
+  const label = v.kind === "not_filmed" ? `촬영: ${KIND_TEXT.not_filmed}` : DOT_TEXT[group];
+  return h("span", { class: `verdict-dot vd-${group}`, title: label },
+    h("span", { class: "sr-only" }, label));
 }
 
 function renderHeader() {
@@ -1095,6 +1143,8 @@ function cutRow(c, w, isTab) {
     h("span", { class: "cut-n" }, `#${c.n}`),
     h("span", { class: "cut-size" }, c.size),
     h("span", { class: "cut-sec" }, fmtSec(c.sec)));
+  const dot = verdictDot(c);
+  if (dot) top.append(dot);
   if (w) top.append(h("span", { class: "warn-icon", title: "대사가 길어요" }, "⚠", h("span", { class: "sr-only" }, "대사가 깁니다")));
   const body = h("span", { class: "cut-body" }, top,
     h("span", { class: "cut-line" + (c.line ? "" : " muted") }, c.line || "(대사 없음)"));
@@ -1722,6 +1772,7 @@ function showEdited(focusId, select) {
     announce(`컷 ${cut.n}`);
   }
   refreshHistory();
+  if (S.footage) S.footage.refresh();
 }
 
 async function insertCut(at, section) {
@@ -2333,6 +2384,7 @@ export async function mount(el, params, ctx) {
 }
 
 export function unmount() {
+  if (S && S.footage) S.footage.unmount();
   stopPolling();
   closeMenu(false);
   clearUndo();

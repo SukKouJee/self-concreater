@@ -12,7 +12,8 @@
 - 원본 서빙(`/api/footage/media/<fid>?path=<콘티>`): 그 콘티의 연결 폴더 바로 아래에서 지금 찾은 파일만 내준다.
   실제 경로를 다시 풀어 폴더 밖(링크 탈출·하위 폴더)이면 거절하고, 지문을 다시 계산해 맞을 때만 내준다.
   폴더를 빼면 곧바로 404. Range(206, Content-Range, Accept-Ranges)를 지원하고 나눠 읽어 보낸다(수 GB 파일).
-- 사진 서빙(`/api/footage/frame/<fid>/<rel>`): footage_dir(fid) 안의 .jpg만.
+- 사진 서빙(`/api/footage/frame/<fid>/<rel>`): footage_dir(fid) 안의 .jpg만. 화면 응답의 후보·선택·새 컷 후보는
+  구간과 겹치는 장면의 대표 사진 경로(`frames`, CARD_FRAMES장까지)를 함께 싣는다(카드 사진·재생 못 할 때 대신 보임).
 - 결과물(footage_out): `remaining`(폰용 남은 컷 HTML)·`csv`(위치 목록)는 바로 쓰고 경로·/files 주소를 돌려준다.
   `clips`(컷 파일)는 작업 kind "footage_clips" — 진행 항목은 고른 구간이 있는 컷마다 하나, 취소는 컷 사이에서.
   원본이 없는 컷은 skipped(이유 `원본 없음`), 다시 압축한 컷은 message "다시 압축함".
@@ -54,6 +55,7 @@ MSG_NO_FILES = "연결된 폴더에 영상 파일(.mp4 .mov .m4v .mkv)이 없습
 MEDIA_TYPES = {".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime", ".mkv": "video/x-matroska"}
 FILMED = frozenset({"auto", "pinned"})
 REMAINING = frozenset({"missing", "not_filmed"})
+CARD_FRAMES = 4                   # 카드(후보·선택·새 컷 후보)에 싣는 대표 사진 수
 
 
 # ---- 입력 ----------------------------------------------------------------------------
@@ -163,20 +165,39 @@ class _Sources:
 
     def __init__(self, linked: list[_Linked]) -> None:
         self.present = {f["fid"]: f["name"] for item in linked for f in item.files}
-        self._names: dict[str, str | None] = {}
+        self._cache: dict[str, dict | None] = {}
+
+    def _cached(self, fid: str) -> dict | None:
+        if fid not in self._cache:
+            self._cache[fid] = footage.cached_result(fid) if footage.valid_fid(fid) else None
+        return self._cache[fid]
 
     def name(self, fid: str) -> str | None:
         if fid in self.present:
             return self.present[fid]
-        if fid not in self._names:
-            cached = footage.cached_result(fid) if footage.valid_fid(fid) else None
-            self._names[fid] = cached.get("name") if cached else None
-        return self._names[fid]
+        cached = self._cached(fid)
+        return cached.get("name") if cached else None
+
+    def frames(self, fid: str, start: Any, end: Any) -> list[str]:
+        """구간과 겹치는 장면들의 대표 사진(footage_dir 기준 상대 경로), 고르게 CARD_FRAMES장까지."""
+        cached = self._cached(fid)
+        try:
+            lo, hi = float(start), float(end)
+        except (TypeError, ValueError):
+            return []
+        found = [rel for s in (cached or {}).get("scenes") or []
+                 if float(s.get("start", 0)) < hi and float(s.get("end", 0)) > lo
+                 for rel in s.get("frames") or [] if isinstance(rel, str)]
+        if len(found) <= CARD_FRAMES:
+            return found
+        step = (len(found) - 1) / (CARD_FRAMES - 1)
+        return [found[round(i * step)] for i in range(CARD_FRAMES)]
 
     def mark(self, item: dict) -> dict:
         fid = item.get("fid")
         ok = isinstance(fid, str)
-        return {**item, "name": self.name(fid) if ok else None, "missing_source": not (ok and fid in self.present)}
+        return {**item, "name": self.name(fid) if ok else None, "missing_source": not (ok and fid in self.present),
+                "frames": self.frames(fid, item.get("start"), item.get("end")) if ok else []}
 
 
 def _counts(cuts: list[dict]) -> dict:

@@ -857,3 +857,37 @@ def test_trash_refused_while_footage_job_runs_on_that_conti(client, rel, saved, 
     finally:
         gate.set()
         running.join(5)
+
+
+# --- 카드 사진 (Task 5: 확인 필요·새 컷 후보 카드의 대표 사진) ----------------------------------
+
+def seed_scenes(fid, scenes):
+    base = footage.footage_dir(fid)
+    base.mkdir(parents=True, exist_ok=True)
+    record = {"schema": 1, "fid": fid, "name": "a.mp4", "status": "done", "decoder": "pyav",
+              "duration_sec": 30.0, "scenes": scenes}
+    (base / "scenes.json").write_text(json.dumps(record), encoding="utf-8")
+
+
+def test_view_items_carry_frames_of_overlapping_scenes(client, rel, saved):
+    seed_scenes(FID, [
+        {"i": 0, "start": 0.0, "end": 3.0, "frames": ["frames/s000_0.jpg", "frames/s000_1.jpg"], "montage": "m0.jpg"},
+        {"i": 1, "start": 3.0, "end": 8.0, "frames": [f"frames/s001_{k}.jpg" for k in range(6)], "montage": "m1.jpg"},
+        {"i": 2, "start": 8.0, "end": 30.0, "frames": ["frames/s002_0.jpg"], "montage": "m2.jpg"},
+    ])
+    cid = conti._load_conti(saved)["cuts"][0]["id"]
+    body = client.json("POST", "/api/footage/choose", {"path": rel, "cut": cid, "fid": FID, "start": 1.0, "end": 2.0})[1]
+    cut = next(c for c in body["cuts"] if c["id"] == cid)
+    assert cut["choice"]["frames"] == ["frames/s000_0.jpg", "frames/s000_1.jpg"]
+    suggestion_state(rel)                                      # 4.0–7.2: scene 1 only, capped to 4 evenly
+    view = client.json("GET", f"/api/footage?path={q(rel)}")[1]
+    frames = view["suggestions"][0]["frames"]
+    assert len(frames) == api_footage.CARD_FRAMES == 4
+    assert frames[0] == "frames/s001_0.jpg" and frames[-1] == "frames/s001_5.jpg"
+
+
+def test_view_items_without_cache_have_no_frames(client, rel, saved):
+    cid = conti._load_conti(saved)["cuts"][0]["id"]
+    body = client.json("POST", "/api/footage/choose", {"path": rel, "cut": cid, "fid": FID, "start": 1.0, "end": 2.0})[1]
+    cut = next(c for c in body["cuts"] if c["id"] == cid)
+    assert cut["choice"]["frames"] == []
