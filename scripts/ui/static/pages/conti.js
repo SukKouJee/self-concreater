@@ -1348,7 +1348,7 @@ function renderScenes(n) {
   }
   if (rec.items.length === 0) {
     box.append(h("p", { class: "muted" },
-      `이 카테고리 레퍼런스에서 '${cut.size}' 장면을 찾지 못했습니다. 레퍼런스 추가에서 "샷 분류도 함께"로 분석하면 후보가 생깁니다.`));
+      `이 카테고리 레퍼런스에서 '${cut.size}' 장면을 찾지 못했습니다. 레퍼런스 화면에서 "샷 분류도 함께"로 분석하면 후보가 생깁니다.`));
   } else {
     box.append(h("p", { class: "muted small" }, "같은 샷 크기·섹션의 레퍼런스 프레임입니다. 누르면 이 컷의 참고 프레임으로 고정합니다."));
     const grid = h("ul", { class: "scene-grid" });

@@ -337,3 +337,20 @@ def test_restart_same_sub_has_no_prior_elapsed(clock: Clock, recorded: list) -> 
     t.done("analyze")
     t.start("analyze")
     assert "prior_elapsed" not in job.timing["steps"]["analyze"]
+
+
+def test_rebind_publishes_same_timing_to_new_job_and_index(clock: Clock, recorded: list) -> None:
+    old, t = make()
+    t.start("fetch")
+    clock.advance(2)
+    t.done("fetch")
+    new = FakeJob()
+
+    t.rebind(new, 3)  # type: ignore[arg-type]
+
+    assert new.calls[-1][0] == 3
+    assert new.timing["steps"]["fetch"]["state"] == "done"
+    before = len(old.calls)
+    t.skip("cuts")
+    assert len(old.calls) == before
+    assert new.timing["steps"]["cuts"]["state"] == "skipped"

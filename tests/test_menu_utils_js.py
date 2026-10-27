@@ -43,6 +43,7 @@ def test_no_imports():
     ("#/diagnose", "#/diagnose/x", True),
     ("#/report", "#/report/x", True),
     ("#/guide", "#/guide/shorts", True),
+    ("#/refs", "#/add", True),                  # 추가 칸은 레퍼런스 화면의 일부
     ("#/add", "#/add/x", False),                # 하위 경로가 없는 메뉴는 정확히 같을 때만
     ("#/refs", "#/refsx", False),
     ("#/home", "#/add", False),

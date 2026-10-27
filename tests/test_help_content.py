@@ -3,10 +3,11 @@ import re
 from pathlib import Path
 
 HELP_DIR = Path(__file__).resolve().parent.parent / "docs" / "help"
-SCREEN_PAGES = ["home", "add", "refs", "library", "typify", "report", "motif",
+SCREEN_PAGES = ["home", "refs", "library", "typify", "report", "motif",
                 "draft", "conti", "diagnose", "mission", "guide"]
 SECTIONS = ["무엇을 하나요", "사용 예", "이렇게 나와요", "알아 둘 것", "다음 단계"]
 LINK_RE = re.compile(r"\(#/([a-z]+)")
+ROUTE_ALIASES = {"add"}  # #/add opens the 레퍼런스 screen (help page: refs)
 
 
 def _read(name):
@@ -33,7 +34,7 @@ def test_screen_md_sections_in_order():
 
 
 def test_guides_exist_and_link_routes():
-    allowed = set(SCREEN_PAGES) - {"guide"}
+    allowed = (set(SCREEN_PAGES) - {"guide"}) | ROUTE_ALIASES
     for name in ("guide-shorts", "guide-long"):
         text = _read(name)
         links = LINK_RE.findall(text)
@@ -44,4 +45,4 @@ def test_guides_exist_and_link_routes():
 def test_help_links_are_known_routes():
     for page in SCREEN_PAGES:
         for x in LINK_RE.findall(_read(page)):
-            assert x in SCREEN_PAGES, (page, x)
+            assert x in SCREEN_PAGES or x in ROUTE_ALIASES, (page, x)

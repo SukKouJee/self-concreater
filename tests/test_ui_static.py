@@ -3,7 +3,7 @@ import re
 from scripts.ui.server import STATIC_DIR
 from tests.test_ui_server import client, no_browser  # noqa: F401  (fixture 재사용)
 
-MENU_NAMES = ["홈", "레퍼런스 추가", "레퍼런스 목록", "공용 라이브러리", "유형화", "리포트", "모티브", "기획안", "콘티", "진단", "미션", "가이드"]
+MENU_NAMES = ["홈", "레퍼런스", "공용 라이브러리", "유형화", "리포트", "모티브", "기획안", "콘티", "진단", "미션", "가이드"]
 # yt-draft is no longer a terminal-only item: the draft screen is a live route.
 # diagnose is live too: its terminal command no longer appears in the menu definition.
 # mission and report are live too: no menu item shows a terminal command any more.
@@ -53,8 +53,8 @@ def test_page_contract_guards_present():
 
 
 ADD_OPTION_LABELS = [
-    "샷 분류도 함께", "이미 분석한 영상도 다시 분석",
-    "자막·컷을 새로 받기(요청이 늘어 차단될 수 있어요)", "추가 시작", "샷 분류만 보강",
+    "샷 분류도 함께", "영상마다 Claude 호출이 한 번 더 일어나요", "다시 분석", "자막·컷 새로 받기",
+    "자막이 없을 때", "음성 인식(기본)", "화면만 보고 분석", "건너뛰기", "카테고리에 넣습니다",
 ]
 SECTION_LABELS = ["hook", "intro", "body", "demo", "transition", "cta", "outro"]
 
@@ -69,10 +69,34 @@ def test_add_page_confirm_card_and_guards():
     text = (STATIC_DIR / "pages" / "add.js").read_text(encoding="utf-8")
     assert ", ".join(f'"{x}"' for x in SECTION_LABELS) in text
     for token in ["isCurrent()", "/api/jobs/current?kind=collect", "encodeURIComponent", "filesUrl",
-                  "clearTimeout", "음성 인식(STT)으로", "화면만 보고 분석", "남은 영상 모두 저장", "reviewed: true"]:
+                  "clearTimeout", "reviewed: true", "/review/"]:
         assert token in text, token
+    for gone in ["/decision", "save_all", "남은 영상 모두 저장", "음성 인식(STT)으로"]:
+        assert gone not in text, gone
     for banned in ["innerHTML", "window.confirm", "confirm(", "alert(", "prompt("]:
         assert banned not in text, banned
+
+
+def test_menu_has_one_refs_entry_and_add_route_opens_refs():
+    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert '"레퍼런스 추가"' not in app and '"레퍼런스 목록"' not in app
+    assert 'case "add": return { page: "refs", params: { add: true } }' in app
+    menu = (STATIC_DIR / "menu-utils.js").read_text(encoding="utf-8")
+    assert '"#/add"' in menu                                  # #/add also lights the 레퍼런스 menu
+
+
+def test_add_area_is_a_component_of_refs_not_a_route_page():
+    refs = (STATIC_DIR / "pages" / "refs.js").read_text(encoding="utf-8")
+    add = (STATIC_DIR / "pages" / "add.js").read_text(encoding="utf-8")
+    assert re.search(r'import \{[^}]*mountAddArea[^}]*\} from "/static/pages/add\.js"', refs)
+    assert "export function mountAddArea" in add and "export async function mount(" not in add
+    for token in ["+ 링크 추가", '"aria-expanded"', '"aria-controls"', "/api/add/shots-pending", "샷 분류 보강 (",
+                  "startShotsOnly"]:
+        assert token in refs, token
+    for token in ["/api/add/check", '"details"', "no_transcript", "startLabel(", "aria-live", "/static/add-utils.js"]:
+        assert token in add, token
+    assert "add-category" not in add and add.count("setCategory") == 1     # 카테고리는 위쪽 선택칸 하나만 쓴다("보기"만 그 칸을 바꾼다)
+    assert "300" in add                                           # check debounce
 
 
 def test_add_page_shots_opt_in_and_polling_safety():
@@ -182,7 +206,7 @@ def test_refs_page_contract_and_safety():
     js = (STATIC_DIR / "pages" / "refs.js").read_text(encoding="utf-8")
     # "signal" is not asserted: ctx.api (bound per page in app.js) already carries ctx.signal, so using it is the contract.
     for token in ["export async function mount", "export function unmount", "export function onCategory",
-                  "isCurrent()", "ctx.api(", "/api/refs", "레퍼런스 추가로 가기", "경로 복사",
+                  "isCurrent()", "ctx.api(", "/api/refs", "경로 복사",
                   "최근 추가순", "길이순", "제목순", "noopener", "lb-",
                   "/trash?category=", "레퍼런스", "aria-expanded", "workspace/trash/"]:
         assert token in js, token
@@ -204,14 +228,14 @@ def test_refs_card_focus_ring_is_not_clipped():
     link = re.search(r"\.ref-link:focus-visible\s*\{([^}]*)\}", css)
     assert link and "box-shadow: none" in link.group(1) and "outline-offset" in link.group(1)
     js = (STATIC_DIR / "pages" / "refs.js").read_text(encoding="utf-8")
-    assert 'role: "list"' in js and "COUNT_DEBOUNCE_MS" in js and "marginLeft" in js
+    assert 'role: "list"' in js and "COUNT_DEBOUNCE_MS" in js
 
 
 def test_refs_page_review_fixes():
     js = (STATIC_DIR / "pages" / "refs.js").read_text(encoding="utf-8")
     assert "String(v.title || v.id)" in js                      # numeric titles must not break localeCompare
     assert "String(role)" in js                                 # unknown role shown as-is
-    assert js.count("sortByStart((") == 2                      # band + detail section list
+    assert js.count("sortByStart((") == 1                      # detail section list (the band moved to section-band.js)
     assert "params.id" in js.split("function loadError")[1].split("// ---- list")[0]   # back link only in detail
 
 
@@ -269,7 +293,7 @@ def test_typify_page_contract_and_safety():
     js = (STATIC_DIR / "pages" / "typify.js").read_text(encoding="utf-8")
     for token in ["export async function mount", "export function unmount", "export function onCategory",
                   "isCurrent()", "ctx.api(", "/api/typify", "/api/typify/run", "/api/typify/save", "kind=typify",
-                  "유형화 실행", "저장", "typify_changed", "invalid_notes", "레퍼런스 추가로 가기",
+                  "유형화 실행", "저장", "typify_changed", "invalid_notes", "레퍼런스 넣기",
                   "이전 이름 그대로", "lb-", "#/refs/"]:
         assert token in js, token
     for bad in ["innerHTML", "insertAdjacentHTML", "outerHTML"]:
@@ -892,7 +916,7 @@ def test_home_narrow_layout_wraps_instead_of_overflowing():
 def test_add_progress_summary_first_then_proportional_steps():
     js = (STATIC_DIR / "pages" / "add.js").read_text(encoding="utf-8")
     css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
-    block = js[js.index("function stepRows"):js.index("function buildItem")]
+    block = js[js.index("function stepRows"):js.index("// ---- review queue")]
     # 위에서부터: 전체 진행 원 -> 남은 시간·끝 시각 -> 지금 하는 일, 그 아래 단계 칸, 걸린 시간
     for token in ['"prog-ring"', '"이 영상 전체 진행률"', "itemProgress(", "쯤 끝", "지금: ", "stepWeights(",
                   "gridTemplateColumns", "걸린 시간", "예상 전체", "남은 시간 계산 중"]:
@@ -902,7 +926,6 @@ def test_add_progress_summary_first_then_proportional_steps():
     assert "S.ringMax" in block and "Math.min(99" in block       # 카드를 새로 만들어도 유지, 끝나기 전엔 100%를 보이지 않는다
     assert "prog.overdue" in block                               # 예상 넘긴 측정 불가 단계는 0초 남음 대신 문구
     assert "r.sub" not in js and "step-total" not in js            # 단계 아래 긴 줄과 맨 아래 합계 줄은 위쪽 요약으로 옮겼다
-    assert "앞 영상이 끝나면 시작해요" in js                          # 대기 중 영상은 단계 칩 대신 한 줄
     for sel in [".prog-ring", ".prog-remain", ".steps.prog-steps", ".row-running .step-name", "@container (max-width: 420px)"]:
         assert sel in css, sel
 
@@ -918,3 +941,48 @@ def test_conti_history_panel_contract():
     css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
     for token in [".hist-panel", ".hist-pair", ".is-diff", ".hist-tag"]:
         assert token in css, token
+
+
+def test_add_area_resume_only_for_jobs_that_need_attention():
+    add = (STATIC_DIR / "pages" / "add.js").read_text(encoding="utf-8")
+    assert "needsAttention(data.job)" in add
+    refs = (STATIC_DIR / "pages" / "refs.js").read_text(encoding="utf-8")
+    assert "autoOpened" in refs
+
+
+def test_add_area_review_queue_and_progress_card_wiring():
+    js = (STATIC_DIR / "pages" / "add.js").read_text(encoding="utf-8")
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    for token in ["saveAllPlan(", "/review/", "/cancel", "모두 저장", "자세히", "확인 대기", "aria-expanded",
+                  "UI 서버를 끄면 사라져요", "멈추기", "고칠 점 적고 다시 분석", "작업이 멈춰 다시 분석할 수 없어요",
+                  "카테고리에서", "보기", "tabindex", "reviewItems(", "queueLine(", "/static/section-band.js",
+                  "onSaved"]:
+        assert token in js, token
+    for banned in ["innerHTML", "window.confirm", "confirm(", "alert(", "prompt("]:
+        assert banned not in js, banned
+    for sel in [".review-queue", ".review-card", ".review-head", ".review-notice", ".other-cat-line"]:
+        assert sel in css, sel
+    sb = (STATIC_DIR / "section-band.js").read_text(encoding="utf-8")
+    assert "export function sectionBand" in sb and "marginLeft" in sb
+    refs = (STATIC_DIR / "pages" / "refs.js").read_text(encoding="utf-8")
+    assert "/static/section-band.js" in refs and "function sectionBand" not in refs
+
+
+def test_save_all_uses_the_review_route_per_card_and_stop_keeps_focus():
+    js = (STATIC_DIR / "pages" / "add.js").read_text(encoding="utf-8")
+    body = js[js.index("async function saveAll"):js.index("function lengthOf")]
+    assert "saveAllPlan(" in body and "/review/" in body and "/save-all" not in body
+    assert 'data-act": "stop"' in js and "hadFocus" in js and '"aria-disabled"' in js
+    assert 'S.headSig = ""' in js[js.index("function ensurePanel"):js.index("function renderJobPanel")]
+
+
+def test_new_job_keeps_state_of_adopted_review_cards_and_guards_before_apply():
+    js = (STATIC_DIR / "pages" / "add.js").read_text(encoding="utf-8")
+    start = js[js.index("async function startJob"):js.index("async function resume")]
+    assert "staleIds(" in start and "edits.clear()" not in start
+    save = js[js.index("async function saveAll"):js.index("function lengthOf")]
+    fetched, guard, apply = (save.index("await fetchJob"), save.index("S !== mine", save.index("await fetchJob")),
+                             save.index("applyJob(fresh)"))
+    assert fetched < guard < apply
+    prog = js[js.index("function renderProgress"):js.index("function tickClock")]
+    assert 'i.step !== "confirm"' in prog

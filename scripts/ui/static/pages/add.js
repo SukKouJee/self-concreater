@@ -1,12 +1,19 @@
-// 레퍼런스 추가 화면: 링크 입력 → 1초 폴링 진행 표시 → 영상별 확인 카드 → 마무리 요약.
-// 서버 작업(kind "collect")이 이미 있으면 화면에 들어올 때 그 작업을 이어서 보여 준다.
+// 레퍼런스 화면의 "링크 추가" 칸(라우트 페이지가 아니라 refs.js가 붙이는 컴포넌트).
+// 링크 입력(입력이 멈추면 줄마다 상태 확인) → 1초 폴링 진행 표시 → 영상별 확인 카드 → 마무리 요약.
+// 서버 작업(kind "collect")이 이미 있으면 칸을 마운트할 때 그 작업을 이어서 보여 준다.
 import { h, filesUrl } from "/static/dom.js";
-import { bodySubName, hookName, narrativeName, sectionLabelName, sectionName } from "/static/labels.js";
+import {
+  STATUS_TEXT, splitLinks, removeLine, startLabel, summaryText, needsAttention, itemCategory, reviewItems, queueLine, saveAllPlan,
+  staleIds,
+} from "/static/add-utils.js";
+import { sectionBand } from "/static/section-band.js";
+import { bodySubName, formatName, hookName, narrativeName, sectionLabelName, sectionName } from "/static/labels.js";
 import {
   fmtDur, fmtClock, fmtRemain, spokenDur, rowView, itemProgress, stepWeights, monotonicFraction,
 } from "/static/progress-utils.js";
 
 const POLL_MS = 1000;
+const CHECK_DEBOUNCE_MS = 300;
 const LABELS = ["hook", "intro", "body", "demo", "transition", "cta", "outro"];
 const STEPS = [
   { key: "fetch", name: "자막" },
@@ -41,22 +48,48 @@ function isActive(job) {
 
 let S = null;
 
-function freshState(el, ctx) {
+function freshState(areaEl, ctx, hooks, startOpen) {
+  const title = h("h2", { class: "add-area-title" });
+  const body = h("div", { class: "add-area-body" });
+  const jobEl = h("div", { class: "job-panel" });
+  const formEl = h("div", { class: "form-panel" });
+  body.append(jobEl, formEl);
+  areaEl.replaceChildren(title, body);
+  areaEl.hidden = !startOpen;
   return {
-    el, ctx, timer: null, clock: null, offset: 0, job: null, view: null,
-    rows: new Map(),       // item key -> { li, sig }
+    area: areaEl, title, el: body, jobEl, formEl, ctx, hooks, isOpen: !!startOpen, timer: null, clock: null, offset: 0, job: null,
+    panel: null, prog: null, noticeSig: "", headSig: "", lastAnnounce: "",
+    expanded: new Set(),   // item ids whose 자세히 is open
+    failMsg: new Map(),    // item id -> why the last save failed
+    savingAll: false, stopping: false,
+    rows: new Map(),       // item id -> { el, sig } (review cards)
     ringMax: new Map(),    // "<job id>:<item id>" -> highest whole-video fraction shown (cards are rebuilt per step)
     edits: new Map(),      // item id -> edited analysis (deep copy of preview)
     openFeedback: new Set(), // item ids whose feedback input is open
     feedbackText: new Map(),
     busy: new Map(),       // item id -> preview signature at decision time (cleared once the item moves on)
-    draft: { role: "ref", links: "", shots: false, force: false, refetch: false },
-    category: ctx.category, names: [],
+    draft: { role: "ref", links: "", shots: false, force: false, refetch: false, noTranscript: "stt" },
+    category: ctx.category,
+    check: { timer: null, seq: 0, rows: [], count: 0, pending: false, error: "" },
+    f: null,               // form element refs (null while the job view is shown)
   };
+}
+
+function emitChange() {
+  if (S && S.hooks.onChange) S.hooks.onChange({ open: S.isOpen, active: isActive(S.job) });
+}
+
+function paintTitle() {
+  const cat = S.category;
+  S.title.textContent = cat ? `${cat} 카테고리에 넣습니다` : "카테고리가 없습니다";
 }
 
 function stopPolling() {
   if (S && S.timer) { clearTimeout(S.timer); S.timer = null; }
+}
+
+function stopCheck() {
+  if (S) { clearTimeout(S.check.timer); S.check.timer = null; S.check.seq += 1; }
 }
 
 function stopClock() {
@@ -75,15 +108,6 @@ function startClock() {
     if (S !== mine || !mine.ctx.isCurrent() || !isActive(mine.job)) { clearInterval(mine.clock); mine.clock = null; return; }
     tickClock();
   }, CLOCK_MS);
-}
-
-// Updates only text and bar widths of the step rows; cards are never rebuilt here.
-function tickClock() {
-  if (!S.job) return;
-  S.job.items.forEach((item, idx) => {
-    const row = S.rows.get(String(idx));
-    if (row && row.li._tick) row.li._tick(item);
-  });
 }
 
 // ---- API --------------------------------------------------------------------
@@ -116,9 +140,9 @@ function schedulePoll() {
       if (e.error === "job_not_found" || e.status === 404) {
         // Server restarted and forgot the job: stop polling and fall back to whatever the server has now.
         mine.ctx.toast("작업을 찾을 수 없어 처음 화면으로 돌아갑니다", "error");
-        mine.job = null;
         mine.pollErrors = 0;
-        renderForm();
+        clearJobPanel();
+        emitChange();
         await resume();
         return;
       }
@@ -133,22 +157,30 @@ async function startJob(path, body) {
   const mine = S;
   try {
     const data = await mine.ctx.api("POST", path, body);
-    if (S !== mine || !mine.ctx.isCurrent()) return;
-    mine.rows.clear();
-    mine.edits.clear();
-    mine.openFeedback.clear();
-    mine.feedbackText.clear();
+    if (S !== mine || !mine.ctx.isCurrent()) return false;
+    const appended = Array.isArray(data.appended) ? data.appended.length : 0;
+    if (appended) mine.ctx.toast(`진행 중인 작업 뒤에 ${appended}개를 붙였어요`, "info");
+    if (!mine.job || mine.job.id !== data.job.id) {
+      // Keep state for items the new job adopted (same ids); drop only ids it no longer has.
+      // The card cache is rebuilt for the new job (its handlers belong to the old one).
+      mine.rows.clear();
+      for (const map of [mine.edits, mine.expanded, mine.failMsg, mine.openFeedback, mine.feedbackText]) {
+        for (const id of staleIds(map.keys(), data.job)) map.delete(id);
+      }
+    }
     mine.pollErrors = 0;
     applyJob(data.job);
     if (isActive(mine.job)) schedulePoll();
+    return true;
   } catch (e) {
-    if (S !== mine || !mine.ctx.isCurrent()) return;
+    if (S !== mine || !mine.ctx.isCurrent()) return false;
     if (e.error === "job_running") {
       mine.ctx.toast("이미 진행 중인 작업이 있습니다. 이어서 보여 드립니다", "error");
       await resume();
     } else if (e.error !== "aborted") {
       mine.ctx.toast(e.message, "error");
     }
+    return false;
   }
 }
 
@@ -157,9 +189,10 @@ async function resume() {
   try {
     const data = await mine.ctx.api("GET", "/api/jobs/current?kind=collect");
     if (S !== mine || !mine.ctx.isCurrent()) return;
-    if (data.job) {
+    if (needsAttention(data.job)) {
       applyJob(data.job);
       if (isActive(data.job)) schedulePoll();
+      if (!mine.isOpen) openArea();
     }
   } catch (e) {
     if (S !== mine || !mine.ctx.isCurrent() || e.error === "aborted") return;
@@ -170,13 +203,15 @@ async function resume() {
 async function decide(item, payload) {
   const mine = S;
   const key = item.id;
-  if (mine.busy.has(key)) return;
+  if (mine.busy.has(key) || mine.savingAll) return;
+  const order = reviewItems(mine.job, mine.category).map((i) => i.id);
   mine.busy.set(key, JSON.stringify(item.preview));
-  renderItem(item);
+  mine.failMsg.delete(key);
+  renderJobPanel();
   try {
     const data = await mine.ctx.api(
       "POST",
-      `/api/jobs/${encodeURIComponent(mine.job.id)}/items/${encodeURIComponent(item.id)}/decision`,
+      `/api/add/${encodeURIComponent(mine.job.id)}/review/${encodeURIComponent(item.id)}`,
       payload,
     );
     if (S !== mine || !mine.ctx.isCurrent()) return;
@@ -184,87 +219,127 @@ async function decide(item, payload) {
       mine.openFeedback.delete(key);
       mine.feedbackText.delete(key);
     }
+    mine.expanded.delete(key);
     applyJob(data.job);
     if (isActive(mine.job) && !mine.timer) schedulePoll();
+    if (payload.action === "save" && mine.hooks.onSaved) mine.hooks.onSaved();
+    focusAfter(order, key);
   } catch (e) {
     if (S !== mine || !mine.ctx.isCurrent() || e.error === "aborted") return;
     mine.busy.delete(key);
+    mine.failMsg.set(key, e.message || "처리하지 못했어요");
     mine.ctx.toast(e.message, "error");
-    // 서버 상태를 다시 읽어 카드가 낡았으면 정리한다
+    // Re-read the server state; the card may be stale (already decided elsewhere).
     try {
       const job = await fetchJob(mine.job.id);
       if (S !== mine || !mine.ctx.isCurrent()) return;
       applyJob(job);
-    } catch { /* keep the card as is */ }
-    if (S === mine && mine.ctx.isCurrent()) {
-      const cur = mine.job.items.find((i) => i.id === key);
-      if (cur) renderItem(cur);
-    }
+    } catch { renderJobPanel(); }
+    if (S === mine && mine.ctx.isCurrent()) focusAct("save", key);
   }
 }
 
-// ---- rendering: entry -------------------------------------------------------
+// ---- rendering: job panel ---------------------------------------------------
+// Order: one-line notices for other categories -> progress card (the video being analyzed, big) -> review queue
+// (summary cards) -> finished card. The link form below stays usable while a job runs.
 
 function applyJob(job) {
   S.job = job;
   if (typeof job.now === "number") S.offset = job.now - Date.now() / 1000;
-  renderJobView();
+  renderJobPanel();
+  paintTitle();
+  emitChange();
 }
 
-function setView(name) {
-  if (S.view === name) return false;
-  S.view = name;
-  S.el.replaceChildren();
-  S.rows.clear();
-  return true;
+function clearJobPanel() {
+  S.job = null;
+  renderJobPanel();
 }
 
-function renderJobView() {
+// Keeps the elements that are already in place (focus and scroll survive) and only moves what changed.
+function reconcile(parent, els) {
+  els.forEach((el, i) => {
+    if (parent.children[i] !== el) parent.insertBefore(el, parent.children[i] || null);
+  });
+  while (parent.children.length > els.length) parent.lastElementChild.remove();
+}
+
+function ensurePanel() {
+  if (S.panel) return S.panel;
+  const live = h("div", { class: "sr-only", "aria-live": "polite", "aria-atomic": "true" });
+  const notices = h("div", { class: "other-cats" });
+  const progSlot = h("div", { class: "prog-slot" });
+  const head = h("div", { class: "review-head", tabindex: "-1" });
+  const list = h("ul", { class: "review-list", "aria-label": "확인 대기 영상" });
+  const queue = h("section", { class: "review-queue", "aria-label": "확인 대기", hidden: true }, head, list);
+  const foot = h("div", { class: "job-foot" });
+  S.jobEl.replaceChildren(live, notices, progSlot, queue, foot);
+  S.lastAnnounce = "";
+  S.noticeSig = "";
+  S.headSig = "";
+  S.prog = { el: null, id: null, sig: "" };
+  S.panel = { live, notices, progSlot, queue, head, list, foot };
+  return S.panel;
+}
+
+function renderJobPanel() {
   const job = S.job;
-  if (!job) { renderForm(); return; }
-  const fresh = setView("job");
-  if (isActive(job)) startClock(); else stopClock();
-  if (fresh) {
-    S.el.append(h("h1", {}, "레퍼런스 추가"));
-    S.head = h("div", { class: "job-head" });
-    S.list = h("ul", { class: "job-items", "aria-label": "영상별 진행 상황" });
-    S.foot = h("div", { class: "job-foot" });
-    S.live = h("div", { class: "sr-only", "aria-live": "polite", "aria-atomic": "true" });
-    S.lastAnnounce = "";
-    S.el.append(S.live, S.head, S.list, S.foot);
+  if (!job) {
+    S.jobEl.replaceChildren();
+    S.panel = null;
+    S.prog = null;
+    S.rows.clear();
+    stopClock();
+    return;
   }
-  renderJobHead(job);
-  syncItems(job);
+  const p = ensurePanel();
+  if (isActive(job)) startClock(); else stopClock();
+  releaseBusy(job);
+  const mine = job.items.filter((i) => itemCategory(i, job) === S.category);
+  renderNotices(p, job);
+  renderProgress(p, job, mine);
+  renderQueue(p, job);
+  renderJobFoot(p, job);
   tickClock();
-  renderJobFoot(job);
-  announce(job);
+  announce(p, job);
 }
 
-function announce(job) {
+function announce(p, job) {
+  const waiting = reviewItems(job, S.category).length;
   let text;
   if (!isActive(job)) text = `작업이 끝났습니다. ${FINISHED_TEXT[job.status] || ""}`.trim();
-  else {
-    const idx = job.items.findIndex((i) => i.state === "awaiting");
-    text = idx >= 0 ? `${idx + 1}번째 영상이 확인을 기다립니다` : `${job.items.filter((i) => i.state === "saved").length}개 저장됨`;
+  else if (waiting > 0) text = `확인 대기 ${waiting}개`;
+  else text = `${job.items.filter((i) => i.state === "saved").length}개 저장됨`;
+  if (text !== S.lastAnnounce) { S.lastAnnounce = text; p.live.textContent = text; }
+}
+
+// "travel 카테고리에서 분석 중 · 확인 대기 2개 — 보기" for work that belongs to another category.
+function renderNotices(p, job) {
+  const rows = [];
+  const cats = [...new Set(job.items.map((i) => itemCategory(i, job)).filter((c) => c && c !== S.category))];
+  for (const cat of cats) {
+    const inCat = job.items.filter((i) => itemCategory(i, job) === cat);
+    const analyzing = isActive(job) && inCat.some((i) => i.state === "running" || i.state === "waiting");
+    const review = reviewItems(job, cat).length;
+    const parts = [analyzing ? "분석 중" : "", review > 0 ? `확인 대기 ${review}개` : ""].filter(Boolean);
+    if (parts.length) rows.push({ cat, text: `${cat} 카테고리에서 ${parts.join(" · ")}` });
   }
-  if (text !== S.lastAnnounce) { S.lastAnnounce = text; S.live.textContent = text; }
+  const sig = JSON.stringify(rows);
+  if (sig === S.noticeSig) return;
+  S.noticeSig = sig;
+  p.notices.replaceChildren(...rows.map((r) => {
+    const go = h("button", { type: "button", class: "btn btn-link" }, "보기");
+    go.addEventListener("click", () => {
+      S.ctx.setCategory(r.cat);
+      if (S.f) S.f.ta.focus();
+    });
+    return h("p", { class: "other-cat-line" }, h("span", {}, `${r.text} — `), go);
+  }));
 }
 
-function renderJobHead(job) {
-  const total = job.items.length;
-  const doneCount = job.items.filter((i) => !ACTIVE.has(i.state) && i.state !== "waiting").length;
-  const active = isActive(job);
-  const text = active
-    ? `${job.category || ""} · ${doneCount}/${total}개 처리`
-    : `${job.category || ""} · ${FINISHED_TEXT[job.status] || "끝났습니다"}`;
-  const head = h("div", { class: "job-title" },
-    h("h2", {}, active ? "분석 진행 중" : "분석 끝"),
-    h("span", { class: "muted" }, text));
-  S.head.replaceChildren(head);
-}
-
-function renderJobFoot(job) {
-  if (isActive(job)) { S.foot.replaceChildren(); return; }
+function renderJobFoot(p, job) {
+  const leftover = job.items.some((i) => i.ask === "review" && i.state === "awaiting");
+  if (isActive(job) || leftover) { p.foot.replaceChildren(); return; }
   const sum = job.summary;
   const box = h("section", { class: "card done-card", "aria-label": "마무리" });
   box.append(h("h2", {}, FINISHED_TEXT[job.status] || "끝났습니다"));
@@ -282,29 +357,21 @@ function renderJobFoot(job) {
   again.addEventListener("click", () => {
     stopPolling();
     stopClock();
-    S.job = null;
     S.rows.clear();
     S.edits.clear();
-    renderForm();
-    const first = S.el.querySelector("textarea");
-    if (first) first.focus();
+    clearJobPanel();
+    emitChange();
+    if (S.f) S.f.ta.focus();
   });
   box.append(again);
-  S.foot.replaceChildren(box);
+  p.foot.replaceChildren(box);
 }
 
-// ---- rendering: items -------------------------------------------------------
+// ---- progress card (the video being analyzed) -----------------------------------
 
-// Structure only (row set and each row start; state and pause are repainted by the clock). Fractions, texts and estimates are patched in place by the clock.
 function timingSig(timing) {
   if (!timing || !timing.steps) return null;
   return Object.entries(timing.steps).map(([k, r]) => [k, r.started_at ?? null]);
-}
-
-function itemSig(item) {
-  return JSON.stringify([item.id, item.title, item.step, item.state, item.message, item.ask,
-    JSON.stringify(item.preview), (item.frames || []).length, S.busy.has(item.id), S.openFeedback.has(item.id),
-    timingSig(item.timing)]);
 }
 
 function releaseBusy(job) {
@@ -314,38 +381,9 @@ function releaseBusy(job) {
   }
 }
 
-function syncItems(job) {
-  releaseBusy(job);
-  const seen = new Set();
-  job.items.forEach((item, idx) => {
-    const key = String(idx);
-    seen.add(key);
-    const sig = itemSig(item);
-    const row = S.rows.get(key);
-    if (row && row.sig === sig) return;
-    const li = buildItem(item);
-    if (row) row.li.replaceWith(li);
-    else S.list.append(li);
-    S.rows.set(key, { li, sig, id: item.id });
-  });
-  for (const [key, row] of [...S.rows]) {
-    if (!seen.has(key)) { row.li.remove(); S.rows.delete(key); }
-  }
-}
-
-function renderItem(item) {
-  const idx = S.job.items.findIndex((i) => i.id === item.id);
-  if (idx < 0) return;
-  const key = String(idx);
-  const row = S.rows.get(key);
-  const li = buildItem(item);
-  if (row) { row.li.replaceWith(li); row.li = li; row.sig = itemSig(item); }
-}
-
 function stepChips(item) {
   const ol = h("ol", { class: "chips", "aria-label": "단계" });
   const idx = STEPS.findIndex((s) => s.key === item.step);
-  const finished = item.state === "saved" || item.step === "done";
   if (item.step === "shots") {
     ol.append(h("li", { class: "chip chip-current", "aria-current": "step" }, "샷 분류"));
     return ol;
@@ -353,13 +391,76 @@ function stepChips(item) {
   STEPS.forEach((s, i) => {
     let cls = "chip";
     let note = "";
-    if (finished || i < idx) { cls += " chip-done"; note = " (완료)"; }
+    if (i < idx) { cls += " chip-done"; note = " (완료)"; }
     else if (i === idx) { cls += " chip-current"; note = " (지금)"; }
-    const li = h("li", { class: cls, "aria-current": i === idx && !finished ? "step" : false }, s.name);
+    const li = h("li", { class: cls, "aria-current": i === idx ? "step" : false }, s.name);
     if (note) li.append(h("span", { class: "sr-only" }, note));
     ol.append(li);
   });
   return ol;
+}
+
+async function stopJob() {
+  const mine = S;
+  if (!mine.job || mine.stopping) return;
+  mine.stopping = true;
+  renderJobPanel();
+  try {
+    const data = await mine.ctx.api("POST", `/api/jobs/${encodeURIComponent(mine.job.id)}/cancel`, {});
+    if (S !== mine || !mine.ctx.isCurrent()) return;
+    applyJob(data.job);
+  } catch (e) {
+    if (S !== mine || !mine.ctx.isCurrent() || e.error === "aborted") return;
+    if (e.error !== "not_running") mine.ctx.toast(e.message, "error");
+  }
+  if (S === mine && mine.ctx.isCurrent()) {
+    mine.stopping = false;
+    renderJobPanel();
+  }
+}
+
+function progressCard(item, line) {
+  const card = h("section", { class: "card job-item prog-card is-running", "aria-label": "지금 분석 중인 영상" });
+  card.append(h("div", { class: "item-line" },
+    h("span", { class: "item-title", title: item ? item.url || "" : "" }, item ? itemLabel(item) : "다음 영상을 준비하는 중"),
+    h("span", { class: "state state-running" }, item ? STATE_TEXT.running : "")));
+  if (item && item.timing && item.timing.steps) card.append(stepRows(card, item));
+  else if (item) card.append(stepChips(item));
+  if (item && item.message) card.append(h("p", { class: "muted item-msg" }, item.message));
+  const foot = h("div", { class: "prog-foot" });
+  if (line) foot.append(h("p", { class: "muted prog-queue" }, line));
+  // aria-disabled (not disabled) keeps the button focusable while stopping.
+  const stop = h("button", { type: "button", class: "btn", "data-act": "stop", "aria-disabled": String(!!S.stopping) },
+    S.stopping ? "멈추는 중…" : "멈추기");
+  stop.addEventListener("click", () => { if (!S.stopping) stopJob(); });
+  foot.append(stop);
+  card.append(foot);
+  return card;
+}
+
+function renderProgress(p, job, mine) {
+  // An item being saved (step "confirm") is not the video in progress.
+  const current = mine.find((i) => i.state === "running" && i.step !== "confirm");
+  const line = isActive(job) ? queueLine({ items: mine }) : "";
+  let sig;
+  if (!isActive(job) || mine.length === 0) sig = "none";
+  else if (current) {
+    sig = JSON.stringify([current.id, current.title, current.step, current.message, timingSig(current.timing), line, !!S.stopping]);
+  } else sig = JSON.stringify(["idle", line, !!S.stopping]);
+  if (sig === S.prog.sig) return;
+  const hadFocus = !!p.progSlot.querySelector('[data-act="stop"]:focus');
+  S.prog.sig = sig;
+  S.prog.id = current ? current.id : null;
+  S.prog.el = sig === "none" ? null : progressCard(current || null, line);
+  if (S.prog.el) p.progSlot.replaceChildren(S.prog.el); else p.progSlot.replaceChildren();
+  if (hadFocus && S.prog.el) S.prog.el.querySelector('[data-act="stop"]').focus();
+}
+
+// Updates only text and bar widths of the progress card; it is never rebuilt here.
+function tickClock() {
+  if (!S || !S.job || !S.prog || !S.prog.el || !S.prog.el._tick) return;
+  const cur = S.job.items.find((i) => i.id === S.prog.id);
+  if (cur) S.prog.el._tick(cur);
 }
 
 // ---- step rows (progress bars, remaining time) --------------------------------
@@ -529,45 +630,6 @@ function stepRows(card, item) {
   return h("div", { class: "step-block" }, hero, ol, detail);
 }
 
-function buildItem(item) {
-  const li = h("li", { class: `job-item is-${item.state}` });
-  const line = h("div", { class: "item-line" });
-  line.append(
-    h("span", { class: "item-title", title: item.url || "" }, itemLabel(item)),
-    h("span", { class: `state state-${item.state}` }, STATE_TEXT[item.state] || item.state),
-  );
-  li.append(line);
-  if (item.timing && item.timing.steps) li.append(stepRows(li, item));
-  // A queued video has not started any step yet: say so instead of chips that would light up 자막 as "now".
-  else if (item.state === "waiting") li.append(h("p", { class: "muted item-wait" }, "앞 영상이 끝나면 시작해요"));
-  else if (item.state === "running" || item.state === "awaiting") li.append(stepChips(item));
-  if (item.message) li.append(h("p", { class: item.state === "failed" ? "error item-msg" : "muted item-msg" }, item.message));
-  if (item.state === "awaiting") {
-    if (item.ask === "no_transcript") li.append(noTranscriptCard(item));
-    else if (item.preview) li.append(confirmCard(item));
-  }
-  return li;
-}
-
-// ---- no transcript ----------------------------------------------------------
-
-function noTranscriptCard(item) {
-  const busy = S.busy.has(item.id);
-  const card = h("section", { class: "confirm", "aria-label": "자막 없음" });
-  card.append(h("p", { class: "confirm-title" }, "자막이 없습니다"),
-    h("p", { class: "muted" }, "음성 인식은 시간이 걸립니다. 화면만 보고 분석하면 빠르지만 대사는 반영되지 않습니다."));
-  const row = h("div", { class: "btn-row" });
-  const stt = h("button", { type: "button", class: "btn btn-primary", disabled: busy }, "음성 인식(STT)으로");
-  const screen = h("button", { type: "button", class: "btn", disabled: busy }, "화면만 보고 분석");
-  const skip = h("button", { type: "button", class: "btn", disabled: busy }, "건너뛰기");
-  stt.addEventListener("click", () => decide(item, { action: "stt" }));
-  screen.addEventListener("click", () => decide(item, { action: "screen" }));
-  skip.addEventListener("click", () => decide(item, { action: "skip" }));
-  row.append(stt, screen, skip);
-  card.append(row);
-  return card;
-}
-
 // ---- confirm card -----------------------------------------------------------
 
 function workingAnalysis(item) {
@@ -614,6 +676,8 @@ function sectionRow(item, a, idx) {
     bullet.className = `lb-dot lb-${s.label}`;
     sub.textContent = bodySubName(s.sub);
     li.classList.toggle("edited", s.label !== item.preview.sections[idx].label);
+    const rc = li.closest(".review-card");
+    if (rc && rc._repaintBand) rc._repaintBand();
     const warn = li.closest(".confirm");
     if (warn) {
       const note = warn.querySelector(".edit-note");
@@ -639,59 +703,170 @@ function frameStrip(item) {
   return wrap;
 }
 
-function confirmCard(item) {
+// ---- review queue (summary cards first, details folded) ----------------------------
+
+function focusAct(act, id) {
+  const el = S.jobEl.querySelector(`[data-act="${act}"][data-id="${CSS.escape(id)}"]`);
+  if (el && !el.disabled) { el.focus(); return true; }
+  return false;
+}
+
+// After a card leaves the queue: the next card's 저장, else the queue head (else the link box).
+function focusAfter(order, key) {
+  const left = new Set(reviewItems(S.job, S.category).map((i) => i.id));
+  const at = order.indexOf(key);
+  const next = order.slice(at + 1).find((id) => left.has(id));
+  if (next && focusAct("save", next)) return;
+  if (!S.panel.queue.hidden) S.panel.head.focus();
+  else if (S.f) S.f.ta.focus();
+}
+
+function renderQueue(p, job) {
+  const items = reviewItems(job, S.category);
+  p.queue.hidden = items.length === 0;
+  const stopped = !isActive(job);
+  const headSig = JSON.stringify([items.length, S.savingAll, stopped]);
+  if (headSig !== S.headSig) {
+    S.headSig = headSig;
+    const all = h("button", { type: "button", class: "btn btn-primary", disabled: S.savingAll || items.length === 0 },
+      S.savingAll ? "저장하는 중…" : "모두 저장");
+    all.addEventListener("click", saveAll);
+    p.head.replaceChildren(
+      h("div", { class: "review-head-line" }, h("h2", {}, `확인 대기 ${items.length}개`), all),
+      h("p", { class: "muted review-notice" }, "저장하지 않은 결과는 UI 서버를 끄면 사라져요"),
+      ...(stopped ? [h("p", { class: "muted review-notice" }, "작업이 멈췄어요. 확인 대기 영상은 저장하거나 건너뛸 수 있어요")] : []));
+  }
+  const seen = new Set();
+  const els = items.map((item) => {
+    seen.add(item.id);
+    const sig = reviewSig(item);
+    const row = S.rows.get(item.id);
+    if (row && row.sig === sig) return row.el;
+    const el = reviewCard(item);
+    S.rows.set(item.id, { el, sig });
+    return el;
+  });
+  for (const key of [...S.rows.keys()]) if (!seen.has(key)) S.rows.delete(key);
+  reconcile(p.list, els);
+}
+
+function reviewSig(item) {
+  return JSON.stringify([item.id, item.title, item.message, item.preview, S.expanded.has(item.id),
+    S.openFeedback.has(item.id), S.busy.has(item.id), S.savingAll, S.failMsg.get(item.id) || "", isActive(S.job)]);
+}
+
+async function saveAll() {
+  const mine = S;
+  if (mine.savingAll || !mine.job) return;
+  mine.savingAll = true;
+  mine.failMsg.clear();
+  renderJobPanel();
+  try {
+    // One request per card through the review route, so edited labels travel with their card and a failure
+    // leaves that card (and its edits) in place.
+    const items = reviewItems(mine.job, mine.category);
+    const edited = {};
+    for (const item of items) if (isEdited(item)) edited[item.id] = mine.edits.get(item.id).a;
+    const results = [];
+    let lastJob = null;
+    for (const step of saveAllPlan(items, edited)) {
+      try {
+        const data = await mine.ctx.api("POST",
+          `/api/add/${encodeURIComponent(mine.job.id)}/review/${encodeURIComponent(step.id)}`, step.body);
+        if (S !== mine || !mine.ctx.isCurrent()) return;
+        lastJob = data.job;
+        results.push({ id: step.id, ok: true });
+      } catch (e) {
+        if (S !== mine || !mine.ctx.isCurrent() || e.error === "aborted") return;
+        results.push({ id: step.id, ok: false, message: e.message });
+      }
+    }
+    const failed = results.filter((r) => !r.ok);
+    const saved = results.length - failed.length;
+    for (const r of failed) mine.failMsg.set(r.id, r.message || "저장하지 못했어요");
+    mine.savingAll = false;
+    const fresh = lastJob || await fetchJob(mine.job.id);
+    if (S !== mine || !mine.ctx.isCurrent()) return;
+    applyJob(fresh);
+    if (isActive(mine.job) && !mine.timer) schedulePoll();
+    if (saved > 0 && mine.hooks.onSaved) mine.hooks.onSaved();
+    if (failed.length) mine.ctx.toast(`${saved}개 저장, ${failed.length}개는 저장하지 못했어요. 카드에 이유를 적어 두었어요`, "error");
+    else if (saved > 0) mine.ctx.toast(`${saved}개를 저장했어요`, "info");
+    if (!(failed.length && focusAct("save", failed[0].id))) focusAfter([], "");
+  } catch (e) {
+    if (S !== mine || !mine.ctx.isCurrent() || e.error === "aborted") return;
+    mine.ctx.toast(e.message, "error");
+  } finally {
+    if (S === mine && mine.savingAll) { mine.savingAll = false; if (mine.ctx.isCurrent()) renderJobPanel(); }
+  }
+}
+
+function lengthOf(a) {
+  const ends = (a.sections || []).map((s) => Number(s.end) || 0);
+  return ends.length ? Math.max(...ends) : 0;
+}
+
+function reviewCard(item) {
   const a = workingAnalysis(item);
-  const busy = S.busy.has(item.id);
-  const card = h("section", { class: "confirm", "aria-label": `${itemLabel(item)} 분석 확인` });
-  if (a.summary) card.append(h("p", { class: "confirm-title" }, a.summary));
-  const meta = h("p", { class: "meta-line" });
-  if (a.hook_type) meta.append(h("span", { class: "tag" }, `훅 ${hookName(a.hook_type)}`));
-  if (a.narrative_type) meta.append(h("span", { class: "tag" }, `서사 ${narrativeName(a.narrative_type)}`));
-  if (meta.childNodes.length) card.append(meta);
-  if (a.synopsis) card.append(h("p", { class: "muted synopsis" }, a.synopsis));
-
-  const secs = a.sections || [];
-  if (secs.length) {
-    card.append(h("h3", {}, "섹션 타임라인"), timelineBar(secs));
-    const ul = h("ul", { class: "sections" });
-    secs.forEach((_, i) => ul.append(sectionRow(item, a, i)));
-    card.append(ul);
-  }
-  const techs = a.techniques || [];
-  if (techs.length) {
-    card.append(h("h3", {}, "기법"));
-    card.append(h("ul", { class: "techs" }, ...techs.map((t) => h("li", {},
-      h("span", { class: "tag" }, t.kind), " ", h("strong", {}, t.name),
-      t.at !== undefined && t.at !== null ? h("span", { class: "muted" }, ` ${typeof t.at === "number" ? fmtTime(t.at) : t.at}`) : null,
-      t.desc ? h("span", { class: "muted" }, ` — ${t.desc}`) : null))));
-  }
-  const strip = frameStrip(item);
-  if (strip) card.append(h("h3", {}, "프레임"), strip);
-
-  card.append(h("p", { class: "edit-note muted", hidden: !isEdited(item), role: "status" }, "고친 라벨이 저장에 반영됩니다."));
-
-  const row = h("div", { class: "btn-row" });
-  const savePayload = (action) => (isEdited(item) ? { action, analysis: S.edits.get(item.id).a } : { action });
-  const save = h("button", { type: "button", class: "btn btn-primary", disabled: busy }, "저장");
-  const saveAll = h("button", { type: "button", class: "btn", disabled: busy }, "남은 영상 모두 저장");
-  const skip = h("button", { type: "button", class: "btn", disabled: busy }, "건너뛰기");
+  const busy = S.busy.has(item.id) || S.savingAll;
+  const expanded = S.expanded.has(item.id);
   const open = S.openFeedback.has(item.id);
-  const redo = h("button", { type: "button", class: "btn", "aria-expanded": String(open), disabled: busy }, "고칠 점 입력 후 다시 분석");
+  const canRedo = isActive(S.job);
+  const li = h("li", { class: "review-card", "data-id": item.id });
+  const detailId = `rv-detail-${S.job.id}-${item.id}`;
+
+  const meta = [lengthOf(a) > 0 ? fmtTime(lengthOf(a)) : "", item.channel || a.channel || ""].filter(Boolean).join(" · ");
+  li.append(h("div", { class: "review-title-line" },
+    h("h3", { class: "review-title", title: item.url || "" }, itemLabel(item)),
+    meta ? h("span", { class: "muted review-meta" }, meta) : null));
+
+  const bandSlot = h("div", { class: "review-band" });
+  const paintBand = () => {
+    const band = sectionBand(a.sections || [], lengthOf(a));
+    if (band) bandSlot.replaceChildren(band); else bandSlot.replaceChildren();
+  };
+  paintBand();
+  li._repaintBand = paintBand;
+  li.append(bandSlot);
+
+  const tags = h("p", { class: "meta-line" });
+  if (a.hook_type) tags.append(h("span", { class: "tag" }, `훅 ${hookName(a.hook_type)}`));
+  if (a.narrative_type) tags.append(h("span", { class: "tag" }, `서사 ${narrativeName(a.narrative_type)}`));
+  const fmt = item.format || a.format;
+  if (fmt) tags.append(h("span", { class: "tag" }, `형식 ${formatName(fmt)}`));
+  if (tags.childNodes.length) li.append(tags);
+  if (a.summary) li.append(h("p", { class: "review-summary" }, a.summary));
+  if (item.message) li.append(h("p", { class: "review-warn" }, item.message));
+  const fail = S.failMsg.get(item.id);
+  if (fail) li.append(h("p", { class: "error review-fail", role: "alert" }, `저장하지 못했어요: ${fail}`));
+
+  const savePayload = (action) => (isEdited(item) ? { action, analysis: S.edits.get(item.id).a } : { action });
+  const save = h("button", { type: "button", class: "btn btn-primary", "data-act": "save", "data-id": item.id, disabled: busy }, "저장");
+  const redoNote = h("span", { class: "muted review-why", id: `${detailId}-why` }, "작업이 멈춰 다시 분석할 수 없어요");
+  const redo = h("button", { type: "button", class: "btn", "data-act": "redo", "data-id": item.id,
+    "aria-expanded": String(open && canRedo), disabled: busy || !canRedo, "aria-describedby": canRedo ? false : redoNote.id },
+  "고칠 점 적고 다시 분석");
+  const skip = h("button", { type: "button", class: "btn", "data-act": "skip", "data-id": item.id, disabled: busy }, "건너뛰기");
+  const more = h("button", { type: "button", class: "btn", "data-act": "more", "data-id": item.id,
+    "aria-expanded": String(expanded), "aria-controls": detailId }, "자세히");
   save.addEventListener("click", () => decide(item, savePayload("save")));
-  saveAll.addEventListener("click", () => decide(item, savePayload("save_all")));
   skip.addEventListener("click", () => decide(item, { action: "skip" }));
   redo.addEventListener("click", () => {
-    if (S.openFeedback.has(item.id)) S.openFeedback.delete(item.id);
-    else S.openFeedback.add(item.id);
-    renderItem(item);
-    const ta = S.el.querySelector(`[data-fb="${CSS.escape(item.id)}"]`);
-    if (ta) ta.focus();
+    if (S.openFeedback.has(item.id)) S.openFeedback.delete(item.id); else S.openFeedback.add(item.id);
+    renderJobPanel();
+    const ta = S.jobEl.querySelector(`[data-fb="${CSS.escape(item.id)}"]`);
+    if (ta) ta.focus(); else focusAct("redo", item.id);
   });
-  row.append(save, saveAll, skip, redo);
-  card.append(row);
+  more.addEventListener("click", () => {
+    if (S.expanded.has(item.id)) S.expanded.delete(item.id); else S.expanded.add(item.id);
+    renderJobPanel();
+    focusAct("more", item.id);
+  });
+  li.append(h("div", { class: "btn-row" }, save, redo, skip, more));
+  if (!canRedo) li.append(redoNote);
 
-  if (open) {
-    const fbId = `fb-${S.job.id}-${S.job.items.indexOf(item)}`;
+  if (open && canRedo) {
+    const fbId = `fb-${S.job.id}-${item.id}`;
     const ta = h("textarea", { id: fbId, rows: "3", "data-fb": item.id,
       placeholder: "예: 2:10 이후는 데모가 아니라 비교입니다" });
     ta.value = S.feedbackText.get(item.id) || "";
@@ -702,148 +877,258 @@ function confirmCard(item) {
       if (!text) { ta.focus(); S.ctx.toast("고칠 점을 입력해 주세요", "error"); return; }
       decide(item, { action: "reanalyze", feedback: text });
     });
-    card.append(h("div", { class: "feedback" },
+    li.append(h("div", { class: "feedback" },
       h("label", { for: fbId }, "고칠 점"), ta,
       h("p", { class: "muted" }, "다시 분석하면 Claude 호출이 한 번 더 일어납니다."), go));
   }
-  return card;
+
+  const panel = h("div", { class: "confirm review-detail", id: detailId, hidden: !expanded });
+  if (expanded) fillDetail(panel, item, a);
+  li.append(panel);
+  return li;
+}
+
+// The fold-out part: synopsis, section table with label editing, techniques, frames.
+function fillDetail(card, item, a) {
+  if (a.synopsis) card.append(h("p", { class: "muted synopsis" }, a.synopsis));
+  const secs = a.sections || [];
+  if (secs.length) {
+    card.append(h("h4", {}, "섹션"), timelineBar(secs));
+    const ul = h("ul", { class: "sections" });
+    secs.forEach((_, i) => ul.append(sectionRow(item, a, i)));
+    card.append(ul);
+  }
+  const techs = a.techniques || [];
+  if (techs.length) {
+    card.append(h("h4", {}, "기법"));
+    card.append(h("ul", { class: "techs" }, ...techs.map((t) => h("li", {},
+      h("span", { class: "tag" }, t.kind), " ", h("strong", {}, t.name),
+      t.at !== undefined && t.at !== null ? h("span", { class: "muted" }, ` ${typeof t.at === "number" ? fmtTime(t.at) : t.at}`) : null,
+      t.desc ? h("span", { class: "muted" }, ` — ${t.desc}`) : null))));
+  }
+  const strip = frameStrip(item);
+  if (strip) card.append(h("h4", {}, "프레임"), strip);
+  card.append(h("p", { class: "edit-note muted", hidden: !isEdited(item), role: "status" }, "고친 라벨이 저장에 반영됩니다."));
+}
+
+// ---- link check (debounced, newest answer wins) ------------------------------
+
+function checkRowsToSend() {
+  return S.check.rows.filter((r) => r.status === "new" || r.status === "reanalyze").map((r) => r.link);
+}
+
+function scheduleCheck() {
+  const mine = S;
+  const c = mine.check;
+  clearTimeout(c.timer);
+  c.seq += 1;                       // an answer still on its way is now stale
+  const links = splitLinks(mine.draft.links);
+  if (!mine.category || links.length === 0) {
+    c.rows = []; c.count = 0; c.pending = false; c.error = "";
+    paintCheck();
+    return;
+  }
+  c.pending = true;
+  paintCheck();
+  c.timer = setTimeout(() => runCheck(mine, links), CHECK_DEBOUNCE_MS);
+}
+
+async function runCheck(mine, links) {
+  const c = mine.check;
+  const seq = ++c.seq;
+  try {
+    const data = await mine.ctx.api("POST", "/api/add/check", {
+      category: mine.category, role: mine.draft.role, links, force: mine.draft.force,
+    });
+    if (S !== mine || !mine.ctx.isCurrent() || seq !== c.seq) return;
+    c.rows = Array.isArray(data.rows) ? data.rows : [];
+    c.count = Number(data.count) || 0;
+    c.error = "";
+  } catch (e) {
+    if (S !== mine || !mine.ctx.isCurrent() || seq !== c.seq || e.error === "aborted") return;
+    c.rows = []; c.count = 0;
+    c.error = e.message || "링크를 확인하지 못했습니다";
+  }
+  c.pending = false;
+  paintCheck();
+}
+
+function linkRow(row) {
+  const name = row.title || row.id || row.link;
+  const x = h("button", { type: "button", class: "btn link-x", "aria-label": `${name} 줄 지우기` }, "×");
+  x.addEventListener("click", () => {
+    S.f.ta.value = removeLine(S.f.ta.value, row.link);
+    S.draft.links = S.f.ta.value;
+    scheduleCheck();
+    S.f.ta.focus();
+  });
+  return h("li", { class: `link-row link-${row.status}` },
+    h("span", { class: `badge link-badge link-badge-${row.status}` }, STATUS_TEXT[row.status] || row.status),
+    h("span", { class: "link-name", title: row.link }, name),
+    x);
+}
+
+function paintCheck() {
+  const f = S && S.f;
+  if (!f) return;
+  const c = S.check;
+  const text = c.error || summaryText(c.rows);
+  if (f.summary.textContent !== text) f.summary.textContent = text;
+  f.summary.classList.toggle("error", !!c.error);
+  f.list.replaceChildren(...c.rows.map(linkRow));
+  f.list.hidden = c.rows.length === 0;
+  f.list.classList.toggle("is-pending", c.pending);
+  f.list.setAttribute("aria-busy", String(c.pending));
+  f.start.textContent = startLabel(c.count);
+  f.start.disabled = c.pending || c.count === 0 || !!f.sending;
 }
 
 // ---- rendering: form --------------------------------------------------------
 
+function checkField(key, text, hint) {
+  const cid = `add-opt-${key}`;
+  const hid = `${cid}-d`;
+  const cb = h("input", { type: "checkbox", id: cid, "aria-describedby": hint ? hid : false });
+  cb.checked = !!S.draft[key];
+  cb.addEventListener("change", () => {
+    S.draft[key] = cb.checked;
+    if (key === "force") scheduleCheck();
+  });
+  return h("div", { class: "check-wrap" },
+    h("label", { class: "check", for: cid }, cb, h("span", {}, text)),
+    hint ? h("p", { class: "muted hint check-hint", id: hid }, hint) : null);
+}
+
 function renderForm() {
-  setView("form");
-  S.el.replaceChildren();
-  S.rows.clear();
-  S.ringMax.clear();
-  S.el.append(h("h1", {}, "레퍼런스 추가"));
-  const card = h("section", { class: "card", "aria-label": "추가 설정" });
-  S.el.append(card);
-  const names = S.names;
-  if (names.length === 0) {
-    card.append(h("h2", {}, "카테고리가 없습니다"),
-      h("p", { class: "muted" }, "먼저 ", h("code", {}, "/yt-coach:yt-init"), " 또는 홈에서 폴더 만들기를 진행하세요."),
-      h("a", { class: "btn", href: "#/home" }, "홈으로"));
+  stopCheck();
+  S.formEl.replaceChildren();
+  S.f = null;
+  paintTitle();
+  if (!S.category) {
+    S.formEl.append(h("p", { class: "muted" }, "먼저 ", h("code", {}, "/yt-coach:yt-init"), " 또는 홈에서 폴더 만들기를 진행하세요."));
     return;
   }
 
   const form = h("form", { class: "add-form", novalidate: "" });
-
-  const sel = h("select", { id: "add-category" });
-  for (const n of names) {
-    const o = h("option", { value: n }, n);
-    if (n === S.category) o.selected = true;
-    sel.append(o);
-  }
-  sel.addEventListener("change", () => { S.category = sel.value; S.ctx.setCategory(sel.value); });
-  form.append(h("div", { class: "field" }, h("label", { for: "add-category" }, "카테고리"), sel));
 
   const fs = h("fieldset", { class: "field seg" }, h("legend", {}, "구분"));
   for (const [val, text] of [["ref", "레퍼런스"], ["mine", "내 영상"]]) {
     const rid = `add-role-${val}`;
     const input = h("input", { type: "radio", name: "role", id: rid, value: val });
     input.checked = S.draft.role === val;
-    input.addEventListener("change", () => { S.draft.role = val; });
+    input.addEventListener("change", () => { S.draft.role = val; scheduleCheck(); });
     fs.append(h("label", { class: "seg-opt", for: rid }, input, h("span", {}, text)));
   }
   form.append(fs);
 
-  const ta = h("textarea", { id: "add-links", rows: "6", placeholder: "유튜브 링크를 한 줄에 하나씩 붙여 넣으세요", spellcheck: "false" });
+  const ta = h("textarea", { id: "add-links", rows: "5", placeholder: "유튜브 링크를 한 줄에 하나씩 붙여 넣으세요",
+    spellcheck: "false", "aria-describedby": "add-check-summary" });
   ta.value = S.draft.links;
-  ta.addEventListener("input", () => { S.draft.links = ta.value; err.hidden = true; });
-  const err = h("p", { class: "error field-error", id: "add-links-err", role: "alert", hidden: true }, "");
-  ta.setAttribute("aria-describedby", "add-links-err");
-  form.append(h("div", { class: "field" }, h("label", { for: "add-links" }, "링크"), ta, err));
+  ta.addEventListener("input", () => { S.draft.links = ta.value; scheduleCheck(); });
+  const summary = h("p", { class: "check-summary", id: "add-check-summary", "aria-live": "polite" });
+  const list = h("ul", { class: "link-list", "aria-label": "링크 확인 결과", hidden: true });
+  form.append(h("div", { class: "field" }, h("label", { for: "add-links" }, "링크"), ta, summary, list));
 
-  const opts = h("div", { class: "field checks" });
-  const checks = [
-    ["shots", "샷 분류도 함께", null],
-    ["force", "이미 분석한 영상도 다시 분석", null],
-    ["refetch", "자막·컷을 새로 받기(요청이 늘어 차단될 수 있어요)", null],
-  ];
-  for (const [key, text] of checks) {
-    const cid = `add-opt-${key}`;
-    const cb = h("input", { type: "checkbox", id: cid });
-    cb.checked = !!S.draft[key];
-    cb.addEventListener("change", () => { S.draft[key] = cb.checked; });
-    opts.append(h("label", { class: "check", for: cid }, cb, h("span", {}, text)));
+  form.append(checkField("shots", "샷 분류도 함께", "영상마다 Claude 호출이 한 번 더 일어나요"));
+
+  const adv = h("details", { class: "adv" }, h("summary", {}, "고급"));
+  adv.open = !!S.draft.advOpen;
+  adv.addEventListener("toggle", () => { S.draft.advOpen = adv.open; });
+  adv.append(
+    checkField("force", "다시 분석", "이미 분석한 영상도 처음부터 다시 분석합니다"),
+    checkField("refetch", "자막·컷 새로 받기", "요청이 늘어 차단될 수 있어요"));
+  const nt = h("fieldset", { class: "field radios" }, h("legend", {}, "자막이 없을 때"));
+  for (const [val, text] of [["stt", "음성 인식(기본)"], ["screen", "화면만 보고 분석"], ["skip", "건너뛰기"]]) {
+    const rid = `add-nt-${val}`;
+    const input = h("input", { type: "radio", name: "no_transcript", id: rid, value: val });
+    input.checked = S.draft.noTranscript === val;
+    input.addEventListener("change", () => { S.draft.noTranscript = val; });
+    nt.append(h("label", { class: "check", for: rid }, input, h("span", {}, text)));
   }
-  form.append(opts);
+  adv.append(nt);
+  form.append(adv);
 
-  const row = h("div", { class: "btn-row" });
-  const start = h("button", { type: "submit", class: "btn btn-primary" }, "추가 시작");
-  const shotsOnly = h("button", { type: "button", class: "btn" }, "샷 분류만 보강");
-  row.append(start, shotsOnly);
-  form.append(row);
+  const start = h("button", { type: "submit", class: "btn btn-primary" }, startLabel(0));
+  start.disabled = true;
+  form.append(h("div", { class: "btn-row" }, start));
   form.append(h("p", { class: "muted hint" }, "영상은 하나씩 처리합니다. 분석마다 Claude 호출이 일어납니다."));
 
+  S.f = { form, ta, summary, list, start, sending: false };
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const links = ta.value.split(/\s+/).map((x) => x.trim()).filter(Boolean);
-    if (links.length === 0) {
-      err.textContent = "분석할 유튜브 링크를 한 줄에 하나씩 넣어 주세요.";
-      err.hidden = false;
-      ta.setAttribute("aria-invalid", "true");
-      ta.focus();
-      return;
-    }
-    ta.removeAttribute("aria-invalid");
-    start.disabled = true;
-    shotsOnly.disabled = true;
-    await startJob("/api/add", {
-      category: sel.value, role: S.draft.role, links,
-      shots: S.draft.shots, force: S.draft.force, refetch: S.draft.refetch,
+    const mine = S;
+    const links = checkRowsToSend();
+    if (links.length === 0 || mine.check.pending || mine.f.sending) return;
+    mine.f.sending = true;
+    paintCheck();
+    const f = mine.f;
+    const ok = await startJob("/api/add", {
+      category: mine.category, role: mine.draft.role, links,
+      shots: mine.draft.shots, force: mine.draft.force, refetch: mine.draft.refetch,
+      no_transcript: mine.draft.noTranscript,
     });
-    if (S && S.ctx.isCurrent() && S.view === "form") { start.disabled = false; shotsOnly.disabled = false; }
+    if (S !== mine || !mine.ctx.isCurrent()) return;
+    f.sending = false;
+    if (ok && S.f === f) {
+      // The form stays for more links; what was sent is cleared.
+      mine.draft.links = "";
+      f.ta.value = "";
+      mine.check.rows = []; mine.check.count = 0; mine.check.pending = false;
+    }
+    if (S.f === f) paintCheck();
   });
-  shotsOnly.addEventListener("click", async () => {
-    start.disabled = true;
-    shotsOnly.disabled = true;
-    await startJob("/api/add/shots-only", { category: sel.value });
-    if (S && S.ctx.isCurrent() && S.view === "form") { start.disabled = false; shotsOnly.disabled = false; }
-  });
-  card.append(form);
+  S.formEl.append(form);
+  if (S.draft.links) scheduleCheck();
 }
 
-// ---- page contract ----------------------------------------------------------
+// ---- component contract -----------------------------------------------------
 
-export async function mount(el, params, ctx) {
+function setOpen(on, focus) {
+  if (!S || S.isOpen === on) return;
+  S.isOpen = on;
+  S.area.hidden = !on;
+  emitChange();
+  if (on && focus && S.f) S.f.ta.focus();
+}
+
+function openArea() { setOpen(true, false); }
+
+// opts: { open, onSaved(), onChange({ open, active }) }. Returns a handle that refs.js drives.
+export function mountAddArea(el, ctx, opts = {}) {
   stopPolling();
   stopClock();
-  S = freshState(el, ctx);
-  el.replaceChildren(h("h1", {}, "레퍼런스 추가"), h("p", { class: "muted", role: "status" }, "불러오는 중…"));
-  const mine = S;
-  try {
-    const [cats, cur] = await Promise.all([
-      ctx.api("GET", "/api/categories"),
-      ctx.api("GET", "/api/jobs/current?kind=collect"),
-    ]);
-    if (S !== mine || !ctx.isCurrent()) return;
-    mine.names = (cats.categories || []).map((c) => c.category);
-    if (!mine.names.includes(mine.category)) mine.category = mine.names[0] || null;
-    if (cur.job) {
-      applyJob(cur.job);
-      if (isActive(cur.job)) schedulePoll();
-    } else {
-      renderForm();
-    }
-  } catch (e) {
-    if (S !== mine || !ctx.isCurrent() || e.error === "aborted") return;
-    const retry = h("button", { type: "button", class: "btn" }, "다시 시도");
-    retry.addEventListener("click", () => { if (ctx.isCurrent()) mount(el, params, ctx); });
-    el.replaceChildren(h("h1", {}, "레퍼런스 추가"), h("p", { class: "error", role: "alert" }, e.message), retry);
-  }
+  stopCheck();
+  S = freshState(el, ctx, { onSaved: opts.onSaved, onChange: opts.onChange }, !!opts.open);
+  paintTitle();
+  renderForm();
+  resume();      // an unfinished collect job opens the area and is shown here
+  return {
+    open: (o) => setOpen(true, !(o && o.focus === false)),
+    close: () => setOpen(false, false),
+    unmount,
+    onCategory,
+    startShotsOnly,
+  };
+}
+
+async function startShotsOnly() {
+  if (!S || !S.category) return false;
+  openArea();
+  return startJob("/api/add/shots-only", { category: S.category });
 }
 
 export function unmount() {
   stopPolling();
   stopClock();
+  stopCheck();
   S = null;
 }
 
 export function onCategory(category) {
   if (!S) return;
   S.category = category;
-  const sel = S.el.querySelector("#add-category");
-  if (sel && category && sel.value !== category) sel.value = category;
+  paintTitle();
+  if (!S.f || !category) renderForm();   // category list was empty before, or just became empty
+  else scheduleCheck();
+  renderJobPanel();
 }

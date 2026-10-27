@@ -397,7 +397,7 @@ function render() {
   if (d.stage === "too_few") {
     kids.push(h("section", { class: "card empty", "aria-label": "ref 부족" },
       h("p", {}, `ref가 ${d.ref}개라 아직 유형을 볼 수 없습니다. ${d.need}개 더 넣으면 예비 관찰을 할 수 있어요`),
-      h("a", { class: "btn btn-primary", href: "#/add" }, "레퍼런스 추가로 가기")));
+      h("a", { class: "btn btn-primary", href: "#/add" }, "레퍼런스 넣기")));
     fill(S.el, ...kids);
     return;
   }

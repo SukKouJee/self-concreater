@@ -52,6 +52,7 @@ class Fakes:
         self.asks = []              # (rules, payload, task, kw)
         self.ask_errors = []        # 차례대로 낼 오류(None이면 정상)
         self.writes = []            # dict(args..., analysis=tmp 내용)
+        self.write_errors = []      # 차례대로 낼 오류(None이면 정상)
         self.shot_ctx_calls = []
         self.applied = []           # (vid, labels)
         self.pending = []
@@ -101,6 +102,10 @@ class Fakes:
     def write(self, vid, category, role, analysis_path, force=False):
         with open(analysis_path, encoding="utf-8") as f:
             content = json.load(f)
+        if self.write_errors:
+            err = self.write_errors.pop(0)
+            if err is not None:
+                raise err
         self.writes.append({"vid": vid, "category": category, "role": role, "path": str(analysis_path),
                             "force": force, "analysis": content})
         return {"id": vid, "status": "written", "stage_text": f"단계 {len(self.writes)}"}
@@ -203,6 +208,30 @@ def decide(client, job_id, item_id, **decision):
     return client.json("POST", f"/api/jobs/{job_id}/items/{item_id}/decision", decision)
 
 
+def review(client, job_id, item_id, **body):
+    return client.json("POST", f"/api/add/{job_id}/review/{item_id}", body)
+
+
+def in_review(i):
+    return lambda job: job["items"][i]["state"] == "awaiting" and job["items"][i]["ask"] == "review"
+
+
+def gate(fakes, vid):
+    """vid의 컷 단계에서 멈추게 한다. (들어옴, 풀기) Event를 돌려준다."""
+    entered, release = threading.Event(), threading.Event()
+    real = fakes.cut_hook
+
+    def hook(progress):
+        if fakes.cut_calls[-1][0] == vid:
+            entered.set()
+            assert release.wait(5)
+        if real:
+            real(progress)
+
+    fakes.cut_hook = hook
+    return entered, release
+
+
 # ---- 흐름 -------------------------------------------------------------------------
 
 def test_add_happy_path_awaits_then_saves(client, fakes, tmp_path):
@@ -212,16 +241,19 @@ def test_add_happy_path_awaits_then_saves(client, fakes, tmp_path):
     item = job["items"][0]
     assert job["status"] == "awaiting"
     assert item["id"] == A and item["title"] == f"제목 {A}" and item["step"] == "confirm"
-    assert item["preview"]["summary"] == "한 줄 요약" and item["ask"] is None
+    assert item["preview"]["summary"] == "한 줄 요약" and item["ask"] == "review"
     assert item["frames"] == [f"workspace/frames/{A}/scene001_0.5s.jpg"]
+    assert item["opts"] == {"category": CAT, "role": "ref", "shots": False, "force": False, "refetch": False,
+                            "no_transcript": "stt"}
     rules, payload, _, kw = fakes.asks[0]
     assert rules == [claude_cli.SKILLS_DIR / "yt-analyze" / "SKILL.md"]
     assert payload["id"] == A
     assert kw["files"] == [tmp_path / "refs/ref_food/videos/ex.md"]   # examples(사용자 교정 md)를 읽어야 한다
     assert api_add.SCREEN_HINT not in fakes.asks[0][2]
 
-    status, body = decide(client, job["id"], A, action="save")
+    status, body = review(client, job["id"], A, action="save")
     assert status == 200 and body["job"]["id"] == job["id"]
+    assert body["job"]["items"][0]["state"] == "saved" and body["job"]["items"][0]["step"] == "done"
     job = wait_for(client, job["id"], finished)
 
     assert job["status"] == "done"
@@ -236,21 +268,369 @@ def test_add_happy_path_awaits_then_saves(client, fakes, tmp_path):
 
 def test_save_uses_edited_analysis(client, fakes):
     job = start_add(client, [url(A)])
-    wait_for(client, job["id"], item_state(0, "awaiting"))
+    wait_for(client, job["id"], in_review(0))
     edited = analysis(label="intro")
-    decide(client, job["id"], A, action="save", analysis=edited)
+    status, _ = review(client, job["id"], A, action="save", analysis=edited)
+    assert status == 200
     wait_for(client, job["id"], finished)
     assert fakes.writes[0]["analysis"]["sections"][0]["label"] == "intro"
 
 
-def test_save_all_skips_further_confirmation(client, fakes):
-    job = start_add(client, [url(A), url(B), url(C)])
-    wait_for(client, job["id"], item_state(0, "awaiting"))
-    decide(client, job["id"], A, action="save_all")
+def test_invalid_edited_analysis_returns_to_review_with_reason(client, fakes):
+    fakes.write_errors = [ScriptError("invalid_analysis", "섹션 라벨이 틀렸습니다")]
+    job = start_add(client, [url(A)])
+    wait_for(client, job["id"], in_review(0))
+    edited = analysis(label="intro")
+
+    status, body = review(client, job["id"], A, action="save", analysis=edited)
+
+    assert status == 400 and body["error"] == "invalid_analysis"
+    item = snap(client, job["id"])["items"][0]
+    assert (item["state"], item["ask"], item["step"]) == ("awaiting", "review", "confirm")
+    assert item["message"] == "섹션 라벨이 틀렸습니다"
+    assert item["preview"]["sections"][0]["label"] == "intro"     # 고친 내용을 그대로 다시 보여 준다
+    status, body = review(client, job["id"], A, action="save")
+    assert status == 200 and body["job"]["items"][0]["state"] == "saved"
+
+
+def test_save_exists_is_skipped(client, fakes, monkeypatch):
+    monkeypatch.setattr(videomd, "write", lambda *a, **kw: {"id": A, "status": "exists"})
+    job = start_add(client, [url(A)])
+    wait_for(client, job["id"], in_review(0))
+    status, body = review(client, job["id"], A, action="save")
+    assert status == 200
+    item = body["job"]["items"][0]
+    assert (item["state"], item["message"]) == ("skipped", "이미 있음")
+
+
+def test_next_video_runs_while_first_waits_for_review(client, fakes):
+    job = start_add(client, [url(A), url(B)])
+    job = wait_for(client, job["id"], lambda j: all(i["state"] == "awaiting" for i in j["items"]))
+    assert all(i["ask"] == "review" for i in job["items"]) and job["status"] == "awaiting"
+    assert [c["vid"] for c in fakes.fetch_calls] == [A, B]
+    assert fakes.writes == []                       # 저장은 사용자가 누를 때만
+
+
+def test_review_save_writes_and_closes_job(client, fakes):
+    job = start_add(client, [url(A)])
+    wait_for(client, job["id"], in_review(0))
+    status, data = review(client, job["id"], A, action="save")
+    assert status == 200 and data["job"]["items"][0]["state"] == "saved"
+    job = wait_for(client, job["id"], lambda j: j["status"] == "done")
+    assert [w["vid"] for w in fakes.writes] == [A]
+
+
+def test_review_skip_marks_skipped_without_writing(client, fakes):
+    job = start_add(client, [url(A)])
+    wait_for(client, job["id"], in_review(0))
+    status, data = review(client, job["id"], A, action="skip")
+    assert status == 200
+    assert data["job"]["items"][0]["state"] == "skipped" and data["job"]["items"][0]["message"] == "건너뜀"
     job = wait_for(client, job["id"], finished)
-    assert [i["state"] for i in job["items"]] == ["saved", "saved", "saved"]
-    assert [w["vid"] for w in fakes.writes] == [A, B, C]
-    assert job["summary"]["saved"] == 3 and job["summary"]["stage_text"] == "단계 3"
+    assert job["status"] == "done" and fakes.writes == []
+
+
+def test_double_save_writes_once(client, fakes):
+    job = start_add(client, [url(A)])
+    wait_for(client, job["id"], in_review(0))
+    barrier = threading.Barrier(2)
+    results = []
+
+    def click():
+        barrier.wait()
+        results.append(review(client, job["id"], A, action="save"))
+
+    threads = [threading.Thread(target=click) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5)
+
+    statuses = sorted(s for s, _ in results)
+    assert statuses == [200, 400]
+    assert [b["error"] for s, b in results if s == 400] == ["not_awaiting"]
+    assert len(fakes.writes) == 1
+    status, body = review(client, job["id"], A, action="save")
+    assert status == 400 and body["error"] == "not_awaiting" and len(fakes.writes) == 1
+
+
+def test_status_leaves_awaiting_when_reviews_resolved_while_worker_busy(client, fakes):
+    entered, release = gate(fakes, B)
+    job = start_add(client, [url(A), url(B)])
+    wait_for(client, job["id"], in_review(0))
+    assert entered.wait(5)
+    assert snap(client, job["id"])["status"] == "awaiting"
+
+    status, body = review(client, job["id"], A, action="save")
+
+    assert status == 200 and body["job"]["status"] == "running"
+    release.set()
+    wait_for(client, job["id"], lambda j: in_review(1)(j) and j["status"] == "awaiting")
+
+
+def test_status_done_when_last_review_resolved_while_idle(client, fakes):
+    job = start_add(client, [url(A), url(B)])
+    wait_for(client, job["id"], lambda j: in_review(0)(j) and in_review(1)(j))
+    time.sleep(0.6)                                   # 워커가 한가한 상태로 돈다
+    review(client, job["id"], A, action="save")
+    assert snap(client, job["id"])["status"] == "awaiting"   # B가 아직 확인 대기
+    review(client, job["id"], B, action="skip")
+    job = wait_for(client, job["id"], lambda j: j["status"] != "awaiting")
+    assert job["status"] in {"running", "done"}
+    job = wait_for(client, job["id"], finished)
+    assert job["status"] == "done"
+    assert job["summary"] == {"saved": 1, "skipped": 1, "failed": 0, "stage_text": "단계 1"}
+
+
+def test_reviews_survive_cancel(client, fakes):
+    entered, release = gate(fakes, B)
+    job = start_add(client, [url(A), url(B)])
+    wait_for(client, job["id"], in_review(0))
+    assert entered.wait(5)
+
+    status, _ = client.json("POST", f"/api/jobs/{job['id']}/cancel", {})
+    assert status == 200
+    release.set()
+    job = wait_for(client, job["id"], finished)
+    assert job["status"] == "stopped"
+    assert job["items"][1]["state"] == "skipped"
+    assert in_review(0)(job)
+
+    status, data = review(client, job["id"], A, action="save")
+    assert status == 200 and data["job"]["items"][0]["state"] == "saved"
+    assert data["job"]["status"] == "stopped"
+    assert data["job"]["summary"]["saved"] == 1        # 멈춘 작업의 요약도 갱신된다
+    assert [w["vid"] for w in fakes.writes] == [A]
+
+
+def test_append_links_to_running_job_skips_duplicates(client, fakes):
+    entered, release = gate(fakes, A)
+    job = start_add(client, [url(A), url(B)])
+    assert entered.wait(5)
+
+    status, data = client.json("POST", "/api/add", {"category": CAT, "links": [url(B), f"https://www.youtube.com/watch?v={A}", url(C)]})
+
+    assert status == 200
+    assert data["appended"] == [url(C)]
+    assert data["job"]["id"] == job["id"]
+    assert [i["url"] for i in data["job"]["items"]] == [url(A), url(B), url(C)]
+    release.set()
+    job = wait_for(client, job["id"], lambda j: all(in_review(i)(j) for i in range(3)))
+    assert [i["id"] for i in job["items"]] == [A, B, C]
+    status, body = client.json("GET", "/api/jobs/current?kind=collect")
+    assert body["job"]["id"] == job["id"]
+
+
+def test_appended_items_carry_their_own_options(client, fakes, tmp_path):
+    (tmp_path / "refs" / "ref_travel" / "videos").mkdir(parents=True)
+    entered, release = gate(fakes, A)
+    job = start_add(client, [url(A)])
+    assert entered.wait(5)
+    status, data = client.json("POST", "/api/add", {"category": "travel", "role": "mine", "links": [url(B)],
+                                                    "refetch": True, "no_transcript": "skip"})
+    assert status == 200 and data["appended"] == [url(B)]
+    release.set()
+    wait_for(client, job["id"], lambda j: in_review(0)(j) and in_review(1)(j))
+    assert fakes.fetch_calls[1] == {"vid": B, "category": "travel", "role": "mine", "force": True, "reanalyze": False}
+    review(client, job["id"], B, action="save")
+    w = fakes.writes[-1]
+    assert (w["vid"], w["category"], w["role"], w["force"]) == (B, "travel", "mine", True)
+
+
+def test_add_while_shots_only_runs_is_refused(client, fakes, monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+
+    def slow_context(vid, category):
+        entered.set()
+        assert release.wait(5)
+        return fakes.shots_context(vid, category)
+
+    monkeypatch.setattr(shots, "context", slow_context)
+    fakes.pending = [A]
+    status, body = client.json("POST", "/api/add/shots-only", {"category": CAT})
+    assert status == 200
+    assert entered.wait(5)
+    status, resp = client.json("POST", "/api/add", {"category": CAT, "links": [url(B)]})
+    release.set()
+    assert status == 400 and resp["error"] == "job_running"
+    assert len(snap(client, body["job"]["id"])["items"]) == 1
+
+
+def test_new_job_adopts_leftover_reviews(client, fakes):
+    fakes.fetch_errors[B] = ScriptError("blocked", "유튜브가 요청을 막았습니다")
+    old = start_add(client, [url(A), url(B)], shots=True)
+    old = wait_for(client, old["id"], finished)
+    assert old["status"] == "stopped" and in_review(0)(old)
+
+    new = start_add(client, [url(A), url(D)])
+
+    assert new["id"] != old["id"]
+    first = new["items"][0]
+    assert (first["id"], first["state"], first["ask"]) == (A, "awaiting", "review")
+    assert first["preview"]["summary"] == "한 줄 요약" and first["opts"]["shots"] is True
+    assert first["timing"]["steps"]["analyze"]["state"] == "done"
+    assert [i["url"] for i in new["items"]] == [url(A), url(D)]      # 같은 영상은 다시 넣지 않는다
+    moved = snap(client, old["id"])["items"][0]
+    assert (moved["state"], moved["message"]) == ("skipped", "새 작업으로 옮김")
+    status, body = review(client, old["id"], A, action="save")
+    assert status == 400 and body["error"] == "not_awaiting"
+
+    status, body = review(client, new["id"], A, action="save")
+    assert status == 200
+    new = wait_for(client, new["id"], lambda j: j["items"][0]["state"] == "saved" and in_review(1)(j))
+    assert new["items"][0]["timing"]["steps"]["shots"]["state"] == "done"
+    assert fakes.shot_ctx_calls == [A]
+
+
+def test_shots_only_is_refused_while_reviews_wait(client, fakes):
+    fakes.fetch_errors[B] = ScriptError("blocked", "유튜브가 요청을 막았습니다")
+    old = start_add(client, [url(A), url(B)])
+    old = wait_for(client, old["id"], finished)
+    assert old["status"] == "stopped" and in_review(0)(old)
+    fakes.pending = [C]
+
+    status, body = client.json("POST", "/api/add/shots-only", {"category": CAT})
+
+    assert status == 400 and body["error"] == "reviews_pending"
+    assert body["message"] == "확인을 기다리는 영상이 있어요. 먼저 저장하거나 건너뛰어 주세요"
+    status, body = client.json("GET", "/api/jobs/current?kind=collect")
+    assert body["job"]["id"] == old["id"] and in_review(0)(body["job"])
+    review(client, old["id"], A, action="skip")
+    status, body = client.json("POST", "/api/add/shots-only", {"category": CAT})
+    assert status == 200
+    wait_for(client, body["job"]["id"], finished)
+
+
+def test_current_prefers_stopped_job_with_reviews_over_newer_finished_job(client, fakes):
+    fakes.fetch_errors[B] = ScriptError("blocked", "유튜브가 요청을 막았습니다")
+    old = start_add(client, [url(A), url(B)])
+    old = wait_for(client, old["id"], finished)
+    assert in_review(0)(old)
+    newer = client.app.jobs.start("collect", lambda job: job.finish("done", None), items=[jobs.new_item(C, step="shots")],
+                                  category=CAT)
+    wait_for(client, newer.id, finished)
+
+    status, body = client.json("GET", "/api/jobs/current?kind=collect")
+
+    assert status == 200 and body["job"]["id"] == old["id"]
+    review(client, old["id"], A, action="skip")
+    status, body = client.json("GET", "/api/jobs/current?kind=collect")
+    assert body["job"]["id"] == newer.id
+
+
+def test_add_while_cancelled_job_winds_down_says_stopping(client, fakes):
+    entered, release = gate(fakes, A)
+    job = start_add(client, [url(A)])
+    assert entered.wait(5)
+    status, _ = client.json("POST", f"/api/jobs/{job['id']}/cancel", {})
+    assert status == 200
+
+    status, body = client.json("POST", "/api/add", {"category": CAT, "links": [url(B)]})
+
+    release.set()
+    assert status == 400 and body["error"] == "job_stopping"
+    assert body["message"] == "작업을 멈추는 중입니다. 잠시 뒤 다시 넣어 주세요"
+    wait_for(client, job["id"], finished)
+
+
+def test_broken_item_options_fail_only_that_video(client, fakes):
+    entered, release = gate(fakes, A)
+    job = start_add(client, [url(A), url(B)])
+    assert entered.wait(5)
+    live = client.app.jobs.get(job["id"])
+    broken = dict(jobs.new_item(url(C), url=url(C)), opts={"category": CAT, "bogus": True})
+    assert live.append_queued([broken], "collect", api_add._same_video) == [2]
+    release.set()
+
+    job = wait_for(client, job["id"], lambda j: j["items"][2]["state"] == "failed" and in_review(1)(j))
+
+    assert in_review(0)(job) and job["status"] == "awaiting"
+    assert job["items"][2]["message"].startswith("예상치 못한 오류: TypeError")
+
+
+def test_reanalyze_queues_and_returns_to_review(client, fakes):
+    job = start_add(client, [url(A)])
+    wait_for(client, job["id"], in_review(0))
+    status, data = review(client, job["id"], A, action="reanalyze", feedback="훅이 더 길어요")
+    assert status == 200
+    item = data["job"]["items"][0]
+    assert item["state"] in {"waiting", "running"} and item["step"] == "analyze" and item["ask"] is None
+    wait_for(client, job["id"], lambda j: in_review(0)(j) and len(fakes.analyze_asks()) == 2)
+    first, second = fakes.analyze_asks()
+    assert "사용자 의견" not in first[2]
+    assert second[2] == first[2] + "\n사용자 의견: 훅이 더 길어요"
+    review(client, job["id"], A, action="skip")
+    job = wait_for(client, job["id"], finished)
+    assert job["items"][0]["state"] == "skipped" and fakes.writes == []
+
+
+def test_reanalyze_failure_returns_to_review_with_old_preview(client, fakes):
+    fakes.ask_errors = [None, ScriptError("claude_failed", "시간 초과")]
+    job = start_add(client, [url(A)])
+    wait_for(client, job["id"], in_review(0))
+    review(client, job["id"], A, action="reanalyze", feedback="")
+    job = wait_for(client, job["id"], lambda j: in_review(0)(j) and len(fakes.analyze_asks()) == 2)
+    item = job["items"][0]
+    assert item["preview"]["summary"] == "한 줄 요약" and "시간 초과" in item["message"]
+    assert steps(job)["analyze"]["state"] == "failed"
+
+
+def test_reanalyze_refused_on_stopped_job(client, fakes):
+    fakes.fetch_errors[B] = ScriptError("blocked", "유튜브가 요청을 막았습니다")
+    job = start_add(client, [url(A), url(B)])
+    job = wait_for(client, job["id"], finished)
+    status, body = review(client, job["id"], A, action="reanalyze", feedback="다시")
+    assert status == 400 and body["error"] == "job_stopped"
+    assert body["message"] == "작업이 멈춰 다시 분석할 수 없습니다. 링크를 다시 넣어 주세요"
+    assert in_review(0)(snap(client, job["id"]))
+    assert len(fakes.analyze_asks()) == 1
+
+
+def test_shots_after_save_on_stopped_job_is_skipped(client, fakes):
+    fakes.fetch_errors[B] = ScriptError("blocked", "유튜브가 요청을 막았습니다")
+    job = start_add(client, [url(A), url(B)], shots=True)
+    job = wait_for(client, job["id"], finished)
+    status, body = review(client, job["id"], A, action="save")
+    assert status == 200
+    item = body["job"]["items"][0]
+    assert item["state"] == "saved" and "샷 분류는 작업이 멈춰 건너뛰었어요" in item["message"]
+    assert item["timing"]["steps"]["shots"]["state"] == "skipped"
+    assert fakes.shot_ctx_calls == [] and [w["vid"] for w in fakes.writes] == [A]
+
+
+def test_review_errors(client, fakes):
+    job = start_add(client, [url(A)])
+    wait_for(client, job["id"], in_review(0))
+    status, body = review(client, job["id"], A, action="explode")
+    assert status == 400 and body["error"] == "bad_action"
+    status, body = review(client, job["id"], A, action="save", analysis=[1])
+    assert status == 400 and body["error"] == "bad_request"
+    status, body = review(client, job["id"], "nope", action="save")
+    assert status == 400 and body["error"] == "item_not_found"
+    status, body = review(client, "missing", A, action="save")
+    assert status == 400 and body["error"] == "job_not_found"
+    assert in_review(0)(snap(client, job["id"])) and fakes.writes == []
+    review(client, job["id"], A, action="save")
+    wait_for(client, job["id"], finished)
+    status, body = review(client, job["id"], A, action="skip")
+    assert status == 400 and body["error"] == "not_awaiting"
+
+
+def test_review_routes_refuse_non_collect_job(client, fakes):
+    fakes.pending = [A]
+    status, body = client.json("POST", "/api/add/shots-only", {"category": CAT})
+    job = wait_for(client, body["job"]["id"], finished)
+    status, body = review(client, job["id"], A, action="save")
+    assert status == 400 and body["error"] == "not_awaiting"
+
+
+def test_old_decision_route_refuses_collect(client, fakes):
+    job = start_add(client, [url(A)])
+    wait_for(client, job["id"], in_review(0))
+    status, body = decide(client, job["id"], A, action="save")
+    assert status == 400 and body["error"] == "bad_action"
+    assert "/review/" in body["message"]
+    assert in_review(0)(snap(client, job["id"])) and fakes.writes == []
 
 
 def test_exists_is_skipped(client, fakes):
@@ -265,51 +645,51 @@ def test_exists_is_skipped(client, fakes):
 def test_blocked_stops_remaining(client, fakes):
     fakes.fetch_errors[B] = ScriptError("blocked", "유튜브가 요청을 막았습니다")
     job = start_add(client, [url(A), url(B), url(C)])
-    wait_for(client, job["id"], item_state(0, "awaiting"))
-    decide(client, job["id"], A, action="save")
     job = wait_for(client, job["id"], finished)
-    assert job["status"] == "stopped"
-    assert [i["state"] for i in job["items"]] == ["saved", "failed", "skipped"]
+    assert job["status"] == "stopped" and job["message"] == "유튜브가 요청을 막았습니다"
+    assert [i["state"] for i in job["items"]] == ["awaiting", "failed", "skipped"]   # 확인 대기는 남는다
     assert job["items"][1]["message"] == "유튜브가 요청을 막았습니다"
     assert job["items"][2]["message"] == "차단으로 중단"
     assert [c["vid"] for c in fakes.fetch_calls] == [A, B]
     assert job["summary"]["failed"] == 1 and job["summary"]["skipped"] == 1
+    status, body = review(client, job["id"], A, action="save")
+    assert status == 200 and body["job"]["items"][0]["state"] == "saved"
 
 
-def test_no_transcript_asks_then_stt(client, fakes):
+def test_no_transcript_default_runs_stt_without_asking(client, fakes):
     fakes.fetch_errors[A] = ScriptError("no_transcript", "자막이 없습니다", id=A, title="무자막")
     job = start_add(client, [url(A)])
-    job = wait_for(client, job["id"], item_state(0, "awaiting"))
+    job = wait_for(client, job["id"], in_review(0))
     item = job["items"][0]
-    assert item["ask"] == "no_transcript" and item["preview"] is None
-    assert item["id"] == A and item["title"] == "무자막"
-    assert fakes.asks == []
-
-    decide(client, job["id"], A, action="stt")
-    job = wait_for(client, job["id"], lambda j: j["items"][0]["preview"] is not None)
+    assert item["id"] == A and item["title"] == "무자막" and item["preview"] is not None
     assert fakes.stt_calls == [A]
-    assert job["items"][0]["ask"] is None
     assert len(fakes.analyze_asks()) == 1
 
 
 def test_no_transcript_screen_uses_read_tool(client, fakes):
     fakes.fetch_errors[A] = ScriptError("no_transcript", "자막이 없습니다", id=A, title="무자막")
-    job = start_add(client, [url(A)])
-    wait_for(client, job["id"], item_state(0, "awaiting"))
-    decide(client, job["id"], A, action="screen")
-    wait_for(client, job["id"], lambda j: j["items"][0]["preview"] is not None)
+    job = start_add(client, [url(A)], no_transcript="screen")
+    job = wait_for(client, job["id"], in_review(0))
     assert fakes.stt_calls == []
     assert fakes.analyze_asks()[0][3]["files"]
     assert api_add.SCREEN_HINT in fakes.analyze_asks()[0][2]
+    assert job["items"][0]["message"] == "자막이 없어 화면만 보고 분석합니다"
+
+
+def test_no_transcript_option_skips_without_asking(client, fakes):
+    fakes.fetch_errors[A] = ScriptError("no_transcript", "자막이 없습니다", id=A, title="무자막")
+    job = start_add(client, [url(A), url(B)], no_transcript="skip")
+    job = wait_for(client, job["id"], in_review(1))
+    item = job["items"][0]
+    assert (item["state"], item["ask"], item["message"]) == ("skipped", None, "자막이 없어 건너뜀")
+    assert fakes.stt_calls == [] and len(fakes.analyze_asks()) == 1
 
 
 def test_stt_unavailable_falls_back_to_screen(client, fakes):
     fakes.fetch_errors[A] = ScriptError("no_transcript", "자막이 없습니다", id=A, title="무자막")
     fakes.stt_error = ScriptError("stt_unavailable", "faster-whisper가 없습니다")
     job = start_add(client, [url(A)])
-    wait_for(client, job["id"], item_state(0, "awaiting"))
-    decide(client, job["id"], A, action="stt")
-    job = wait_for(client, job["id"], lambda j: j["items"][0]["preview"] is not None)
+    job = wait_for(client, job["id"], in_review(0))
     assert "faster-whisper가 없습니다" in job["items"][0]["message"]
     assert api_add.SCREEN_HINT in fakes.analyze_asks()[0][2]
 
@@ -377,30 +757,17 @@ def test_cuts_failure_keeps_going(client, fakes, monkeypatch):
     assert job["items"][0]["frames"] == []
 
 
-def test_reanalyze_passes_feedback(client, fakes):
-    job = start_add(client, [url(A)])
-    wait_for(client, job["id"], item_state(0, "awaiting"))
-    decide(client, job["id"], A, action="reanalyze", feedback="훅이 더 길어요")
-    wait_for(client, job["id"], lambda j: j["items"][0]["state"] == "awaiting" and len(fakes.asks) == 2)
-    first, second = fakes.analyze_asks()
-    assert "사용자 의견" not in first[2]
-    assert second[2] == first[2] + "\n사용자 의견: 훅이 더 길어요"
-    decide(client, job["id"], A, action="skip")
-    job = wait_for(client, job["id"], finished)
-    assert job["items"][0]["state"] == "skipped" and fakes.writes == []
-
-
 def test_force_and_refetch_flags(client, fakes):
     job = start_add(client, [url(A)], force=True)
     wait_for(client, job["id"], item_state(0, "awaiting"))
-    decide(client, job["id"], A, action="save")
+    review(client, job["id"], A, action="save")
     wait_for(client, job["id"], finished)
     assert fakes.fetch_calls[-1]["reanalyze"] is True and fakes.fetch_calls[-1]["force"] is False
     assert fakes.cut_calls[-1] == (A, False) and fakes.writes[-1]["force"] is True
 
     job = start_add(client, [url(B)], refetch=True)
     wait_for(client, job["id"], item_state(0, "awaiting"))
-    decide(client, job["id"], B, action="save")
+    review(client, job["id"], B, action="save")
     wait_for(client, job["id"], finished)
     assert fakes.fetch_calls[-1]["force"] is True
     assert fakes.cut_calls[-1] == (B, True) and fakes.writes[-1]["force"] is True
@@ -409,7 +776,10 @@ def test_force_and_refetch_flags(client, fakes):
 def test_shots_option_runs_after_save(client, fakes, tmp_path):
     job = start_add(client, [url(A)], shots=True)
     wait_for(client, job["id"], item_state(0, "awaiting"))
-    decide(client, job["id"], A, action="save")
+    status, body = review(client, job["id"], A, action="save")
+    assert status == 200 and body["job"]["items"][0]["step"] in {"shots", "done"}
+    assert body["job"]["items"][0]["state"] in {"waiting", "running", "saved"}
+    assert [w["vid"] for w in fakes.writes] == [A]          # md는 요청을 받은 쪽이 바로 쓴다
     job = wait_for(client, job["id"], finished)
     assert job["items"][0]["state"] == "saved"
     assert fakes.shot_ctx_calls == [A]
@@ -427,7 +797,7 @@ def test_shots_no_frames_keeps_saved(client, fakes, monkeypatch):
     monkeypatch.setattr(shots, "context", no_frames)
     job = start_add(client, [url(A)], shots=True)
     wait_for(client, job["id"], item_state(0, "awaiting"))
-    decide(client, job["id"], A, action="save")
+    review(client, job["id"], A, action="save")
     job = wait_for(client, job["id"], finished)
     assert job["items"][0]["state"] == "saved"
     assert job["items"][0]["message"] == "컷 통계가 없어 샷 분류를 건너뜁니다"
@@ -458,14 +828,12 @@ def test_shots_only_stops_when_claude_unusable(client, fakes):
 
 # ---- API / 잠금 -----------------------------------------------------------------
 
-def test_only_one_collect_job(client, fakes):
+def test_shots_only_refused_while_collect_runs(client, fakes):
     job = start_add(client, [url(A)])
     wait_for(client, job["id"], item_state(0, "awaiting"))
-    status, body = client.json("POST", "/api/add", {"category": CAT, "links": [url(B)]})
-    assert status == 400 and body["error"] == "job_running"
-    assert body["message"] == "이미 수집 중인 작업이 있습니다"
     status, body = client.json("POST", "/api/add/shots-only", {"category": CAT})
     assert status == 400 and body["error"] == "job_running"
+    assert body["message"] == "이미 수집 중인 작업이 있습니다"
 
 
 def test_current_job_snapshot_keeps_awaiting_preview(client, fakes):
@@ -494,27 +862,16 @@ def test_links_parsing_dedup(client, fakes):
     ({"category": CAT, "role": "other", "links": ["x"]}, "bad_request"),
     ({"links": ["x"]}, "bad_request"),
     ({"category": "nope", "links": ["x"]}, "category_not_found"),
+    ({"category": CAT, "links": ["x"], "no_transcript": "ask"}, "bad_request"),
 ])
 def test_add_rejects_bad_request(client, body, code):
     status, resp = client.json("POST", "/api/add", body)
     assert status == 400 and resp["error"] == code
 
 
-def test_decision_errors(client, fakes):
-    job = start_add(client, [url(A)])
-    wait_for(client, job["id"], item_state(0, "awaiting"))
-    status, body = decide(client, job["id"], A, action="explode")
-    assert status == 400 and body["error"] == "bad_action"
-    status, body = decide(client, job["id"], "nope", action="save")
-    assert status == 400 and body["error"] == "item_not_found"
-    status, body = decide(client, job["id"], A, action="stt")
-    assert status == 400 and body["error"] == "bad_action"
+def test_missing_job(client, fakes):
     status, body = client.json("GET", "/api/jobs/missing")
     assert status == 400 and body["error"] == "job_not_found"
-    decide(client, job["id"], A, action="save")
-    wait_for(client, job["id"], finished)
-    status, body = decide(client, job["id"], A, action="save")
-    assert status == 400 and body["error"] == "not_awaiting"
 
 
 def test_categories_route(client, fakes):
@@ -614,25 +971,6 @@ def test_serve_waits_for_jobs_on_exit(monkeypatch, tmp_path, no_browser):
     assert calls[-1] == ui_main.JOB_STOP_TIMEOUT_SEC       # _serve finally: 작업 정리를 기다린다
 
 
-def test_decide_checks_action_under_lock(client, fakes):
-    job = start_add(client, [url(A)])
-    wait_for(client, job["id"], item_state(0, "awaiting"))
-    live = client.app.jobs.get(job["id"])
-    with pytest.raises(ScriptError) as err:
-        live.decide(A, {"action": "explode"}, allowed={None: api_add.PREVIEW_ACTIONS})
-    assert err.value.code == "bad_action"
-    assert live.snapshot()["items"][0]["state"] == "awaiting"
-
-
-def test_unknown_action_never_writes(client, fakes):
-    job = start_add(client, [url(A)])
-    wait_for(client, job["id"], item_state(0, "awaiting"))
-    client.app.jobs.get(job["id"]).decide(A, {"action": "explode"})   # 라우트 검증을 건너뛴 결정
-    job = wait_for(client, job["id"], finished)
-    assert job["items"][0]["state"] == "failed"
-    assert fakes.writes == []
-
-
 def _scenes(n):
     return {"cuts": [], "duration_sec": 60,
             "scenes": [{"start": i, "end": i + 1, "frame": f"workspace/frames/{A}/s{i:02d}.jpg"} for i in range(n)]}
@@ -649,10 +987,8 @@ def test_analyze_attaches_only_examples_when_speech_is_enough(client, fakes, mon
 def test_analyze_attaches_at_most_8_frames_with_first_and_last_when_screen(client, fakes, monkeypatch, tmp_path):
     monkeypatch.setattr(videomd, "load_cuts", lambda vid: _scenes(30))
     fakes.fetch_errors[A] = ScriptError("no_transcript", "자막이 없습니다", id=A, title="무자막")
-    job = start_add(client, [url(A)])
-    wait_for(client, job["id"], item_state(0, "awaiting"))
-    decide(client, job["id"], A, action="screen")
-    wait_for(client, job["id"], lambda j: j["items"][0]["preview"] is not None)
+    job = start_add(client, [url(A)], no_transcript="screen")
+    wait_for(client, job["id"], in_review(0))
     files = fakes.analyze_asks()[0][3]["files"]
     frames = [f for f in files if f.suffix == ".jpg"]
     assert len(frames) == 8
@@ -692,7 +1028,7 @@ def test_collect_item_has_timing_rows(client, fakes):
     assert list(timing["steps"]) == ["fetch", "cuts", "analyze"]
     assert timing["video_sec"] == 60
     assert [s["state"] for s in timing["steps"].values()] == ["done", "done", "done"]
-    decide(client, job["id"], A, action="save")
+    review(client, job["id"], A, action="save")
     job = wait_for(client, job["id"], finished)
     assert [s["state"] for s in steps(job).values()] == ["done", "done", "done"]
 
@@ -702,7 +1038,7 @@ def test_timing_rows_include_shots_when_selected(client, fakes, tmp_path):
     job = wait_for(client, job["id"], item_state(0, "awaiting"))
     assert list(steps(job)) == ["fetch", "cuts", "analyze", "shots"]
     assert steps(job)["shots"]["state"] == "pending"
-    decide(client, job["id"], A, action="save")
+    review(client, job["id"], A, action="save")
     job = wait_for(client, job["id"], finished)
     assert steps(job)["shots"]["state"] == "done"
     assert len(records(tmp_path)[engine_key("shots")]) == 1
@@ -713,7 +1049,7 @@ def test_timing_records_written(client, fakes, tmp_path, monkeypatch):
         "id": vid, "meta": {"duration": 60}, "transcript": {"segments": [{"text": "안녕 하세요"}, {"text": "네"}]}})
     job = start_add(client, [url(A)])
     wait_for(client, job["id"], item_state(0, "awaiting"))
-    decide(client, job["id"], A, action="save")
+    review(client, job["id"], A, action="save")
     wait_for(client, job["id"], finished)
     data = records(tmp_path)
     assert {"fetch", "cuts", engine_key("analyze")} <= set(data)
@@ -745,8 +1081,8 @@ def test_reanalyze_restarts_analyze_row(client, fakes, tmp_path):
     job = wait_for(client, job["id"], item_state(0, "awaiting"))
     first = steps(job)["analyze"]["started_at"]
     time.sleep(0.4)                                  # 확인 대기
-    decide(client, job["id"], A, action="reanalyze", feedback="")
-    job = wait_for(client, job["id"], lambda j: j["items"][0]["state"] == "awaiting" and len(fakes.asks) == 2)
+    review(client, job["id"], A, action="reanalyze", feedback="")
+    job = wait_for(client, job["id"], lambda j: in_review(0)(j) and len(fakes.asks) == 2)
     row = steps(job)["analyze"]
     assert row["state"] == "done"
     assert row["started_at"] >= first + 0.4
@@ -829,18 +1165,14 @@ def test_fetch_gets_progress_callback(client, fakes):
     assert callable(fakes.progress["fetch"]) and callable(fakes.progress["cuts"])
 
 
-def test_no_transcript_wait_paused_then_stt_is_new_fetch_run(client, fakes, tmp_path):
+def test_no_transcript_stt_is_new_fetch_run(client, fakes, tmp_path):
     fakes.fetch_errors[A] = ScriptError("no_transcript", "자막이 없습니다", id=A, title="무자막",
                                         duration_sec=120, raw_status="fetched")
     fakes.raw_cached = False                         # 길이는 no_transcript 정보에서 얻는다
     job = start_add(client, [url(A)])
-    job = wait_for(client, job["id"], item_state(0, "awaiting"))
-    timing = job["items"][0]["timing"]
-    assert timing["video_sec"] == 120
-    assert timing["steps"]["fetch"]["state"] == "running" and "paused_at" in timing["steps"]["fetch"]
-    time.sleep(0.3)                                  # 사용자 결정 대기
-    decide(client, job["id"], A, action="stt")
-    job = wait_for(client, job["id"], lambda j: j["items"][0]["preview"] is not None)
+    job = wait_for(client, job["id"], in_review(0))
+    assert job["items"][0]["timing"]["video_sec"] == 120
+    assert "prior_elapsed" in steps(job)["fetch"]  # 자막 받기 -> 음성 인식이 한 줄로 합쳐 보인다
     assert callable(fakes.progress["stt"])
     assert steps(job)["fetch"]["state"] == "done"
     data = records(tmp_path)
@@ -852,9 +1184,7 @@ def test_stt_unavailable_marks_fetch_row_skipped(client, fakes, tmp_path):
     fakes.fetch_errors[A] = ScriptError("no_transcript", "자막이 없습니다", id=A, title="무자막")
     fakes.stt_error = ScriptError("stt_unavailable", "faster-whisper가 없습니다")
     job = start_add(client, [url(A)])
-    wait_for(client, job["id"], item_state(0, "awaiting"))
-    decide(client, job["id"], A, action="stt")
-    job = wait_for(client, job["id"], lambda j: j["items"][0]["preview"] is not None)
+    job = wait_for(client, job["id"], in_review(0))
     assert steps(job)["fetch"]["state"] == "skipped"
     assert "stt" not in records(tmp_path)
 
@@ -870,7 +1200,7 @@ def test_timing_errors_never_fail_collection(client, fakes, monkeypatch):
     fakes.cut_hook = lambda p: p("download", 0.1, "영상 받는 중 10%")
     job = start_add(client, [url(A)])
     wait_for(client, job["id"], item_state(0, "awaiting"))
-    decide(client, job["id"], A, action="save")
+    review(client, job["id"], A, action="save")
     job = wait_for(client, job["id"], finished)
     assert job["items"][0]["state"] == "saved"
 
@@ -884,7 +1214,7 @@ def test_timing_constructor_error_never_fails_collection(client, fakes, monkeypa
     monkeypatch.setattr(progress.ItemTiming, "__init__", boom)
     job = start_add(client, [url(A)])
     wait_for(client, job["id"], item_state(0, "awaiting"))
-    decide(client, job["id"], A, action="save")
+    review(client, job["id"], A, action="save")
     job = wait_for(client, job["id"], finished)
     assert job["items"][0]["state"] == "saved"
 
@@ -904,7 +1234,7 @@ def test_shots_no_frames_marks_shots_row_skipped(client, fakes, monkeypatch, tmp
     monkeypatch.setattr(shots, "context", no_frames)
     job = start_add(client, [url(A)], shots=True)
     wait_for(client, job["id"], item_state(0, "awaiting"))
-    decide(client, job["id"], A, action="save")
+    review(client, job["id"], A, action="save")
     job = wait_for(client, job["id"], finished)
     assert steps(job)["shots"]["state"] == "skipped" and steps(job)["shots"]["expected"] == 0
 
@@ -930,7 +1260,7 @@ def test_exists_skips_remaining_rows(client, fakes):
 def test_skip_at_confirm_skips_shots_row(client, fakes):
     job = start_add(client, [url(A)], shots=True)
     wait_for(client, job["id"], item_state(0, "awaiting"))
-    decide(client, job["id"], A, action="skip")
+    review(client, job["id"], A, action="skip")
     job = wait_for(client, job["id"], finished)
     assert steps(job)["shots"]["state"] == "skipped"
 
@@ -944,19 +1274,15 @@ def test_failed_item_skips_pending_rows(client, fakes):
 
 def test_no_transcript_skip_skips_remaining_rows(client, fakes):
     fakes.fetch_errors[A] = ScriptError("no_transcript", "자막이 없습니다", id=A, title="무자막")
-    job = start_add(client, [url(A)])
-    wait_for(client, job["id"], item_state(0, "awaiting"))
-    decide(client, job["id"], A, action="skip")
+    job = start_add(client, [url(A)], no_transcript="skip")
     job = wait_for(client, job["id"], finished)
     assert [s["state"] for s in steps(job).values()] == ["done", "skipped", "skipped"]
 
 
 def test_no_transcript_raw_status_detail_skips_record(client, fakes, tmp_path):
     fakes.fetch_errors[A] = ScriptError("no_transcript", "자막이 없습니다", id=A, title="무자막", raw_status="cached")
-    job = start_add(client, [url(A)])
-    wait_for(client, job["id"], item_state(0, "awaiting"))
-    decide(client, job["id"], A, action="screen")
-    job = wait_for(client, job["id"], lambda j: j["items"][0]["preview"] is not None)
+    job = start_add(client, [url(A)], no_transcript="screen")
+    job = wait_for(client, job["id"], in_review(0))
     assert steps(job)["fetch"]["expected"] == 0
     assert "fetch" not in records(tmp_path)
 
@@ -982,3 +1308,94 @@ def test_wait_phase_publishes_once_per_report(tmp_path, monkeypatch):
         report("download", None, "영상 받는 중")
         assert len(job.updates) == before + 2
         assert "paused_at" not in job.updates[-1]["timing"]["steps"]["cuts"]
+
+
+# ---- 링크 미리 확인 · 샷 분류 보강 개수 -----------------------------------------------------
+
+D, E, F = "DDDDDDDDDDD", "EEEEEEEEEEE", "FFFFFFFFFFF"
+
+
+def put_md(home, vid, *, role="ref", category=CAT, title=None):
+    path = home / "refs" / f"ref_{category}" / "videos" / f"{vid}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fm = {"id": vid, "role": role, "title": title or f"제목 {vid}"}
+    path.write_bytes(refstore.join_frontmatter(fm, "## 내 메모\n").encode("utf-8"))
+    return path
+
+
+def test_check_links_classifies_rows(client, fakes, tmp_path):
+    put_md(tmp_path, A, role="ref")
+    put_md(tmp_path, C, role="mine")
+    links = f"{url(A)}\n{url(B)}\n{url(B)}\nhttps://www.youtube.com/@channel\n{url(C)}\n\n"
+    status, data = client.json("POST", "/api/add/check", {"category": CAT, "role": "ref", "links": links})
+    assert status == 200
+    assert [r["status"] for r in data["rows"]] == ["exists", "new", "dup", "invalid", "other_role"]
+    assert data["rows"][0]["title"] == f"제목 {A}" and data["rows"][4]["title"] == f"제목 {C}"
+    assert data["rows"][1]["id"] == B and data["rows"][1]["title"] is None
+    assert data["rows"][3]["id"] is None and data["rows"][2]["id"] == B
+    assert data["rows"][0]["link"] == url(A)
+    assert data["count"] == 1
+
+
+def test_check_links_force_turns_exists_into_reanalyze(client, fakes, tmp_path):
+    put_md(tmp_path, A, role="ref")
+    put_md(tmp_path, C, role="mine")
+    body = {"category": CAT, "role": "ref", "links": [url(A), url(C)], "force": True}
+    status, data = client.json("POST", "/api/add/check", body)
+    assert [r["status"] for r in data["rows"]] == ["reanalyze", "other_role"]
+    assert data["count"] == 1
+
+
+def test_check_links_other_category_counts_as_new(client, fakes, tmp_path):
+    put_md(tmp_path, D, role="ref", category="travel")
+    status, data = client.json("POST", "/api/add/check", {"category": CAT, "role": "ref", "links": [url(D)]})
+    assert data["rows"][0]["status"] == "new" and data["count"] == 1
+
+
+def test_check_links_md_without_title_gives_no_title(client, fakes, tmp_path):
+    path = tmp_path / "refs" / f"ref_{CAT}" / "videos" / f"{E}.md"
+    path.write_bytes(refstore.join_frontmatter({"id": E, "role": "ref"}, "## 내 메모\n").encode("utf-8"))
+    status, data = client.json("POST", "/api/add/check", {"category": CAT, "role": "ref", "links": [url(E)]})
+    assert status == 200
+    assert data["rows"][0]["status"] == "exists" and data["rows"][0]["title"] is None
+
+
+def test_check_links_rejects_bad_category(client):
+    status, data = client.json("POST", "/api/add/check", {"category": "../x", "links": []})
+    assert status == 400
+
+
+def test_check_links_rejects_bad_role(client):
+    status, data = client.json("POST", "/api/add/check", {"category": CAT, "role": "x", "links": []})
+    assert status == 400
+
+
+def test_shots_pending_count(client, fakes):
+    fakes.pending = [A, B]
+    status, data = client.json("GET", f"/api/add/shots-pending?category={CAT}")
+    assert status == 200 and data == {"count": 2}
+
+
+def test_shots_pending_rejects_bad_category(client):
+    status, data = client.json("GET", "/api/add/shots-pending?category=nope")
+    assert status == 400
+
+
+def test_check_links_broken_md_does_not_fail_other_rows(client, fakes, tmp_path):
+    same = tmp_path / "refs" / f"ref_{CAT}" / "videos" / f"{E}.md"
+    same.write_text("프런트매터 없음\n", encoding="utf-8")
+    other = tmp_path / "refs" / "ref_travel" / "videos" / f"{F}.md"
+    other.parent.mkdir(parents=True)
+    other.write_text("프런트매터 없음\n", encoding="utf-8")
+    links = [url(E), url(F), url(B)]
+    status, data = client.json("POST", "/api/add/check", {"category": CAT, "role": "ref", "links": links})
+    assert status == 200
+    assert [r["status"] for r in data["rows"]] == ["exists", "new", "new"]
+    assert data["rows"][0]["title"] is None and data["count"] == 2
+
+
+def test_check_links_missing_role_counts_as_exists(client, fakes, tmp_path):
+    path = tmp_path / "refs" / f"ref_{CAT}" / "videos" / f"{E}.md"
+    path.write_bytes(refstore.join_frontmatter({"id": E, "title": "역할 없음"}, "## 내 메모\n").encode("utf-8"))
+    status, data = client.json("POST", "/api/add/check", {"category": CAT, "role": "mine", "links": [url(E)]})
+    assert data["rows"][0]["status"] == "exists" and data["rows"][0]["title"] == "역할 없음"

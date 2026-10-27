@@ -261,7 +261,7 @@ function renderList() {
   else if (t.preliminary) kids.push(h("p", { class: "muted hint" }, "예비 진단 — 레퍼런스가 10개 미만이라 참고용으로 봐 주세요"));
   kids.push(
     listSection("diag-videos", "내 영상", t.videos, [
-      "레퍼런스 추가에서 구분을 '내 영상'으로 넣으면 여기 나옵니다 ", h("a", { href: "#/add" }, "레퍼런스 추가로 가기"),
+      "레퍼런스 화면에서 구분을 '내 영상'으로 넣으면 여기 나옵니다 ", h("a", { href: "#/add" }, "레퍼런스 넣기"),
     ]),
     listSection("diag-drafts", "기획안", t.drafts, [
       "진단할 기획안이 없습니다 ", h("a", { href: "#/draft" }, "기획안 만들러 가기"),

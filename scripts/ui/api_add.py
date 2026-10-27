@@ -1,34 +1,43 @@
 """레퍼런스 추가 API: `commands/yt-add.md` 2절 흐름을 백그라운드 작업(kind "collect")으로 돌린다.
 
-영상은 하나씩 처리한다: fetch → cuts → videomd.context → Claude 분석 → 확인 대기 → 저장 → (샷 분류).
+작업 줄 모델: 워커 하나(`Collector`)가 줄에서 할 일을 하나씩 꺼낸다(받기·분석은 영상 하나씩).
+- collect: fetch → cuts → videomd.context → Claude 분석 → 확인 대기(`state="awaiting", ask="review"`).
+  확인을 기다리지 않고 곧바로 다음 할 일로 간다.
+- 저장(`POST /api/add/<작업>/review/<항목>` save)은 요청을 받은 HTTP 스레드가 `take_review` 관문을 지나
+  바로 md를 쓴다. 샷 분류 옵션이면 그 영상의 shots 할 일을 줄 뒤에 붙인다. 다시 분석(reanalyze)도 줄 뒤에 붙는다.
+- 줄이 비고 확인 대기가 없으면 작업이 done으로 끝난다. 작업 중에 넣은 링크는 같은 줄 끝에 붙고(같은 영상은 빼고),
+  옵션·카테고리는 항목마다 `opts`로 들고 있다.
 - force: fetch reanalyze=True, write force=True (cuts 캐시 유지)
 - refetch: fetch force=True, cuts force=True, write force=True
-- blocked/proxy_failed(수집·STT·컷 어디서든): 그 영상 failed, 남은 영상 skipped("차단으로 중단"), job stopped
+- 자막이 없으면 묻지 않고 `opts.no_transcript`(stt/screen/skip)대로 간다.
+- blocked/proxy_failed(수집·STT·컷 어디서든): 그 영상 failed, 줄에 남은 영상 skipped("차단으로 중단"), job stopped.
+  확인 대기 영상은 남아 저장·건너뛰기를 계속 받고, 다음 새 작업이 앞쪽으로 옮겨 간다("새 작업으로 옮김").
 - claude_missing/claude_login: 같은 방식으로 멈춘다(남은 영상을 받지 않는다). 라우트는 작업 전에 claude를 확인한다.
-- 예상치 못한 예외: 그 영상만 failed("예상치 못한 오류: ...")로 두고 다음 영상으로 간다.
+- 예상치 못한 예외: 그 영상만 failed("예상치 못한 오류: ...")로 두고 다음 할 일로 간다.
 - 분석 호출에는 examples md를 항상 첨부하고, 장면 프레임(최대 8장, 처음·끝 포함)은 sparse이거나 화면 분석을 고른 경우에만 첨부한다(yt-analyze 0단계).
   화면 위주 분석 안내(SCREEN_HINT)도 같은 경우에만 task에 붙인다.
 - 단계 사이마다 `job.check_cancelled()`: 서버 종료 시 진행 중인 단계(다운로드 정리 try/finally 포함)를
   끝까지 마친 뒤 다음 단계로 가지 않고 멈춘다.
 - 항목마다 `timing`(단계 줄별 진행·예상 시간, `scripts.ui.progress.ItemTiming`)을 게시한다.
-  줄은 fetch·cuts·analyze(+shots), 샷 전용 작업은 shots 하나. 사용자 결정 대기와 차단 방지 대기는
-  걸린 시간에서 뺀다. 진행 표시는 보조 정보라 그 오류로 수집을 멈추지 않는다(`_StepClock`).
+  줄은 fetch·cuts·analyze(+shots), 샷 전용 작업은 shots 하나. 확인 대기는 분석 줄이 끝난 뒤라 걸린 시간에
+  들어가지 않고, 차단 방지 대기는 줄을 멈춰 뺀다. 진행 표시는 보조 정보라 그 오류로 수집을 멈추지 않는다(`_StepClock`).
 """
 from __future__ import annotations
 
 import json
 import math
 import sys
+import threading
 import traceback
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 from scripts import claude_cli, cuts, fetch, llm, refstore, shots, stt, videomd
 from scripts.common import Progress, ScriptError, work_root, workspace_dir
-from scripts.ui.jobs import Job, JobCancelled, new_item
+from scripts.ui.jobs import SINGLE_KINDS, STOP_MESSAGE, Job, JobCancelled, new_item
 from scripts.ui.progress import ItemTiming
 from scripts.ui.server import Request, route
 
@@ -37,10 +46,9 @@ ROLES = ("ref", "mine")
 BLOCK_CODES = frozenset({"blocked", "proxy_failed"})
 CLAUDE_CODES = frozenset({"claude_missing", "claude_login", "llm_auth", "llm_not_configured"})
 STOP_CODES = BLOCK_CODES | CLAUDE_CODES
-PREVIEW_ACTIONS = frozenset({"save", "save_all", "skip", "reanalyze"})
-TRANSCRIPT_ACTIONS = frozenset({"stt", "screen", "skip"})
-SAVE_ACTIONS = frozenset({"save", "save_all"})
-ALLOWED_ACTIONS: dict[str | None, frozenset[str]] = {None: PREVIEW_ACTIONS, "no_transcript": TRANSCRIPT_ACTIONS}
+REVIEW_ACTIONS = frozenset({"save", "skip", "reanalyze"})
+NO_TRANSCRIPT_CHOICES = ("stt", "screen", "skip")
+IDLE_POLL_SEC = 0.5   # 줄이 비었을 때 확인 대기가 끝났는지 다시 보는 간격
 
 ANALYZE_FRAME_CAP = 8
 ANALYZE_TASK = "yt-analyze 규칙대로 입력 영상의 분석 JSON을 만드세요(5절 출력 형식)."
@@ -53,6 +61,17 @@ MSG_EXISTS = "이미 분석됨"
 MSG_BLOCKED = "차단으로 중단"
 MSG_CLAUDE_STOP = "Claude(LLM 엔진)를 쓸 수 없어 중단"
 MSG_SKIPPED = "건너뜀"
+MSG_ALREADY = "이미 있음"
+MSG_NO_TRANSCRIPT_SKIP = "자막이 없어 건너뜀"
+MSG_SCREEN_ONLY = "자막이 없어 화면만 보고 분석합니다"
+MSG_MOVED = "새 작업으로 옮김"
+MSG_SHOTS_STOPPED = "샷 분류는 작업이 멈춰 건너뛰었어요"
+MSG_REANALYZE_STOPPED = "작업이 멈춰 다시 분석하지 못했습니다"
+MSG_REANALYZE_FAILED = "다시 분석하지 못했습니다"
+MSG_JOB_STOPPED = "작업이 멈춰 다시 분석할 수 없습니다. 링크를 다시 넣어 주세요"
+MSG_JOB_STOPPING = "작업을 멈추는 중입니다. 잠시 뒤 다시 넣어 주세요"
+MSG_USE_REVIEW = "레퍼런스 확인은 /api/add/<작업>/review/<항목> 경로로 보내 주세요"
+MSG_REVIEWS_PENDING = "확인을 기다리는 영상이 있어요. 먼저 저장하거나 건너뛰어 주세요"
 MSG_NO_FRAMES = "컷 통계가 없어 샷 분류를 건너뜁니다"
 COLLECT_ROWS = ("fetch", "cuts", "analyze")
 SHOTS_ROW = "shots"
@@ -67,35 +86,129 @@ def _shots_rules() -> list[Path]:
     return [claude_cli.SKILLS_DIR / "yt-shots" / "SKILL.md"]
 
 
-def parse_links(links: str | Iterable[str]) -> list[str]:
-    """공백·줄바꿈으로 나누고 빈 값과 중복을 뺀다(처음 나온 순서 유지)."""
+def _split_links(links: str | Iterable[str]) -> list[str]:
+    """공백·줄바꿈으로 나눈 모든 조각(빈 값 제외, 중복 유지)."""
     chunks = [links] if isinstance(links, str) else list(links)
-    seen: dict[str, None] = {}
+    pieces: list[str] = []
     for chunk in chunks:
         if not isinstance(chunk, str):
             raise ScriptError("bad_request", "links는 문자열 목록이어야 합니다")
-        for link in chunk.split():
-            seen.setdefault(link, None)
-    return list(seen)
+        pieces.extend(chunk.split())
+    return pieces
+
+
+def parse_links(links: str | Iterable[str]) -> list[str]:
+    """공백·줄바꿈으로 나누고 빈 값과 중복을 뺀다(처음 나온 순서 유지)."""
+    return list(dict.fromkeys(_split_links(links)))
+
+
+def _row_id(link: str) -> str | None:
+    """줄 하나의 영상 id. 영상 링크가 아니면(채널·재생목록 등) None."""
+    try:
+        return fetch.parse_video_id(link)
+    except ScriptError:
+        return None
+
+
+def _saved_state(category: str, video_id: str, role: str) -> tuple[str, str | None] | None:
+    """요청한 카테고리의 md만 본다. 없으면 None, 있으면 (exists|other_role, title).
+
+    프런트매터를 못 읽거나 role이 없으면 같은 role로 보고(exists) title은 None.
+    """
+    path = refstore.category_dir(category) / "videos" / f"{video_id}.md"
+    if not path.is_file():
+        return None
+    try:
+        fm = refstore.read_md(path)[0]
+    except (ScriptError, OSError):
+        return "exists", None
+    title = fm.get("title")
+    saved_role = fm.get("role")
+    status = "other_role" if saved_role and saved_role != role else "exists"
+    return status, title if isinstance(title, str) and title else None
+
+
+def check_links(links: str | Iterable[str], category: str, role: str, force: bool) -> dict:
+    """붙여넣은 링크를 줄마다 new/exists/other_role/dup/invalid/reanalyze로 가른다(입력 순서, 빈 줄 제외)."""
+    lines = _split_links(links)
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for link in lines:
+        video_id = _row_id(link)
+        title: str | None = None
+        if video_id is None:
+            status = "invalid"
+        elif video_id in seen:
+            status = "dup"
+        else:
+            seen.add(video_id)
+            status = "new"
+            saved = _saved_state(category, video_id, role)
+            if saved is not None:
+                status, title = saved
+                if status == "exists" and force:
+                    status = "reanalyze"
+        rows.append({"link": link, "id": video_id, "status": status, "title": title})
+    return {"rows": rows, "count": sum(1 for r in rows if r["status"] in {"new", "reanalyze"})}
 
 
 @dataclass(frozen=True)
 class AddOptions:
+    """영상(항목) 하나의 옵션. 작업 중에 링크를 더 넣을 수 있어 항목마다 `opts`로 들고 있다."""
+
     category: str
     role: str = "ref"
     shots: bool = False
     force: bool = False
     refetch: bool = False
+    no_transcript: str = "stt"
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def of(cls, item: dict) -> AddOptions:
+        return cls(**item["opts"])
 
 
 def _stop_message(code: str) -> str:
     return MSG_CLAUDE_STOP if code in CLAUDE_CODES else MSG_BLOCKED
 
 
-def _summary(job: Job, stage_text: str | None) -> dict:
-    states = [item["state"] for item in job.items]
+def _summary(items: list[dict], stage_text: str | None) -> dict:
+    states = [item["state"] for item in items]
     return {"saved": states.count("saved"), "skipped": states.count("skipped"),
             "failed": states.count("failed"), "stage_text": stage_text}
+
+
+def _join_message(prior: Any, message: str) -> str:
+    return f"{prior} / {message}" if prior else message
+
+
+def _item_video(item: dict) -> str | None:
+    """항목의 영상 id: 수집이 알아낸 값, 아니면 링크에서 읽은 값."""
+    video_id = item.get("video_id")
+    if isinstance(video_id, str) and video_id:
+        return video_id
+    link = item.get("url")
+    return _row_id(link) if isinstance(link, str) else None
+
+
+def _same_video(old: dict, new: dict) -> bool:
+    """같은 링크이거나 같은 영상 id면 같은 영상이다."""
+    if old.get("url") is not None and old.get("url") == new.get("url"):
+        return True
+    old_id = _item_video(old)
+    return old_id is not None and old_id == _item_video(new)
+
+
+def _fresh(items: list[dict], existing: list[dict]) -> list[dict]:
+    """existing이나 앞선 항목과 같은 영상인 항목을 뺀다(입력 순서 유지)."""
+    kept: list[dict] = []
+    for item in items:
+        if not any(_same_video(old, item) for old in [*existing, *kept]):
+            kept.append(item)
+    return kept
 
 
 def _frame_files(frames: Any) -> list[Path]:
@@ -131,6 +244,16 @@ def _classify_shots(video_id: str, category: str) -> dict:
     finally:
         tmp.unlink(missing_ok=True)
     return applied
+
+
+def _write(video_id: str, opts: AddOptions, analysis: dict) -> dict:
+    path = workspace_dir("tmp", f"analysis_{video_id}.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(analysis, ensure_ascii=False, indent=1), encoding="utf-8")
+    try:
+        return videomd.write(video_id, opts.category, opts.role, path, opts.force or opts.refetch)
+    finally:
+        path.unlink(missing_ok=True)
 
 
 # ---- 단계별 진행 시간 ----------------------------------------------------------------
@@ -177,10 +300,13 @@ class _StepClock:
     - 영상 길이는 처음 알게 된 값만 쓴다(`offer_video_sec`): raw 캐시 → no_transcript 정보 → 메타 → 컷 통계 순으로 부른다.
     - `progress()`는 수집 함수에 넘길 콜백이다. 차단 방지 대기("wait") 동안은 줄을 멈춰 걸린 시간에서 빼고,
       대기 글은 그대로 보여 준다.
+    - 확인 대기 중인 항목이 새 작업으로 옮겨지면 `bind()`로 새 작업·인덱스에 이어서 게시한다.
     """
 
     def __init__(self, job: Job, index: int, rows: list[str], engine: str | None) -> None:
         self._timing: ItemTiming | None = None
+        self._job = job
+        self._index = index
         self._rows = list(rows)
         self._running: str | None = None
         self._settled: set[str] = set()
@@ -190,6 +316,12 @@ class _StepClock:
             self._timing = ItemTiming(job, index, rows, engine=engine)
         except Exception:  # noqa: BLE001 - 진행 표시가 고장 나도 수집은 계속한다
             self._warn()
+
+    def bind(self, job: Job, index: int) -> None:
+        if job is self._job and index == self._index:
+            return
+        self._job, self._index = job, index
+        self._call(lambda t: t.rebind(job, index))
 
     def offer_video_sec(self, value: Any) -> None:
         sec = _length(value)
@@ -213,6 +345,8 @@ class _StepClock:
 
     def skip(self, row: str) -> None:
         """오류가 아니라 하지 않은 줄(STT 없음, 프레임 없음)."""
+        if row not in self._rows:
+            return
         self._settle(row)
         self._call(lambda t: t.skip(row))
 
@@ -280,48 +414,125 @@ class _AnalyzeRun:
 
 
 class Collector:
-    """링크 목록을 하나씩 처리하는 작업 함수(JobManager.start의 target)."""
+    """collect 작업의 워커(JobManager.start의 target). 작업 줄에서 할 일을 하나씩 꺼내 처리한다.
 
-    def __init__(self, opts: AddOptions) -> None:
-        self.opts = opts
-        self.save_all = False
+    줄에 오르는 일: `collect`(받기→컷→분석→확인 대기), `reanalyze`(의견을 넣어 다시 분석→확인 대기),
+    `shots`(저장된 영상의 샷 분류). 저장·건너뛰기는 HTTP 스레드가 `save_review`/`skip_review`로 바로 처리한다.
+    항목마다 `_StepClock`을 들고 있어 다시 분석·샷 분류가 같은 진행 표시에 이어서 기록된다.
+    """
+
+    def __init__(self, clocks: dict[int, _StepClock] | None = None) -> None:
         self.stage_text: str | None = None
         self.engine: str | None = None
+        self._clocks: dict[int, _StepClock] = dict(clocks or {})
+        self._clocks_lock = threading.Lock()
 
     def __call__(self, job: Job) -> None:
         self.engine = _timing_engine()
-        for index in range(len(job.items)):
-            job.check_cancelled()
-            try:
-                self._one(job, index)
-            except JobCancelled:
-                raise
-            except ScriptError as e:
-                job.update(index, state="failed", message=e.message)
-                if e.code in STOP_CODES:
-                    job.skip_rest(index + 1, _stop_message(e.code))
-                    job.finish("stopped", _summary(job, self.stage_text), e.message)
-                    return
-            except Exception as e:  # noqa: BLE001 - 한 영상의 버그가 남은 영상까지 막지 않게 한다
-                traceback.print_exc(file=sys.stderr)
-                job.update(index, state="failed", message=f"예상치 못한 오류: {type(e).__name__}: {e}")
-        job.finish("done", _summary(job, self.stage_text))
-
-    # ---- 영상 하나 -------------------------------------------------------------------
-
-    def _one(self, job: Job, index: int) -> None:
-        rows = [*COLLECT_ROWS, *([SHOTS_ROW] if self.opts.shots else [])]
-        clock = _StepClock(job, index, rows, self.engine)
         try:
-            self._collect(job, index, clock)
-        except BaseException:
-            clock.fail_running()   # 실패·취소: 달리던 줄은 기록하지 않고 실패로 둔다
+            while True:
+                task = job.next_task(IDLE_POLL_SEC)
+                if task is None:
+                    job.sync_status()
+                    if job.close_if_idle(lambda items: _summary(items, self.stage_text)):
+                        return
+                    continue
+                stop = self._run_task(job, task)
+                job.sync_status()
+                if stop is not None:
+                    self._settle_leftovers(job, job.close_queue(), _stop_message(stop.code))
+                    job.finish("stopped", _summary(job.items, self.stage_text), stop.message)
+                    return
+        except JobCancelled:
+            # 남은 줄을 먼저 정리한다: 저장된 영상의 샷 분류는 saved로, 다시 분석 대기는 확인 대기로 되돌린다
+            self._settle_leftovers(job, job.close_queue(), STOP_MESSAGE)
             raise
-        finally:
-            clock.skip_pending()   # 항목이 끝났으니 시작하지 않은 줄은 건너뜀
 
-    def _collect(self, job: Job, index: int, clock: _StepClock) -> None:
-        opts = self.opts
+    # ---- 진행 시계 ---------------------------------------------------------------------
+
+    def clock(self, job: Job, index: int) -> _StepClock:
+        """항목의 진행 시계. 없으면(예상 밖) 분석·샷 줄만으로 새로 만든다. 다른 작업에서 옮겨 왔으면 이 작업에 묶는다."""
+        with self._clocks_lock:
+            clock = self._clocks.get(index)
+            if clock is None:
+                opts = AddOptions.of(job.item(index))
+                rows = [COLLECT_ROWS[-1], *([SHOTS_ROW] if opts.shots else [])]
+                clock = self._clocks[index] = _StepClock(job, index, rows, self.engine)
+        clock.bind(job, index)
+        return clock
+
+    def take_clock(self, index: int) -> _StepClock | None:
+        with self._clocks_lock:
+            return self._clocks.pop(index, None)
+
+    def put_clock(self, index: int, clock: _StepClock) -> None:
+        with self._clocks_lock:
+            self._clocks[index] = clock
+
+    def _new_clock(self, job: Job, index: int, rows: list[str]) -> _StepClock:
+        clock = _StepClock(job, index, rows, self.engine)
+        with self._clocks_lock:
+            self._clocks[index] = clock
+        return clock
+
+    # ---- 줄의 할 일 --------------------------------------------------------------------
+
+    def _run_task(self, job: Job, task: dict) -> ScriptError | None:
+        """할 일 하나를 처리한다. 작업을 멈춰야 하는 오류(STOP_CODES)면 그 오류를 돌려준다."""
+        kind, index = task.get("kind"), task["index"]
+        if kind == "collect":
+            return self._collect_task(job, index)
+        if kind == "reanalyze":
+            return self._reanalyze_task(job, index, str(task.get("feedback") or "").strip() or None)
+        if kind == "shots":
+            self._shots_task(job, index)
+            return None
+        raise ScriptError("bad_task", f"알 수 없는 할 일입니다: {kind!r}")
+
+    def _settle_leftovers(self, job: Job, tasks: list[dict], message: str) -> None:
+        """작업이 멈출 때 줄에 남은 할 일을 정리한다(확인 대기 영상은 그대로 남는다)."""
+        for task in tasks:
+            index = task["index"]
+            if task.get("kind") == "shots":
+                self.clock(job, index).skip(SHOTS_ROW)
+                prior = job.item(index)["message"]
+                job.update(index, state="saved", step="done", message=_join_message(prior, MSG_SHOTS_STOPPED))
+            elif task.get("kind") == "reanalyze":
+                job.update(index, state="awaiting", ask="review", step="confirm", message=MSG_REANALYZE_STOPPED)
+            else:
+                job.update(index, state="skipped", message=message)
+
+    def _collect_task(self, job: Job, index: int) -> ScriptError | None:
+        clock: _StepClock | None = None
+
+        def settle_failed() -> None:
+            if clock is not None:
+                clock.fail_running()   # 실패·취소: 달리던 줄은 기록하지 않고 실패로 둔다
+                clock.skip_pending()
+
+        try:
+            # 옵션 읽기도 영상 하나의 일이다: 항목 하나의 opts가 깨져도 그 영상만 실패한다
+            opts = AddOptions.of(job.item(index))
+            clock = self._new_clock(job, index, [*COLLECT_ROWS, *([SHOTS_ROW] if opts.shots else [])])
+            in_review = self._collect(job, index, clock, opts)
+        except JobCancelled:
+            settle_failed()
+            raise
+        except ScriptError as e:
+            settle_failed()
+            job.update(index, state="failed", message=e.message)
+            return e if e.code in STOP_CODES else None
+        except Exception as e:  # noqa: BLE001 - 한 영상의 버그가 남은 영상까지 막지 않게 한다
+            traceback.print_exc(file=sys.stderr)
+            settle_failed()
+            job.update(index, state="failed", message=f"예상치 못한 오류: {type(e).__name__}: {e}")
+            return None
+        if not in_review:
+            clock.skip_pending()   # 항목이 끝났으니 시작하지 않은 줄은 건너뜀
+        return None
+
+    def _collect(self, job: Job, index: int, clock: _StepClock, opts: AddOptions) -> bool:
+        """영상 하나를 받고·자르고·분석해 확인 대기로 둔다. 확인 대기로 갔으면 True, 건너뛰었으면 False."""
         notes: list[str] = []
         job.update(index, state="running", step="fetch")
         link = job.item(index)["url"]
@@ -337,25 +548,22 @@ class Collector:
                 raise
             clock.offer_video_sec(e.details.get("duration_sec"))
             video_id = self._identify(job, index, e.details.get("id"), e.details.get("title"))
-            choice = self._wait(job, index, clock, ask="no_transcript", message=e.message)["action"]
             clock.done("fetch", cached=e.details.get("raw_status") == "cached")
-            if choice == "skip":
-                job.update(index, state="skipped", step="done", ask=None, message=MSG_SKIPPED)
-                return
-            if choice not in {"stt", "screen"}:
-                raise ScriptError("bad_action", f"알 수 없는 결정입니다: {choice!r}")
-            job.update(index, ask=None, message=None)
-            if choice == "stt":
+            if opts.no_transcript == "skip":
+                job.update(index, state="skipped", step="done", message=MSG_NO_TRANSCRIPT_SKIP)
+                return False
+            if opts.no_transcript == "stt":
                 screen = not self._transcribe(job, index, video_id, notes, clock)
             else:
                 screen = True
+                notes.append(MSG_SCREEN_ONLY)
         else:
             clock.offer_video_sec(info.get("duration_sec"))
             video_id = self._identify(job, index, info.get("id"), info.get("title"))
             clock.done("fetch", cached=info.get("status") in {"cached", "exists"})
             if info.get("status") == "exists":
                 job.update(index, state="skipped", step="done", message=MSG_EXISTS)
-                return
+                return False
 
         job.check_cancelled()
         job.update(index, step="cuts")
@@ -372,30 +580,128 @@ class Collector:
             clock.offer_video_sec(stats.get("duration_sec"))
             clock.done("cuts", cached=stats.get("status") == "cached")
             job.update(index, frames=list(stats.get("frames") or []))
-        job.update(index, message=" / ".join(notes) or None)
+        note = " / ".join(notes) or None
+        job.update(index, message=note, note=note, screen=screen)
 
         job.check_cancelled()
-        self._analyze_and_save(job, index, video_id, screen, clock)
+        job.update(index, step="analyze")
+        preview = self._timed_analyze(clock, opts.category, video_id, screen, None)
+        job.check_cancelled()   # 분석 중에 멈추면 이 영상은 확인 대기로 보내지 않는다(진행 중인 영상만 멈춘다)
+        job.update(index, state="awaiting", ask="review", step="confirm", preview=preview)
+        return True
+
+    def _reanalyze_task(self, job: Job, index: int, feedback: str | None) -> ScriptError | None:
+        """의견을 넣어 다시 분석한다. 실패하면 앞의 분석을 그대로 둔 채 확인 대기로 돌아간다(이유는 message)."""
+        item = job.item(index)
+        opts = AddOptions.of(item)
+        job.update(index, state="running", step="analyze")
+        clock = self.clock(job, index)
+        try:
+            preview = self._timed_analyze(clock, opts.category, str(item["video_id"]), bool(item.get("screen")),
+                                          feedback)
+        except ScriptError as e:
+            clock.fail_running()
+            job.update(index, state="awaiting", ask="review", step="confirm",
+                       message=f"{MSG_REANALYZE_FAILED}: {e.message}")
+            return e if e.code in STOP_CODES else None
+        except Exception as e:  # noqa: BLE001 - 앞의 분석으로 확인을 이어 가게 하고, 이유는 message에 남긴다
+            traceback.print_exc(file=sys.stderr)
+            clock.fail_running()
+            job.update(index, state="awaiting", ask="review", step="confirm",
+                       message=f"{MSG_REANALYZE_FAILED}: 예상치 못한 오류: {type(e).__name__}: {e}")
+            return None
+        job.update(index, state="awaiting", ask="review", step="confirm", preview=preview, message=item.get("note"))
+        return None
+
+    def _shots_task(self, job: Job, index: int) -> None:
+        """저장된 영상의 샷 분류. md는 이미 저장됐으므로 어떤 실패도 항목을 saved로 두고 이유만 남긴다."""
+        item = job.item(index)
+        opts = AddOptions.of(item)
+        job.update(index, state="running", step="shots")
+        clock = self.clock(job, index)
+        try:
+            self._shots_after_save(job, index, str(item["video_id"]), opts.category, clock)
+        except Exception as e:  # noqa: BLE001 - 저장된 영상을 실패로 바꾸지 않는다(이유는 message)
+            traceback.print_exc(file=sys.stderr)
+            clock.fail_running()
+            prior = job.item(index)["message"]
+            job.update(index, message=_join_message(prior, f"샷 분류 실패: 예상치 못한 오류: {type(e).__name__}: {e}"))
+        job.update(index, state="saved", step="done")
+
+    # ---- 확인(HTTP 스레드) ------------------------------------------------------------
+
+    def save_review(self, job: Job, item_id: str, edited: dict | None) -> str | None:
+        """확인 대기 항목을 저장한다(take_review 관문을 지난 쪽만). 결과 안내 글(없으면 None)을 돌려준다.
+
+        저장이 실패하면 항목을 확인 대기로 되돌리고(고친 분석은 그대로 보여 준다) 이유를 message에 둔 뒤 ScriptError.
+        """
+        index = job.take_review(item_id)
+        item = job.item(index)
+        opts = AddOptions.of(item)
+        chosen = edited if edited is not None else item["preview"]
+        back: dict[str, Any] = {"state": "awaiting", "ask": "review", "step": "confirm"}
+        if edited is not None:
+            back["preview"] = edited
+        try:
+            result = _write(str(item["video_id"]), opts, chosen)
+        except ScriptError as e:
+            job.update(index, message=e.message, **back)
+            raise
+        except Exception as e:
+            traceback.print_exc(file=sys.stderr)
+            message = f"예상치 못한 오류: {type(e).__name__}: {e}"
+            job.update(index, message=message, **back)
+            raise ScriptError("save_failed", message) from e
+
+        clock = self.clock(job, index)
+        if result.get("status") == "exists":
+            job.update(index, state="skipped", step="done", ask=None, message=MSG_ALREADY)
+            clock.skip_pending()
+            return MSG_ALREADY
+        self.stage_text = result.get("stage_text")
+        if opts.shots:
+            # 샷 분류는 Claude 호출이라 워커 줄 뒤에 붙인다. 줄이 닫혔으면(작업이 멈춤) 건너뛴다
+            if job.requeue(index, {"kind": "shots", "index": index}, state="waiting", step="shots", ask=None):
+                return None
+            clock.skip(SHOTS_ROW)
+            job.update(index, state="saved", step="done", ask=None,
+                       message=_join_message(item.get("message"), MSG_SHOTS_STOPPED))
+            return MSG_SHOTS_STOPPED
+        job.update(index, state="saved", step="done", ask=None)
+        clock.skip_pending()
+        return None
+
+    def skip_review(self, job: Job, item_id: str) -> None:
+        index = job.take_review(item_id)
+        job.update(index, state="skipped", step="done", ask=None, message=MSG_SKIPPED)
+        self.clock(job, index).skip_pending()
+
+    def reanalyze_review(self, job: Job, item_id: str, feedback: str) -> None:
+        """다시 분석을 워커 줄 뒤에 붙인다. 작업이 멈췄으면 확인 대기를 그대로 두고 job_stopped."""
+        index = job.take_review(item_id)
+        task = {"kind": "reanalyze", "index": index, "feedback": feedback}
+        if not job.requeue(index, task, state="waiting", step="analyze", ask=None):
+            job.update(index, state="awaiting", ask="review", step="confirm")
+            raise ScriptError("job_stopped", MSG_JOB_STOPPED)
+
+    def after_review(self, job: Job) -> None:
+        """확인 처리 뒤: status를 맞추고, 이미 멈춘 작업이면 요약을 새로 만든다."""
+        job.sync_status()
+        if not job.is_active():
+            job.set_summary(_summary(job.items, self.stage_text))
+
+    # ---- 영상 하나의 단계 -------------------------------------------------------------
 
     def _identify(self, job: Job, index: int, video_id: Any, title: Any) -> str:
         """링크로 시작한 항목에 영상 id·제목을 붙인다. 다른 항목이 같은 id를 쓰면 항목 id는 링크로 둔다."""
         if not video_id:
             raise ScriptError("fetch_failed", "영상 id를 알 수 없습니다")
         taken = any(item["id"] == video_id for i, item in enumerate(job.items) if i != index)
-        fields: dict[str, Any] = {"title": title}
+        fields: dict[str, Any] = {"title": title, "video_id": str(video_id)}
         if not taken:
             fields["id"] = str(video_id)
         job.update(index, **fields)
         return str(video_id)
-
-    def _wait(self, job: Job, index: int, clock: _StepClock, **fields: Any) -> dict:
-        """사용자 결정을 기다린다. 기다리는 동안은 달리던 줄의 시계를 멈춘다(걸린 시간에 넣지 않는다)."""
-        job.update(index, state="awaiting", **fields)
-        clock.pause()
-        try:
-            return job.wait_decision(job.item(index)["id"])
-        finally:
-            clock.resume()
 
     def _transcribe(self, job: Job, index: int, video_id: str, notes: list[str], clock: _StepClock) -> bool:
         """STT로 자막을 만든다(자막 줄의 새 회차, 기록 키 stt). stt_unavailable이면 이유를 남기고 False(화면 분석으로)."""
@@ -414,15 +720,16 @@ class Collector:
         clock.done("fetch", cached=result.get("status") == "exists")
         return True
 
-    def _timed_analyze(self, clock: _StepClock, video_id: str, screen: bool, feedback: str | None) -> dict:
+    def _timed_analyze(self, clock: _StepClock, category: str, video_id: str, screen: bool,
+                       feedback: str | None) -> dict:
         """분석 줄을 새 회차로 시작해 분석하고 첨부 프레임 수·대본 글자 수와 함께 기록한다."""
         clock.start("analyze")
-        run = self._analyze(video_id, screen, feedback)
+        run = self._analyze(category, video_id, screen, feedback)
         clock.done("analyze", frames=run.frames, text_chars=run.text_chars)
         return run.analysis
 
-    def _analyze(self, video_id: str, screen: bool, feedback: str | None) -> _AnalyzeRun:
-        ctx = videomd.context(video_id, self.opts.category)
+    def _analyze(self, category: str, video_id: str, screen: bool, feedback: str | None) -> _AnalyzeRun:
+        ctx = videomd.context(video_id, category)
         # duration·cut_times는 videomd.write와 같은 방식으로 구한다
         raw = fetch.load_raw(video_id)
         cut_data = videomd.load_cuts(video_id)
@@ -439,70 +746,11 @@ class Collector:
         )
         return _AnalyzeRun(analysis, frames=len(frames), text_chars=_transcript_chars(raw))
 
-    def _analyze_and_save(self, job: Job, index: int, video_id: str, screen: bool, clock: _StepClock) -> None:
-        job.update(index, step="analyze")
-        preview = self._timed_analyze(clock, video_id, screen, None)
-        note = job.item(index)["message"]
-        while True:
-            if self.save_all:
-                decision: dict = {"action": "save"}
-                job.update(index, preview=preview)
-            else:
-                decision = self._wait(job, index, clock, step="confirm", preview=preview, message=note)
-            action = decision["action"]
-            if action == "skip":
-                job.update(index, state="skipped", step="done", message=MSG_SKIPPED)
-                return
-            if action == "reanalyze":
-                job.check_cancelled()
-                job.update(index, state="running", step="analyze")
-                feedback = str(decision.get("feedback") or "").strip() or None
-                preview = self._timed_analyze(clock, video_id, screen, feedback)
-                continue
-            if action not in SAVE_ACTIONS:
-                # 저장 버튼을 누르지 않은 결정으로는 절대 쓰지 않는다
-                raise ScriptError("bad_action", f"알 수 없는 결정입니다: {action!r}")
-            if action == "save_all":
-                self.save_all = True
-            edited = decision.get("analysis")
-            chosen = edited if isinstance(edited, dict) else preview
-            job.update(index, state="running", step="confirm")
-            try:
-                result = self._write(video_id, chosen)
-            except ScriptError as e:
-                # 사용자가 고친 분석이 형식에 어긋나면 고친 내용을 그대로 다시 보여 주고 기다린다
-                if e.code != "invalid_analysis" or not isinstance(edited, dict):
-                    raise
-                preview, note = chosen, e.message
-                self.save_all = False
-                continue
-            break
-
-        if result.get("status") == "exists":
-            job.update(index, state="skipped", step="done", message="이미 있음")
-            return
-        self.stage_text = result.get("stage_text")
-        if self.opts.shots:
-            job.check_cancelled()
-            job.update(index, step="shots")
-            self._shots_after_save(job, index, video_id, clock)
-        job.update(index, state="saved", step="done")
-
-    def _write(self, video_id: str, analysis: dict) -> dict:
-        opts = self.opts
-        path = workspace_dir("tmp", f"analysis_{video_id}.json")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(analysis, ensure_ascii=False, indent=1), encoding="utf-8")
-        try:
-            return videomd.write(video_id, opts.category, opts.role, path, opts.force or opts.refetch)
-        finally:
-            path.unlink(missing_ok=True)
-
-    def _shots_after_save(self, job: Job, index: int, video_id: str, clock: _StepClock) -> None:
+    def _shots_after_save(self, job: Job, index: int, video_id: str, category: str, clock: _StepClock) -> None:
         """md는 이미 저장됐으므로 샷 분류 실패는 항목을 실패로 바꾸지 않고 이유만 남긴다(샷 줄만 실패)."""
         clock.start(SHOTS_ROW)
         try:
-            _classify_shots(video_id, self.opts.category)
+            _classify_shots(video_id, category)
         except ScriptError as e:
             if e.code == "no_frames":
                 clock.skip(SHOTS_ROW)
@@ -510,7 +758,7 @@ class Collector:
                 clock.fail(SHOTS_ROW)
             message = MSG_NO_FRAMES if e.code == "no_frames" else f"샷 분류 실패: {e.message}"
             prior = job.item(index)["message"]
-            job.update(index, message=f"{prior} / {message}" if prior else message)
+            job.update(index, message=_join_message(prior, message))
             return
         clock.done(SHOTS_ROW)
 
@@ -522,7 +770,7 @@ def _transcript_chars(raw: Any) -> int:
     return sum(len(s["text"]) for s in segments or [] if isinstance(s, dict) and isinstance(s.get("text"), str))
 
 
-def run_shots_only(category: str) -> Any:
+def run_shots_only(category: str) -> Callable[[Job], None]:
     def target(job: Job) -> None:
         engine = _timing_engine()
         for index, item in enumerate(job.items):
@@ -542,7 +790,7 @@ def run_shots_only(category: str) -> Any:
                 job.update(index, state="failed", message=e.message)
                 if e.code in CLAUDE_CODES:
                     job.skip_rest(index + 1, MSG_CLAUDE_STOP)
-                    job.finish("stopped", _summary(job, None), e.message)
+                    job.finish("stopped", _summary(job.items, None), e.message)
                     return
                 continue
             except BaseException:
@@ -550,7 +798,7 @@ def run_shots_only(category: str) -> Any:
                 raise
             clock.done(SHOTS_ROW)
             job.update(index, state="saved", step="done")
-        job.finish("done", _summary(job, None))
+        job.finish("done", _summary(job.items, None))
 
     return target
 
@@ -572,6 +820,49 @@ def _category(body: dict) -> str:
     return category
 
 
+def _no_transcript(body: dict) -> str:
+    value = body.get("no_transcript", "stt")
+    if value not in NO_TRANSCRIPT_CHOICES:
+        raise ScriptError("bad_request", f"no_transcript는 {'/'.join(NO_TRANSCRIPT_CHOICES)} 중 하나여야 합니다")
+    return str(value)
+
+
+def _collector(job: Job) -> Collector | None:
+    return job.target if isinstance(job.target, Collector) else None
+
+
+def _has_leftover_reviews(job: Job) -> bool:
+    return not job.is_active() and _collector(job) is not None and not job.review_done()
+
+
+def _start_collect(app: Any, items: list[dict], category: str) -> Job:
+    """새 collect 작업을 시작한다. 확인 대기가 남은 가장 최근의 멈춘 collect 작업에서 그 영상들을 앞쪽으로 옮겨 온다.
+
+    가장 최근 작업만 보지 않는 까닭: 그 사이에 샷 분류 보강(같은 kind)이 돌았어도 확인 대기를 잃지 않게.
+    """
+    previous = app.jobs.latest_where(KIND, _has_leftover_reviews)
+    old = _collector(previous) if previous is not None else None
+    released = previous.release_reviews(MSG_MOVED) if previous is not None and old is not None else []
+    adopted = [item for _, item in released]
+    fresh = _fresh(items, adopted)
+    clocks: dict[int, _StepClock] = {}
+    for new_index, (old_index, _) in enumerate(released):
+        clock = old.take_clock(old_index) if old is not None else None
+        if clock is not None:
+            clocks[new_index] = clock
+    tasks = [{"kind": "collect", "index": i} for i in range(len(adopted), len(adopted) + len(fresh))]
+    try:
+        return app.jobs.start(KIND, Collector(clocks), items=[*adopted, *fresh], category=category, tasks=tasks)
+    except ScriptError:
+        # 다른 요청이 먼저 작업을 시작했다: 옮기려던 확인 대기를 원래 작업에 되돌린다
+        if previous is not None and old is not None:
+            for new_index, (old_index, item) in enumerate(released):
+                previous.update(old_index, state="awaiting", ask="review", message=item["message"])
+                if new_index in clocks:
+                    old.put_clock(old_index, clocks[new_index])
+        raise
+
+
 @route("GET", "/api/categories")
 def _categories(req: Request) -> dict:
     return {"categories": refstore.list_categories()}
@@ -579,6 +870,7 @@ def _categories(req: Request) -> dict:
 
 @route("POST", "/api/add")
 def _add(req: Request) -> dict:
+    """링크를 넣는다. 도는 collect 작업이 있으면 그 줄 끝에 붙이고(같은 영상은 빼고), 없으면 새 작업을 시작한다."""
     body = req.json
     role = body.get("role", "ref")
     if role not in ROLES:
@@ -587,17 +879,49 @@ def _add(req: Request) -> dict:
     links = parse_links(body.get("links") or [])
     if not links:
         raise ScriptError("no_links", "분석할 유튜브 링크를 넣어 주세요")
-    opts = AddOptions(category=category, role=role, shots=_flag(body, "shots"),
-                      force=_flag(body, "force"), refetch=_flag(body, "refetch"))
+    opts = AddOptions(category=category, role=role, shots=_flag(body, "shots"), force=_flag(body, "force"),
+                      refetch=_flag(body, "refetch"), no_transcript=_no_transcript(body))
     llm.check()              # claude가 없으면 영상을 받기 전에 400으로 알린다
-    items = [new_item(link, url=link) for link in links]
-    job = req.app.jobs.start(KIND, Collector(opts), items=items, category=category)
+    items = [dict(new_item(link, url=link), opts=opts.to_dict()) for link in links]
+    current = req.app.jobs.current(KIND)
+    if current is not None and current.is_active():
+        if _collector(current) is None:
+            raise ScriptError("job_running", SINGLE_KINDS[KIND])   # 샷 분류 보강 작업에는 붙이지 않는다
+        indexes = current.append_queued(items, "collect", _same_video)
+        if indexes is not None:
+            snapshot = current.snapshot()
+            return {"job": snapshot, "appended": [snapshot["items"][i]["id"] for i in indexes]}
+        if current.is_active():
+            # 줄이 닫혔는데 아직 진행 중: 취소·중단 코드로 멈추는 중이다(곧 stopped가 된다)
+            raise ScriptError("job_stopping", MSG_JOB_STOPPING)
+        # 그사이 작업이 끝났다: 새 작업으로 시작한다
+    job = _start_collect(req.app, items, category)
     return {"job": job.snapshot()}
+
+
+@route("POST", "/api/add/check")
+def _check(req: Request) -> dict:
+    """링크를 받기 전에 줄마다 상태를 알려 준다(Claude·네트워크를 쓰지 않는다)."""
+    body = req.json
+    role = body.get("role", "ref")
+    if role not in ROLES:
+        raise ScriptError("bad_request", f"role은 {'/'.join(ROLES)} 중 하나여야 합니다")
+    category = _category(body)
+    return check_links(body.get("links") or [], category, role, _flag(body, "force"))
+
+
+@route("GET", "/api/add/shots-pending")
+def _shots_pending(req: Request) -> dict:
+    category = _category({"category": req.query.get("category")})
+    return {"count": len(shots.pending(category)["pending"])}
 
 
 @route("POST", "/api/add/shots-only")
 def _shots_only(req: Request) -> dict:
     category = _category(req.json)
+    if req.app.jobs.latest_where(KIND, _has_leftover_reviews) is not None:
+        # 샷 분류 보강도 collect 작업이라, 돌기 시작하면 멈춘 작업의 확인 대기 카드가 화면에서 가려진다
+        raise ScriptError("reviews_pending", MSG_REVIEWS_PENDING)
     llm.check()
     pending = shots.pending(category)["pending"]
     items = [new_item(vid, step="shots") for vid in pending]
@@ -605,9 +929,37 @@ def _shots_only(req: Request) -> dict:
     return {"job": job.snapshot()}
 
 
+@route("POST", r"/api/add/(?P<job_id>[^/]+)/review/(?P<item_id>.+)")
+def _review(req: Request, job_id: str, item_id: str) -> dict:
+    """확인 대기 영상 하나: save(바로 md를 쓴다) · skip · reanalyze(작업 줄 뒤에 붙는다)."""
+    job = req.app.jobs.get(job_id)
+    body = req.json
+    action = body.get("action")
+    if action not in REVIEW_ACTIONS:
+        raise ScriptError("bad_action", f"할 수 없는 결정입니다: {action!r} (가능: {', '.join(sorted(REVIEW_ACTIONS))})")
+    edited = body.get("analysis")
+    if edited is not None and not isinstance(edited, dict):
+        raise ScriptError("bad_request", "analysis는 JSON 객체여야 합니다")
+    collector = _collector(job)
+    if collector is None:
+        raise ScriptError("not_awaiting", "이 항목은 확인을 기다리고 있지 않습니다")
+    if action == "save":
+        collector.save_review(job, item_id, edited)
+    elif action == "skip":
+        collector.skip_review(job, item_id)
+    else:
+        collector.reanalyze_review(job, item_id, str(body.get("feedback") or ""))
+    collector.after_review(job)
+    return {"job": job.snapshot()}
+
+
 @route("GET", "/api/jobs/current")
 def _current(req: Request) -> dict:
-    job = req.app.jobs.current(req.query.get("kind") or KIND)
+    """그 kind의 가장 최근 작업. collect는 끝난 작업이면 확인 대기가 남은 멈춘 작업을 먼저 돌려준다(그 카드를 잃지 않게)."""
+    kind = req.query.get("kind") or KIND
+    job = req.app.jobs.current(kind)
+    if kind == KIND and job is not None and not job.is_active():
+        job = req.app.jobs.latest_where(KIND, _has_leftover_reviews) or job
     return {"job": job.snapshot() if job else None}
 
 
@@ -628,15 +980,17 @@ def _cancel(req: Request, job_id: str) -> dict:
 
 @route("POST", r"/api/jobs/(?P<job_id>[^/]+)/items/(?P<item_id>.+)/decision")
 def _decision(req: Request, job_id: str, item_id: str) -> dict:
+    """작업 스레드가 기다리는 결정을 넣는다. collect는 확인 경로(`/api/add/<작업>/review/<항목>`)를 쓴다."""
     job = req.app.jobs.get(job_id)
+    if job.kind == KIND:
+        raise ScriptError("bad_action", MSG_USE_REVIEW)
     body = req.json
-    action = body.get("action")
-    decision: dict[str, Any] = {"action": action}
-    if action == "reanalyze":
-        decision["feedback"] = str(body.get("feedback") or "")
-    if action in {"save", "save_all"} and body.get("analysis") is not None:
+    decision: dict[str, Any] = {"action": body.get("action")}
+    if body.get("feedback") is not None:
+        decision["feedback"] = str(body["feedback"])
+    if body.get("analysis") is not None:
         if not isinstance(body["analysis"], dict):
             raise ScriptError("bad_request", "analysis는 JSON 객체여야 합니다")
         decision["analysis"] = body["analysis"]
-    job.decide(item_id, decision, allowed=ALLOWED_ACTIONS)
+    job.decide(item_id, decision)
     return {"job": job.snapshot()}
