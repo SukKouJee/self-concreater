@@ -63,7 +63,7 @@ yt-coach/
 │   ├── yt-inspire/   모티브 카드 생성 규칙
 │   ├── yt-draft/     대본 골격 + 샷 리스트 규칙
 │   ├── yt-polish/    훅 5·제목 10·썸네일 지시서 규칙 + hooks.json(공식 21, MIT 출처)
-│   ├── yt-conti/     전체 대사 + 컷별 대사·가이드 규칙
+│   ├── yt-conti/     전체 대사 + 컷별 대사·가이드 규칙 (footage-match.md: 촬영 장면 맞추기 규칙)
 │   ├── yt-diagnose/  근접도·갭 서술 규칙
 │   └── yt-mission/   성장 단계·미션·회고 규칙
 ├── bin/ytc, ytc.cmd 스크립트 실행기 (.venv Python 선택, 작업 폴더 전달. .cmd는 Git Bash 없는 Windows용)
@@ -76,12 +76,15 @@ yt-coach/
 │   ├── cluster.py    축별 군집·판정 점수
 │   ├── similarity.py mine vs 아키타입 근접도
 │   ├── conti.py      draft → 콘티 검증·저장, 도식+참고 프레임 HTML 스토리보드
+│   ├── footage.py    내 촬영 영상 한 파일 → 장면·사진 모음·받아쓰기 (PyAV 우선, OpenCV 대체)
+│   ├── footage_match.py 콘티 컷 ↔ 촬영 장면 후보·판정(Claude 묶음 호출)·상태 파일
+│   ├── footage_out.py 남은 컷 HTML·위치 CSV·컷 클립 mp4
 │   ├── report.py     HTML 리포트
 │   ├── status.py     카테고리별 진행 단계·다음 할 일 (UI 홈)
 │   ├── claude_cli.py claude -p 호출기 (UI, `claude-cli` 엔진)
 │   ├── llm.py        LLM 엔진 계층 (설정·점검·ask·ask_validated)
 │   ├── llm_anthropic.py Anthropic Messages API 엔진 (`anthropic-api`)
-│   └── ui/           로컬 UI 서버 + 정적 화면
+│   └── ui/           로컬 UI 서버 + 정적 화면 (api_footage.py: 촬영 영상 라우트 `/api/footage/*`)
 ├── templates/        video.md, index.md, techniques.md, profile.md, mission.md, thresholds.json
 ├── CLAUDE.md
 └── README.md
@@ -313,8 +316,19 @@ AI 출력은 제안. 파일 저장 전 사용자 확인.
 
 콘티 자막을 CapCut에서 쓸 "초록 배경 + 움직이는 자막" MP4로 렌더한다(`scripts/captions.py`, `remotion/`). 자막 블록과 시간은 SRT 내보내기와 같은 계산(`conti.caption_blocks`: 계획 시간 또는 편집본 컷에 맞춘 시간)을 공유한다. 출력은 `drafts/<기획안>-captions.mp4`(H.264, 30fps, `#00FF00`, 쇼츠 1080×1920·롱폼 1920×1080·편집본이면 그 비율). 렌더는 `npx remotion render` 하위 프로세스(cwd `remotion/`, 임시 mp4로 렌더한 뒤 교체, 시간 제한은 영상 길이에 비례한 전체 상한(`total_timeout`, 짧은 영상 900초)과 출력이 300초 동안 없을 때의 멈춤 감지, 취소 시 그 프로세스만 종료)이고, Node 18+와 사용자가 직접 실행하는 `ytc captions setup`이 있을 때만 켜진다(없으면 `remotion_missing`). 투명 배경 출력·스타일 편집 UI는 하지 않는다. Remotion은 개인·직원 3명 이하·비영리 무료.
 
+### 7.2 촬영 영상 ↔ 콘티 맞추기 (v2.6)
+
+사용자가 직접 찍은 영상을 콘티 컷에 이어, 컷마다 찍었는지 판정하고 남은 컷을 모은다. 스펙: `docs/superpowers/specs/2026-10-27-footage-matching-design.md`
+
+- 입력: 콘티에 연결한 날짜별 촬영 폴더(여러 개, 나중에 추가, 하위 폴더 안 봄, UNC·네트워크 경로 거부 — PC로 복사). 연결은 콘티 md가 아니라 `workspace/footage_match/<콘티 stem>.json`에 둔다. 새 파일만 처리한다(파일 지문 `fid`가 같으면 건너뜀).
+- 처리(`scripts/footage.py`): 파일마다 장면 나누기(60초 넘는 장면은 분할, 최소 1초) → 장면당 사진 → 장면 모음 이미지(montage) → 받아쓰기(`faster-whisper`가 있을 때만, 30분 창 단위). 디코더는 PyAV 우선, 실패하면 OpenCV. 결과는 `workspace/footage/<fid>/`(scenes.json, transcript.json, frames/, montage). CPU만 쓰며 2시간 1080p ≈ 25~30분, 4K ≈ 30~45분.
+- 맞추기(`scripts/footage_match.py`, 규칙 `skills/yt-conti/footage-match.md`): 글자 후보(로컬)를 만든 뒤 Claude 묶음 호출로 컷마다 후보 2~3개와 판정을 받는다. 확실하면 자동 "찍음", 사용자는 고르기·"안 찍음" 표시·AI 판정으로 되돌리기. 콘티에 없는 쓸 만한 장면은 제안(넣기·숨기기). **촬영본 이미지 상한: Claude 호출 하나에 8장, 한 번 실행에 120장.** 이것은 레퍼런스 규칙(장면당 1장, 영상당 최대 40장, 8절)과 별개다. 레퍼런스는 다운로드 영상을 즉시 삭제하는 분석용이고, 촬영본은 사용자 원본을 읽기만 하며 한 번의 맞추기 호출 비용을 묶는 상한이다.
+- 출력(`scripts/footage_out.py`): `drafts/<기획안>-remaining.html`(폰용 남은 컷, 안 찍음 컷 포함, 한 파일), `drafts/<기획안>-footage.csv`(위치, UTF-8 BOM), `drafts/<기획안>-cuts/NN_<원본 이름>.mp4`(고른 구간을 재압축 없이 잘라 낸 클립, 키프레임 때문에 시작이 몇 초 앞당겨질 수 있음, 만들기 전 그 폴더의 이전 클립만 지움). 콘티 삭제 시 이 출력과 상태 파일도 휴지통으로 함께 옮긴다.
+- UI(`scripts/ui/api_footage.py`): `GET /api/footage`, `POST /api/footage/{folders, folders/remove, process, choose, not-filmed, reset, suggestions/hide, suggestions/insert, remaining, csv, clips}`, 미디어 `GET /api/footage/media/<fid>`·`/api/footage/frame/<fid>/<rel>`. 처리·맞추기·클립 만들기는 서로 동시에 돌지 않고 콘티·기획안 삭제도 막는다.
+- 원칙: 원본 영상은 읽기만 한다. 쓰기는 작업 폴더(`workspace/footage`, `workspace/footage_match`, `drafts/`)에만. 의미 판정은 Claude(제안), 수집·계산·출력은 스크립트. 알려진 한계: HEVC는 Chrome·Edge에서 재생 안 될 수 있어 사진 띠로 대체(변환 안 함, 소리만 나오고 화면이 검은 경우는 감지 못 함), 받아쓰기 30분 경계에 걸친 말은 둘로 나뉠 수 있음.
+
 ## 8. 비용·운영
 - 영상은 하나씩 처리, md가 있으면 재분석 안 함
-- 프레임은 장면당 1장, 영상당 최대 40장
+- 프레임은 장면당 1장, 영상당 최대 40장 (레퍼런스 한정. 촬영 영상 맞추기는 7.2의 호출당 8장·실행당 120장)
 - 자막 차단 시 `YT_PROXY` 환경변수 안내
 - 영상 원본은 프레임 추출 직후 삭제, 개인 분석 용도로만 사용

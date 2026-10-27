@@ -54,7 +54,7 @@ bin\ytc.cmd ui           # Git Bash 없는 Windows
 | 모으기 | 공용 라이브러리 (`#/library`. 연결 전에는 저장소 주소·표시 이름으로 연결, 연결 뒤에는 "받기"(마지막 받은 시각)와 탭 "기법"/"기획안 틀"(카테고리·작성자·잘 먹힘 거르기, 작성자·메모·"내가 올림" 표시)을 봄. 기법 카드를 체크해 "모티브 재료로 쓰기"(모티브 화면의 "지인 기법" 칸으로 전달), 틀 카드의 "이 틀로 기획안 만들기"(기획안 화면 "지인 틀"). "공유하기" 탭: 내 기법/기획안 고르기 → 미리보기(기획안은 "섹션 요약 받기"로 Claude 1회, 고치기) → 메모·잘 먹힘 → "올리기"와 인라인 확인 뒤에만 올림. 이미 올린 항목은 "그래도 새로 올리기"로 따로 확인. 지인이 쓴 글은 마크다운 표시일 뿐 실행되지 않음) | 2차 ✅ |
 | 분석 | 유형화 (ref 수·단계, 축별 판정, 아키타입 카드, 이상치. 실행 → 미리보기에서 근거·이름 고치기 → 저장) | 2차 ✅ |
 | 분석 | 리포트 (탭 2개. "카테고리 리포트": "리포트 만들기"(Claude 없음)로 `reports/<카테고리>-<날짜>.html`을 만들고 목록에서 골라 화면 안(스크립트 실행 차단 프레임)이나 새 탭에서 보기. "주간 회고": 주를 고르면 미션 완료율·종류·난이도·건너뛴 사유·새 모티브 카드·진단 갭이 바로 보이고(Claude 없음), "회고 쓰기"로 요약·반복된 약점·다음 주 방향·프로필 변경 제안을 받아 고쳐 "저장" → `reviews/<주>.md`(`## 내 메모` 유지). 저장한 회고에서 제안마다 체크해 "프로필에 반영"(지금/바꿀 값 나란히, 체크한 섹션만)) | 2차 ✅ |
-| 만들기 | 콘티 (컷별 레퍼런스 장면·대사 대안을 클릭으로 고르기, CapCut용 자막 SRT 받기, 컷 추가·복제·삭제·순서 바꾸기와 버전 이력·되돌리기, 편집본 영상의 컷에 자막 시간 맞추기: `POST /api/conti/srt-fit`, 움직이는 자막 영상(초록 배경 MP4) 만들기: `POST /api/conti/caption-video`) | 1차 ✅ |
+| 만들기 | 콘티 (컷별 레퍼런스 장면·대사 대안을 클릭으로 고르기, CapCut용 자막 SRT 받기, 컷 추가·복제·삭제·순서 바꾸기와 버전 이력·되돌리기, 편집본 영상의 컷에 자막 시간 맞추기: `POST /api/conti/srt-fit`, 움직이는 자막 영상(초록 배경 MP4) 만들기: `POST /api/conti/caption-video`, 촬영 영상 연결·컷 맞추기: 날짜별 촬영 폴더를 이어 컷마다 찍었는지 판정하고 남은 컷(폰용 HTML)·위치 CSV·컷 클립 만들기: `/api/footage/*`) | 1차 ✅ |
 | 만들기 | 모티브 (새 카드 뽑기 → 미리보기에서 고쳐 고른 카드만 저장, 저장한 카드 거르기·★·"기획안 만들기"로 그 카드를 출처로 기획안 화면 열기. 기법 카탈로그 병합은 터미널 `/yt-coach:yt-inspire`) | 2차 ✅ |
 | 만들기 | 기획안 (저장한 기획안 목록·상세 읽기 전용, 출처 고르기 → 만들기 → 미리보기에서 제목·대본·샷 표·준비물 고쳐 저장, 콘티 화면으로 연결, 상세에서 "훅·제목·썸네일 다듬기": 훅 5·제목 10·썸네일 후보를 점수·지적·근거와 보고 고쳐 저장) | 2차 ✅ |
 | 성장 | 진단 (내 영상·기획안 목록 → "비교하기"로 가장 가까운 아키타입·축별 근접도·갭을 바로 보기(Claude 없음) → "설명 받기"로 요약·갭 설명·다음 행동을 받아 고쳐 저장 → `mine/<이름>.md`(`## 내 메모` 유지). 저장한 진단에서 갭마다 "일부러 다르게 한 거예요" 표시. 대본 붙여넣기·링크 바로 진단은 터미널 `/yt-coach:yt-diagnose`) | 2차 ✅ |
@@ -78,7 +78,7 @@ bin\ytc.cmd ui           # Git Bash 없는 Windows
 ### 1. 준비물
 
 - Python 3.11+
-- (선택) ffmpeg — 지금은 필요 없습니다. 컷 분석은 OpenCV, STT 디코딩은 PyAV로 합니다
+- (선택) ffmpeg — 지금은 필요 없습니다. 컷 분석은 OpenCV, STT·촬영 영상 디코딩은 PyAV(`av`, 휠에 ffmpeg 포함)로 합니다
 - Claude Code (로컬 실행. YouTube 접근이 필요합니다)
 
 ### 2. Python 의존성
@@ -187,6 +187,8 @@ Claude가 라이브러리를 직접 부를 수 있는 도구 8개를 제공합�
 | `polish` | `context <draft.md>`, `evaluate <draft.md> --data <json>`, `apply <draft.md> --choice <json> --hash <sha>` (훅·제목·썸네일 한국어 점수·지적·레퍼런스 근거 → 고른 것을 기획안에 반영, 이전 값은 `## 패키징` 이력. 해시가 다르면 `draft_changed`) |
 | `conti` | `context <draft.md>`, `save <draft.md> --conti <json> [--force]`, `render <conti.md>`, `srt <conti.md> [--track caption\|line] [--video <편집본>]`(CapCut용 `.srt`. `--video`면 자막 없는 편집본의 실제 컷에 시간을 맞춤), `update`, `scenes`, `cut-context`, `history`, `history-name`, `history-restore`, `history-diff` (검증·대사 길이 경고·참고 프레임 매칭 → `drafts/*-conti.md`·`.html`. update·scenes·cut-context는 화면의 컷 단위 편집·장면 후보·대사 대안 입력) |
 | `captions` | `setup`(처음 한 번, `remotion/`에서 `npm ci`), `check`, `render <conti.md> [--video <편집본>] [--track caption\|line]` — 콘티 자막을 초록 배경 움직이는 자막 MP4(`drafts/<기획안>-captions.mp4`)로 렌더(선택 설치, Remotion). 취소·시간 초과 시 그 하위 프로세스만 종료 |
+| `footage` | `scan <folder>`, `process <file> [--no-stt]` — 촬영 영상 한 파일을 장면 나누기·사진 모음·받아쓰기(`workspace/footage/<지문>/`). 컷 맞추기는 화면에서(`scripts/footage_match.py`, Claude 호출) |
+| `footage_out` | `remaining <conti.md>`, `csv <conti.md>`, `clips <conti.md>` — 남은 컷 HTML(`drafts/<기획안>-remaining.html`), 위치 CSV(`-footage.csv`), 컷 클립(`-cuts/NN_<원본 이름>.mp4`) |
 | `similarity` | `compare <cat> <target>`, `save <cat> <target> --notes <json>` (→ `mine/`), `intentional <cat> <name> <key> [--off]` |
 | `mission` | `context`, `save --mission <json> [--replace]`, `submit <file> --difficulty --feedback`, `skip --reason`, `week [YYYY-Www]`, `review-save`, `profile-update` (모두 `--date`로 날짜 지정 가능) |
 | `shots` | `pending <cat>`, `context <id> --category`, `apply <id> --category --labels <json>` (장면 길이 가중 분포 → md `shots`) |

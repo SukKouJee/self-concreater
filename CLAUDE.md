@@ -22,7 +22,7 @@
 - 다운로드한 영상은 프레임 추출 직후 삭제(try/finally). 360p 이하만 받는다.
 
 ## 개발 환경
-- Python 3.11+. 의존성은 `requirements.txt`. ffmpeg는 선택(현재 코드는 쓰지 않음: 컷은 OpenCV, STT는 PyAV).
+- Python 3.11+. 의존성은 `requirements.txt`. ffmpeg는 선택(현재 코드는 쓰지 않음: 컷은 OpenCV, STT·촬영 영상 디코딩은 PyAV).
 - 로컬 실행 전제. 자막 차단 시 `YT_PROXY` 안내.
 - 테스트: `pytest tests/`. 실제 링크는 `tests/fixtures/links.txt`.
 - 프로세스를 이미지 이름으로 일괄 종료하지 않는다(`taskkill /IM python.exe`, `Stop-Process -Name python`, `pkill python`, `node.exe` 포함 금지). 사용자의 UI 서버와 다른 프로그램까지 죽인다. UI 서버는 `ytc ui --stop`, 남은 프로세스는 직접 띄운 PID나 그 포트를 쓰는 PID만 끈다.
