@@ -7,9 +7,13 @@
 - 원본 파일은 읽기만 한다. 결과는 workspace/footage/<지문>/ 아래(scenes.json, transcript.json,
   frames/, montage/). 경로는 모두 그 폴더 기준 상대 경로다.
 - 지문 = sha1(정규화한 절대 경로) 앞 12자 + 크기 + 수정 시각(ns). 파일이 바뀌면 지문도 바뀐다.
-- 장면: 짧은 변 360 이하로 줄이고 초당 5프레임만 본다. OpenCV로 열고, 못 열면 PyAV로 푼다.
-  둘 다 안 되면 status "unreadable"(이유 포함)로 두고 다음 파일로 넘어간다.
+- 장면: 짧은 변 360 이하로 줄이고 초당 5프레임만 본다(시각은 프레임의 실제 시각 — 아이폰 VFR 대응).
+  PyAV로 먼저 푼다(디코더 단계에서 줄여 받아 OpenCV보다 2~8배 빠르다). 못 열거나, 한 장도 못 읽거나,
+  읽다 오류가 나면 OpenCV로 다시 해 본다. 둘 다 안 되면 status "unreadable"(이유 포함, 캐시)로 두고
+  다음 파일로 넘어간다. 파일 잠김·드라이브 분리 같은 OSError는 status "retry"(캐시하지 않음).
+  디코더 핸들은 어떤 경우에도 닫는다(윈도에서 원본 파일이 잠긴 채 남지 않게).
   긴 장면(MAX_SCENE_SEC 초과)은 나눈다: 원테이크 촬영도 맞추기 단위가 너무 길지 않게, 메모리도 묶어 둔다.
+  끝에 남은 1초 미만 조각은 앞 장면에 붙인다(모든 장면이 사진 4~6장을 갖게).
 - 장면마다 사진 4~6장(긴 변 320px JPEG), 모음 이미지 1장(사진 격자, 긴 변 960px — AI용).
 - 받아쓰기: stt.transcribe_file(한국어). faster-whisper가 없으면 transcript None + stt_missing.
 - scenes.json은 사진을 다 쓴 뒤 마지막에 원자적으로 쓴다. 없으면 남은 사진을 지우고 처음부터 한다
@@ -22,6 +26,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -61,7 +66,17 @@ def fingerprint(path: str | Path) -> str:
     return f"{digest}-{st.st_size}-{st.st_mtime_ns}"
 
 
+_FID_RE = re.compile(r"[0-9a-f]{12}-[0-9]+-[0-9]+")
+
+
+def valid_fid(fid: object) -> bool:
+    """fingerprint() 모양인가. URL에서 받은 id를 경로로 쓰기 전에 확인한다."""
+    return isinstance(fid, str) and _FID_RE.fullmatch(fid) is not None
+
+
 def footage_dir(fid: str) -> Path:
+    if not valid_fid(fid):
+        raise ScriptError("bad_fid", "잘못된 파일 id입니다")
     return workspace_dir("footage", fid)
 
 
@@ -114,84 +129,134 @@ def rotation_code(rotation: float | int) -> int | None:
     return {90: cv2.ROTATE_90_COUNTERCLOCKWISE, 180: cv2.ROTATE_180, 270: cv2.ROTATE_90_CLOCKWISE}.get(angle)
 
 
-def _read_opencv(path: Path, short_side: int) -> Source | None:
-    """OpenCV로 연다. 열지 못하거나 첫 프레임부터 못 읽으면 None(PyAV로 넘긴다)."""
-    cap = cv2.VideoCapture(str(path))
-    if not cap.isOpened():
-        cap.release()
-        return None
-    fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
-    count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-    if fps <= 0 or not cap.grab():
-        cap.release()
-        return None
+def frame_time(msec: float, index: int, fps: float) -> float:
+    """OpenCV가 알려 준 프레임 시각(ms). 0 이하·NaN이면(백엔드가 모를 때) 번호/fps로 대신한다."""
+    if math.isfinite(msec) and msec > 0:
+        return msec / 1000
+    return index / fps if fps > 0 else 0.0
 
-    def frames() -> Iterator[tuple[float, np.ndarray]]:
-        try:
+
+@contextlib.contextmanager
+def _read_opencv(path: Path, short_side: int) -> Iterator[Source]:
+    """OpenCV로 연다. 못 열면 ScriptError("unreadable"). 캡처는 블록을 나갈 때 반드시 닫는다."""
+    cap = cv2.VideoCapture(str(path))
+    try:
+        if not cap.isOpened():
+            raise ScriptError("unreadable", "OpenCV로 영상을 열 수 없습니다")
+        fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
+        count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+
+        def frames() -> Iterator[tuple[float, np.ndarray]]:
             index, next_t = 0, 0.0
-            while True:
-                t = index / fps
+            while any(cap.grab() for _ in range(1 + DECODE_RETRIES)):
+                t = frame_time(cap.get(cv2.CAP_PROP_POS_MSEC), index, fps)
                 if t + 1e-6 >= next_t:
                     ok, frame = cap.retrieve()
                     if ok:
                         yield t, _fit(frame, short_side)
-                        next_t += 1 / SAMPLE_FPS
-                if not any(cap.grab() for _ in range(1 + DECODE_RETRIES)):
-                    return
+                        next_t = t + 1 / SAMPLE_FPS
                 index += 1
-        finally:
-            cap.release()
 
-    return Source("opencv", count / fps if count > 0 else None, frames())
+        yield Source("opencv", count / fps if count > 0 and fps > 0 else None, frames())
+    finally:
+        cap.release()
 
 
-def _read_pyav(path: Path, short_side: int) -> Source:
-    """PyAV로 푼다(HEVC 등 OpenCV가 못 여는 파일). 못 열면 ScriptError("unreadable")."""
-    import av
+@contextlib.contextmanager
+def _read_pyav(path: Path, short_side: int) -> Iterator[Source]:
+    """PyAV로 푼다. 못 열면 ScriptError("unreadable"), 파일 잠김 등 OSError는 그대로 올린다.
+    컨테이너는 블록을 나갈 때 반드시 닫는다."""
+    try:
+        import av
+    except ImportError as e:
+        raise ScriptError("unreadable", "PyAV가 설치돼 있지 않습니다") from e
 
     try:
         container = av.open(str(path), mode="r")
-    except (av.error.FFmpegError, OSError) as e:
+    except av.error.FFmpegError as e:
+        if isinstance(e, OSError):
+            raise
         raise ScriptError("unreadable", f"영상을 열 수 없습니다: {stt.av_detail(e)}") from e
-    if not container.streams.video:
-        container.close()
-        raise ScriptError("unreadable", "영상 트랙이 없습니다")
-    stream = container.streams.video[0]
-    stream.thread_type = "AUTO"
-    duration = None
-    if stream.duration is not None and stream.time_base is not None:
-        duration = float(stream.duration * stream.time_base)
-    elif container.duration is not None:
-        duration = container.duration / av.time_base
+    try:
+        if not container.streams.video:
+            raise ScriptError("unreadable", "영상 트랙이 없습니다")
+        stream = container.streams.video[0]
+        stream.thread_type = "AUTO"
+        duration = None
+        if stream.duration is not None and stream.time_base is not None:
+            duration = float(stream.duration * stream.time_base)
+        elif container.duration is not None:
+            duration = container.duration / av.time_base
 
-    def frames() -> Iterator[tuple[float, np.ndarray]]:
-        try:
+        def frames() -> Iterator[tuple[float, np.ndarray]]:
             first: float | None = None
             next_t = 0.0
             size: tuple[int, int] | None = None
-            for frame in container.decode(stream):
-                if frame.time is None:
-                    continue
-                first = frame.time if first is None else first
-                t = frame.time - first
-                if t + 1e-6 < next_t:
-                    continue
-                size = size or _scaled_size(frame.width, frame.height, short_side)
-                image = frame.to_ndarray(format="bgr24", width=size[0], height=size[1])
-                code = rotation_code(getattr(frame, "rotation", 0) or 0)
-                yield t, (cv2.rotate(image, code) if code is not None else image)
-                next_t = t + 1 / SAMPLE_FPS
-        except av.error.FFmpegError:
-            return  # 뒤가 깨진 파일: 읽은 데까지만 쓴다(하나도 못 읽으면 호출한 쪽이 unreadable로 둔다)
-        finally:
-            container.close()
+            try:
+                for frame in container.decode(stream):
+                    if frame.time is None:
+                        continue
+                    first = frame.time if first is None else first
+                    t = frame.time - first
+                    if t + 1e-6 < next_t:
+                        continue
+                    size = size or _scaled_size(frame.width, frame.height, short_side)
+                    image = frame.to_ndarray(format="bgr24", width=size[0], height=size[1])
+                    code = rotation_code(getattr(frame, "rotation", 0) or 0)
+                    yield t, (cv2.rotate(image, code) if code is not None else image)
+                    next_t = t + 1 / SAMPLE_FPS
+            except av.error.FFmpegError as e:
+                if first is None or isinstance(e, OSError):
+                    raise
+                # 뒤가 깨진 파일(촬영 중 전원 꺼짐 등): 읽은 데까지만 쓴다
 
-    return Source("pyav", duration, frames())
+        yield Source("pyav", duration, frames())
+    finally:
+        container.close()
 
 
-def open_source(path: Path) -> Source:
-    source = _read_opencv(path, DECODE_SHORT_SIDE)
-    return source if source is not None else _read_pyav(path, DECODE_SHORT_SIDE)
+def _decode_errors() -> tuple[type[Exception], ...]:
+    errors: list[type[Exception]] = [ValueError, cv2.error]
+    try:
+        import av
+    except ImportError:
+        return tuple(errors)
+    return (*errors, av.error.FFmpegError)
+
+
+def _clear_images(base: Path) -> None:
+    for leftover in ("frames", "montage"):
+        shutil.rmtree(base / leftover, ignore_errors=True)
+
+
+def decode_scenes(path: Path, base: Path, report: Progress | None = None) -> tuple[str, float, list[dict]]:
+    """PyAV → OpenCV 순서로 장면을 뽑는다. -> (디코더, 길이, 장면)
+
+    한 디코더가 못 열거나, 한 장도 못 읽거나, 읽다 오류(ValueError·cv2.error·FFmpegError)가 나면
+    사진을 지우고 다음 디코더로 한다. 둘 다 안 되면 ScriptError("unreadable"). 파일 잠김·드라이브 분리
+    같은 OSError는 ScriptError("retry")로 바로 올린다(다음 처리 때 다시 해 본다).
+    """
+    reasons: list[str] = []
+    for reader in (_read_pyav, _read_opencv):
+        _clear_images(base)
+        try:
+            with reader(path, DECODE_SHORT_SIDE) as source:
+                duration, scenes = extract_scenes(source, base, report)
+            return source.decoder, duration, scenes
+        except OSError as e:
+            _clear_images(base)
+            detail = e.strerror or type(e).__name__
+            raise ScriptError(
+                "retry", f"파일을 읽지 못했습니다(다른 프로그램이 쓰고 있거나 드라이브가 빠졌을 수 있습니다): {detail}",
+            ) from e
+        except ScriptError as e:
+            if e.code != "unreadable":
+                raise
+            reasons.append(e.message)
+        except _decode_errors() as e:
+            reasons.append(f"영상을 읽다 멈췄습니다: {stt.av_detail(e)}")
+    _clear_images(base)
+    raise ScriptError("unreadable", " / ".join(dict.fromkeys(reasons)))
 
 
 # --- 장면 -----------------------------------------------------------------------
@@ -306,25 +371,27 @@ def extract_scenes(source: Source, out_dir: Path, report: Progress | None = None
         _write_jpeg(out_dir / montage, make_montage([frame for _, frame in picked]))
         scenes.append({"i": i, "start": round(start, 2), "end": round(end, 2), "frames": names, "montage": montage})
 
-    with contextlib.closing(source.frames):
-        for t, frame in source.frames:
-            hsv = _hsv_small(frame)
-            if prev is not None and t - start >= MIN_SCENE_SEC and (
-                _content_score(prev, hsv) >= SCENE_THRESHOLD or t - start >= MAX_SCENE_SEC
-            ):
-                close(t)
-                buffer, start = SceneBuffer(), t
-            buffer.add(t, frame)
-            prev, last_t = hsv, t
-            if report is not None and t >= next_report:
-                fraction = min(0.99, t / source.duration) if source.duration else None
-                report("scenes", fraction, scene_progress_text(t, source.duration))
-                next_report = t + every
+    for t, frame in source.frames:
+        hsv = _hsv_small(frame)
+        if prev is not None and t - start >= MIN_SCENE_SEC and (
+            _content_score(prev, hsv) >= SCENE_THRESHOLD or t - start >= MAX_SCENE_SEC
+        ):
+            close(t)
+            buffer, start = SceneBuffer(), t
+        buffer.add(t, frame)
+        prev, last_t = hsv, t
+        if report is not None and t >= next_report:
+            fraction = min(0.99, t / source.duration) if source.duration else None
+            report("scenes", fraction, scene_progress_text(t, source.duration))
+            next_report = t + every
 
     if last_t is None:
         raise ScriptError("unreadable", "영상 프레임을 하나도 읽지 못했습니다")
     duration = max(source.duration or 0.0, last_t + 1 / SAMPLE_FPS)
-    close(duration)
+    if scenes and duration - start < MIN_SCENE_SEC:
+        scenes[-1]["end"] = round(duration, 2)   # 끝 조각이 너무 짧으면 앞 장면에 붙인다
+    else:
+        close(duration)
     if report is not None:
         report("scenes", 1.0, scene_progress_text(duration, duration))
     return round(duration, 2), scenes
@@ -347,20 +414,18 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 
 
 def _scene_record(path: Path, fid: str, base: Path, report: Progress | None) -> dict[str, Any]:
-    for leftover in ("frames", "montage"):
-        shutil.rmtree(base / leftover, ignore_errors=True)
+    """장면을 뽑아 scenes.json에 남긴다. retry(잠김 등)는 남기지 않아 다음 처리 때 다시 해 본다."""
     record: dict[str, Any] = {"schema": SCHEMA, "fid": fid, "name": path.name}
     try:
-        source = open_source(path)
-        duration, scenes = extract_scenes(source, base, report)
+        decoder, duration, scenes = decode_scenes(path, base, report)
     except ScriptError as e:
+        if e.code == "retry":
+            return {**record, "status": "retry", "reason": e.message, "duration_sec": None, "scenes": []}
         if e.code != "unreadable":
             raise
-        for leftover in ("frames", "montage"):
-            shutil.rmtree(base / leftover, ignore_errors=True)
         record.update(status="unreadable", reason=e.message, duration_sec=None, scenes=[])
     else:
-        record.update(status="done", decoder=source.decoder, duration_sec=duration, scenes=scenes)
+        record.update(status="done", decoder=decoder, duration_sec=duration, scenes=scenes)
     _write_json(base / "scenes.json", record)
     return record
 
@@ -382,10 +447,10 @@ def _transcript(path: Path, base: Path, report: Progress | None) -> dict[str, An
     return data
 
 
-def process_file(path: str | Path, progress: Progress | None = None, stt: bool = True) -> dict[str, Any]:
+def process_file(path: str | Path, progress: Progress | None = None, run_stt: bool = True) -> dict[str, Any]:
     """파일 하나를 처리한다(캐시가 있으면 그대로). 원본은 읽기만 한다.
 
-    -> {"fid", "name", "status": "done"|"unreadable", "reason"?, "decoder"?, "duration_sec",
+    -> {"fid", "name", "status": "done"|"unreadable"|"retry", "reason"?, "decoder"?, "duration_sec",
         "scenes": [{"i", "start", "end", "frames": [rel...], "montage": rel}],
         "transcript": [{"start", "end", "text"}] | None, "stt_missing"?, "transcript_error"?}
     rel은 footage_dir(fid) 기준 상대 경로. progress: ("scenes", 비율, 글) → ("stt", 비율, 글).
@@ -403,7 +468,7 @@ def process_file(path: str | Path, progress: Progress | None = None, stt: bool =
     result["transcript"] = None
     if record["status"] != "done":
         return result
-    transcript = _transcript(path, base, report) if stt else _read_json(base / "transcript.json")
+    transcript = _transcript(path, base, report) if run_stt else _read_json(base / "transcript.json")
     if transcript is not None:
         result["transcript"] = transcript["segments"]
         if transcript.get("stt_missing"):
@@ -424,7 +489,7 @@ def main(argv: list[str]) -> Any:
     args = parser.parse_args(argv)
     if args.cmd == "scan":
         return {"folder": str(Path(args.folder).resolve()), "files": scan_folder(args.folder)}
-    return process_file(args.file, stt=not args.no_stt)
+    return process_file(args.file, run_stt=not args.no_stt)
 
 
 if __name__ == "__main__":

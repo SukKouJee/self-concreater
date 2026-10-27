@@ -210,9 +210,10 @@ def _local_model(calls):
             calls["model"] = (name, device, compute_type)
 
         def transcribe(self, audio, language=None, vad_filter=True, **kwargs):
-            calls["audio"], calls["language"] = audio, language
+            calls.setdefault("audio", []).append(audio)
+            calls["language"] = language
             info = types.SimpleNamespace(language=language, duration=4.0)
-            segs = [types.SimpleNamespace(start=0.0, end=1.234, text=" a "),
+            segs = [types.SimpleNamespace(start=0.0, end=1.234, text=f" {audio} "),
                     types.SimpleNamespace(start=1.5, end=2.0, text="  "),
                     types.SimpleNamespace(start=2.0, end=4.0, text="b")]
             return iter(segs), info
@@ -220,22 +221,70 @@ def _local_model(calls):
     return Model
 
 
+def _wav(path, seconds=1.0, rate=16000):
+    av = pytest.importorskip("av")
+    np = pytest.importorskip("numpy")
+    n = int(seconds * rate)
+    tone = (np.sin(np.arange(n) * 2 * np.pi * 440 / rate) * 12000).astype(np.int16)
+    with av.open(str(path), mode="w") as out:
+        stream = out.add_stream("pcm_s16le", rate=rate, layout="mono")
+        frame = av.AudioFrame.from_ndarray(tone.reshape(1, -1), format="s16", layout="mono")
+        frame.rate = rate
+        for packet in stream.encode(frame):
+            out.mux(packet)
+        for packet in stream.encode(None):
+            out.mux(packet)
+    return path
+
+
 def test_transcribe_file_returns_segments_in_korean(monkeypatch, tmp_path):
     calls = {}
     monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=_local_model(calls)))
-    monkeypatch.setattr(stt, "has_audio", lambda path: True)
-    monkeypatch.setattr(stt, "decode_audio", lambda path: f"decoded:{path.name}")
+    monkeypatch.setattr(stt, "probe_audio", lambda path: stt.AudioProbe(True, 4.0))
+    monkeypatch.setattr(stt, "iter_audio_windows", lambda path, window_sec=None: iter([(0.0, "w0")]))
     clip = tmp_path / "clip.mov"
     clip.write_bytes(b"x")
     progress = []
 
     out = stt.transcribe_file(clip, progress=lambda *a: progress.append(a))
 
-    assert out == [{"start": 0.0, "end": 1.23, "text": "a"}, {"start": 2.0, "end": 4.0, "text": "b"}]
-    assert calls["language"] == "ko" and calls["audio"] == "decoded:clip.mov"
+    assert out == [{"start": 0.0, "end": 1.23, "text": "w0"}, {"start": 2.0, "end": 4.0, "text": "b"}]
+    assert calls["language"] == "ko" and calls["audio"] == ["w0"]
     assert calls["model"] == ("small", "cpu", "int8")
     assert [p[1] for p in progress if p[1] is not None] == pytest.approx([0.3085, 0.5, 1.0])
     assert clip.read_bytes() == b"x"
+
+
+def test_transcribe_file_long_audio_uses_windows_with_offsets(monkeypatch, tmp_path):
+    calls = {}
+    monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=_local_model(calls)))
+    monkeypatch.setattr(stt, "probe_audio", lambda path: stt.AudioProbe(True, 2 * 3600.0))
+    windows = [(0.0, "w0"), (1800.0, "w1"), (3600.0, "w2"), (5400.0, "w3")]
+    monkeypatch.setattr(stt, "iter_audio_windows", lambda path, window_sec=None: iter(windows))
+    progress = []
+
+    out = stt.transcribe_file(tmp_path / "two_hours.mov", progress=lambda *a: progress.append(a))
+
+    assert calls["audio"] == ["w0", "w1", "w2", "w3"]                 # 창마다 따로 받아쓴다
+    assert [(s["start"], s["text"]) for s in out[:4]] == [(0.0, "w0"), (2.0, "b"), (1800.0, "w1"), (1802.0, "b")]
+    assert out[-1] == {"start": 5402.0, "end": 5404.0, "text": "b"}
+    fractions = [p[1] for p in progress if p[1] is not None]
+    assert fractions == sorted(fractions) and fractions[-1] == pytest.approx(5404 / 7200)
+    assert "1:30:04 / 2:00:00" in progress[-1][2]
+
+
+def test_iter_audio_windows_splits_and_keeps_all_samples(tmp_path):
+    np = pytest.importorskip("numpy")
+    wav = _wav(tmp_path / "tone.wav", seconds=1.0)
+    whole = stt.decode_audio(wav)
+
+    windows = list(stt.iter_audio_windows(wav, window_sec=0.25))
+
+    assert [off for off, _ in windows] == [0.0, 0.25, 0.5, 0.75]
+    assert all(len(a) == 4000 for _, a in windows[:-1])
+    assert all(a.dtype == np.float32 for _, a in windows)
+    joined = np.concatenate([a for _, a in windows])
+    assert len(joined) == len(whole) and np.allclose(joined, whole)
 
 
 def test_transcribe_file_without_whisper(monkeypatch, tmp_path):
@@ -248,26 +297,17 @@ def test_transcribe_file_without_whisper(monkeypatch, tmp_path):
 def test_transcribe_file_without_audio_track_is_empty(monkeypatch, tmp_path):
     calls = {}
     monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=_local_model(calls)))
-    monkeypatch.setattr(stt, "has_audio", lambda path: False)
+    monkeypatch.setattr(stt, "probe_audio", lambda path: stt.AudioProbe(False, None))
     assert stt.transcribe_file(tmp_path / "clip.mov") == []
     assert "audio" not in calls
 
 
-def test_has_audio(tmp_path):
-    av = pytest.importorskip("av")
-    np = pytest.importorskip("numpy")
-    wav = tmp_path / "tone.wav"
-    with av.open(str(wav), mode="w") as out:
-        stream = out.add_stream("pcm_s16le", rate=16000, layout="mono")
-        frame = av.AudioFrame.from_ndarray(np.zeros((1, 1600), dtype=np.int16), format="s16", layout="mono")
-        frame.rate = 16000
-        for packet in stream.encode(frame):
-            out.mux(packet)
-        for packet in stream.encode(None):
-            out.mux(packet)
-    assert stt.has_audio(wav) is True
+def test_probe_audio(tmp_path):
+    wav = _wav(tmp_path / "tone.wav", seconds=0.5)
+    probe = stt.probe_audio(wav)
+    assert probe.has_audio is True and probe.duration == pytest.approx(0.5, abs=0.05)
     bad = tmp_path / "bad.mov"
     bad.write_bytes(b"garbage")
     with pytest.raises(ScriptError) as exc:
-        stt.has_audio(bad)
+        stt.probe_audio(bad)
     assert exc.value.code == "stt_failed" and "bad.mov" not in exc.value.message
