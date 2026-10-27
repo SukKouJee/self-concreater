@@ -17,6 +17,14 @@ export function splitLinks(text) {
   return String(text || "").split(/\s+/).map((x) => x.trim()).filter(Boolean);
 }
 
+// True when a job from /api/jobs/current still needs the user: it is running, or it holds finished videos
+// waiting for review (also after the job stopped). A finished job with nothing left is not shown again.
+export function needsAttention(job) {
+  if (!job) return false;
+  if (job.status === "running" || job.status === "awaiting") return true;
+  return (job.items || []).some((i) => i.state === "awaiting" && i.ask === "review");
+}
+
 // Removes the first line that is exactly this link. If the link only shares a line with others, just that token goes.
 export function removeLine(text, link) {
   const lines = String(text).split("\n");

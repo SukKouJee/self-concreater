@@ -2,7 +2,7 @@
 // 링크 입력(입력이 멈추면 줄마다 상태 확인) → 1초 폴링 진행 표시 → 영상별 확인 카드 → 마무리 요약.
 // 서버 작업(kind "collect")이 이미 있으면 칸을 마운트할 때 그 작업을 이어서 보여 준다.
 import { h, filesUrl } from "/static/dom.js";
-import { STATUS_TEXT, splitLinks, removeLine, startLabel, summaryText } from "/static/add-utils.js";
+import { STATUS_TEXT, splitLinks, removeLine, startLabel, summaryText, needsAttention } from "/static/add-utils.js";
 import { bodySubName, hookName, narrativeName, sectionLabelName, sectionName } from "/static/labels.js";
 import {
   fmtDur, fmtClock, fmtRemain, spokenDur, rowView, itemProgress, stepWeights, monotonicFraction,
@@ -69,7 +69,9 @@ function emitChange() {
 }
 
 function paintTitle() {
-  S.title.textContent = S.category ? `${S.category} 카테고리에 넣습니다` : "카테고리가 없습니다";
+  // The progress view belongs to the job's category, whatever the category selector says now.
+  const cat = S.view === "job" && S.job && S.job.category ? S.job.category : S.category;
+  S.title.textContent = cat ? `${cat} 카테고리에 넣습니다` : "카테고리가 없습니다";
 }
 
 function stopPolling() {
@@ -184,7 +186,7 @@ async function resume() {
   try {
     const data = await mine.ctx.api("GET", "/api/jobs/current?kind=collect");
     if (S !== mine || !mine.ctx.isCurrent()) return;
-    if (data.job) {
+    if (needsAttention(data.job)) {
       applyJob(data.job);
       if (isActive(data.job)) schedulePoll();
       if (!mine.isOpen) openArea();
@@ -238,6 +240,7 @@ function applyJob(job) {
   S.job = job;
   if (typeof job.now === "number") S.offset = job.now - Date.now() / 1000;
   renderJobView();
+  paintTitle();
   emitChange();
 }
 
@@ -317,7 +320,7 @@ function renderJobFoot(job) {
     S.edits.clear();
     renderForm();
     emitChange();
-    S.f.ta.focus();
+    if (S.f) S.f.ta.focus();
   });
   box.append(again);
   S.foot.replaceChildren(box);

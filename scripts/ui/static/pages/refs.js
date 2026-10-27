@@ -105,7 +105,7 @@ function freshState(el, params, ctx) {
   syncView(ctx.category);
   return {
     el, params, ctx, seq: 0, videos: [], skipped: 0, nodes: {}, countTimer: null, trashing: false,
-    shell: null, area: null, areaOpen: !!(params && params.add), areaActive: false, autoOpenFor: null, shotsPending: 0,
+    shell: null, area: null, areaOpen: !!(params && params.add), areaActive: false, autoOpenFor: null, autoOpened: false, shotsPending: 0,
   };
 }
 
@@ -167,6 +167,7 @@ function ensureShell() {
   });
   toggle.addEventListener("click", () => {
     if (!alive(mine) || !mine.area) return;
+    mine.autoOpened = false;
     if (mine.areaOpen) mine.area.close(); else mine.area.open();
   });
 }
@@ -199,7 +200,13 @@ function openWhenEmpty() {
   const cat = S.ctx.category;
   if (S.autoOpenFor === cat) return;
   S.autoOpenFor = cat;
-  if (!S.videos.some((v) => v.role === "ref") && !S.areaOpen && S.area) S.area.open({ focus: false });
+  if (!S.videos.some((v) => v.role === "ref")) {
+    if (!S.areaOpen && S.area) { S.area.open({ focus: false }); S.autoOpened = true; }
+  } else if (S.autoOpened) {
+    // Opened by itself for an empty category: fold it away again unless a job is running in it.
+    S.autoOpened = false;
+    if (S.areaOpen && !S.areaActive && S.area) S.area.close();
+  }
 }
 
 async function loadShotsPending() {

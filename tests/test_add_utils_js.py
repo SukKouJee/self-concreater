@@ -63,3 +63,14 @@ def test_summary_text_counts_by_status():
     assert run_js(f"m.summaryText({rows})") == "새 영상 2개 · 다시 분석 1개 · 건너뜀 2개"
     assert run_js('m.summaryText([{status:"new"}])') == "새 영상 1개"
     assert run_js("m.summaryText([])") == ""
+
+
+def test_needs_attention():
+    assert run_js("m.needsAttention(null)") is False
+    assert run_js('m.needsAttention({status:"running",items:[]})') is True
+    assert run_js('m.needsAttention({status:"awaiting",items:[]})') is True
+    # finished job with nothing left: not shown again
+    assert run_js('m.needsAttention({status:"done",items:[{state:"saved"},{state:"skipped"}]})') is False
+    # stopped job that still holds a review: shown
+    assert run_js('m.needsAttention({status:"stopped",items:[{state:"awaiting",ask:"review"}]})') is True
+    assert run_js('m.needsAttention({status:"stopped",items:[{state:"awaiting",ask:"other"}]})') is False

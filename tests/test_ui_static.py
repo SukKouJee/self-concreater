@@ -917,3 +917,10 @@ def test_add_progress_summary_first_then_proportional_steps():
     assert "앞 영상이 끝나면 시작해요" in js                          # 대기 중 영상은 단계 칩 대신 한 줄
     for sel in [".prog-ring", ".prog-remain", ".steps.prog-steps", ".row-running .step-name", "@container (max-width: 420px)"]:
         assert sel in css, sel
+
+
+def test_add_area_resume_only_for_jobs_that_need_attention():
+    add = (STATIC_DIR / "pages" / "add.js").read_text(encoding="utf-8")
+    assert "needsAttention(data.job)" in add
+    refs = (STATIC_DIR / "pages" / "refs.js").read_text(encoding="utf-8")
+    assert "autoOpened" in refs
