@@ -14,7 +14,7 @@ from urllib.parse import quote
 from pathlib import Path
 from typing import Any
 
-from scripts import captions, claude_cli, conti, llm, refstore
+from scripts import captions, claude_cli, conti, conti_history, llm, refstore
 from scripts.common import ScriptError, work_root, workspace_dir
 from scripts.ui.jobs import Job, JobCancelled, new_item
 from scripts.ui.server import Request, route
@@ -165,10 +165,18 @@ def _trash(req: Request) -> dict:
 
 # ---- 불러오기 -------------------------------------------------------------------------
 
-@route("GET", "/api/conti")
-def _get(req: Request) -> dict:
-    path = _safe_path(req.query.get("path"), conti_file=True)
-    fm = conti._load_conti(path)
+def _stale(path: Path, outputs: list[Path]) -> bool:
+    """콘티가 산출물보다 나중에 바뀌었는지(산출물이 있을 때만)."""
+    mtime = path.stat().st_mtime
+    return any(out.is_file() and mtime > out.stat().st_mtime for out in outputs)
+
+
+def conti_view(path: Path) -> dict:
+    """GET /api/conti 응답. 불러올 때 id를 붙이고 밖에서 고친 내용을 이력에 남긴다(편집과 겹치지 않게 잠금 안에서)."""
+    with conti.HISTORY_LOCK:
+        conti_history.baseline(path)
+        fm = conti._load_conti(path)
+        digest = conti.content_hash(path)
     sections = [{"label": s["label"]} for s in fm["script"]]
     pool = conti.frame_pool(fm.get("category"))
     matched = conti.match_frames(fm["cuts"], sections, pool)
@@ -184,8 +192,17 @@ def _get(req: Request) -> dict:
             ref = {"frame": m["frame"], "match": m["match"], "title": m.get("title")}
         cuts.append({**c, "label": fm["script"][c["section"]]["label"], "sketch": conti.sketch(c["size"], vertical),
                      "ref": ref, "max_chars": int(fm["speech_cps"] * c["sec"])})
-    return {"path": _rel(path), "hash": conti.content_hash(path), "fm": fm, "html": fm.get("html"),
-            "cuts": cuts, "warnings": conti.warnings(fm["script"], fm["cuts"], fm["speech_cps"])}
+    base = path.stem[: -len(CONTI_SUFFIX)]
+    srt_files = [path.with_name(f"{base}-{suffix}.srt") for _, suffix in conti.SRT_TRACKS.values()]
+    return {"path": _rel(path), "hash": digest, "fm": fm, "html": fm.get("html"),
+            "cuts": cuts, "warnings": conti.warnings(fm["script"], fm["cuts"], fm["speech_cps"]),
+            "total_sec": round(sum(float(c["sec"]) for c in fm["cuts"]), 2), "target_sec": fm.get("target_sec"),
+            "outputs_stale": {"srt": _stale(path, srt_files), "video": _stale(path, [path.with_name(f"{base}-captions.mp4")])}}
+
+
+@route("GET", "/api/conti")
+def _get(req: Request) -> dict:
+    return conti_view(_safe_path(req.query.get("path"), conti_file=True))
 
 
 @route("GET", "/api/conti/scenes")
@@ -234,6 +251,64 @@ def _cut(req: Request) -> dict:
     if not isinstance(expected, str) or not expected:
         raise ScriptError("bad_request", "hash가 필요합니다. 콘티를 다시 불러오세요")
     return conti.update_cut(path, _int(body.get("n"), "n"), fields, expected_hash=expected)
+
+
+def _hash(body: dict) -> str:
+    expected = body.get("hash")
+    if not isinstance(expected, str) or not expected:
+        raise ScriptError("bad_request", "hash가 필요합니다. 콘티를 다시 불러오세요")
+    return expected
+
+
+@route("POST", "/api/conti/cuts")
+def _cuts(req: Request) -> dict:
+    body = req.json
+    path = _safe_path(body.get("path"), conti_file=True)
+    expected = _hash(body)
+    op = {k: v for k, v in body.items() if k not in ("path", "hash")}
+    result = conti.edit_cuts(path, op, expected)
+    return {**conti_view(path), "cut_id": result["cut_id"]}
+
+
+# ---- 이력 ------------------------------------------------------------------------------
+
+@route("GET", "/api/conti/history")
+def _history(req: Request) -> dict:
+    path = _safe_path(req.query.get("path"), conti_file=True)
+    with conti.HISTORY_LOCK:
+        conti_history.baseline(path)
+        return {"versions": conti_history.list_versions(path)}
+
+
+@route("GET", "/api/conti/history/version")
+def _history_version(req: Request) -> dict:
+    path = _safe_path(req.query.get("path"), conti_file=True)
+    return {"version": conti_history.get_version(path, _int(req.query.get("n"), "n"))}
+
+
+@route("GET", "/api/conti/history/diff")
+def _history_diff(req: Request) -> dict:
+    path = _safe_path(req.query.get("path"), conti_file=True)
+    b = req.query.get("b")
+    return conti_history.diff_versions(path, _int(req.query.get("a"), "a"), None if b in (None, "") else _int(b, "b"))
+
+
+@route("POST", "/api/conti/history/name")
+def _history_name(req: Request) -> dict:
+    body = req.json
+    path = _safe_path(body.get("path"), conti_file=True)
+    label = body.get("name")
+    if not isinstance(label, str):
+        raise ScriptError("bad_request", "name은 문자열이어야 합니다")
+    version = conti_history.name(path, label, _hash(body))
+    return {"version": version, "hash": conti.content_hash(path)}
+
+
+@route("POST", "/api/conti/history/restore")
+def _history_restore(req: Request) -> dict:
+    body = req.json
+    path = _safe_path(body.get("path"), conti_file=True)
+    return conti_history.restore(path, _int(body.get("n"), "n"), _hash(body))
 
 
 @route("POST", "/api/conti/srt")

@@ -310,7 +310,7 @@ def test_update_line_resyncs_section_text(saved, home):
     assert (home / out["html"]).exists()
 
 
-@pytest.mark.parametrize("fields", [{"size": "바스트"}, {"guide": " "}, {"guide": ""}])
+@pytest.mark.parametrize("fields", [{"size": "없는크기"}, {"guide": " "}, {"guide": ""}])
 def test_update_rejects_unknown_field_and_empty_guide(saved, fields):
     with pytest.raises(ScriptError) as exc:
         conti.update_cut(saved, 1, fields)
@@ -849,3 +849,164 @@ def test_render_saves_ids_of_v2_file(saved):
     conti.render(saved)
     fm, _ = refstore.read_md(saved)
     assert fm["schema_version"] == 3 and all(len(c["id"]) == 8 for c in fm["cuts"])
+
+
+# --- 컷 편집 연산(edit_cuts) -----------------------------------------------------------
+
+def _ids(path):
+    fm, _ = refstore.read_md(path)
+    return [c["id"] for c in fm["cuts"]]
+
+
+def _edit(path, op, **kw):
+    return conti.edit_cuts(path, op, conti.content_hash(path), **kw)
+
+
+def _cuts(path):
+    fm, _ = refstore.read_md(path)
+    return fm["cuts"]
+
+
+def test_insert_defaults_take_previous_cut_section(saved, home):
+    out = _edit(saved, {"op": "insert", "at": 2})
+    cuts = _cuts(saved)
+    new = cuts[2]
+    assert out["status"] == "updated" and out["cut_id"] == new["id"] and out["hash"] == conti.content_hash(saved)
+    assert (new["size"], new["sec"], new["action"], new["guide"]) == ("미디엄", 4, "새 컷", "촬영 지시를 적어 주세요")
+    assert new["section"] == cuts[1]["section"] == 1 and len(cuts) == 5
+    fm, _ = refstore.read_md(saved)
+    assert fm["script"][1]["end"] == 10 and fm["script"][2]["start"] == 10 and fm["script"][2]["end"] == 12
+    assert [c["n"] for c in cuts] == [1, 2, 3, 4, 5]
+
+
+def test_insert_at_front_uses_section_zero_and_explicit_section(saved):
+    _edit(saved, {"op": "insert", "at": 0, "cut": {"action": "맨 앞", "sec": 1.5}})
+    first = _cuts(saved)[0]
+    assert first["section"] == 0 and first["action"] == "맨 앞" and first["sec"] == 1.5
+    _edit(saved, {"op": "insert", "at": 3, "section": 1})            # 섹션 1의 마지막 자리
+    assert [c["section"] for c in _cuts(saved)] == [0, 0, 1, 1, 1, 2]
+
+
+def test_insert_rejects_bad_position_and_section(saved):
+    for op in ({"op": "insert", "at": 9}, {"op": "insert", "at": 1, "section": 2}, {"op": "insert", "at": 1, "section": 7}):
+        with pytest.raises(ScriptError) as exc:
+            _edit(saved, op)
+        assert exc.value.code == "invalid_edit"
+
+
+def test_delete_cut_and_last_cut_guard(saved):
+    ids = _ids(saved)
+    _edit(saved, {"op": "delete", "id": ids[1]})
+    assert _ids(saved) == [ids[0], ids[2], ids[3]]
+    with pytest.raises(ScriptError) as exc:
+        _edit(saved, {"op": "delete", "n": 1})                       # 섹션 0의 유일한 컷
+    assert exc.value.code == "last_cut" and "하나는" in exc.value.message
+    assert _ids(saved) == [ids[0], ids[2], ids[3]]
+
+
+def test_move_across_sections_changes_membership(saved):
+    ids = _ids(saved)
+    _edit(saved, {"op": "move", "id": ids[2], "to": 3})              # 섹션 1의 마지막 컷을 섹션 2 뒤로
+    cuts = _cuts(saved)
+    assert [c["id"] for c in cuts] == [ids[0], ids[1], ids[3], ids[2]]
+    assert [c["section"] for c in cuts] == [0, 1, 2, 2]
+
+
+def test_move_to_front_adopts_next_section_and_blocks_emptying(saved):
+    ids = _ids(saved)
+    _edit(saved, {"op": "move", "id": ids[1], "to": 0})              # 섹션 1 컷을 맨 앞으로: 섹션 0 소속
+    assert [c["section"] for c in _cuts(saved)] == [0, 0, 1, 2]
+    with pytest.raises(ScriptError) as exc:
+        _edit(saved, {"op": "move", "id": ids[3], "to": 0})          # 섹션 2의 유일한 컷을 밖으로
+    assert exc.value.code == "last_cut"
+
+
+def test_move_within_section_and_explicit_section(saved):
+    ids = _ids(saved)
+    _edit(saved, {"op": "move", "id": ids[1], "to": 2})
+    assert _ids(saved)[1:3] == [ids[2], ids[1]]
+    _edit(saved, {"op": "move", "id": ids[1], "to": 3, "section": 2})
+    assert [c["section"] for c in _cuts(saved)] == [0, 1, 2, 2]
+
+
+def test_duplicate_gets_new_id_right_after(saved):
+    ids = _ids(saved)
+    out = _edit(saved, {"op": "duplicate", "id": ids[1]})
+    cuts = _cuts(saved)
+    assert len(cuts) == 5 and cuts[2]["id"] == out["cut_id"] and out["cut_id"] not in ids
+    assert cuts[2]["action"] == cuts[1]["action"] and cuts[2]["section"] == 1
+
+
+@pytest.mark.parametrize("fields", [
+    {"sec": 0.4}, {"sec": 120.5}, {"sec": 1.3}, {"sec": "abc"}, {"sec": True},
+    {"size": "없는크기"}, {"action": " "}, {"guide": ""},
+])
+def test_update_rejects_bad_sec_size_action(saved, fields):
+    before = saved.read_bytes()
+    with pytest.raises(ScriptError) as exc:
+        _edit(saved, {"op": "update", "n": 1, "fields": fields})
+    assert exc.value.code == "invalid_edit" and saved.read_bytes() == before
+
+
+def test_update_sec_size_action_shifts_later_sections(saved):
+    out = _edit(saved, {"op": "update", "n": 1, "fields": {"sec": 3.5, "size": "미디엄", "action": "새 동작"}})
+    fm, _ = refstore.read_md(saved)
+    assert out["cut_id"] == fm["cuts"][0]["id"]
+    assert (fm["cuts"][0]["sec"], fm["cuts"][0]["size"], fm["cuts"][0]["action"]) == (3.5, "미디엄", "새 동작")
+    assert [(s["start"], s["end"]) for s in fm["script"]] == [(0, 3.5), (3.5, 7.5), (7.5, 9.5)]
+    assert fm["target_sec"] == 8                                      # 목표 길이는 그대로
+
+
+def test_edit_with_stale_hash_is_rejected(saved):
+    old = conti.content_hash(saved)
+    conti.edit_cuts(saved, {"op": "insert", "at": 1}, old)
+    before = saved.read_bytes()
+    with pytest.raises(ScriptError) as exc:
+        conti.edit_cuts(saved, {"op": "delete", "n": 1}, old)
+    assert exc.value.code == "conti_changed" and saved.read_bytes() == before
+
+
+def test_unknown_op_and_missing_cut(saved):
+    for op, code in (({"op": "explode"}, "invalid_edit"), ({"op": "delete", "id": "zzzzzzzz"}, "cut_not_found"),
+                     ({"op": "delete", "n": 99}, "cut_not_found"), ({"op": "delete"}, "invalid_edit")):
+        with pytest.raises(ScriptError) as exc:
+            _edit(saved, op)
+        assert exc.value.code == code
+
+
+def test_edit_keeps_memo_crlf_and_records_history(saved):
+    from scripts import conti_history
+    saved.write_bytes(saved.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+    _edit(saved, {"op": "insert", "at": 1})
+    data = saved.read_bytes()
+    assert data.startswith(b"---\r\n") and b"\n" not in data.replace(b"\r\n", b"")
+    assert "## 내 메모" in data.decode("utf-8")
+    versions = conti_history.list_versions(saved)
+    assert versions[0]["kind"] == "auto" and versions[0]["summary"]["cuts"] == 5
+
+
+def test_srt_render_and_view_work_with_new_times(saved, home):
+    ids = _ids(saved)
+    _edit(saved, {"op": "move", "id": ids[2], "to": 3})
+    _edit(saved, {"op": "update", "id": ids[0], "fields": {"sec": 5}})
+    srt = conti.export_srt(saved, "line")
+    text = (home / srt["path"]).read_text("utf-8")
+    assert "00:00:05,000" in text and srt["duration_sec"] == 11
+    assert conti.render(saved)["status"] == "rendered"
+    fm = conti._load_conti(saved)
+    assert fm["cuts"][-1]["end"] == 11 == fm["script"][-1]["end"]
+    assert saved.with_suffix(".html").exists()
+
+
+def test_update_cut_wrapper_keeps_shape(saved):
+    out = conti.update_cut(saved, 2, {"sec": 3})
+    assert out["cut"]["sec"] == 3 and out["cut"]["n"] == 2 and {"hash", "warnings", "status"} <= set(out)
+
+
+def test_baseline_holds_history_lock(saved, monkeypatch):
+    from scripts import conti_history
+    seen = []
+    real = conti.ensure_ids
+    monkeypatch.setattr(conti, "ensure_ids", lambda p: (seen.append(conti.HISTORY_LOCK._is_owned()), real(p))[1])
+    conti_history.baseline(saved)
+    assert seen == [True]

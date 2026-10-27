@@ -266,8 +266,9 @@ def diff_versions(conti_path: str | Path, a: int, b: int | None = None) -> dict:
 def baseline(conti_path: str | Path, now: float | None = None) -> dict | None:
     """불러올 때: id를 먼저 붙이고(있으면 그대로) 이력 기준선·external을 확인한다."""
     path = conti._resolve(conti_path)
-    conti.ensure_ids(path)
-    fm, _ = refstore.read_md(path)
-    if not fm.get("cuts") or not fm.get("script"):
-        raise ScriptError("invalid_conti", "콘티 프런트매터에 script·cuts가 없습니다")
-    return check_external(path, conti._load_conti(path), now)
+    with conti.HISTORY_LOCK:                             # 편집과 겹쳐 같은 버전 번호를 두 번 쓰지 않도록
+        conti.ensure_ids(path)
+        fm, _ = refstore.read_md(path)
+        if not fm.get("cuts") or not fm.get("script"):
+            raise ScriptError("invalid_conti", "콘티 프런트매터에 script·cuts가 없습니다")
+        return check_external(path, conti._load_conti(path), now)

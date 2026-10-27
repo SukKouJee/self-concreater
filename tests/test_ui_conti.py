@@ -620,3 +620,98 @@ def test_draft_trash_sees_every_running_conti_job(client, home, draft_md, fakes,
         wait_for(client, job_id, lambda j: j["status"] == "done")
     status, _ = client.json("POST", "/api/draft/trash", {"path": rel(home, draft_md)})
     assert status == 200 and other.exists()
+
+
+# --- 컷 편집 · 이력 라우트 ------------------------------------------------------------------
+
+def _view(client, home, src):
+    status, body = client.json("GET", "/api/conti?path=" + q(rel(home, src)))
+    assert status == 200
+    return body
+
+
+def test_get_conti_adds_totals_and_stale_flags(client, home, draft_md):
+    import os
+    src = saved_conti(home, draft_md)
+    body = _view(client, home, src)
+    assert body["total_sec"] == 8 and body["target_sec"] == 8 and body["outputs_stale"] == {"srt": False, "video": False}
+    srt = src.with_name(src.stem[: -len("-conti")] + "-captions.srt")
+    video = src.with_name(src.stem[: -len("-conti")] + "-captions.mp4")
+    srt.write_text("x", encoding="utf-8")
+    video.write_bytes(b"x")
+    old = src.stat().st_mtime - 100
+    os.utime(srt, (old, old))
+    assert _view(client, home, src)["outputs_stale"] == {"srt": True, "video": False}
+    os.utime(video, (old, old))
+    assert _view(client, home, src)["outputs_stale"] == {"srt": True, "video": True}
+
+
+def test_cuts_route_ops_and_view_shape(client, home, draft_md):
+    src = saved_conti(home, draft_md)
+    view = _view(client, home, src)
+    body = {"path": rel(home, src), "hash": view["hash"], "op": "insert", "at": 1, "cut": {"sec": 3}}
+    status, resp = client.json("POST", "/api/conti/cuts", body)
+    assert status == 200 and resp["cut_id"] and resp["hash"] != view["hash"]
+    assert len(resp["cuts"]) == 5 and resp["total_sec"] == 11 and resp["target_sec"] == 8
+    assert resp["cuts"][1]["id"] == resp["cut_id"] and "sketch" in resp["cuts"][0] and resp["fm"]["cuts"]
+    status, stale = client.json("POST", "/api/conti/cuts", body)         # 낡은 hash
+    assert status == 400 and stale["error"] == "conti_changed"
+    status, resp = client.json("POST", "/api/conti/cuts", {"path": rel(home, src), "hash": resp["hash"], "op": "delete", "n": 5})
+    assert status == 400 and resp["error"] == "last_cut"
+
+
+@pytest.mark.parametrize("extra", [{}, {"hash": ""}, {"hash": 5}])
+def test_cuts_route_requires_hash(client, home, draft_md, extra):
+    src = saved_conti(home, draft_md)
+    status, resp = client.json("POST", "/api/conti/cuts", {"path": rel(home, src), "op": "duplicate", "n": 1, **extra})
+    assert status == 400 and resp["error"] == "bad_request" and "hash" in resp["message"]
+
+
+def test_old_cut_route_still_edits_size_and_sec(client, home, draft_md):
+    src = saved_conti(home, draft_md)
+    body = {"path": rel(home, src), "n": 1, "fields": {"sec": 3}, "hash": conti.content_hash(src)}
+    status, resp = client.json("POST", "/api/conti/cut", body)
+    assert status == 200 and resp["cut"]["sec"] == 3
+
+
+def test_history_routes_round_trip(client, home, draft_md):
+    src = saved_conti(home, draft_md)
+    path = q(rel(home, src))
+    view = _view(client, home, src)
+    status, resp = client.json("POST", "/api/conti/history/name", {"path": rel(home, src), "name": "기획 완료", "hash": view["hash"]})
+    assert status == 200
+    status, resp = client.json("POST", "/api/conti/cuts", {"path": rel(home, src), "hash": view["hash"], "op": "duplicate", "n": 2})
+    assert status == 200
+    status, listing = client.json("GET", "/api/conti/history?path=" + path)
+    assert status == 200 and [v["kind"] for v in listing["versions"]][:2] == ["auto", "named"]
+    named = next(v for v in listing["versions"] if v["kind"] == "named")
+    status, one = client.json("GET", f"/api/conti/history/version?path={path}&n={named['n']}")
+    assert status == 200 and one["version"]["state"]["cuts"] and len(one["version"]["state"]["cuts"]) == 4
+    status, diff = client.json("GET", f"/api/conti/history/diff?path={path}&a={named['n']}")
+    assert status == 200 and [c["kind"] for c in diff["changes"] if c["kind"] == "added"] == ["added"]
+    status, restored = client.json("POST", "/api/conti/history/restore", {"path": rel(home, src), "n": named["n"], "hash": resp["hash"]})
+    assert status == 200 and restored["hash"] == conti.content_hash(src)
+    assert len(_view(client, home, src)["cuts"]) == 4
+    status, bad = client.json("POST", "/api/conti/history/restore", {"path": rel(home, src), "n": named["n"], "hash": resp["hash"]})
+    assert status == 400 and bad["error"] == "conti_changed"
+    status, bad = client.json("GET", f"/api/conti/history/version?path={path}&n=99")
+    assert status == 400 and bad["error"] == "version_not_found"
+
+
+def test_history_name_validates_input(client, home, draft_md):
+    src = saved_conti(home, draft_md)
+    h = conti.content_hash(src)
+    for body in ({"name": "", "hash": h}, {"name": "가" * 31, "hash": h}, {"name": 5, "hash": h}, {"name": "ok"}):
+        status, resp = client.json("POST", "/api/conti/history/name", {"path": rel(home, src), **body})
+        assert status == 400 and resp["error"] in ("invalid_name", "bad_request")
+
+
+def test_get_conti_external_edit_adds_one_version(client, home, draft_md):
+    src = saved_conti(home, draft_md)
+    path = q(rel(home, src))
+    _view(client, home, src)
+    src.write_text(src.read_text("utf-8").replace("뚜껑 뜯기", "뚜껑 확 뜯기"), encoding="utf-8")
+    _view(client, home, src)
+    _view(client, home, src)
+    status, listing = client.json("GET", "/api/conti/history?path=" + path)
+    assert [v["kind"] for v in listing["versions"]] == ["external", "created"]

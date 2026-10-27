@@ -618,13 +618,37 @@ def _find_cut(cuts: list[dict], n: int) -> dict:
     return cut
 
 
+MIN_CUT_SEC, MAX_CUT_SEC, SEC_STEP = 0.5, 120.0, 0.5
+CUT_DEFAULTS = {"size": "미디엄", "sec": 4, "action": "새 컷", "guide": "촬영 지시를 적어 주세요"}
+UPDATABLE_FIELDS = (*EDITABLE_FIELDS, "sec", "size", "action")
+LAST_CUT_MESSAGE = "섹션에 컷이 하나는 있어야 해요"
+
+
+def _check_sec(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ScriptError("invalid_edit", "컷 길이는 숫자여야 합니다")
+    try:
+        sec = float(value)
+    except ValueError as e:
+        raise ScriptError("invalid_edit", "컷 길이는 숫자여야 합니다") from e
+    if not MIN_CUT_SEC <= sec <= MAX_CUT_SEC or (sec / SEC_STEP) != round(sec / SEC_STEP):
+        raise ScriptError("invalid_edit", f"컷 길이는 {MIN_CUT_SEC:g}~{MAX_CUT_SEC:g}초, {SEC_STEP:g}초 단위여야 합니다")
+    return sec
+
+
 def _check_edit(fields: dict) -> dict:
-    unknown = sorted(set(fields) - set(EDITABLE_FIELDS))
+    unknown = sorted(set(fields) - set(UPDATABLE_FIELDS))
     if unknown:
-        raise ScriptError("invalid_edit", f"고칠 수 없는 필드입니다: {', '.join(unknown)} (허용: {', '.join(EDITABLE_FIELDS)})")
-    edit = {k: ("" if v is None else str(v)).strip() for k, v in fields.items()}
+        raise ScriptError("invalid_edit", f"고칠 수 없는 필드입니다: {', '.join(unknown)} (허용: {', '.join(UPDATABLE_FIELDS)})")
+    edit: dict[str, Any] = {k: ("" if v is None else str(v)).strip() for k, v in fields.items() if k != "sec"}
+    if "sec" in fields:
+        edit["sec"] = _check_sec(fields["sec"])
     if "guide" in edit and not edit["guide"]:
         raise ScriptError("invalid_edit", "가이드는 비울 수 없습니다")
+    if "action" in edit and not edit["action"]:
+        raise ScriptError("invalid_edit", "동작은 비울 수 없습니다")
+    if "size" in edit and edit["size"] not in SHOT_SIZES:
+        raise ScriptError("invalid_edit", f"샷 크기 {edit['size']!r}은 쓸 수 없습니다 (허용: {', '.join(SHOT_SIZES)})")
     ref = edit.get("ref_frame")
     if ref:
         target = _resolve(ref)
@@ -679,45 +703,145 @@ def ensure_ids(path: str | Path) -> bool:
 
 def update_cut(conti: str | Path, n: int, fields: dict, expected_hash: str | None = None,
                now: float | None = None) -> dict:
-    """컷 하나의 line·guide·caption·sfx·ref_frame을 고친다. 본문은 다시 그리되 '## 내 메모'와 줄바꿈 방식은 보존."""
+    """컷 하나의 필드를 고친다(`edit_cuts`의 update). 반환: edit_cuts 결과 + 고친 컷(`cut`)."""
     with HISTORY_LOCK:
-        return _update_cut_locked(conti, n, fields, expected_hash, now)
+        result, fm = _edit_locked(conti, {"op": "update", "n": n, "fields": fields}, expected_hash, now)
+    return {**result, "cut": _find_cut(fm["cuts"], n)}
 
 
-def _update_cut_locked(conti: str | Path, n: int, fields: dict, expected_hash: str | None, now: float | None) -> dict:
+def edit_cuts(conti: str | Path, op: dict, expected_hash: str | None, now: float | None = None) -> dict:
+    """컷 구조 편집: insert / delete / move / duplicate / update. 섹션 시간은 컷 길이 합으로 다시 계산한다.
+    반환: {"status", "path", "html", "abs_html", "hash", "cut_id"(새로 생기거나 고친 컷, 없으면 None), "warnings"}."""
+    with HISTORY_LOCK:
+        return _edit_locked(conti, op, expected_hash, now)[0]
+
+
+def _cut_ref(cuts: list[dict], op: dict) -> int:
+    """op의 id(우선) 또는 n이 가리키는 컷의 0부터 시작하는 위치."""
+    if op.get("id") is not None:
+        found = next((i for i, c in enumerate(cuts) if c["id"] == op["id"]), None)
+        if found is None:
+            raise ScriptError("cut_not_found", f"컷 {op['id']}이(가) 없습니다")
+        return found
+    n = op.get("n")
+    if isinstance(n, bool) or not isinstance(n, int):
+        raise ScriptError("invalid_edit", "id 또는 n으로 컷을 가리켜야 합니다")
+    return cuts.index(_find_cut(cuts, n))
+
+
+def _int_arg(op: dict, key: str, low: int, high: int) -> int:
+    value = op.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+        raise ScriptError("invalid_edit", f"{key}는 {low}~{high} 사이 정수여야 합니다")
+    return value
+
+
+def _section_arg(op: dict, sections: int) -> int | None:
+    if op.get("section") is None:
+        return None
+    return _int_arg(op, "section", 0, sections - 1)
+
+
+def _fit_section(cuts: list[dict], pos: int, section: int | None, current: int | None) -> int:
+    """cuts[pos]에 놓을 섹션. 지정(section)이 앞뒤 컷과 순서가 맞아야 하고, 지정이 없으면 current를 쓰되
+    순서가 거꾸로면 그 자리의 섹션(앞 컷, 맨 앞이면 다음 컷)으로 맞춘다."""
+    prev = cuts[pos - 1]["section"] if pos > 0 else None
+    nxt = cuts[pos + 1]["section"] if pos + 1 < len(cuts) else None
+
+    def fits(s: int) -> bool:
+        return (prev is None or prev <= s) and (nxt is None or s <= nxt)
+
+    if section is not None:
+        if not fits(section):
+            raise ScriptError("invalid_edit", "그 자리에는 그 섹션의 컷을 둘 수 없습니다 (섹션 순서가 거꾸로 됩니다)")
+        return section
+    if current is not None and fits(current):
+        return current
+    if prev is not None:
+        return prev
+    return nxt if nxt is not None else 0
+
+
+def _unused_id(cuts: list[dict]) -> str:
+    taken = {c["id"] for c in cuts}
+    cut_id = new_cut_id()
+    while cut_id in taken:
+        cut_id = new_cut_id()
+    return cut_id
+
+
+def _apply_op(fm: dict, op: dict) -> tuple[dict, str | None]:
+    """op를 적용한 새 fm(시간은 아직 안 맞춤)과 새로 생기거나 고친 컷 id."""
+    kind = op.get("op")
+    cuts = [dict(c) for c in fm["cuts"]]
+    sections = len(fm["script"])
+    cut_id: str | None = None
+    if kind == "insert":
+        at = _int_arg(op, "at", 0, len(cuts))
+        extra = op.get("cut") or {}
+        if not isinstance(extra, dict):
+            raise ScriptError("invalid_edit", "cut은 JSON 객체여야 합니다")
+        cut_id = _unused_id(cuts)
+        new = {"id": cut_id, "section": 0, "angle": None, "line": "", "caption": "", "sfx": "",
+               **CUT_DEFAULTS, **_check_edit(extra)}
+        if not new.get("ref_frame"):
+            new.pop("ref_frame", None)
+        cuts.insert(at, new)
+        new["section"] = _fit_section(cuts, at, _section_arg(op, sections), cuts[at - 1]["section"] if at > 0 else 0)
+    elif kind == "delete":
+        cuts.pop(_cut_ref(cuts, op))
+    elif kind == "move":
+        pos = _cut_ref(cuts, op)
+        to = _int_arg(op, "to", 0, len(cuts) - 1)
+        cut = cuts.pop(pos)
+        cuts.insert(to, cut)
+        cut["section"] = _fit_section(cuts, to, _section_arg(op, sections), cut["section"])
+        cut_id = cut["id"]
+    elif kind == "duplicate":
+        pos = _cut_ref(cuts, op)
+        copy = {**cuts[pos], "id": _unused_id(cuts)}
+        cuts.insert(pos + 1, copy)
+        cut_id = copy["id"]
+    elif kind == "update":
+        pos = _cut_ref(cuts, op)
+        fields = op.get("fields")
+        if not isinstance(fields, dict):
+            raise ScriptError("invalid_edit", "fields는 JSON 객체여야 합니다")
+        for key, value in _check_edit(fields).items():
+            if key == "ref_frame" and not value:
+                cuts[pos].pop("ref_frame", None)
+            else:
+                cuts[pos][key] = value
+        cut_id = cuts[pos]["id"]
+    else:
+        raise ScriptError("invalid_edit", f"알 수 없는 편집입니다: {kind!r} (insert, delete, move, duplicate, update)")
+    if {c["section"] for c in cuts} != set(range(sections)):
+        raise ScriptError("last_cut", LAST_CUT_MESSAGE)
+    return {**fm, "cuts": cuts}, cut_id
+
+
+def _edit_locked(conti: str | Path, op: dict, expected_hash: str | None, now: float | None) -> tuple[dict, dict]:
     from scripts import conti_history
 
+    if not isinstance(op, dict):
+        raise ScriptError("invalid_edit", "편집 내용은 JSON 객체여야 합니다")
     path = _resolve(conti)
     if not path.exists():
         raise ScriptError("conti_not_found", f"콘티가 없습니다: {_rel(path)}")
     if expected_hash is not None and hashlib.sha256(path.read_bytes()).hexdigest() != expected_hash:
         raise ScriptError("conti_changed", "파일이 밖에서 바뀌었습니다. 다시 불러오세요")
-    edit = _check_edit(fields)
     ensure_ids(path)                                     # 편집 전 상태를 이력에 남기려면 id가 파일에 있어야 한다
-    fm = _load_conti(path)
-    _find_cut(fm["cuts"], n)                             # 없는 컷 번호면 이력을 남기기 전에 실패한다
-    conti_history.check_external(path, fm, now)
+    before = _load_conti(path)
+    edited, cut_id = _apply_op(before, op)               # 잘못된 편집은 이력·파일을 건드리기 전에 실패한다
+    fm = retime(edited)
+    conti_history.check_external(path, before, now)
     raw = path.read_bytes()
-    fm = _load_conti(path)
-    cut = _find_cut(fm["cuts"], n)
-    for key, value in edit.items():
-        if key == "ref_frame" and not value:
-            cut.pop("ref_frame", None)
-        else:
-            cut[key] = value
-    if "line" in edit:                                   # 컷 대사를 이은 것이 섹션 전체 대사
-        lines = [c["line"] for c in fm["cuts"] if c["section"] == cut["section"] and c["line"]]
-        fm["script"][cut["section"]]["text"] = " ".join(lines)
-    fm["schema_version"] = SCHEMA_VERSION
-    nl = "\r\n" if raw.lstrip(b"\xef\xbb\xbf").startswith(b"---\r\n") else "\n"
-    memo = _existing_memo(path).replace("\r\n", "\n")
-    body = render_md(fm, memo).replace("\n", nl)
-    path.write_bytes(refstore.join_frontmatter(fm, body, nl).encode("utf-8"))
-    html_path = _write_html(path, fm)
+    html_path = _write_conti(path, raw, fm)
     conti_history.record(path, fm, "auto", now=now)
-    return {"status": "updated", "path": _rel(path), "html": _rel(html_path), "abs_html": str(html_path),
-            "hash": content_hash(path), "cut": _find_cut(fm["cuts"], n),
-            "warnings": warnings(fm["script"], fm["cuts"], fm["speech_cps"])}
+    result = {"status": "updated", "path": _rel(path), "html": _rel(html_path), "abs_html": str(html_path),
+              "hash": content_hash(path), "cut_id": cut_id,
+              "warnings": warnings(fm["script"], fm["cuts"], fm["speech_cps"])}
+    return result, fm
 
 
 def scenes(conti: str | Path, n: int, limit: int = 6) -> list[dict]:
