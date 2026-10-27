@@ -801,3 +801,49 @@ def test_ensure_ids_migrates_v2_keeping_memo_and_crlf(saved):
     assert raw.startswith(b"---\r\n") and b"\n" not in raw.replace(b"\r\n", b"")
     assert "소품 미리 사기" in body
     assert conti.ensure_ids(saved) is False
+
+
+def _set_ids(path, ids, schema=3):
+    fm, body = refstore.read_md(path)
+    for c, i in zip(fm["cuts"], ids):
+        c["id"] = i
+    fm["schema_version"] = schema
+    path.write_bytes(refstore.join_frontmatter(fm, body).encode("utf-8"))
+
+
+@pytest.mark.parametrize("bad", ["A b/1", "ABCDEFGH", "short", "toolong123", ""])
+def test_validate_replaces_malformed_id(draft_md, bad):
+    data = json.loads(json.dumps(CONTI))
+    data["cuts"][0]["id"] = bad
+    _, cuts = conti.validate(data, conti.parse_draft(draft_md)["sections"])
+    assert cuts[0]["id"] != bad and len(cuts[0]["id"]) == 8
+
+
+def test_ensure_ids_fixes_duplicate_and_malformed_ids_stably(saved):
+    _set_ids(saved, ["dup00001", "dup00001", "A b/1", "ok000004"])
+    assert conti.ensure_ids(saved) is True
+    first = [c["id"] for c in conti._load_conti(saved)["cuts"]]
+    assert len(set(first)) == 4 and first[0] == "dup00001" and first[3] == "ok000004"
+    assert [c["id"] for c in conti._load_conti(saved)["cuts"]] == first
+    assert conti.ensure_ids(saved) is False
+
+
+def test_ensure_ids_keeps_memo_under_heading(saved):
+    fm, body = refstore.read_md(saved)
+    body = body.replace("## 내 메모\n", "## 내 메모\n소품 미리 사기\n")
+    saved.write_bytes(refstore.join_frontmatter(fm, body).encode("utf-8"))
+    _set_ids(saved, ["dup00001"] * 4)
+    assert conti.ensure_ids(saved) is True
+    _, body = refstore.read_md(saved)
+    assert body.split("## 내 메모")[1].strip().startswith("소품 미리 사기")
+
+
+def test_render_saves_ids_of_v2_file(saved):
+    fm, body = refstore.read_md(saved)
+    for c in fm["cuts"]:
+        del c["id"]
+    fm["schema_version"] = 2
+    saved.write_bytes(refstore.join_frontmatter(fm, body).encode("utf-8"))
+    conti.render(saved)
+    fm, _ = refstore.read_md(saved)
+    assert fm["schema_version"] == 3 and all(len(c["id"]) == 8 for c in fm["cuts"])

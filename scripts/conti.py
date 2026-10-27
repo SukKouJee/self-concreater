@@ -179,6 +179,7 @@ def _norm(text: str) -> str:
 
 
 _ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789"
+_ID_RE = re.compile(r"[a-z0-9]{8}")
 
 
 def new_cut_id() -> str:
@@ -216,11 +217,10 @@ def validate(data: dict, sections: list[dict]) -> tuple[list[dict], list[dict]]:
             if not str(c.get(field) or "").strip():
                 raise _invalid(f"컷 {i}의 {field}가 비어 있습니다")
         cut_id = c.get("id")
-        if not isinstance(cut_id, str) or not cut_id.strip() or cut_id.strip() in seen_ids:
+        if not isinstance(cut_id, str) or not _ID_RE.fullmatch(cut_id) or cut_id in seen_ids:
             cut_id = new_cut_id()
             while cut_id in seen_ids:
                 cut_id = new_cut_id()
-        cut_id = cut_id.strip()
         seen_ids.add(cut_id)
         out_cuts.append({"n": i, "id": cut_id, "section": sec_idx, "size": c["size"], "angle": c.get("angle") or None, "sec": sec,
                          **{f: str(c.get(f) or "").strip() for f in ("action", "line", "caption", "sfx", "guide")}})
@@ -556,6 +556,7 @@ def render(conti: str | Path) -> dict:
     path = _resolve(conti)
     if not path.exists():
         raise ScriptError("conti_not_found", f"콘티가 없습니다: {_rel(path)}")
+    ensure_ids(path)                                     # id가 없던 옛 파일은 먼저 저장해 HTML과 파일의 id를 맞춘다
     fm, _ = refstore.read_md(path)
     if not fm.get("cuts") or not fm.get("script"):
         raise ScriptError("invalid_conti", "콘티 프런트매터에 script·cuts가 없습니다")
@@ -645,10 +646,11 @@ def ensure_ids(path: str | Path) -> bool:
         raise ScriptError("conti_not_found", f"콘티가 없습니다: {_rel(p)}")
     raw = p.read_bytes()
     stored, _ = refstore.read_md(p)
-    cuts = stored.get("cuts") or []
-    if cuts and all(isinstance(c.get("id"), str) and c["id"].strip() for c in cuts):
+    loaded = _load_conti(p)
+    on_disk = [c.get("id") for c in stored.get("cuts") or []]
+    if stored.get("schema_version", 0) >= SCHEMA_VERSION and on_disk == [c["id"] for c in loaded["cuts"]]:
         return False
-    _write_conti(p, raw, _load_conti(p))
+    _write_conti(p, raw, loaded)
     return True
 
 
