@@ -11,6 +11,11 @@
 - 상태는 모두 `Job._lock` 아래에서 바뀐다. 바깥에는 `snapshot()`(깊은 복사)만 내준다.
 - 결정 대기: 작업 스레드가 `update(i, state="awaiting")` 뒤 `wait_decision(item_id)`로 Event를 기다리고,
   HTTP 스레드가 `decide(item_id, decision)`로 결정을 넣고 깨운다. Event는 먼저 오는 쪽이 만든다(경합 없음).
+- collect는 "작업 줄" 모델이다: 워커 스레드 하나가 `next_task()`로 줄에서 할 일을 꺼내 처리하고, 새 링크·저장 요청은
+  HTTP 스레드가 `append_items()`/`push_task()`로 붙인다. 줄 대기는 `_lock`에 묶인 Condition이라 상태 확인과 대기가 원자적이고,
+  `cancel()`이 기다리는 `next_task()`도 깨운다(JobCancelled).
+  저장 확인을 기다리는 항목(`state=="awaiting"`, `ask=="review"`)은 분석 워커가 멈춰도 그대로 남고(`_close`가 건드리지 않음),
+  `take_review()`가 잠금 안에서 `running`으로 바꾸는 쪽만 저장을 진행한다(저장 버튼 중복 클릭 방지).
 - 같은 kind 중 `SINGLE_KINDS`(collect, typify, motif, draft, polish, srtfit, caption_video, diagnose, mission, mission_feedback, review, library_summary, help_chat)는 진행 중(running/awaiting)인 작업이 하나뿐이다.
 """
 from __future__ import annotations
@@ -21,6 +26,7 @@ import sys
 import threading
 import time
 import traceback
+from collections import deque
 from collections.abc import Iterable, Mapping
 from typing import Any, Callable
 
@@ -61,6 +67,8 @@ class Job:
         self.kind = kind
         self.category = category
         self._lock = threading.Lock()
+        self._tasks_cond = threading.Condition(self._lock)
+        self._tasks: deque[dict] = deque()
         self._items: list[dict] = [dict(i) for i in items or []]
         self._status = "running"
         self._summary: dict | None = None
@@ -128,6 +136,60 @@ class Job:
         if self._cancelled.is_set():
             raise JobCancelled
 
+    def append_items(self, items: list[dict]) -> list[int]:
+        """항목을 끝에 붙이고 새 인덱스들을 돌려준다."""
+        with self._lock:
+            start = len(self._items)
+            self._items.extend(dict(i) for i in items)
+            return list(range(start, len(self._items)))
+
+    def push_task(self, task: dict) -> None:
+        """워커 줄 끝에 할 일을 넣고 기다리는 `next_task()`를 깨운다."""
+        with self._tasks_cond:
+            self._tasks.append(dict(task))
+            self._tasks_cond.notify()
+
+    def next_task(self, timeout: float | None) -> dict | None:
+        """줄 맨 앞 할 일을 꺼낸다. timeout=0이면 안 기다리고, None이면 할 일이나 취소가 올 때까지 기다린다.
+
+        시간 안에 없으면 None. 취소됐으면 JobCancelled.
+        """
+        deadline = None if timeout is None else time.monotonic() + timeout
+        with self._tasks_cond:
+            while True:
+                if self._cancelled.is_set():
+                    raise JobCancelled
+                if self._tasks:
+                    return self._tasks.popleft()
+                if deadline is None:
+                    self._tasks_cond.wait()
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._tasks_cond.wait(remaining)
+
+    def set_idle_status(self) -> None:
+        """워커가 할 일이 없을 때: 확인 대기 항목이 있으면 status를 awaiting으로, 없으면 그대로."""
+        with self._lock:
+            if self._status in ACTIVE and any(i["state"] == "awaiting" for i in self._items):
+                self._status = "awaiting"
+
+    def review_done(self) -> bool:
+        """확인 대기(`ask=="review"`) 항목이 하나도 남지 않았으면 True."""
+        with self._lock:
+            return not any(i["state"] == "awaiting" and i.get("ask") == "review" for i in self._items)
+
+    def take_review(self, item_id: str) -> int:
+        """확인 대기 항목을 잠금 안에서 `running`/`confirm`으로 바꾸고 인덱스를 돌려준다. 아니면 not_awaiting."""
+        with self._lock:
+            index = self._index_of(item_id)
+            item = self._items[index]
+            if item["state"] != "awaiting" or item.get("ask") != "review":
+                raise ScriptError("not_awaiting", "이 항목은 확인을 기다리고 있지 않습니다")
+            item.update(state="running", step="confirm")
+            return index
+
     def wait_decision(self, item_id: str) -> dict:
         """item_id에 결정이 들어올 때까지 막는다. 취소되면 JobCancelled."""
         with self._lock:
@@ -188,6 +250,7 @@ class Job:
         with self._lock:
             for event in self._waits.values():
                 event.set()
+            self._tasks_cond.notify_all()
 
     def join(self, timeout: float | None = None) -> None:
         if self._thread is not None:
@@ -202,6 +265,8 @@ class Job:
             for item in self._items:
                 if item["state"] in ITEM_DONE:
                     continue
+                if item["state"] == "awaiting" and item.get("ask") == "review":
+                    continue  # 저장 확인 대기는 작업이 멈춰도 사용자가 이어서 처리한다
                 if status == "failed" and item["state"] in ACTIVE:
                     item.update(state="failed", message=message)
                 else:
