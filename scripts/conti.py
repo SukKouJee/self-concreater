@@ -25,6 +25,7 @@ import hashlib
 import html
 import json
 import re
+import secrets
 import statistics
 from collections.abc import Callable
 from datetime import date
@@ -41,7 +42,7 @@ DEFAULT_CPS = float(json.loads((TEMPLATES_DIR / "thresholds.json").read_text("ut
 CONTI_SUFFIX = "-conti"
 SEC_TOLERANCE = 0.3
 OVERFLOW_SLACK = 1.15          # 말 속도 × 컷 길이의 115%까지는 허용
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 EDITABLE_FIELDS = ("line", "guide", "caption", "sfx", "ref_frame")
 
 _HEAD_RE = re.compile(r"^### (\d+:\d{2})–(\d+:\d{2}) · (\w+)(?:/(\w+))? \(")
@@ -177,6 +178,14 @@ def _norm(text: str) -> str:
     return re.sub(r"[\W_]+", "", text or "", flags=re.UNICODE)
 
 
+_ID_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789"
+
+
+def new_cut_id() -> str:
+    """컷을 번호와 무관하게 가리키는 8자 id (소문자+숫자)."""
+    return "".join(secrets.choice(_ID_ALPHABET) for _ in range(8))
+
+
 def validate(data: dict, sections: list[dict]) -> tuple[list[dict], list[dict]]:
     """(script, cuts) — script에 섹션 시간을 붙이고, cuts에 번호·시작·끝을 붙인다."""
     script = data.get("script") or []
@@ -187,7 +196,7 @@ def validate(data: dict, sections: list[dict]) -> tuple[list[dict], list[dict]]:
         raise _invalid("cuts가 비어 있습니다")
     out_script = [{"label": s["label"], "start": s["start"], "end": s["end"], "text": str(t.get("text") or "").strip()}
                   for s, t in zip(sections, script)]
-    out_cuts, prev_section = [], 0
+    out_cuts, prev_section, seen_ids = [], 0, set()
     for i, c in enumerate(cuts, 1):
         sec_idx = c.get("section")
         if not isinstance(sec_idx, int) or not 0 <= sec_idx < len(sections):
@@ -206,7 +215,14 @@ def validate(data: dict, sections: list[dict]) -> tuple[list[dict], list[dict]]:
         for field in ("action", "guide"):
             if not str(c.get(field) or "").strip():
                 raise _invalid(f"컷 {i}의 {field}가 비어 있습니다")
-        out_cuts.append({"n": i, "section": sec_idx, "size": c["size"], "angle": c.get("angle") or None, "sec": sec,
+        cut_id = c.get("id")
+        if not isinstance(cut_id, str) or not cut_id.strip() or cut_id.strip() in seen_ids:
+            cut_id = new_cut_id()
+            while cut_id in seen_ids:
+                cut_id = new_cut_id()
+        cut_id = cut_id.strip()
+        seen_ids.add(cut_id)
+        out_cuts.append({"n": i, "id": cut_id, "section": sec_idx, "size": c["size"], "angle": c.get("angle") or None, "sec": sec,
                          **{f: str(c.get(f) or "").strip() for f in ("action", "line", "caption", "sfx", "guide")}})
         pinned = c.get("ref_frame")
         if isinstance(pinned, str) and pinned.strip():
@@ -596,6 +612,44 @@ def _check_edit(fields: dict) -> dict:
             raise ScriptError("invalid_edit", f"참고 프레임 파일이 없습니다: {ref}")
         edit["ref_frame"] = rel
     return edit
+
+
+def _write_conti(path: Path, raw: bytes, fm: dict) -> Path:
+    """fm으로 md·html을 다시 쓴다. '## 내 메모'와 줄바꿈 방식(CRLF/LF)은 보존. 새 HTML 경로를 돌려준다."""
+    fm["schema_version"] = SCHEMA_VERSION
+    nl = "\r\n" if raw.lstrip(b"\xef\xbb\xbf").startswith(b"---\r\n") else "\n"
+    memo = _existing_memo(path).replace("\r\n", "\n")
+    body = render_md(fm, memo).replace("\n", nl)
+    path.write_bytes(refstore.join_frontmatter(fm, body, nl).encode("utf-8"))
+    return _write_html(path, fm)
+
+
+def retime(fm: dict) -> dict:
+    """컷 순서·길이(sec)대로 섹션 시간·대사와 컷 n/start/end를 다시 계산한 새 fm. 섹션은 0에서 이어 붙는다."""
+    script, t = [], 0.0
+    for i, s in enumerate(fm["script"]):
+        mine = [c for c in fm["cuts"] if c["section"] == i]
+        length = sum(float(c["sec"]) for c in mine)
+        text = " ".join(c["line"] for c in mine if c.get("line"))
+        script.append({"label": s["label"], "start": round(t, 2), "end": round(t + length, 2), "text": text})
+        t += length
+    sections = [{"idx": i, "label": s["label"], "start": s["start"], "end": s["end"]} for i, s in enumerate(script)]
+    new_script, new_cuts = validate({"script": script, "cuts": fm["cuts"]}, sections)
+    return {**fm, "script": new_script, "cuts": new_cuts}
+
+
+def ensure_ids(path: str | Path) -> bool:
+    """파일 컷에 id가 없으면 붙여 다시 쓴다(schema 3). 이미 모두 있으면 아무것도 안 하고 False."""
+    p = _resolve(path)
+    if not p.exists():
+        raise ScriptError("conti_not_found", f"콘티가 없습니다: {_rel(p)}")
+    raw = p.read_bytes()
+    stored, _ = refstore.read_md(p)
+    cuts = stored.get("cuts") or []
+    if cuts and all(isinstance(c.get("id"), str) and c["id"].strip() for c in cuts):
+        return False
+    _write_conti(p, raw, _load_conti(p))
+    return True
 
 
 def update_cut(conti: str | Path, n: int, fields: dict, expected_hash: str | None = None) -> dict:

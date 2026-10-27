@@ -338,7 +338,7 @@ def test_ref_frame_pin_and_clear(saved, home):
     rel = pin_frame(home)
     out = conti.update_cut(saved, 1, {"ref_frame": rel})
     fm, _ = refstore.read_md(saved)
-    assert fm["schema_version"] == 2 and fm["cuts"][0]["ref_frame"] == rel
+    assert fm["schema_version"] == 3 and fm["cuts"][0]["ref_frame"] == rel
     assert "참고(고정)" in (home / out["html"]).read_text("utf-8")
     conti.update_cut(saved, 1, {"ref_frame": ""})
     fm, _ = refstore.read_md(saved)
@@ -756,3 +756,48 @@ def test_draft_trash_refuses_a_conti_file(saved):
     with pytest.raises(ScriptError) as e:
         draft.trash(saved)
     assert e.value.code == "bad_path" and saved.exists()
+
+
+# --- 컷 id · schema 3 · 섹션 시간 다시 계산 ---------------------------------------------
+
+def _sections(fm):
+    return [{"idx": i, "label": s["label"], "start": float(s["start"]), "end": float(s["end"])}
+            for i, s in enumerate(fm["script"])]
+
+
+def test_validate_keeps_and_assigns_ids(draft_md):
+    sections = conti.parse_draft(draft_md)["sections"]
+    data = json.loads(json.dumps(CONTI))
+    data["cuts"][1]["id"] = "keepme01"
+    _, cuts = conti.validate(data, sections)
+    ids = [c["id"] for c in cuts]
+    assert ids[1] == "keepme01"
+    assert all(isinstance(i, str) and len(i) == 8 and i == i.lower() and i.isalnum() for i in ids)
+    assert len(set(ids)) == len(ids)
+
+
+def test_retime_moves_later_sections(saved):
+    fm = conti._load_conti(saved)
+    fm["cuts"][0]["sec"] += 2
+    out = conti.retime(fm)
+    assert [(s["start"], s["end"]) for s in out["script"]] == [(0, 4), (4, 8), (8, 10)]
+    assert [(c["n"], c["start"], c["end"]) for c in out["cuts"]] == [(1, 0, 4), (2, 4, 6), (3, 6, 8), (4, 8, 10)]
+    assert out["script"][1]["text"] == "1단계부터 갑니다. 와 순하다"
+    assert [c["id"] for c in out["cuts"]] == [c["id"] for c in fm["cuts"]]
+
+
+def test_ensure_ids_migrates_v2_keeping_memo_and_crlf(saved):
+    fm, body = refstore.read_md(saved)
+    for c in fm["cuts"]:
+        del c["id"]
+    fm["schema_version"] = 2
+    body = body.replace("## 내 메모\n", "## 내 메모\n소품 미리 사기\n").replace("\n", "\r\n")
+    saved.write_bytes(refstore.join_frontmatter(fm, body, "\r\n").encode("utf-8"))
+
+    assert conti.ensure_ids(saved) is True
+    fm, body = refstore.read_md(saved)
+    assert fm["schema_version"] == 3 and all(len(c["id"]) == 8 for c in fm["cuts"])
+    raw = saved.read_bytes()
+    assert raw.startswith(b"---\r\n") and b"\n" not in raw.replace(b"\r\n", b"")
+    assert "소품 미리 사기" in body
+    assert conti.ensure_ids(saved) is False
