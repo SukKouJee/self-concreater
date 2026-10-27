@@ -132,7 +132,7 @@ def test_decode_audio_rejects_garbage(tmp_path):
     bad.write_bytes(b"not audio")
     with pytest.raises(ScriptError) as exc:
         stt.decode_audio(bad)
-    assert exc.value.code == "stt_failed"
+    assert exc.value.code == "stt_failed" and "bad.m4a" not in exc.value.message
 
 
 def test_no_speech_keeps_empty_transcript(home, fake_audio, monkeypatch):
@@ -200,3 +200,74 @@ def test_stt_progress_survives_raising_callback(home, fake_audio, monkeypatch, c
     out = stt.transcribe(VID, progress=boom)
     assert out["segments"] == 2
     assert "ui gone" in capsys.readouterr().err
+
+
+# --- 로컬 파일 받아쓰기 ---------------------------------------------------------
+
+def _local_model(calls):
+    class Model:
+        def __init__(self, name, device, compute_type):
+            calls["model"] = (name, device, compute_type)
+
+        def transcribe(self, audio, language=None, vad_filter=True, **kwargs):
+            calls["audio"], calls["language"] = audio, language
+            info = types.SimpleNamespace(language=language, duration=4.0)
+            segs = [types.SimpleNamespace(start=0.0, end=1.234, text=" a "),
+                    types.SimpleNamespace(start=1.5, end=2.0, text="  "),
+                    types.SimpleNamespace(start=2.0, end=4.0, text="b")]
+            return iter(segs), info
+
+    return Model
+
+
+def test_transcribe_file_returns_segments_in_korean(monkeypatch, tmp_path):
+    calls = {}
+    monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=_local_model(calls)))
+    monkeypatch.setattr(stt, "has_audio", lambda path: True)
+    monkeypatch.setattr(stt, "decode_audio", lambda path: f"decoded:{path.name}")
+    clip = tmp_path / "clip.mov"
+    clip.write_bytes(b"x")
+    progress = []
+
+    out = stt.transcribe_file(clip, progress=lambda *a: progress.append(a))
+
+    assert out == [{"start": 0.0, "end": 1.23, "text": "a"}, {"start": 2.0, "end": 4.0, "text": "b"}]
+    assert calls["language"] == "ko" and calls["audio"] == "decoded:clip.mov"
+    assert calls["model"] == ("small", "cpu", "int8")
+    assert [p[1] for p in progress if p[1] is not None] == pytest.approx([0.3085, 0.5, 1.0])
+    assert clip.read_bytes() == b"x"
+
+
+def test_transcribe_file_without_whisper(monkeypatch, tmp_path):
+    monkeypatch.setitem(sys.modules, "faster_whisper", None)
+    with pytest.raises(ScriptError) as exc:
+        stt.transcribe_file(tmp_path / "clip.mov")
+    assert exc.value.code == "stt_unavailable"
+
+
+def test_transcribe_file_without_audio_track_is_empty(monkeypatch, tmp_path):
+    calls = {}
+    monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(WhisperModel=_local_model(calls)))
+    monkeypatch.setattr(stt, "has_audio", lambda path: False)
+    assert stt.transcribe_file(tmp_path / "clip.mov") == []
+    assert "audio" not in calls
+
+
+def test_has_audio(tmp_path):
+    av = pytest.importorskip("av")
+    np = pytest.importorskip("numpy")
+    wav = tmp_path / "tone.wav"
+    with av.open(str(wav), mode="w") as out:
+        stream = out.add_stream("pcm_s16le", rate=16000, layout="mono")
+        frame = av.AudioFrame.from_ndarray(np.zeros((1, 1600), dtype=np.int16), format="s16", layout="mono")
+        frame.rate = 16000
+        for packet in stream.encode(frame):
+            out.mux(packet)
+        for packet in stream.encode(None):
+            out.mux(packet)
+    assert stt.has_audio(wav) is True
+    bad = tmp_path / "bad.mov"
+    bad.write_bytes(b"garbage")
+    with pytest.raises(ScriptError) as exc:
+        stt.has_audio(bad)
+    assert exc.value.code == "stt_failed" and "bad.mov" not in exc.value.message

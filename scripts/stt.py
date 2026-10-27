@@ -6,6 +6,7 @@
 - 선택 의존성: pip install faster-whisper
 - 모델: YT_STT_MODEL 환경변수 (기본 small). CPU int8로 실행
 - 오디오는 workspace/tmp/에 받았다가 성공·실패와 관계없이 삭제한다
+- 로컬 파일(촬영 영상)은 transcribe_file()로 받아쓴다(언어 기본 ko, 원본은 읽기만)
 - 디코딩은 PyAV로 직접 한다(16kHz mono float32). faster-whisper 1.2.1 내장 디코더는
   av 19에서 사라진 metadata_errors 인자를 넘겨 실패한다
 """
@@ -51,6 +52,11 @@ def download_audio(video_id: str, out_dir: Path, proxy: str | None) -> Path:
         raise ytdlp_error(e, "오디오 다운로드") from e
 
 
+def av_detail(e: Exception) -> str:
+    """PyAV 오류의 설명만(문구에 붙는 파일 경로는 빼고) — 화면에 보일 이유로 쓴다."""
+    return getattr(e, "strerror", None) or type(e).__name__
+
+
 def decode_audio(path: Path):
     """PyAV(faster-whisper 의존성)로 16kHz mono float32 배열을 만든다."""
     import av
@@ -66,7 +72,7 @@ def decode_audio(path: Path):
             for out in resampler.resample(None):  # 남은 샘플 비우기
                 chunks.append(out.to_ndarray().reshape(-1))
     except av.error.FFmpegError as e:
-        raise ScriptError("stt_failed", f"오디오를 디코딩하지 못했습니다: {e}") from e
+        raise ScriptError("stt_failed", f"오디오를 디코딩하지 못했습니다: {av_detail(e)}") from e
     if not chunks:
         raise ScriptError("stt_failed", "오디오 트랙이 비어 있습니다")
     return np.concatenate(chunks).astype(np.float32) / 32768.0
@@ -128,6 +134,56 @@ def transcribe(video_id: str, force: bool = False, progress: Progress | None = N
         "language": data["transcript"]["language"], "segments": len(data["transcript"]["segments"]),
         "speech": bool(data["transcript"]["segments"]),
     }
+
+
+def has_audio(path: Path) -> bool:
+    """파일에 소리 트랙이 있는가. 열지 못하면 ScriptError("stt_failed")."""
+    import av
+
+    try:
+        with av.open(str(path), mode="r") as container:
+            return bool(container.streams.audio)
+    except av.error.FFmpegError as e:
+        raise ScriptError("stt_failed", f"파일을 열지 못했습니다: {av_detail(e)}") from e
+
+
+_models: dict[tuple[Any, str], Any] = {}
+
+
+def _model(whisper_model: Any, name: str) -> Any:
+    """파일마다 모델을 다시 올리지 않도록 (클래스, 이름)별로 한 번만 만든다."""
+    key = (whisper_model, name)
+    if key not in _models:
+        _models.clear()
+        _models[key] = whisper_model(name, device="cpu", compute_type="int8")
+    return _models[key]
+
+
+def transcribe_file(path: str | Path, lang: str = "ko", progress: Progress | None = None) -> list[dict[str, Any]]:
+    """로컬 영상·음성 파일을 받아쓴다. 원본은 읽기만 한다. -> [{"start", "end", "text"}]
+
+    소리 트랙이 없으면 빈 목록. faster-whisper가 없으면 ScriptError("stt_unavailable"),
+    소리를 풀지 못하면 ScriptError("stt_failed"). progress는 transcribe()와 같은 ("stt", 비율, 글).
+    """
+    path = Path(path)
+    whisper_model = _load_whisper()
+    if not has_audio(path):
+        return []
+    report = safe_progress(progress)
+    if report is not None:
+        report("stt", None, "음성 인식 준비 중")
+    model = _model(whisper_model, os.environ.get("YT_STT_MODEL") or DEFAULT_MODEL)
+    segments, info = model.transcribe(decode_audio(path), language=lang, vad_filter=True)
+    duration = getattr(info, "duration", None) or None
+    out: list[dict[str, Any]] = []
+    for s in segments:
+        text = s.text.strip()
+        if text:
+            out.append({"start": round(s.start, 2), "end": round(s.end, 2), "text": text})
+        if report is not None:
+            fraction = min(1.0, max(0.0, s.end / duration)) if duration else None
+            report("stt", fraction, stt_progress_text(s.end, duration))
+    return out
 
 
 def main(argv: list[str]) -> Any:
