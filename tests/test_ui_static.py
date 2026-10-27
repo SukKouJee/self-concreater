@@ -949,3 +949,15 @@ def test_save_all_uses_the_review_route_per_card_and_stop_keeps_focus():
     assert "saveAllPlan(" in body and "/review/" in body and "/save-all" not in body
     assert 'data-act": "stop"' in js and "hadFocus" in js and '"aria-disabled"' in js
     assert 'S.headSig = ""' in js[js.index("function ensurePanel"):js.index("function renderJobPanel")]
+
+
+def test_new_job_keeps_state_of_adopted_review_cards_and_guards_before_apply():
+    js = (STATIC_DIR / "pages" / "add.js").read_text(encoding="utf-8")
+    start = js[js.index("async function startJob"):js.index("async function resume")]
+    assert "staleIds(" in start and "edits.clear()" not in start
+    save = js[js.index("async function saveAll"):js.index("function lengthOf")]
+    fetched, guard, apply = (save.index("await fetchJob"), save.index("S !== mine", save.index("await fetchJob")),
+                             save.index("applyJob(fresh)"))
+    assert fetched < guard < apply
+    prog = js[js.index("function renderProgress"):js.index("function tickClock")]
+    assert 'i.step !== "confirm"' in prog

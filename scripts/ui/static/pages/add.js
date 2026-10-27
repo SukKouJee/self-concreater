@@ -4,6 +4,7 @@
 import { h, filesUrl } from "/static/dom.js";
 import {
   STATUS_TEXT, splitLinks, removeLine, startLabel, summaryText, needsAttention, itemCategory, reviewItems, queueLine, saveAllPlan,
+  staleIds,
 } from "/static/add-utils.js";
 import { sectionBand } from "/static/section-band.js";
 import { bodySubName, formatName, hookName, narrativeName, sectionLabelName, sectionName } from "/static/labels.js";
@@ -160,12 +161,12 @@ async function startJob(path, body) {
     const appended = Array.isArray(data.appended) ? data.appended.length : 0;
     if (appended) mine.ctx.toast(`진행 중인 작업 뒤에 ${appended}개를 붙였어요`, "info");
     if (!mine.job || mine.job.id !== data.job.id) {
+      // Keep state for items the new job adopted (same ids); drop only ids it no longer has.
+      // The card cache is rebuilt for the new job (its handlers belong to the old one).
       mine.rows.clear();
-      mine.edits.clear();
-      mine.expanded.clear();
-      mine.failMsg.clear();
-      mine.openFeedback.clear();
-      mine.feedbackText.clear();
+      for (const map of [mine.edits, mine.expanded, mine.failMsg, mine.openFeedback, mine.feedbackText]) {
+        for (const id of staleIds(map.keys(), data.job)) map.delete(id);
+      }
     }
     mine.pollErrors = 0;
     applyJob(data.job);
@@ -438,7 +439,8 @@ function progressCard(item, line) {
 }
 
 function renderProgress(p, job, mine) {
-  const current = mine.find((i) => i.state === "running");
+  // An item being saved (step "confirm") is not the video in progress.
+  const current = mine.find((i) => i.state === "running" && i.step !== "confirm");
   const line = isActive(job) ? queueLine({ items: mine }) : "";
   let sig;
   if (!isActive(job) || mine.length === 0) sig = "none";
@@ -761,7 +763,7 @@ async function saveAll() {
   renderJobPanel();
   try {
     // One request per card through the review route, so edited labels travel with their card and a failure
-    // leaves that card (and its edits) in place. The server save-all route stays available but is not used here.
+    // leaves that card (and its edits) in place.
     const items = reviewItems(mine.job, mine.category);
     const edited = {};
     for (const item of items) if (isEdited(item)) edited[item.id] = mine.edits.get(item.id).a;
@@ -783,8 +785,9 @@ async function saveAll() {
     const saved = results.length - failed.length;
     for (const r of failed) mine.failMsg.set(r.id, r.message || "저장하지 못했어요");
     mine.savingAll = false;
-    applyJob(lastJob || await fetchJob(mine.job.id));
+    const fresh = lastJob || await fetchJob(mine.job.id);
     if (S !== mine || !mine.ctx.isCurrent()) return;
+    applyJob(fresh);
     if (isActive(mine.job) && !mine.timer) schedulePoll();
     if (saved > 0 && mine.hooks.onSaved) mine.hooks.onSaved();
     if (failed.length) mine.ctx.toast(`${saved}개 저장, ${failed.length}개는 저장하지 못했어요. 카드에 이유를 적어 두었어요`, "error");

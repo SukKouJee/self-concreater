@@ -103,6 +103,10 @@ def test_queue_line_three_cases():
     assert run_js(f"m.queueLine({json.dumps(waiting)})") == "남은 영상 2개"
     only_review = _job(_it("awaiting", "review"), _it("awaiting", "review"), _it("saved"))
     assert run_js(f"m.queueLine({json.dumps(only_review)})") == "확인을 기다리는 영상 2개"
+    saved_for_shots = _job(_it("running"), _it("waiting", step="shots"), _it("waiting", step="queued"))
+    assert run_js(f"m.queueLine({json.dumps(saved_for_shots)})") == "남은 영상 1개"
+    only_shots = _job(_it("waiting", step="shots"), _it("awaiting", "review"))
+    assert run_js(f"m.queueLine({json.dumps(only_shots)})") == "확인을 기다리는 영상 1개"
     last = _job(_it("running"), _it("awaiting", "review"))
     assert run_js(f"m.queueLine({json.dumps(last)})") == ""
     assert run_js("m.queueLine(null)") == ""
@@ -122,3 +126,11 @@ def test_save_all_plan_edited_carry_analysis_and_each_id_once():
     assert plan[1]["body"] == {"action": "save", "analysis": {"sections": [1]}}
     assert plan[2]["body"] == {"action": "save"}
     assert run_js("m.saveAllPlan(null, null)") == []
+
+
+def test_stale_ids_keeps_ids_the_new_job_adopted():
+    job = _job(_it("awaiting", "review", id="a"), _it("waiting", id="n"))
+    assert run_js(f"m.staleIds(['a', 'b'], {json.dumps(job)})") == ["b"]
+    assert run_js(f"m.staleIds(new Map([['a', 1], ['c', 2]]).keys(), {json.dumps(job)})") == ["c"]
+    assert run_js("m.staleIds(['a'], null)") == ["a"]
+    assert run_js("m.staleIds(undefined, null)") == []

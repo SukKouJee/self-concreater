@@ -64,10 +64,11 @@ export function reviewItems(job, category) {
     && !!i.opts && i.opts.category === category);
 }
 
-// One line under the current video: how many videos are still queued, or (queue empty) how many wait for review.
+// One line under the current video: how many videos are still to analyse, or (queue empty) how many wait for review.
+// Saved videos queued only for shot classification (step "shots") are not counted as 남은 영상.
 export function queueLine(job) {
   const items = (job && job.items) || [];
-  const waiting = items.filter((i) => i.state === "waiting").length;
+  const waiting = items.filter((i) => i.state === "waiting" && i.step !== "shots").length;
   if (waiting > 0) return `남은 영상 ${waiting}개`;
   if (items.some((i) => i.state === "running")) return "";
   const review = items.filter((i) => i.ask === "review" && i.state === "awaiting").length;
@@ -85,4 +86,11 @@ export function saveAllPlan(items, edited) {
     plan.push({ id: item.id, body: a ? { action: "save", analysis: a } : { action: "save" } });
   }
   return plan;
+}
+
+// Per-item UI state to drop when a new job is shown: ids of `keys` that the new job no longer has.
+// A new job can adopt a stopped job's review cards under the same ids, so their unsaved edits must survive.
+export function staleIds(keys, job) {
+  const live = new Set(((job && job.items) || []).map((i) => i.id));
+  return [...(keys || [])].filter((id) => !live.has(id));
 }
