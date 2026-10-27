@@ -533,6 +533,18 @@ def test_conti_caption_video_contract():
         assert banned not in section, banned
 
 
+def test_conti_cut_editing_contract():
+    text = (STATIC_DIR / "pages" / "conti.js").read_text(encoding="utf-8")
+    for token in ["/api/conti/cuts", "draggable", '"aria-haspopup"', '"여기에 컷 넣기"', '"되돌리기"', '"위로"', '"아래로"',
+                  "fmtDelta(", "dropTarget(", "stepMove(", "canRemove(", "snapSec(", "장면 설명", "길이(초)", "샷 크기",
+                  "위에 넣기", "아래에 넣기", "복제", "콘티가 바뀌었어요 — 다시 받아 주세요", "UNDO_MS"]:
+        assert token in text, token
+    for banned in ["innerHTML", "outerHTML", "insertAdjacentHTML", "window.confirm", "confirm(", "alert(", "prompt(",
+                   "http://", "https://"]:
+        assert banned not in text, banned
+    assert "/static/conti-utils.js" in text
+
+
 # ---- 공용 라이브러리 화면 -----------------------------------------------------------------
 
 def test_library_menu_route_and_page_served(client):

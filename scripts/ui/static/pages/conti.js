@@ -5,6 +5,7 @@
 // 모든 컷 저장은 마지막으로 받은 hash를 보낸다. 파일이 밖에서 바뀌면 서버가 conti_changed로 거절한다.
 import { h, filesUrl } from "/static/dom.js";
 import { sectionLabelName } from "/static/labels.js";
+import { SHOT_SIZES, canRemove, dropTarget, fmtClock, fmtDelta, snapSec, stepMove } from "/static/conti-utils.js";
 
 const POLL_MS = 1000;
 const POLL_MAX_MS = 15000;
@@ -16,11 +17,21 @@ const RECREATE_WARNING = "다시 만들면 화면에서 바꾼 대사·가이드
 const SAVED_TOAST = "저장했습니다 · 스토리보드도 다시 그렸습니다";
 const CHANGED_TEXT = "파일이 밖에서 바뀌었습니다 — 다시 불러오기";
 const MATCH_TEXT = { exact: "일치", approx: "근사", pinned: "고정" };
+const UNDO_MS = 8000;
+const INSERT_LABEL = "여기에 컷 넣기";
+const LAST_CUT_TEXT = "섹션에 컷이 하나는 있어야 해요";
+const STALE_TEXT = "콘티가 바뀌었어요 — 다시 받아 주세요";
+const EMPTY_TEXT = { guide: "가이드는 비울 수 없습니다.", action: "장면 설명은 비울 수 없습니다." };
+const SEC_TEXT = "길이는 0.5~120초 사이로 적어 주세요 (0.5초 단위)";
+// kind: text (default) | area | select | number. required fields cannot be saved empty.
 const FIELDS = [
-  { key: "line", label: "대사", multiline: true },
-  { key: "guide", label: "촬영 가이드", multiline: true },
-  { key: "caption", label: "자막", multiline: false },
-  { key: "sfx", label: "효과음", multiline: false },
+  { key: "line", label: "대사", kind: "area", rows: "2" },
+  { key: "action", label: "장면 설명", kind: "area", rows: "2", required: true },
+  { key: "guide", label: "촬영 가이드", kind: "area", rows: "3", required: true },
+  { key: "size", label: "샷 크기", kind: "select", pair: true },
+  { key: "sec", label: "길이(초)", kind: "number", pair: true },
+  { key: "caption", label: "자막", kind: "text" },
+  { key: "sfx", label: "효과음", kind: "text" },
 ];
 const ACTIVE = new Set(["running", "awaiting"]);
 
@@ -99,6 +110,7 @@ function freshState(el, params, ctx) {
     data: null, hash: null, sel: null, conflict: false,
     scenes: new Map(), alts: new Map(), forms: new Map(),
     nodes: {}, live: null, lastAnnounce: "",
+    editing: false, undo: null, menu: null, drag: null,
   };
 }
 
@@ -551,12 +563,15 @@ function renderEditor() {
   S.nodes.header = h("div", { class: "conti-head" });
   S.nodes.conflict = h("div", { class: "conflict-slot" });
   const vertical = S.data.fm.format === "shorts";
+  S.nodes.tools = h("div", { class: "cut-tools" });
   S.nodes.list = h("ol", { class: "cut-list", "aria-label": "컷 목록" });
   S.nodes.panel = h("section", { class: "cut-panel", "aria-labelledby": "panel-title" });
   S.nodes.board = h("div", { class: `conti-board ${vertical ? "is-vertical" : "is-wide"}` },
-    h("div", { class: "cut-col" }, S.nodes.list), S.nodes.panel);
+    h("div", { class: "cut-col" }, S.nodes.tools, S.nodes.list), S.nodes.panel);
   S.el.append(S.nodes.header, S.nodes.conflict, S.nodes.board);
   S.nodes.list.addEventListener("keydown", onListKey);
+  wireDrag(S.nodes.list);
+  S.nodes.list.parentElement.addEventListener("scroll", closeMenu, { passive: true });
   renderHeader();
   renderCutList();
   renderPanel();
@@ -569,7 +584,7 @@ function renderHeader() {
   const meta = h("p", { class: "meta-line muted" },
     h("span", { class: "tag" }, fm.format === "shorts" ? "쇼츠" : "롱폼"),
     h("span", {}, `컷 ${d.cuts.length}개`),
-    h("span", {}, `${fmtSec(fm.target_sec)}`),
+    h("span", { class: "total-delta" }, fmtDelta(d.total_sec, d.target_sec)),
     h("span", {}, `말 속도 ${fm.speech_cps}자/초`));
   if (fm.category) meta.append(h("span", { class: "tag" }, fm.category));
   const actions = h("div", { class: "btn-row" });
@@ -592,7 +607,8 @@ function srtRow() {
   const line = h("button", { type: "button", class: "btn" }, "대사도 따로 받기");
   caption.addEventListener("click", () => exportSrt("caption", [caption, line], note));
   line.addEventListener("click", () => exportSrt("line", [caption, line], note));
-  return h("div", { class: "srt-row" }, h("div", { class: "btn-row" }, caption, line), note, srtFitBox(), captionVideoBox());
+  const stale = S.data.outputs_stale && S.data.outputs_stale.srt ? h("p", { class: "stale-note", role: "status" }, STALE_TEXT) : null;
+  return h("div", { class: "srt-row" }, h("div", { class: "btn-row" }, caption, line), stale, note, srtFitBox(), captionVideoBox());
 }
 
 // ---- srt fit ----------------------------------------------------------------------
@@ -760,6 +776,7 @@ function cvActive() {
 function captionVideoBox() {
   const busy = cvActive() || !!S.cvStarting;
   const box = h("div", { class: "capvideo" }, h("h2", { class: "capvideo-title" }, "움직이는 자막 영상"));
+  if (S.data && S.data.outputs_stale && S.data.outputs_stale.video) box.append(h("p", { class: "stale-note", role: "status" }, STALE_TEXT));
   if (S.cvReady === null || S.cvReady === undefined) {
     box.append(h("p", { class: "muted srt-note" }, "설치 상태를 확인하는 중…"));
     return box;
@@ -1002,59 +1019,202 @@ function matchBadge(match) {
   return h("span", { class: `badge match-${match}` }, MATCH_TEXT[match]);
 }
 
-function renderCutList() {
+// Cut list: one group per section (header with name and time range); in a group a row per cut and an
+// "insert here" slot above the first cut and under every cut. Rows keep the old roving tab stop (one Tab stop
+// for the list, arrow keys inside); the slots are reached with the arrow keys too.
+function selectedId() {
+  const c = currentCut();
+  return c ? c.id : null;
+}
+
+function renderCutList(focusKey = null) {
   const list = S.nodes.list;
   const col = list.parentElement;
   const scroll = col ? col.scrollTop : 0;
-  const focusedN = list.contains(document.activeElement) ? Number(document.activeElement.dataset.n) : null;
+  const active = document.activeElement;
+  const keep = focusKey || (list.contains(active) && active.dataset ? active.dataset.nav || null : null);
   const warn = warnCutSet();
-  const tabN = S.sel !== null ? S.sel : (S.data.cuts[0] || {}).n;
+  const cuts = S.data.cuts;
+  const tabId = selectedId() || (cuts[0] || {}).id;
+  closeMenu(false);
   list.replaceChildren();
-  for (const c of S.data.cuts) {
-    const selected = c.n === S.sel;
-    const w = warn.has(c.n);
-    const btn = h("button", {
-      type: "button", class: "cut-item" + (selected ? " is-selected" : ""), "data-n": String(c.n),
-      "aria-current": selected ? "true" : false, tabindex: c.n === tabN ? "0" : "-1",
-    });
-    const sk = h("span", { class: "cut-sketch" });
-    const svg = sanitizeSvg(c.sketch);
-    if (svg) sk.append(svg);
-    const top = h("span", { class: "cut-top" },
-      h("span", { class: "cut-n" }, `#${c.n}`),
-      sectionTag(c.label),
-      h("span", { class: "cut-size" }, c.size),
-      h("span", { class: "cut-sec" }, fmtSec(c.sec)));
-    if (w) top.append(h("span", { class: "warn-icon", title: "대사가 길어요" }, "⚠", h("span", { class: "sr-only" }, "대사가 깁니다")));
-    const body = h("span", { class: "cut-body" }, top,
-      h("span", { class: "cut-line" + (c.line ? "" : " muted") }, c.line || "(대사 없음)"));
-    const ref = h("span", { class: "cut-ref" }, refThumb(c.ref, "cut-thumb"), matchBadge(c.ref && c.ref.match));
-    btn.append(sk, body, ref);
-    btn.addEventListener("click", () => selectCut(c.n));
-    list.append(h("li", {}, btn));
-  }
+  S.data.fm.script.forEach((sec, si) => {
+    const mine = cuts.filter((c) => c.section === si);
+    const head = h("div", { class: "sec-head", "data-section": String(si), "data-gap": String(mine.length ? cuts.indexOf(mine[0]) : cuts.length) },
+      sectionTag(sec.label),
+      h("span", { class: "sec-range num" }, `${fmtClock(sec.start)}–${fmtClock(sec.end)}`),
+      h("span", { class: "sec-count muted" }, `컷 ${mine.length}개`));
+    const rows = h("ul", { class: "sec-cuts", "aria-label": `${sectionLabelName(sec.label)} 컷` });
+    if (mine.length) rows.append(gapItem(cuts.indexOf(mine[0]), si, null));
+    for (const c of mine) {
+      rows.append(cutRow(c, warn.has(c.n), c.id === tabId));
+      rows.append(gapItem(cuts.indexOf(c) + 1, si, c));
+    }
+    list.append(h("li", { class: "sec-group" }, head, rows));
+  });
   if (col) col.scrollTop = scroll;
-  if (focusedN !== null) {
-    const again = list.querySelector(`[data-n="${focusedN}"]`);
-    if (again) again.focus();
+  if (keep) {
+    const again = list.querySelector(`[data-nav="${CSS.escape(keep)}"]`);
+    if (again) again.focus({ preventScroll: true });
   }
+  renderTools();
+}
+
+function gapItem(at, section, after) {
+  const btn = h("button", { type: "button", class: "gap-btn", tabindex: "-1", "data-nav": `gap:${at}:${section}` },
+    h("span", { "aria-hidden": "true" }, "＋ "), INSERT_LABEL,
+    h("span", { class: "sr-only" }, after ? ` (컷 ${after.n} 아래)` : " (섹션 맨 앞)"));
+  btn.addEventListener("click", () => insertCut(at, section));
+  return h("li", { class: "cut-gap", "data-gap": String(at), "data-section": String(section) }, btn);
+}
+
+function cutRow(c, w, isTab) {
+  const selected = c.n === S.sel;
+  const btn = h("button", {
+    type: "button", class: "cut-item" + (selected ? " is-selected" : ""), "data-n": String(c.n), "data-id": c.id,
+    "data-nav": `cut:${c.id}`, "aria-current": selected ? "true" : false, tabindex: isTab ? "0" : "-1",
+  });
+  const sk = h("span", { class: "cut-sketch" });
+  const svg = sanitizeSvg(c.sketch);
+  if (svg) sk.append(svg);
+  const top = h("span", { class: "cut-top" },
+    h("span", { class: "cut-n" }, `#${c.n}`),
+    h("span", { class: "cut-size" }, c.size),
+    h("span", { class: "cut-sec" }, fmtSec(c.sec)));
+  if (w) top.append(h("span", { class: "warn-icon", title: "대사가 길어요" }, "⚠", h("span", { class: "sr-only" }, "대사가 깁니다")));
+  const body = h("span", { class: "cut-body" }, top,
+    h("span", { class: "cut-line" + (c.line ? "" : " muted") }, c.line || "(대사 없음)"));
+  const ref = h("span", { class: "cut-ref" }, refThumb(c.ref, "cut-thumb"), matchBadge(c.ref && c.ref.match));
+  btn.append(sk, body, ref);
+  btn.addEventListener("click", () => selectCut(c.n));
+
+  const handle = h("span", { class: "cut-handle", draggable: "true", "aria-hidden": "true", title: "끌어서 순서 바꾸기" }, "⋮⋮");
+  const more = h("button", {
+    type: "button", class: "cut-more", "aria-haspopup": "menu", "aria-expanded": "false", "aria-label": `컷 ${c.n} 메뉴`,
+    "data-nav": `more:${c.id}`, tabindex: isTab ? "0" : "-1",
+  }, "⋯");
+  more.addEventListener("click", () => (S.menu && S.menu.id === c.id ? closeMenu() : openMenu(more, c)));
+  return h("li", { class: "cut-row", "data-id": c.id }, handle, btn, more);
 }
 
 function onListKey(e) {
-  const keys = ["ArrowDown", "ArrowUp", "Home", "End"];
+  const keys = ["ArrowDown", "ArrowUp", "Home", "End", "ArrowRight", "ArrowLeft"];
   if (!keys.includes(e.key)) return;
-  const btns = [...S.nodes.list.querySelectorAll(".cut-item")];
-  const i = btns.indexOf(document.activeElement);
+  const cur = document.activeElement;
+  if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+    if (e.key === "ArrowRight" && cur.classList.contains("cut-item")) {
+      e.preventDefault();
+      cur.closest(".cut-row").querySelector(".cut-more").focus();
+    } else if (e.key === "ArrowLeft" && cur.classList.contains("cut-more")) {
+      e.preventDefault();
+      cur.closest(".cut-row").querySelector(".cut-item").focus();
+    }
+    return;
+  }
+  const stops = [...S.nodes.list.querySelectorAll(".cut-item, .gap-btn")];
+  let i = stops.indexOf(cur);
+  if (i < 0 && cur.classList.contains("cut-more")) i = stops.indexOf(cur.closest(".cut-row").querySelector(".cut-item"));
   if (i < 0) return;
   e.preventDefault();
   let j = i;
-  if (e.key === "ArrowDown") j = Math.min(i + 1, btns.length - 1);
+  if (e.key === "ArrowDown") j = Math.min(i + 1, stops.length - 1);
   else if (e.key === "ArrowUp") j = Math.max(i - 1, 0);
   else if (e.key === "Home") j = 0;
-  else j = btns.length - 1;
-  btns[i].setAttribute("tabindex", "-1");
-  btns[j].setAttribute("tabindex", "0");
-  btns[j].focus();
+  else j = stops.length - 1;
+  const items = stops.filter((b) => b.classList.contains("cut-item"));
+  for (const b of items) {
+    b.setAttribute("tabindex", "-1");
+    b.closest(".cut-row").querySelector(".cut-more").setAttribute("tabindex", "-1");
+  }
+  const tab = stops[j].classList.contains("cut-item")
+    ? stops[j]
+    : stops.slice(0, j).reverse().find((b) => b.classList.contains("cut-item")) || items[0];
+  tab.setAttribute("tabindex", "0");
+  tab.closest(".cut-row").querySelector(".cut-more").setAttribute("tabindex", "0");
+  stops[j].focus();
+}
+
+// Tools above the list for the selected cut: 위로 / 아래로 (crossing a section edge changes its section).
+function renderTools() {
+  const box = S.nodes.tools;
+  const cut = currentCut();
+  if (!box) return;
+  if (!cut) { box.replaceChildren(); box.hidden = true; return; }
+  box.hidden = false;
+  const cuts = S.data.cuts;
+  const mk = (label, dir) => {
+    const step = stepMove(cuts, cut.id, dir);
+    const stuck = !!step && step.crosses && !canRemove(cuts, cut.id);
+    const btn = h("button", { type: "button", class: "btn btn-sm", "data-tool": dir < 0 ? "up" : "down", disabled: !step || stuck || S.editing }, label);
+    if (!step) btn.title = dir < 0 ? "맨 앞 컷입니다" : "맨 뒤 컷입니다";
+    else if (stuck) btn.title = LAST_CUT_TEXT;
+    else if (step.crosses) btn.title = "섹션 경계를 넘으면 컷의 섹션이 바뀝니다";
+    btn.addEventListener("click", () => moveStep(cut.id, dir));
+    return btn;
+  };
+  box.replaceChildren(h("span", { class: "cut-tools-label" }, `컷 ${cut.n}`), mk("위로", -1), mk("아래로", 1));
+}
+
+// ⋯ menu: 위에 넣기 · 아래에 넣기 · 복제 · 삭제. Position is fixed so the scrolling list never clips it.
+function closeMenu(restoreFocus = true) {
+  const m = S && S.menu;
+  if (!m) return;
+  S.menu = null;
+  m.el.remove();
+  document.removeEventListener("pointerdown", m.outside, true);
+  window.removeEventListener("resize", closeMenu);
+  m.btn.setAttribute("aria-expanded", "false");
+  if (restoreFocus === true && m.btn.isConnected) m.btn.focus();
+}
+
+function openMenu(btn, cut) {
+  closeMenu(false);
+  const cuts = S.data.cuts;
+  const at = cuts.findIndex((c) => c.id === cut.id);
+  const removable = canRemove(cuts, cut.id);
+  const entries = [
+    { label: "위에 넣기", run: () => insertCut(at, cut.section) },
+    { label: "아래에 넣기", run: () => insertCut(at + 1, cut.section) },
+    { label: "복제", run: () => duplicateCut(cut.id) },
+    { label: "삭제", danger: true, disabled: !removable, title: LAST_CUT_TEXT, run: () => deleteCut(cut.id) },
+  ];
+  const menu = h("div", { class: "cut-menu", role: "menu", "aria-label": `컷 ${cut.n} 메뉴` });
+  const items = entries.map((en) => {
+    const it = h("button", {
+      type: "button", role: "menuitem", class: "cut-menu-item" + (en.danger ? " is-danger" : ""), tabindex: "-1",
+      "aria-disabled": en.disabled ? "true" : false, title: en.disabled ? en.title : false,
+    }, en.label);
+    it.addEventListener("click", () => {
+      if (en.disabled) return;
+      closeMenu(false);
+      en.run();
+    });
+    return it;
+  });
+  menu.append(...items);
+  document.body.append(menu);
+  const r = btn.getBoundingClientRect();
+  const mh = menu.offsetHeight;
+  const below = r.bottom + 4 + mh <= window.innerHeight;
+  const top = below ? r.bottom + 4 : r.top - 4 - mh;
+  menu.style.top = `${Math.max(4, Math.min(top, window.innerHeight - mh - 4))}px`;
+  menu.style.left = `${Math.max(4, Math.min(window.innerWidth - menu.offsetWidth - 4, r.right - menu.offsetWidth))}px`;
+  const outside = (ev) => { if (!menu.contains(ev.target) && ev.target !== btn) closeMenu(false); };
+  document.addEventListener("pointerdown", outside, true);
+  window.addEventListener("resize", closeMenu);
+  S.menu = { id: cut.id, el: menu, btn, outside };
+  btn.setAttribute("aria-expanded", "true");
+  menu.addEventListener("keydown", (e) => {
+    const i = items.indexOf(document.activeElement);
+    const go = (j) => { e.preventDefault(); items[(j + items.length) % items.length].focus(); };
+    if (e.key === "ArrowDown") go(i + 1);
+    else if (e.key === "ArrowUp") go(i < 0 ? items.length - 1 : i - 1);
+    else if (e.key === "Home") go(0);
+    else if (e.key === "End") go(items.length - 1);
+    else if (e.key === "Escape") { e.preventDefault(); closeMenu(); }
+    else if (e.key === "Tab") closeMenu(false);
+  });
+  items[0].focus();
 }
 
 function selectCut(n) {
@@ -1067,6 +1227,7 @@ function selectCut(n) {
       if (on) b.setAttribute("aria-current", "true"); else b.removeAttribute("aria-current");
     }
     renderPanel();
+    renderTools();
     const cut = currentCut();
     announce(`컷 ${n} · ${cut ? sectionLabelName(cut.label) : ""}`);
   }
@@ -1291,24 +1452,51 @@ function renderAlts(n) {
 
 // ---- edit form ---------------------------------------------------------------------------
 
+const str = (v) => (v === null || v === undefined ? "" : String(v));
+
 function formValues(cut) {
   const draft = S.forms.get(cut.n) || {};
   const out = {};
-  for (const f of FIELDS) out[f.key] = f.key in draft ? draft[f.key] : (cut[f.key] || "");
+  for (const f of FIELDS) out[f.key] = f.key in draft ? draft[f.key] : str(cut[f.key]);
   return out;
 }
 
 function changedFields(cut) {
   const vals = formValues(cut);
   const out = {};
-  for (const f of FIELDS) if (vals[f.key].trim() !== (cut[f.key] || "").trim()) out[f.key] = vals[f.key];
+  for (const f of FIELDS) {
+    const v = vals[f.key].trim();
+    const same = f.kind === "number" ? v !== "" && Number(v) === Number(cut[f.key]) : v === str(cut[f.key]).trim();
+    if (!same) out[f.key] = vals[f.key];
+  }
   return out;
+}
+
+function fieldControl(f, cut, value) {
+  const id = `edit-${f.key}`;
+  const fk = `f:${f.key}`;
+  if (f.kind === "area") return h("textarea", { id, rows: f.rows, "data-fk": fk }, value);
+  if (f.kind === "select") {
+    const sizes = SHOT_SIZES.includes(cut.size) ? SHOT_SIZES : [...SHOT_SIZES, cut.size];
+    const sel = h("select", { id, "data-fk": fk }, ...sizes.map((s) => h("option", { value: s }, s)));
+    sel.value = value;
+    return sel;
+  }
+  const input = h("input", { id, type: f.kind === "number" ? "number" : "text", "data-fk": fk });
+  if (f.kind === "number") {
+    input.min = "0.5";
+    input.max = "120";
+    input.step = "0.5";
+    input.setAttribute("inputmode", "decimal");
+  }
+  input.value = value;
+  return input;
 }
 
 function editForm(cut) {
   const vals = formValues(cut);
   const form = h("form", { class: "edit-form", novalidate: "" });
-  const err = h("p", { class: "error field-error", role: "alert", hidden: true });
+  const err = h("p", { class: "error field-error", role: "alert", hidden: true, id: "edit-err" });
   const save = h("button", { type: "submit", class: "btn btn-primary", "data-fk": "save", disabled: true }, "저장");
   const reset = h("button", { type: "button", class: "btn", "data-fk": "reset", disabled: true }, "되돌리기");
   const sync = () => {
@@ -1316,12 +1504,10 @@ function editForm(cut) {
     save.disabled = !dirty || S.saving;
     reset.disabled = !dirty || S.saving;
   };
+  let pairRow = null;
   for (const f of FIELDS) {
     const id = `edit-${f.key}`;
-    const input = f.multiline
-      ? h("textarea", { id, rows: f.key === "guide" ? "3" : "2", "data-fk": `f:${f.key}` })
-      : h("input", { id, type: "text", "data-fk": `f:${f.key}` });
-    input.value = vals[f.key];
+    const input = fieldControl(f, cut, vals[f.key]);
     const field = h("div", { class: "field" }, h("label", { for: id }, f.label), input);
     if (f.key === "line") {
       const count = h("p", { class: "muted small char-count", id: "edit-line-count" });
@@ -1335,33 +1521,49 @@ function editForm(cut) {
       upd();
       field.append(count);
     }
-    if (f.key === "guide") input.setAttribute("aria-describedby", "edit-err");
-    input.addEventListener("input", () => {
+    if (f.required) input.setAttribute("aria-describedby", "edit-err");
+    if (f.kind === "number") field.append(h("p", { class: "muted small" }, "0.5초 단위, 0.5~120초"));
+    const onChange = () => {
       const d = S.forms.get(cut.n) || {};
       d[f.key] = input.value;
       S.forms.set(cut.n, d);
       err.hidden = true;
-      input.removeAttribute("aria-invalid");
+      for (const el of form.querySelectorAll("[aria-invalid]")) el.removeAttribute("aria-invalid");
       sync();
-    });
-    form.append(field);
+    };
+    input.addEventListener(f.kind === "select" ? "change" : "input", onChange);
+    if (f.pair) {
+      if (!pairRow) { pairRow = h("div", { class: "field-row" }); form.append(pairRow); }
+      pairRow.append(field);
+    } else {
+      form.append(field);
+    }
   }
-  err.id = "edit-err";
   form.append(err, h("div", { class: "btn-row" }, save, reset,
     h("span", { class: "muted small" }, "바뀐 칸만 저장합니다. 대사를 바꾸면 섹션 전체 대사도 이어서 바뀝니다.")));
   reset.addEventListener("click", () => { S.forms.delete(cut.n); renderPanel(); const f = S.nodes.panel.querySelector("#edit-line"); if (f) f.focus(); });
+  const fail = (key, message) => {
+    err.textContent = message;
+    err.hidden = false;
+    const el = form.querySelector(`#edit-${key}`);
+    el.setAttribute("aria-invalid", "true");
+    el.setAttribute("aria-describedby", "edit-err");
+    el.focus();
+  };
   form.addEventListener("submit", (e) => {
     e.preventDefault();
     const fields = changedFields(cut);
-    if (!Object.keys(fields).length) return;
-    if ("guide" in fields && !fields.guide.trim()) {
-      err.textContent = "가이드는 비울 수 없습니다.";
-      err.hidden = false;
-      const g = form.querySelector("#edit-guide");
-      g.setAttribute("aria-invalid", "true");
-      g.focus();
-      return;
+    for (const f of FIELDS) {
+      if (f.required && f.key in fields && !fields[f.key].trim()) { fail(f.key, EMPTY_TEXT[f.key]); return; }
     }
+    if ("sec" in fields) {
+      const raw = fields.sec.trim();
+      const n = Number(raw);
+      if (raw === "" || !Number.isFinite(n) || n < 0.5 || n > 120) { fail("sec", SEC_TEXT); return; }
+      fields.sec = snapSec(n);
+      if (fields.sec === Number(cut.sec)) delete fields.sec;
+    }
+    if (!Object.keys(fields).length) return;
     saveCut(cut.n, fields, "save");
   });
   sync();
@@ -1390,6 +1592,8 @@ async function saveCut(n, fields, focusKey) {
     mine.hash = res.hash;
     const d = mine.forms.get(n);
     if (d) { for (const k of Object.keys(fields)) delete d[k]; if (!Object.keys(d).length) mine.forms.delete(n); }
+    if ("size" in fields) mine.scenes.delete(n);
+    if ("sec" in fields) { const alt = mine.alts.get(n); if (alt) alt.max = null; }
     mine.ctx.toast(SAVED_TOAST, "info");
     // Stay "saving" through the reload so a second save cannot race it with a stale hash.
     await loadEditor(true);
@@ -1420,6 +1624,253 @@ async function saveCut(n, fields, focusKey) {
   }
 }
 
+// ---- structure edits: insert, delete (with undo), move, duplicate -----------------------------
+// Every edit is POST /api/conti/cuts with the last hash; the answer has the same shape as GET /api/conti, so the
+// screen is redrawn from it. Drafts typed in the edit form and cached alternatives follow their cut by id
+// because the cut numbers (n) shift when cuts come and go.
+
+function idOfN(data, n) {
+  const c = data.cuts.find((x) => x.n === n);
+  return c ? c.id : null;
+}
+
+function remapByCutId(map, before, after) {
+  for (const n of [...map.keys()]) {
+    const id = idOfN(before, n);
+    const moved = id && after.cuts.find((c) => c.id === id);
+    const value = map.get(n);
+    map.delete(n);
+    if (moved) map.set(moved.n, value);
+  }
+}
+
+// Returns the answer, or null when nothing was changed (error shown, busy, or the screen was left).
+async function editCuts(op) {
+  const mine = S;
+  if (mine.editing || mine.saving) return null;
+  if (mine.conflict) { mine.ctx.toast("파일이 밖에서 바뀌었습니다. 먼저 다시 불러오세요", "error"); return null; }
+  mine.editing = true;
+  mine.nodes.list.setAttribute("aria-busy", "true");
+  renderTools();
+  try {
+    const res = await mine.ctx.api("POST", "/api/conti/cuts", { path: mine.data.path, hash: mine.hash, ...op });
+    if (!alive(mine)) return null;
+    const before = mine.data;
+    const selId = idOfN(before, mine.sel);
+    remapByCutId(mine.forms, before, res);
+    remapByCutId(mine.alts, before, res);
+    mine.scenes.clear();
+    mine.data = res;
+    mine.hash = res.hash;
+    const keep = selId && res.cuts.find((c) => c.id === selId);
+    mine.sel = keep ? keep.n : null;
+    return res;
+  } catch (e) {
+    if (!alive(mine) || e.error === "aborted") return null;
+    if (e.error === "conti_changed") {
+      mine.conflict = true;
+      renderConflict();
+      const b = mine.nodes.conflict.querySelector("button");
+      if (b) b.focus();
+    } else {
+      mine.ctx.toast(e.message, "error");
+    }
+    return null;
+  } finally {
+    if (alive(mine)) {
+      mine.editing = false;
+      mine.nodes.list.removeAttribute("aria-busy");
+      renderTools();
+    }
+  }
+}
+
+// Draw the answer and put focus on a cut (the new/moved one, or the one that took the deleted cut's place).
+function showEdited(focusId, select) {
+  const cut = S.data.cuts.find((c) => c.id === focusId) || S.data.cuts[0];
+  if (select && cut) S.sel = cut.n;
+  renderHeader();
+  renderCutList(cut ? `cut:${cut.id}` : null);
+  renderPanel();
+  if (cut) {
+    const btn = S.nodes.list.querySelector(`[data-nav="cut:${cut.id}"]`);
+    if (btn) {
+      for (const b of S.nodes.list.querySelectorAll(".cut-item, .cut-more")) b.setAttribute("tabindex", "-1");
+      btn.setAttribute("tabindex", "0");
+      btn.closest(".cut-row").querySelector(".cut-more").setAttribute("tabindex", "0");
+      btn.focus({ preventScroll: true });
+      btn.scrollIntoView({ block: "nearest" });
+    }
+    announce(`컷 ${cut.n}`);
+  }
+}
+
+async function insertCut(at, section) {
+  const res = await editCuts({ op: "insert", at, section });
+  if (res) showEdited(res.cut_id, true);
+}
+
+async function duplicateCut(id) {
+  const res = await editCuts({ op: "duplicate", id });
+  if (res) showEdited(res.cut_id, true);
+}
+
+async function moveCut(id, to, section) {
+  const res = await editCuts({ op: "move", id, to, section });
+  if (res) showEdited(res.cut_id, false);
+}
+
+function moveStep(id, dir) {
+  const step = stepMove(S.data.cuts, id, dir);
+  if (!step) return;
+  moveCut(id, step.to, step.section).then(() => {
+    const btn = S.nodes.tools && S.nodes.tools.querySelector(`[data-tool="${dir < 0 ? "up" : "down"}"]`);
+    if (btn && !btn.disabled) btn.focus({ preventScroll: true });
+    else { const row = S.nodes.list.querySelector(`[data-nav="cut:${id}"]`); if (row) row.focus({ preventScroll: true }); }
+  });
+}
+
+// The fields a deleted cut needs to be put back (the server only takes these; angle is derived from the size).
+const RESTORE_KEYS = ["size", "sec", "action", "guide", "line", "caption", "sfx", "ref_frame"];
+
+async function deleteCut(id) {
+  const cuts = S.data.cuts;
+  const index = cuts.findIndex((c) => c.id === id);
+  const cut = cuts[index];
+  if (!cut) return;
+  if (!canRemove(cuts, id)) { S.ctx.toast(LAST_CUT_TEXT, "error"); return; }
+  const fields = {};
+  for (const k of RESTORE_KEYS) if (cut[k] !== undefined && cut[k] !== null && cut[k] !== "") fields[k] = cut[k];
+  const res = await editCuts({ op: "delete", id });
+  if (!res) return;
+  const next = res.cuts[Math.min(index, res.cuts.length - 1)];
+  showEdited(next ? next.id : null, false);
+  showUndo({ n: cut.n, index, section: cut.section, fields });
+}
+
+// 8-second toast with a 되돌리기 button. Stays while the pointer or focus is on it. The restored cut gets a new
+// id (the server always issues one), the same fields and the same place.
+function clearUndo() {
+  const u = S && S.undo;
+  if (!u) return;
+  S.undo = null;
+  clearTimeout(u.timer);
+  u.el.remove();
+  document.removeEventListener("keydown", u.onKey);
+}
+
+function showUndo(info) {
+  clearUndo();
+  const mine = S;
+  const undo = h("button", { type: "button", class: "btn btn-sm", title: "Ctrl+Z" }, "되돌리기");
+  const el = h("div", { class: "toast toast-undo", role: "status" }, h("span", {}, `컷 ${info.n}을 지웠습니다`), undo);
+  const u = { el, timer: null, onKey: null, hold: 0 };
+  const arm = () => { clearTimeout(u.timer); u.timer = setTimeout(() => { if (mine.undo === u) clearUndo(); }, UNDO_MS); };
+  const hold = () => { clearTimeout(u.timer); };
+  el.addEventListener("pointerenter", hold);
+  el.addEventListener("pointerleave", arm);
+  el.addEventListener("focusin", hold);
+  el.addEventListener("focusout", arm);
+  const run = async () => {
+    if (mine.undo !== u) return;
+    clearUndo();
+    const at = Math.min(info.index, mine.data.cuts.length);
+    const res = await editCuts({ op: "insert", at, section: Math.min(info.section, mine.data.fm.script.length - 1), cut: info.fields });
+    if (res) showEdited(res.cut_id, true);
+  };
+  undo.addEventListener("click", run);
+  u.onKey = (e) => {
+    const t = e.target;
+    const typing = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "z" && !typing) { e.preventDefault(); run(); }
+  };
+  document.addEventListener("keydown", u.onKey);
+  S.undo = u;
+  (document.getElementById("toasts") || document.body).append(el);
+  arm();
+}
+
+// ---- drag and drop ----------------------------------------------------------------------------
+// Only the ⋮⋮ handle starts a drag. A row takes the drop above or below its middle; a section header takes
+// it as "first cut of that section"; an insert slot takes it where it sits. Keyboard and touch users have
+// 위로 / 아래로 and the ⋯ menu instead.
+
+function dropPlace(target, y) {
+  const row = target.closest(".cut-row");
+  if (row) {
+    const cuts = S.data.cuts;
+    const i = cuts.findIndex((c) => c.id === row.dataset.id);
+    if (i < 0) return null;
+    const r = row.getBoundingClientRect();
+    const after = y > r.top + r.height / 2;
+    return { el: row, cls: after ? "drop-after" : "drop-before", gap: i + (after ? 1 : 0), section: cuts[i].section };
+  }
+  const gap = target.closest(".cut-gap");
+  if (gap) return { el: gap, cls: "drop-here", gap: Number(gap.dataset.gap), section: Number(gap.dataset.section) };
+  const head = target.closest(".sec-head");
+  if (head) return { el: head, cls: "drop-here", gap: Number(head.dataset.gap), section: Number(head.dataset.section) };
+  return null;
+}
+
+function clearDropMarks() {
+  for (const el of S.nodes.list.querySelectorAll(".drop-before, .drop-after, .drop-here")) {
+    el.classList.remove("drop-before", "drop-after", "drop-here");
+  }
+}
+
+function wireDrag(list) {
+  list.addEventListener("dragstart", (e) => {
+    const handle = e.target.closest && e.target.closest(".cut-handle");
+    const row = handle && handle.closest(".cut-row");
+    if (!row || S.editing || S.saving) { e.preventDefault(); return; }
+    closeMenu(false);
+    S.drag = { id: row.dataset.id };
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", row.dataset.id);
+    e.dataTransfer.setDragImage(row, 16, 16);
+    setTimeout(() => row.classList.add("is-dragging"), 0);
+  });
+  list.addEventListener("dragover", (e) => {
+    if (!S.drag) return;
+    const place = dropPlace(e.target, e.clientY);
+    if (!place) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    clearDropMarks();
+    place.el.classList.add(place.cls);
+    S.drag.place = place;
+  });
+  list.addEventListener("dragleave", (e) => {
+    if (!list.contains(e.relatedTarget)) clearDropMarks();
+  });
+  list.addEventListener("drop", (e) => {
+    if (!S.drag) return;
+    e.preventDefault();
+    const place = dropPlace(e.target, e.clientY) || S.drag.place;
+    const id = S.drag.id;
+    endDrag();
+    if (place) dropCut(id, place);
+  });
+  list.addEventListener("dragend", endDrag);
+}
+
+function endDrag() {
+  if (!S || !S.nodes.list) return;
+  S.drag = null;
+  clearDropMarks();
+  for (const el of S.nodes.list.querySelectorAll(".is-dragging")) el.classList.remove("is-dragging");
+}
+
+function dropCut(id, place) {
+  const cuts = S.data.cuts;
+  const target = dropTarget(cuts, id, place.gap, place.section);
+  const from = cuts.findIndex((c) => c.id === id);
+  if (!target || from < 0) return;
+  if (target.to === from && target.section === cuts[from].section) return;
+  if (target.section !== cuts[from].section && !canRemove(cuts, id)) { S.ctx.toast(LAST_CUT_TEXT, "error"); return; }
+  moveCut(id, target.to, target.section);
+}
+
 // ---- page contract ------------------------------------------------------------------------
 
 export async function mount(el, params, ctx) {
@@ -1432,5 +1883,7 @@ export async function mount(el, params, ctx) {
 
 export function unmount() {
   stopPolling();
+  closeMenu(false);
+  clearUndo();
   S = null;
 }
