@@ -13,6 +13,10 @@
 - 콘티에서 지운 컷의 판정은 지우지 않는다(이력 복원으로 같은 id가 돌아오면 판정도 돌아옴, F6).
   화면·내보내기는 visible_cuts로 지금 콘티에 있는 컷만 쓴다.
 - 새 컷 후보(D)는 같은 호출에 함께 묻는다. 숨긴 후보와 겹치는 새 후보는 다시 내놓지 않는다.
+  후보는 key(파일 + 구간)로 가리킨다(다시 맞추면 순서가 바뀌므로 번호로 가리키지 않는다).
+- 묶음 하나가 실패해도(시간 초과, 다시 물어도 형식 오류) 나머지 묶음은 계속 묻고, 성공한 결과를 저장한 뒤
+  첫 오류를 다시 던진다. 실패한 묶음의 컷은 review + FAIL_REASON(high 후보를 다른 묶음에서 찾았으면 auto).
+  로그인·설치·설정 문제(FATAL_CODES)는 남은 묶음을 부르지 않고 멈춘다(그 컷들도 FAIL_REASON).
 """
 from __future__ import annotations
 
@@ -38,6 +42,9 @@ EXTRA_SEGMENTS = 40          # 새 컷 후보를 찾으라고 첫 글자 호출�
 MIN_EXTRA_CHARS = 4          # 이보다 짧은 말(공백·문장부호 제외)은 새 컷 후보로 보내지 않는다
 CONFIDENCES = ("high", "medium", "low")
 CAP_REASON = "사진 상한으로 AI가 보지 못함"
+FAIL_REASON = "AI 호출이 실패해 다시 맞춰야 해요"
+# 설정·로그인 문제: 남은 묶음도 똑같이 실패하므로 더 부르지 않고 바로 멈춘다
+FATAL_CODES = frozenset({"claude_login", "claude_missing", "llm_auth", "llm_not_configured"})
 CUT_KEYS = ("id", "n", "section", "line", "guide", "action", "size", "sec")
 
 TEXT_TASK = ("footage-match 규칙대로, 컷마다 candidates 중 맞는 구간을 고르고(최대 3개, 확신도와 이유), "
@@ -349,11 +356,44 @@ def _extra_segments(transcripts: dict[str, list[dict]], taken: dict[str, list[tu
     return out
 
 
-def _ask(payload: dict, task: str, offer: _Offer, files: list[Path] | None) -> dict[str, Any]:
-    _, parsed = llm.ask_validated(_rules(), payload, task, lambda d: _parse_answer(d, offer),
-                                  schema=MATCH_SCHEMA, files=files)
-    result: dict[str, Any] = parsed
-    return result
+@dataclass
+class _Batches:
+    """묶음 호출들의 결과. 한 묶음이 실패해도 다른 묶음의 결과는 남기고, 실패한 묶음의 컷은 FAIL_REASON."""
+
+    matches: dict[str, list[dict]]
+    suggestions: list[dict] = field(default_factory=list)
+    failed: set[str] = field(default_factory=set)
+    error: ScriptError | None = None
+    images_used: int = 0
+
+    @property
+    def stopped(self) -> bool:
+        return self.error is not None and self.error.code in FATAL_CODES
+
+    def run(self, payload: dict, task: str, offer: _Offer, files: list[Path] | None) -> None:
+        if self.stopped:
+            self.failed |= offer.cut_ids
+            return
+        try:
+            _, parsed = llm.ask_validated(_rules(), payload, task, lambda d: _parse_answer(d, offer),
+                                          schema=MATCH_SCHEMA, files=files)
+        except ScriptError as e:
+            self.failed |= offer.cut_ids
+            fatal = e.code in FATAL_CODES
+            if fatal or self.error is None:     # 첫 오류를 알리되, 멈췄으면 멈춘 이유를 알린다
+                self.error = e
+            if not fatal:
+                self.images_used += len(files or [])   # 보낸 사진은 이미 비용이 들었다
+            return
+        self.images_used += len(files or [])
+        for cid, found in parsed["cuts"].items():
+            self.matches[cid].extend(found)
+        self.suggestions.extend(parsed["suggestions"])
+
+
+def suggestion_key(s: dict) -> str:
+    """새 컷 후보의 고정 id(파일 + 구간). 다시 맞춰 순서가 바뀌어도 같은 후보를 가리킨다."""
+    return f"{s['fid']}@{float(s['start']):.3f}-{float(s['end']):.3f}"
 
 
 def _merge_suggestions(old: list[dict], new: list[dict], chosen: list[dict]) -> list[dict]:
@@ -365,7 +405,7 @@ def _merge_suggestions(old: list[dict], new: list[dict], chosen: list[dict]) -> 
     for s in new:
         if any(clash(s, c) for c in chosen) or any(clash(s, o) for o in out):
             continue
-        out.append({**s, "hidden": False})
+        out.append({**s, "key": suggestion_key(s), "hidden": False})
     return out
 
 
@@ -384,8 +424,7 @@ def match(conti_path: str | Path, files_results: list[dict], now: float | None =
     transcripts = {r["fid"]: sorted(r["transcript"], key=lambda s: s["start"])
                    for r in usable if r.get("transcript")}
 
-    matches: dict[str, list[dict]] = {c["id"]: [] for c in todo}
-    suggestions: list[dict] = []
+    batches = _Batches({c["id"]: [] for c in todo})
     text_cuts: list[tuple[dict, list[dict]]] = []
     image_cuts: list[dict] = []
     for c in todo if usable else []:
@@ -411,12 +450,8 @@ def match(conti_path: str | Path, files_results: list[dict], now: float | None =
         others, extras = extras, []          # 말 후보는 첫 호출에만
         for o in others:
             offer.add(o["fid"], o["start"], o["end"])
-        parsed = _ask({"mode": "text", "cuts": cuts_payload, "others": others}, TEXT_TASK, offer, None)
-        for cid, found in parsed["cuts"].items():
-            matches[cid].extend(found)
-        suggestions.extend(parsed["suggestions"])
+        batches.run({"mode": "text", "cuts": cuts_payload, "others": others}, TEXT_TASK, offer, None)
 
-    images_used = 0
     unseen = False
     if image_cuts:
         pool = _scene_pool(usable, transcripts)
@@ -429,16 +464,18 @@ def match(conti_path: str | Path, files_results: list[dict], now: float | None =
                 offer.add(s.fid, s.start, s.end)
             scenes = [{"image": i + 1, "fid": s.fid, "start": s.start, "end": s.end, "text": s.text}
                       for i, s in enumerate(chunk)]
-            parsed = _ask({"mode": "images", "cuts": cuts_payload, "scenes": scenes}, IMAGE_TASK, offer,
-                          [s.image for s in chunk])
-            images_used += len(chunk)
-            for cid, found in parsed["cuts"].items():
-                matches[cid].extend(found)
-            suggestions.extend(parsed["suggestions"])
+            batches.run({"mode": "images", "cuts": cuts_payload, "scenes": scenes}, IMAGE_TASK, offer,
+                         [s.image for s in chunk])
 
     image_ids = {c["id"] for c in image_cuts}
-    entries = {cid: _entry_from(found, transcripts, CAP_REASON if unseen and cid in image_ids else None)
-               for cid, found in matches.items()}
+
+    def reason(cid: str) -> str | None:
+        if cid in batches.failed:
+            return FAIL_REASON
+        return CAP_REASON if unseen and cid in image_ids else None
+
+    entries = {cid: _entry_from(found, transcripts, reason(cid)) for cid, found in batches.matches.items()}
+    suggestions = batches.suggestions
     for s in suggestions:
         s["text"] = _speech(transcripts, s["fid"], s["start"], s["end"])
 
@@ -450,9 +487,11 @@ def match(conti_path: str | Path, files_results: list[dict], now: float | None =
         chosen = [{"fid": e["choice"]["fid"], "start": e["choice"]["start"], "end": e["choice"]["end"]}
                   for e in state["cuts"].values() if e.get("choice")]
         state["suggestions"] = _merge_suggestions(state["suggestions"], suggestions, chosen)
-        state["images_used"] = images_used
+        state["images_used"] = batches.images_used
         state["matched_at"] = time.time() if now is None else now
         save_state(path, state)
+    if batches.error is not None:
+        raise batches.error           # 성공한 묶음은 저장했다. 실패는 알린다(첫 오류, 멈췄으면 그 이유)
     return state
 
 
@@ -504,15 +543,18 @@ def reset(conti_path: str | Path, cut_id: str) -> dict[str, Any]:
     return _update_cut(conti_path, cut_id, _ai_verdict)
 
 
-def hide_suggestion(conti_path: str | Path, idx: int) -> dict[str, Any]:
-    """새 컷 후보를 숨긴다(다시 맞춰도 나오지 않는다). -> 숨긴 후보."""
+def hide_suggestion(conti_path: str | Path, key: str) -> dict[str, Any]:
+    """새 컷 후보를 key(suggestion_key)로 숨긴다(다시 맞춰도 나오지 않는다). -> 숨긴 후보."""
+    if not isinstance(key, str) or not key:
+        raise ScriptError("bad_request", "새 컷 후보 key가 필요합니다")
     with STATE_LOCK:
         state = load_state(conti_path)
-        if isinstance(idx, bool) or not isinstance(idx, int) or not 0 <= idx < len(state["suggestions"]):
-            raise ScriptError("bad_request", "새 컷 후보 번호가 올바르지 않습니다")
-        state["suggestions"][idx] = {**state["suggestions"][idx], "hidden": True}
+        idx = next((i for i, s in enumerate(state["suggestions"]) if suggestion_key(s) == key), None)
+        if idx is None:
+            raise ScriptError("suggestion_not_found", "새 컷 후보가 없습니다. 화면을 다시 불러오세요")
+        hidden: dict[str, Any] = {**state["suggestions"][idx], "key": key, "hidden": True}
+        state["suggestions"][idx] = hidden
         save_state(conti_path, state)
-        hidden: dict[str, Any] = state["suggestions"][idx]
     return hidden
 
 
