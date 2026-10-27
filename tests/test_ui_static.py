@@ -986,3 +986,11 @@ def test_new_job_keeps_state_of_adopted_review_cards_and_guards_before_apply():
     assert fetched < guard < apply
     prog = js[js.index("function renderProgress"):js.index("function tickClock")]
     assert 'i.step !== "confirm"' in prog
+
+
+def test_topbar_fits_380px_phones():
+    # 380px 폰: 메뉴·브랜드·카테고리·도움말·서버 끄기가 한 줄에 들어가야 한다(넘치면 화면 전체가 400px로 넓어짐)
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    assert ".cat-select { min-width: 88px" not in css
+    assert ".cat-select { min-width: 64px; flex: 0 1 auto; }" in css
+    assert ".topbar .btn:not(.btn-icon) { padding: 6px var(--sp-3); }" in css

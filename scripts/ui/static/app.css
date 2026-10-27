@@ -244,7 +244,9 @@ code { background: var(--chip); padding: 1px 6px; border-radius: 4px; }
 @media (max-width: 720px) {
   .btn.menu-toggle { display: inline-flex; }
   .topbar { gap: var(--sp-2); padding: 0 var(--sp-3); }
-  .cat-select { min-width: 88px; flex: 0 1 auto; }
+  /* phones: the bar must fit 380px, so the select shrinks first and the text buttons get tighter padding */
+  .cat-select { min-width: 64px; flex: 0 1 auto; }
+  .topbar .btn:not(.btn-icon) { padding: 6px var(--sp-3); }
   .cat-select select { max-width: 100%; width: 100%; }
   .brand { flex-shrink: 0; }
   .work-root { display: none; }
