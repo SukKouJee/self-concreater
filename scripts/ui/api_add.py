@@ -13,8 +13,9 @@
 - blocked/proxy_failed(수집·STT·컷 어디서든): 그 영상 failed, 줄에 남은 영상 skipped("차단으로 중단"), job stopped.
   확인 대기 영상은 남아 저장·건너뛰기를 계속 받고, 다음 새 작업이 앞쪽으로 옮겨 간다("새 작업으로 옮김").
 - claude_missing/claude_login: 같은 방식으로 멈춘다(남은 영상을 받지 않는다). 라우트는 작업 전에 claude를 확인한다.
-- 촬영 영상 작업(footage·footage_clips)이 도는 동안에는 새 collect 작업을 시작하지 않는다: `JobManager.start`가
-  `ScriptError("busy", "촬영 영상 처리가 끝난 뒤 시작해 주세요")`로 거절한다(jobs.EXCLUSIVE, 반대 방향도 같은 곳).
+- 촬영 영상 작업(footage·footage_clips)이 도는 동안에는 새 collect 작업을 시작하거나 도는 줄에 링크를 붙이지 않는다:
+  `ScriptError("busy", "촬영 영상 처리가 끝난 뒤 시작해 주세요")`(jobs.EXCLUSIVE). 반대로 collect는 확인만 기다릴 때는
+  촬영 영상 처리를 막지 않는다.
 - 예상치 못한 예외: 그 영상만 failed("예상치 못한 오류: ...")로 두고 다음 할 일로 간다.
 - 분석 호출에는 examples md를 항상 첨부하고, 장면 프레임(최대 8장, 처음·끝 포함)은 sparse이거나 화면 분석을 고른 경우에만 첨부한다(yt-analyze 0단계).
   화면 위주 분석 안내(SCREEN_HINT)도 같은 경우에만 task에 붙인다.
@@ -889,6 +890,7 @@ def _add(req: Request) -> dict:
     if current is not None and current.is_active():
         if _collector(current) is None:
             raise ScriptError("job_running", SINGLE_KINDS[KIND])   # 샷 분류 보강 작업에는 붙이지 않는다
+        req.app.jobs.check_exclusive(KIND)   # 확인만 기다리던 줄에 일을 붙이는 것도 촬영 영상 처리와 겹친다
         indexes = current.append_queued(items, "collect", _same_video)
         if indexes is not None:
             snapshot = current.snapshot()

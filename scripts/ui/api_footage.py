@@ -16,9 +16,11 @@
 """
 from __future__ import annotations
 
+import ctypes
 import os
 import re
 import sys
+import threading
 import time
 import traceback
 from collections.abc import Callable
@@ -29,6 +31,7 @@ from typing import Any
 from scripts import conti, footage, llm
 from scripts import footage_match as fmatch
 from scripts.common import ScriptError
+from scripts.features import SHOT_SIZES
 from scripts.ui.api_conti import rel_path, view_of
 from scripts.ui.jobs import Job, new_item
 from scripts.ui.server import NOT_FOUND, STREAM_CHUNK, FileSlice, Request, Response, _contained, route
@@ -36,6 +39,10 @@ from scripts.ui.server import NOT_FOUND, STREAM_CHUNK, FileSlice, Request, Respo
 KIND = "footage"
 MATCH_ITEM = "match"
 CHUNK = STREAM_CHUNK
+MAX_OPEN_RANGE = 8 * 1024 * 1024   # 끝을 정하지 않은 Range(bytes=N-)에 한 번에 내주는 상한
+MEDIA_CACHE_SEC = 5.0             # fid → 파일 찾기 결과를 다시 쓰는 시간(재생 중 잇단 Range 요청)
+DRIVE_REMOTE = 4                  # GetDriveTypeW: 네트워크 드라이브
+MSG_NETWORK = "네트워크 폴더는 아직 지원하지 않아요. PC 폴더로 복사해서 연결해 주세요"
 MSG_CACHED = "이미 처리함"
 MSG_NO_FOLDERS = "먼저 촬영 영상 폴더를 더해 주세요"
 MSG_NO_FILES = "연결된 폴더에 영상 파일(.mp4 .mov .m4v .mkv)이 없습니다"
@@ -69,6 +76,24 @@ def _folder_arg(value: Any) -> Path:
     if not path.is_absolute():
         raise ScriptError("bad_request", f"드라이브부터 시작하는 전체 경로를 넣어 주세요 (예: D:\\촬영\\1일차): {raw}")
     return path
+
+
+def _is_remote_drive(path: Path) -> bool:
+    """윈도에서 연결한 네트워크 드라이브(Z: 등)인가. 다른 OS는 False."""
+    if sys.platform != "win32" or not path.drive:
+        return False
+    windll = getattr(ctypes, "windll", None)
+    if windll is None:
+        return False
+    return int(windll.kernel32.GetDriveTypeW(path.drive + "\\")) == DRIVE_REMOTE
+
+
+def _is_network(path: Path) -> bool:
+    """UNC 경로(\\\\서버\\공유)나 네트워크 드라이브."""
+    text = str(path)
+    if text.startswith(("\\\\?\\", "\\\\.\\")):           # 긴 경로 접두사: \\?\UNC\… 만 네트워크
+        return text[4:].upper().startswith("UNC\\") or _is_remote_drive(Path(text[4:]))
+    return text.startswith(("\\\\", "//")) or _is_remote_drive(path)
 
 
 def _key(folder: str | Path) -> str:
@@ -203,6 +228,8 @@ def _get(req: Request) -> dict:
 def _add_folder(req: Request) -> dict:
     path = _conti(req.json.get("path"))
     given = _folder_arg(req.json.get("folder"))
+    if _is_network(given):
+        raise ScriptError("bad_folder", MSG_NETWORK)
     try:
         folder = given.resolve()
         found = folder.is_dir()
@@ -210,6 +237,8 @@ def _add_folder(req: Request) -> dict:
         found = False
     if not found:
         raise ScriptError("folder_not_found", f"폴더를 찾을 수 없습니다: {given}")
+    if _is_network(folder):
+        raise ScriptError("bad_folder", MSG_NETWORK)
     with fmatch.STATE_LOCK:
         state = fmatch.load_state(path)
         if any(_key(f) == _key(folder) for f in state["folders"]):
@@ -231,6 +260,8 @@ def _remove_folder(req: Request) -> dict:
             raise ScriptError("folder_not_linked", "연결된 폴더가 아닙니다")
         state["folders"] = kept
         fmatch.save_state(path, state)
+    with _MEDIA_CACHE_LOCK:
+        _MEDIA_CACHE.clear()
     return footage_view(req.app, path)
 
 
@@ -293,6 +324,9 @@ def process_target(path: Path, rel: str, files: list[dict]) -> Callable[[Job], N
             else:
                 tally["processed"] += 1
                 stt_missing = stt_missing or bool(result.get("stt_missing"))
+            if result is None or result["status"] == "retry":
+                # 이번에 실패해도 앞서 뽑아 둔 장면이 있으면 그것으로 맞춘다(빠지면 그 파일의 자동 판정이 지워진다)
+                result = footage.cached_result(file["fid"])
             if result is not None:
                 results.append(result)
         job.check_cancelled()
@@ -393,13 +427,23 @@ def _insert(req: Request) -> dict:
     if after not in cut_ids:
         raise ScriptError("cut_not_found", f"컷 {after}이(가) 없습니다")
     start, end = float(found["start"]), float(found["end"])
+    size = found.get("size")
     fields = {"line": str(found.get("line") or ""),
               "guide": str(found.get("guide") or "").strip() or conti.CUT_DEFAULTS["guide"],
-              "size": found["size"], "sec": suggested_sec(start, end)}
+              "size": size if size in SHOT_SIZES else conti.CUT_DEFAULTS["size"], "sec": suggested_sec(start, end)}
     op = {"op": "insert", "at": cut_ids.index(after) + 1, "cut": fields}
     result, written = conti.edit_cuts_fm(path, op, expected)
-    fmatch.choose(path, result["cut_id"], found["fid"], start, end)
-    fmatch.hide_suggestion(path, key)          # 넣은 후보는 다시 나오지 않게
+    try:
+        with fmatch.STATE_LOCK:                # 고정과 숨기기를 한 덩어리로(맞추기 병합이 사이에 끼지 않게)
+            fmatch.choose(path, result["cut_id"], found["fid"], start, end)
+            fmatch.hide_suggestion(path, key)  # 넣은 후보는 다시 나오지 않게
+    except ScriptError as e:
+        raise ScriptError(
+            "cut_not_linked",
+            f"컷은 콘티에 넣었지만 촬영 구간과 잇지 못했어요. "
+            f"화면을 다시 불러온 뒤 그 컷에서 구간을 골라 주세요: {e.message}",
+            hash=result["hash"], cut_id=result["cut_id"],
+        ) from e
     return {"hash": result["hash"], "cut_id": result["cut_id"], "conti": view_of(path, written, result["hash"]),
             "footage": footage_view(req.app, path)}
 
@@ -413,9 +457,10 @@ class RangeNotSatisfiable(Exception):
 _RANGE_RE = re.compile(r"\s*bytes\s*=\s*(\d*)\s*-\s*(\d*)\s*")
 
 
-def byte_range(header: str | None, size: int) -> tuple[int, int] | None:
+def byte_range(header: str | None, size: int, open_cap: int | None = None) -> tuple[int, int] | None:
     """HTTP Range 한 구간 → (시작, 끝 포함). 없거나 형식이 틀리거나 여러 구간이면 None(전체, RFC 9110은 무시를 허용).
-    파일 밖이면 RangeNotSatisfiable."""
+    파일 밖이면 RangeNotSatisfiable. open_cap: 끝을 정하지 않은 bytes=N-는 이만큼만 내준다
+    (브라우저가 이어서 다시 요청한다 — 멈춘 재생이 원본 파일 핸들과 수 GB 응답을 붙잡고 있지 않게)."""
     if not header or "," in header:
         return None
     m = _RANGE_RE.fullmatch(header)
@@ -427,7 +472,10 @@ def byte_range(header: str | None, size: int) -> tuple[int, int] | None:
             raise RangeNotSatisfiable
         return max(0, size - n), size - 1
     start = int(m.group(1))
-    end = int(m.group(2)) if m.group(2) else size - 1
+    if m.group(2):
+        end = int(m.group(2))
+    else:
+        end = size - 1 if open_cap is None else start + open_cap - 1
     if start >= size:
         raise RangeNotSatisfiable
     if end < start:
@@ -435,24 +483,48 @@ def byte_range(header: str | None, size: int) -> tuple[int, int] | None:
     return start, min(end, size - 1)
 
 
+# (콘티 경로, fid) → (연결 폴더, 파일 경로, 만료 시각). 폴더를 빼면 비운다. 꺼낼 때도 아래 확인을 모두 다시 한다.
+_MEDIA_CACHE: dict[tuple[str, str], tuple[str, str, float]] = {}
+_MEDIA_CACHE_LOCK = threading.Lock()
+
+
+def _checked(folder: str, file: str, fid: str) -> Path | None:
+    """file이 연결 폴더 folder 바로 아래 실제 영상이고 지문이 fid면 그 실제 경로."""
+    try:
+        root = Path(folder).resolve(strict=True)
+        real = Path(file).resolve(strict=True)
+        if real.parent != root or real.suffix.lower() not in footage.VIDEO_EXTS or not real.is_file():
+            return None                        # 링크로 폴더 밖을 가리키거나 하위 폴더
+        if footage.fingerprint(real) != fid:
+            return None                        # 스캔한 뒤 바뀌었다
+    except OSError:
+        return None                            # 그 사이에 지워졌거나 드라이브가 빠졌다: 없는 파일과 같게
+    return real
+
+
 def media_file(path: Path, fid: str) -> Path | None:
-    """fid를 그 콘티의 연결 폴더 바로 아래 실제 파일로 푼다. 못 찾거나 폴더 밖이면 None."""
+    """fid를 그 콘티의 연결 폴더 바로 아래 실제 파일로 푼다. 못 찾거나 폴더 밖이면 None.
+    재생 중 잇단 Range 요청은 MEDIA_CACHE_SEC 동안 찾은 결과를 다시 쓴다(폴더가 아직 연결돼 있는지·실제 경로·지문은
+    매번 확인한다)."""
     if not footage.valid_fid(fid):
         return None
-    for item in _scan_linked(fmatch.load_state(path)["folders"]):
+    folders = fmatch.load_state(path)["folders"]
+    key = (str(path), fid)
+    with _MEDIA_CACHE_LOCK:
+        hit = _MEDIA_CACHE.get(key)
+    if hit is not None and hit[2] > time.monotonic() and hit[0] in folders:
+        real = _checked(hit[0], hit[1], fid)
+        if real is not None:
+            return real
+    for item in _scan_linked(folders):
         entry = next((f for f in item.files if f["fid"] == fid), None)
-        if entry is None:
-            continue
-        try:
-            root = Path(item.folder).resolve(strict=True)
-            real = Path(entry["path"]).resolve(strict=True)
-            if real.parent != root or real.suffix.lower() not in footage.VIDEO_EXTS or not real.is_file():
-                continue                       # 링크로 폴더 밖을 가리키거나 하위 폴더
-            if footage.fingerprint(real) != fid:
-                continue                       # 스캔한 뒤 바뀌었다
-        except OSError:
-            continue                           # 그 사이에 지워졌거나 드라이브가 빠졌다: 없는 파일과 같게
-        return real
+        real = _checked(item.folder, entry["path"], fid) if entry is not None else None
+        if real is not None:
+            with _MEDIA_CACHE_LOCK:
+                _MEDIA_CACHE[key] = (item.folder, str(real), time.monotonic() + MEDIA_CACHE_SEC)
+            return real
+    with _MEDIA_CACHE_LOCK:
+        _MEDIA_CACHE.pop(key, None)
     return None
 
 
@@ -462,11 +534,14 @@ def _media(req: Request, fid: str) -> Response | tuple[int, dict]:
     real = media_file(path, fid)
     if real is None:
         return NOT_FOUND
-    size = real.stat().st_size
+    try:
+        size = real.stat().st_size
+    except OSError:
+        return NOT_FOUND                       # 확인한 뒤 곧바로 지워졌거나 드라이브가 빠졌다
     ctype = MEDIA_TYPES.get(real.suffix.lower(), "application/octet-stream")
     ranges = [("Accept-Ranges", "bytes")]
     try:
-        span = byte_range(req.headers.get("range"), size)
+        span = byte_range(req.headers.get("range"), size, MAX_OPEN_RANGE)
     except RangeNotSatisfiable:
         return Response(416, b"", "text/plain; charset=utf-8", [*ranges, ("Content-Range", f"bytes */{size}")])
     if span is None:

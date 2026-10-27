@@ -88,7 +88,7 @@ MATCH_SCHEMA: dict = {
     "required": ["cuts", "suggestions"],
 }
 
-STATE_LOCK = threading.Lock()   # 맞추기 끝의 병합과 사용자 조작이 서로의 저장을 덮지 않게
+STATE_LOCK = threading.RLock()  # 맞추기 끝의 병합과 사용자 조작이 서로의 저장을 덮지 않게(여러 조작을 한 덩어리로 묶을 수 있게 재진입)
 
 
 def _rules() -> list[Path]:

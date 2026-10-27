@@ -11,7 +11,7 @@ from scripts import conti_history as ch
 from scripts import footage_match as fm
 from scripts.common import ScriptError
 from scripts.ui import api_footage
-from scripts.ui.jobs import Job
+from scripts.ui.jobs import Job, new_item
 from tests.test_conti import conti_file, draft_md, home  # noqa: F401 - fixtures
 from tests.test_footage_match import FakeLLM, answer, m
 from tests.test_ui_add import wait_for
@@ -364,7 +364,7 @@ def test_footage_rejected_while_collect_runs(client, rel, tmp_path, fake_process
 
     def collect(job: Job) -> None:
         gate.wait(5)
-    collect_job = client.app.jobs.start("collect", collect, items=[])
+    collect_job = client.app.jobs.start("collect", collect, items=[new_item("https://youtu.be/abcdefghijk")])
     status, body = client.json("POST", "/api/footage/process", {"path": rel})
     assert status == 400 and body["error"] == "busy"
     assert body["message"] == "레퍼런스 분석이 끝난 뒤 시작해 주세요"
@@ -551,7 +551,7 @@ def test_clips_job_excludes_footage_and_collect():
     from scripts.ui.jobs import JobManager
     jobs = JobManager()
     gate = threading.Event()
-    clips = jobs.start("footage_clips", lambda job: gate.wait(5))
+    clips = jobs.start("footage_clips", lambda job: gate.wait(5), items=[new_item("clip")])
     for kind, message in (("footage", "컷 파일 만들기가 끝난 뒤 시작해 주세요"),
                           ("collect", "촬영 영상 처리가 끝난 뒤 시작해 주세요")):
         with pytest.raises(ScriptError) as e:
@@ -582,3 +582,147 @@ def test_suggested_sec_snaps_and_clamps():
     assert api_footage.suggested_sec(4.0, 7.2) == 3.0
     assert api_footage.suggested_sec(0.0, 0.1) == 0.5
     assert api_footage.suggested_sec(0.0, 500.0) == 120.0
+
+
+# --- Fix round 1 ---------------------------------------------------------------------------
+
+def test_failed_reprocess_keeps_cached_scenes_in_match(client, rel, tmp_path, fake_process, fake_llm,
+                                                       monkeypatch):
+    folder = shoot(tmp_path, files=("a.mp4",))
+    link(client, rel, folder)
+    proc = fake_process()
+    proc(folder / "a.mp4")                                     # 장면 캐시는 있고
+    (footage.footage_dir(footage.fingerprint(folder / "a.mp4")) / "transcript.json").unlink()   # 받아쓰기는 남음
+
+    def fail(path, progress=None, run_stt=True):
+        raise ScriptError("stt_failed", "받아쓰기 실패")
+    monkeypatch.setattr(footage, "process_file", fail)
+    fake_llm(lambda payload, files: answer())
+    seen = []
+    real = fm.match
+
+    def spy(path, results, now=None):
+        seen.append([(r["name"], r["status"]) for r in results])
+        return real(path, results, now)
+    monkeypatch.setattr(fm, "match", spy)
+    job = client.json("POST", "/api/footage/process", {"path": rel})[1]["job"]
+    job = wait_for(client, job["id"], finished)
+    assert job["items"][0]["state"] == "failed" and job["items"][0]["message"] == "받아쓰기 실패"
+    assert seen == [[("a.mp4", "done")]]                       # 앞서 뽑은 장면으로 계속 맞춘다
+
+
+def test_insert_suggestion_without_size_uses_default(client, rel, saved):
+    with fm.STATE_LOCK:
+        state = fm.load_state(rel)
+        s = {"fid": FID, "start": 1.0, "end": 3.0, "line": "", "guide": ""}
+        state["suggestions"] = [{**s, "key": fm.suggestion_key(s), "hidden": False}]
+        fm.save_state(rel, state)
+    before = conti._load_conti(saved)["cuts"]
+    status, body = client.json("POST", "/api/footage/suggestions/insert",
+                               {"path": rel, "key": fm.suggestion_key(s), "after_cut": before[0]["id"],
+                                "hash": conti.content_hash(saved)})
+    assert status == 200, body
+    new = conti._load_conti(saved)["cuts"][1]
+    assert new["size"] == conti.CUT_DEFAULTS["size"] and new["guide"] == conti.CUT_DEFAULTS["guide"]
+
+
+def test_insert_suggestion_pin_failure_reports_inserted_cut(client, rel, saved, monkeypatch):
+    key = suggestion_state(rel)
+    before = conti._load_conti(saved)["cuts"]
+
+    def boom(*a, **k):
+        raise ScriptError("bad_state", "판정 파일을 읽지 못했습니다")
+    monkeypatch.setattr(fm, "choose", boom)
+    status, body = client.json("POST", "/api/footage/suggestions/insert",
+                               {"path": rel, "key": key, "after_cut": before[0]["id"],
+                                "hash": conti.content_hash(saved)})
+    assert status == 400 and body["error"] == "cut_not_linked"
+    assert "넣었지만" in body["message"] and "판정 파일을 읽지 못했습니다" in body["message"]
+    after = conti._load_conti(saved)["cuts"]
+    assert len(after) == len(before) + 1 and body["cut_id"] == after[1]["id"]
+    assert body["hash"] == conti.content_hash(saved)
+    assert fm.load_state(rel)["suggestions"][0]["hidden"] is False   # 숨기지 않아 다시 고를 수 있다
+
+
+def test_open_ended_range_is_capped(client, rel, tmp_path, monkeypatch):
+    folder = shoot(tmp_path, files=("a.mp4",))
+    link(client, rel, folder)
+    monkeypatch.setattr(api_footage, "MAX_OPEN_RANGE", 1000)
+    fid = footage.fingerprint(folder / "a.mp4")
+    status, headers, raw = media(client, rel, fid, headers={"Range": "bytes=0-"})
+    assert status == 206 and raw == VIDEO_BYTES[:1000]
+    assert headers["Content-Range"] == f"bytes 0-999/{len(VIDEO_BYTES)}"
+    status, headers, raw = media(client, rel, fid, headers={"Range": "bytes=10000-"})
+    assert status == 206 and raw == VIDEO_BYTES[10000:]
+    status, _, raw = media(client, rel, fid, headers={"Range": "bytes=0-4999"})   # 닫힌 범위는 그대로
+    assert status == 206 and raw == VIDEO_BYTES[:5000]
+
+
+def test_media_reuses_recent_lookup_without_rescanning(client, rel, tmp_path, monkeypatch):
+    folder = shoot(tmp_path)
+    link(client, rel, folder)
+    fid = footage.fingerprint(folder / "a.mp4")
+    assert media(client, rel, fid)[0] == 200
+    scans = []
+    real = footage.scan_folder
+    monkeypatch.setattr(footage, "scan_folder", lambda f: scans.append(f) or real(f))
+    for _ in range(3):
+        assert media(client, rel, fid, headers={"Range": "bytes=0-9"})[0] == 206
+    assert scans == []
+    (folder / "a.mp4").write_bytes(VIDEO_BYTES + b"x")           # 바뀐 파일은 캐시가 있어도 내주지 않는다
+    assert media(client, rel, fid)[0] == 404
+
+
+def test_add_folder_rejects_unc_path(client, rel):
+    status, body = client.json("POST", "/api/footage/folders", {"path": rel, "folder": r"\\nas\share\촬영"})
+    assert status == 400 and body["error"] == "bad_folder" and "네트워크 폴더" in body["message"]
+
+
+def test_add_folder_rejects_mapped_network_drive(client, rel, tmp_path, monkeypatch):
+    folder = shoot(tmp_path)
+    monkeypatch.setattr(api_footage, "_is_remote_drive", lambda path: True)
+    status, body = client.json("POST", "/api/footage/folders", {"path": rel, "folder": str(folder)})
+    assert status == 400 and body["error"] == "bad_folder"
+
+
+def _review_only_collect(jobs):
+    from scripts.ui import api_add
+    item = {**api_add.new_item("https://youtu.be/abcdefghijk"), "state": "awaiting", "ask": "review"}
+    return jobs.start("collect", api_add.Collector(), items=[item])
+
+
+def test_footage_allowed_while_collect_only_waits_for_reviews(client, rel, tmp_path, fake_process, fake_llm):
+    link(client, rel, shoot(tmp_path))
+    proc = fake_process()
+    proc.gate = threading.Event()
+    fake_llm(lambda payload, files: answer())
+    collect = _review_only_collect(client.app.jobs)
+    status, body = client.json("POST", "/api/footage/process", {"path": rel})
+    assert status == 200, body
+    cat = conti._load_conti(saved_path(rel))["category"]
+    status, resp = client.json("POST", "/api/add", {"category": cat, "links": ["https://youtu.be/bcdefghijkl"]})
+    assert status == 400 and resp["error"] == "busy"        # 확인 대기 collect에 새 링크를 붙여도 안 된다
+    assert resp["message"] == "촬영 영상 처리가 끝난 뒤 시작해 주세요"
+    proc.gate.set()
+    wait_for(client, body["job"]["id"], finished)
+    collect.cancel()
+    collect.join(5)
+
+
+def test_footage_refused_while_collect_has_work(client, rel, tmp_path, fake_process):
+    link(client, rel, shoot(tmp_path))
+    fake_process()
+    gate = threading.Event()
+
+    def work(job: Job) -> None:
+        job.update(0, state="running")
+        gate.wait(5)
+    collect = client.app.jobs.start("collect", work, items=[new_item("x")])
+    status, body = client.json("POST", "/api/footage/process", {"path": rel})
+    assert status == 400 and body["error"] == "busy"
+    gate.set()
+    collect.join(5)
+
+
+def saved_path(rel):
+    return conti.safe_draft_path(rel)

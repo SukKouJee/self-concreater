@@ -22,7 +22,9 @@
   `release_reviews()`는 멈춘 작업의 확인 대기를 새 작업으로 옮길 때 쓴다.
 - 같은 kind 중 `SINGLE_KINDS`(collect, typify, motif, draft, polish, srtfit, caption_video, diagnose, mission, mission_feedback, review, library_summary, help_chat, footage, footage_clips)는 진행 중(running/awaiting)인 작업이 하나뿐이다.
 - `EXCLUSIVE`: CPU를 많이 쓰는 kind끼리는 동시에 돌지 않는다(collect ↔ footage·footage_clips, footage ↔ footage_clips).
-  상대 kind가 진행 중이면 `start()`가 같은 잠금 안에서 `ScriptError("busy", 상대 kind의 문구)`로 거절한다.
+  상대 kind의 작업이 일을 하는 중이면(`Job.has_work`: 줄에 할 일이 있거나 대기·진행 중 항목이 있음) `start()`가
+  같은 잠금 안에서 `ScriptError("busy", 상대 kind의 문구)`로 거절한다. 사용자 확인만 기다리는 collect는 막지 않는다.
+  도는 collect 줄에 일을 더 붙이기 전에는 `check_exclusive()`로 같은 확인을 한다.
 """
 from __future__ import annotations
 
@@ -127,6 +129,12 @@ class Job:
 
     def is_active(self) -> bool:
         return self.status in ACTIVE
+
+    def has_work(self) -> bool:
+        """진행 중이고, 줄에 할 일이 있거나 아직 하지 않았거나 하는 중인 항목이 있다(확인 대기만 남으면 False)."""
+        with self._lock:
+            return self._status in ACTIVE and (
+                bool(self._tasks) or any(i["state"] in ("waiting", "running") for i in self._items))
 
     # ---- 작업 스레드 쪽 ------------------------------------------------------------
 
@@ -415,9 +423,7 @@ class JobManager:
             current = self._latest.get(kind)
             if kind in SINGLE_KINDS and current is not None and current.is_active():
                 raise ScriptError("job_running", SINGLE_KINDS[kind])
-            for other, message in EXCLUSIVE.get(kind, {}).items():
-                if any(j.kind == other and j.is_active() for j in self._jobs.values()):
-                    raise ScriptError("busy", message)
+            self._check_exclusive(kind)
             job = Job(kind, items, category)
             job.target = target
             job.set_summary(summary)
@@ -429,6 +435,16 @@ class JobManager:
                                            daemon=True)
             job._thread.start()
         return job
+
+    def check_exclusive(self, kind: str) -> None:
+        """kind의 일을 시작하거나 더해도 되는지. 함께 돌 수 없는 kind가 일하는 중이면 ScriptError("busy")."""
+        with self._lock:
+            self._check_exclusive(kind)
+
+    def _check_exclusive(self, kind: str) -> None:
+        for other, message in EXCLUSIVE.get(kind, {}).items():
+            if any(j.kind == other and j.has_work() for j in self._jobs.values()):
+                raise ScriptError("busy", message)
 
     def get(self, job_id: str) -> Job:
         with self._lock:
