@@ -95,7 +95,7 @@ def test_add_area_is_a_component_of_refs_not_a_route_page():
         assert token in refs, token
     for token in ["/api/add/check", '"details"', "no_transcript", "startLabel(", "aria-live", "/static/add-utils.js"]:
         assert token in add, token
-    assert "add-category" not in add and "setCategory" not in add     # 카테고리는 위쪽 선택칸 하나만 쓴다
+    assert "add-category" not in add and add.count("setCategory") == 1     # 카테고리는 위쪽 선택칸 하나만 쓴다("보기"만 그 칸을 바꾼다)
     assert "300" in add                                           # check debounce
 
 
@@ -228,14 +228,14 @@ def test_refs_card_focus_ring_is_not_clipped():
     link = re.search(r"\.ref-link:focus-visible\s*\{([^}]*)\}", css)
     assert link and "box-shadow: none" in link.group(1) and "outline-offset" in link.group(1)
     js = (STATIC_DIR / "pages" / "refs.js").read_text(encoding="utf-8")
-    assert 'role: "list"' in js and "COUNT_DEBOUNCE_MS" in js and "marginLeft" in js
+    assert 'role: "list"' in js and "COUNT_DEBOUNCE_MS" in js
 
 
 def test_refs_page_review_fixes():
     js = (STATIC_DIR / "pages" / "refs.js").read_text(encoding="utf-8")
     assert "String(v.title || v.id)" in js                      # numeric titles must not break localeCompare
     assert "String(role)" in js                                 # unknown role shown as-is
-    assert js.count("sortByStart((") == 2                      # band + detail section list
+    assert js.count("sortByStart((") == 1                      # detail section list (the band moved to section-band.js)
     assert "params.id" in js.split("function loadError")[1].split("// ---- list")[0]   # back link only in detail
 
 
@@ -904,7 +904,7 @@ def test_home_narrow_layout_wraps_instead_of_overflowing():
 def test_add_progress_summary_first_then_proportional_steps():
     js = (STATIC_DIR / "pages" / "add.js").read_text(encoding="utf-8")
     css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
-    block = js[js.index("function stepRows"):js.index("function buildItem")]
+    block = js[js.index("function stepRows"):js.index("// ---- review queue")]
     # 위에서부터: 전체 진행 원 -> 남은 시간·끝 시각 -> 지금 하는 일, 그 아래 단계 칸, 걸린 시간
     for token in ['"prog-ring"', '"이 영상 전체 진행률"', "itemProgress(", "쯤 끝", "지금: ", "stepWeights(",
                   "gridTemplateColumns", "걸린 시간", "예상 전체", "남은 시간 계산 중"]:
@@ -914,7 +914,6 @@ def test_add_progress_summary_first_then_proportional_steps():
     assert "S.ringMax" in block and "Math.min(99" in block       # 카드를 새로 만들어도 유지, 끝나기 전엔 100%를 보이지 않는다
     assert "prog.overdue" in block                               # 예상 넘긴 측정 불가 단계는 0초 남음 대신 문구
     assert "r.sub" not in js and "step-total" not in js            # 단계 아래 긴 줄과 맨 아래 합계 줄은 위쪽 요약으로 옮겼다
-    assert "앞 영상이 끝나면 시작해요" in js                          # 대기 중 영상은 단계 칩 대신 한 줄
     for sel in [".prog-ring", ".prog-remain", ".steps.prog-steps", ".row-running .step-name", "@container (max-width: 420px)"]:
         assert sel in css, sel
 
@@ -924,3 +923,21 @@ def test_add_area_resume_only_for_jobs_that_need_attention():
     assert "needsAttention(data.job)" in add
     refs = (STATIC_DIR / "pages" / "refs.js").read_text(encoding="utf-8")
     assert "autoOpened" in refs
+
+
+def test_add_area_review_queue_and_progress_card_wiring():
+    js = (STATIC_DIR / "pages" / "add.js").read_text(encoding="utf-8")
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    for token in ["/save-all", "/review/", "/cancel", "모두 저장", "자세히", "확인 대기", "aria-expanded",
+                  "UI 서버를 끄면 사라져요", "멈추기", "고칠 점 적고 다시 분석", "작업이 멈춰 다시 분석할 수 없어요",
+                  "카테고리에서", "보기", "tabindex", "reviewItems(", "queueLine(", "/static/section-band.js",
+                  "onSaved"]:
+        assert token in js, token
+    for banned in ["innerHTML", "window.confirm", "confirm(", "alert(", "prompt("]:
+        assert banned not in js, banned
+    for sel in [".review-queue", ".review-card", ".review-head", ".review-notice", ".other-cat-line"]:
+        assert sel in css, sel
+    sb = (STATIC_DIR / "section-band.js").read_text(encoding="utf-8")
+    assert "export function sectionBand" in sb and "marginLeft" in sb
+    refs = (STATIC_DIR / "pages" / "refs.js").read_text(encoding="utf-8")
+    assert "/static/section-band.js" in refs and "function sectionBand" not in refs

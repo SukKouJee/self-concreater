@@ -51,3 +51,25 @@ export function summaryText(rows) {
   if (skipped) parts.push(`건너뜀 ${skipped}개`);
   return parts.join(" · ");
 }
+
+// Category of one item: its own opts (items of one job can differ), else the job's.
+export function itemCategory(item, job) {
+  const own = item && item.opts && item.opts.category;
+  return own || (job && job.category) || "";
+}
+
+// Finished videos waiting for the user's decision in this category.
+export function reviewItems(job, category) {
+  return ((job && job.items) || []).filter((i) => i.ask === "review" && i.state === "awaiting"
+    && !!i.opts && i.opts.category === category);
+}
+
+// One line under the current video: how many videos are still queued, or (queue empty) how many wait for review.
+export function queueLine(job) {
+  const items = (job && job.items) || [];
+  const waiting = items.filter((i) => i.state === "waiting").length;
+  if (waiting > 0) return `남은 영상 ${waiting}개`;
+  if (items.some((i) => i.state === "running")) return "";
+  const review = items.filter((i) => i.ask === "review" && i.state === "awaiting").length;
+  return review > 0 ? `확인을 기다리는 영상 ${review}개` : "";
+}

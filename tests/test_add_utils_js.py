@@ -74,3 +74,41 @@ def test_needs_attention():
     # stopped job that still holds a review: shown
     assert run_js('m.needsAttention({status:"stopped",items:[{state:"awaiting",ask:"review"}]})') is True
     assert run_js('m.needsAttention({status:"stopped",items:[{state:"awaiting",ask:"other"}]})') is False
+
+
+def _job(*items):
+    return {"status": "running", "items": list(items)}
+
+
+def _it(state, ask=None, category="travel", **extra):
+    return {"id": extra.pop("id", "x"), "state": state, "ask": ask, "opts": {"category": category}, **extra}
+
+
+def test_review_items_only_awaiting_review_in_this_category():
+    job = _job(
+        _it("awaiting", "review", id="a"),
+        _it("awaiting", "review", category="food", id="b"),
+        _it("awaiting", None, id="c"),
+        _it("running", "review", id="d"),
+        _it("saved", "review", id="e"),
+        {"id": "f", "state": "awaiting", "ask": "review"},
+    )
+    got = run_js(f"m.reviewItems({json.dumps(job)}, 'travel').map(i => i.id)")
+    assert got == ["a"]
+    assert run_js("m.reviewItems(null, 'travel')") == []
+
+
+def test_queue_line_three_cases():
+    waiting = _job(_it("running"), _it("waiting"), _it("waiting"), _it("awaiting", "review"))
+    assert run_js(f"m.queueLine({json.dumps(waiting)})") == "남은 영상 2개"
+    only_review = _job(_it("awaiting", "review"), _it("awaiting", "review"), _it("saved"))
+    assert run_js(f"m.queueLine({json.dumps(only_review)})") == "확인을 기다리는 영상 2개"
+    last = _job(_it("running"), _it("awaiting", "review"))
+    assert run_js(f"m.queueLine({json.dumps(last)})") == ""
+    assert run_js("m.queueLine(null)") == ""
+
+
+def test_item_category_falls_back_to_the_job():
+    assert run_js("m.itemCategory({opts: {category: 'a'}}, {category: 'b'})") == "a"
+    assert run_js("m.itemCategory({}, {category: 'b'})") == "b"
+    assert run_js("m.itemCategory({}, null)") == ""

@@ -11,6 +11,7 @@ import {
 } from "/static/labels.js";
 import { renderMarkdown } from "/static/md.js";
 import { mountAddArea } from "/static/pages/add.js";
+import { sectionBand } from "/static/section-band.js";
 
 const COUNT_DEBOUNCE_MS = 300;
 const ROLE_TEXT = { ref: "레퍼런스", mine: "내 영상" };
@@ -56,34 +57,6 @@ function alive(mine) {
 
 function ignorable(e) {
   return !e || e.error === "aborted";
-}
-
-// ---- section band (shared by list cards and detail) -------------------------------
-
-// Segment widths are percentages of the video length (or of the last section end when the length is unknown).
-function sectionBand(sections, duration) {
-  const segs = sortByStart((sections || []).filter((s) => s && typeof s.label === "string" && s.label));
-  if (segs.length === 0) return null;
-  const total = num(duration) > 0 ? num(duration) : Math.max(...segs.map((s) => num(s.end)));
-  if (!(total > 0)) return null;
-  const band = h("div", {
-    class: "sec-band", role: "img",
-    "aria-label": `섹션 흐름: ${segs.map((s) => sectionLabelName(s.label)).join(" → ")}`,
-  });
-  // Position by start: a gap before a section becomes a left margin; overlaps are clamped to the previous end.
-  let cursor = 0;
-  for (const s of segs) {
-    const from = Math.max(num(s.start), cursor);
-    const gap = Math.min(100, (Math.max(0, from - cursor) / total) * 100);
-    const width = Math.max(0, Math.min(100, ((num(s.end) - from) / total) * 100));
-    const text = `${sectionName(s.label, s.sub)} ${fmtRange(s)}`;
-    const seg = h("span", { class: `lb-${s.label}`, title: text, "aria-label": text });
-    seg.style.width = `${width}%`;
-    if (gap > 0) seg.style.marginLeft = `${gap}%`;
-    band.append(seg);
-    cursor = Math.max(cursor, num(s.end));
-  }
-  return band;
 }
 
 // ---- page state ---------------------------------------------------------------
