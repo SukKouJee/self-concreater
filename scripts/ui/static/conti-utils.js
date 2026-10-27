@@ -116,6 +116,10 @@ const euro = (n) => (/[360]$/.test(String(n)) ? "으로" : "로");
 
 // One line of the change list. `sectionName` (optional) is the section a new cut sits in.
 export function changeText(c, sectionName) {
+  if (c.kind === "shifted") {
+    const d = c.delta === null || c.delta === undefined || c.delta === 0 ? "" : ` (${c.delta > 0 ? "+" : "-"}${clock(Math.abs(c.delta))})`;
+    return `뒤 섹션 ${c.count}개 시간이 밀렸어요${d}`;
+  }
   if (c.kind === "total") return `총 길이 ${clock(c.from)} → ${clock(c.to)}`;
   if (c.kind === "removed") return `컷 ${c.n_from} 삭제`;
   if (c.kind === "added") return `컷 ${c.n_to} 새로 생김${sectionName ? `(${sectionName})` : ""}`;
@@ -161,4 +165,20 @@ export function alignCuts(left, right, changes) {
     }
   }
   return rows;
+}
+
+// A single insert shifts every later section's time; show that run of time-only section lines as one line.
+// Section text changes and everything else stay as they are. The shift is read from the "total" entry.
+export function collapseChanges(changes) {
+  const total = changes.find((c) => c.kind === "total");
+  const delta = total ? Math.round(Number(total.to) - Number(total.from)) : null;
+  const timeOnly = (c) => c.kind === "changed" && c.field === "script" && c.from === c.to;
+  const out = [];
+  for (const c of changes) {
+    const last = out[out.length - 1];
+    if (!timeOnly(c)) out.push(c);
+    else if (last && last.kind === "shifted") last.count += 1;
+    else out.push({ kind: "shifted", count: 1, delta });
+  }
+  return out;
 }

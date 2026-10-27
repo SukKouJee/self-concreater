@@ -912,7 +912,7 @@ def test_conti_history_panel_contract():
     for token in [
         "/api/conti/history", "/api/conti/history/diff", "/api/conti/history/name", "/api/conti/history/restore",
         "이름 붙이기", "지금 상태에 이름 붙이기", "나란히 보기", "되돌리기", "이 버전으로 되돌리기", "지금과 비교", "둘 비교",
-        "지금 상태도 이력에 남아 있어 다시 되돌릴 수 있어요", "aria-expanded", '"Escape"', "conti_changed", "alignCuts", "changeText",
+        "지금 상태도 이력에 남아 있어 다시 되돌릴 수 있어요", "aria-expanded", "inert", "collapseChanges", "저장하지 않은 입력", "저장 중이에요. 잠시 뒤 다시 눌러 주세요", '"Escape"', "conti_changed", "alignCuts", "changeText",
     ]:
         assert token in text, token
     css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")

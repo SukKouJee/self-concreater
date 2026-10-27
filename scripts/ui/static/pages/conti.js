@@ -6,7 +6,8 @@
 import { h, filesUrl } from "/static/dom.js";
 import { sectionLabelName } from "/static/labels.js";
 import {
-  SHOT_SIZES, alignCuts, canRemove, changeText, dropTarget, fmtClock, fmtDelta, fmtWhen, snapSec, stepMove, versionLabel,
+  SHOT_SIZES, alignCuts, canRemove, changeText, collapseChanges, dropTarget, fieldText, fmtClock, fmtDelta, fmtWhen, snapSec, stepMove,
+  versionLabel,
 } from "/static/conti-utils.js";
 
 const POLL_MS = 1000;
@@ -541,6 +542,7 @@ async function loadEditor(keep = false) {
     else { renderHeader(); renderCutList(); renderPanel(); }
     if (!mine.fitChecked) { mine.fitChecked = true; resumeFit(); }
     if (!mine.cvChecked) { mine.cvChecked = true; loadCaptionVideo(); }
+    refreshHistory();
   } catch (e) {
     if (!alive(mine) || e.error === "aborted") return;
     if (keep && mine.nodes.board) { mine.ctx.toast(e.message, "error"); return; }
@@ -1609,7 +1611,6 @@ async function saveCut(n, fields, focusKey) {
     if ("size" in fields) mine.scenes.delete(n);
     if ("sec" in fields) { const alt = mine.alts.get(n); if (alt) alt.max = null; }
     mine.ctx.toast(SAVED_TOAST, "info");
-    refreshHistory();
     // Stay "saving" through the reload so a second save cannot race it with a stale hash.
     await loadEditor(true);
     if (!alive(mine)) return;
@@ -1920,10 +1921,11 @@ function dropCut(id, place) {
 const NAME_MAX = 30;
 const NAME_IDEAS = ["촬영 전", "편집 시작 전", "컷 순서 확정"];
 const RESTORE_NOTE = "지금 상태도 이력에 남아 있어 다시 되돌릴 수 있어요";
+const BUSY_TEXT = "저장 중이에요. 잠시 뒤 다시 눌러 주세요";
 const STATUS_TEXT = { same: "", changed: "바뀜", moved: "옮김", removed: "빠짐", added: "새 컷" };
 
 function freshHist() {
-  return { open: false, versions: null, error: null, pick: [], view: null, mode: "list", confirm: null, busy: false, loadingDiff: false };
+  return { open: false, versions: null, error: null, pick: [], view: null, mode: "list", confirm: null, busy: false, loadingDiff: false, seq: 0, listSeq: 0 };
 }
 
 function histBtn() {
@@ -1942,14 +1944,26 @@ function mountHistory() {
   const old = S.nodes.hist;
   if (old) old.remove();
   S.nodes.hist = null;
-  if (!S.hist.open) return;
+  if (!S.hist.open) { syncInert(); return; }
   const panel = h("aside", { class: "hist-panel", id: "hist-panel", "aria-labelledby": "hist-title" });
-  panel.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !e.defaultPrevented) { e.preventDefault(); closeHistory(true); }
-  });
   S.nodes.hist = panel;
   S.el.append(panel);
   renderHistory();
+}
+
+// Esc closes the panel from anywhere (a menu or field that already used the key calls preventDefault first).
+function onHistKey(e) {
+  if (e.key === "Escape" && !e.defaultPrevented && S && S.hist.open) { e.preventDefault(); closeHistory(true); }
+}
+
+// Narrow screens: the panel covers the page, so the page behind it must not take Tab or screen reader focus.
+function syncInert() {
+  const panel = S.nodes.hist;
+  const on = !!panel && window.matchMedia(NARROW).matches;
+  for (const el of S.el.children) {
+    if (el === panel || el === S.live) continue;
+    if (on) el.setAttribute("inert", ""); else el.removeAttribute("inert");
+  }
 }
 
 function renderHistory() {
@@ -1967,10 +1981,12 @@ function renderHistory() {
   panel.replaceChildren(...kids);
   const again = focusId && panel.querySelector(`#${CSS.escape(focusId)}`);
   if (again && !again.disabled) again.focus({ preventScroll: true });   // a redraw must not drop the focus
+  syncInert();
 }
 
 async function openHistory() {
   S.hist.open = true;
+  document.addEventListener("keydown", onHistKey);
   const btn = histBtn();
   if (btn) btn.setAttribute("aria-expanded", "true");
   mountHistory();
@@ -1981,6 +1997,7 @@ async function openHistory() {
 
 function closeHistory(restoreFocus) {
   if (!S || !S.hist.open) return;
+  document.removeEventListener("keydown", onHistKey);
   S.hist = freshHist();
   mountHistory();
   const btn = histBtn();
@@ -1989,14 +2006,17 @@ function closeHistory(restoreFocus) {
 
 async function loadHistory() {
   const mine = S;
+  const H = mine.hist;
+  const tok = ++H.listSeq;
+  const stale = () => !alive(mine) || mine.hist !== H || !H.open || H.listSeq !== tok;
   try {
     const res = await mine.ctx.api("GET", `/api/conti/history?path=${encodeURIComponent(mine.data.path)}`);
-    if (!alive(mine) || !mine.hist.open) return;
+    if (stale()) return;
     mine.hist.versions = res.versions;
     mine.hist.error = null;
     mine.hist.pick = mine.hist.pick.filter((n) => res.versions.some((v) => v.n === n));
   } catch (e) {
-    if (!alive(mine) || e.error === "aborted" || !mine.hist.open) return;
+    if (e.error === "aborted" || stale()) return;
     mine.hist.error = e.message;
   }
   if (mine.hist.view) return;                       // the compare view does not list versions; keep what is on screen
@@ -2008,7 +2028,7 @@ function refreshHistory() {
   if (!S || !S.hist.open) return;
   loadHistory();
   const v = S.hist.view;
-  if (v && v.b === null) loadDiff(v.a, null, true);
+  if (v && v.b === null) loadDiff(v.a, null, true);   // keeps the mode (list or side by side)
 }
 
 function nameBox() {
@@ -2040,7 +2060,8 @@ function nameBox() {
 
 async function nameNow(name, btn, note) {
   const mine = S;
-  if (mine.hist.busy || mine.editing || mine.saving) return;
+  if (mine.hist.busy) return;
+  if (mine.editing || mine.saving) { note.textContent = BUSY_TEXT; return; }
   if (mine.conflict) { note.textContent = "파일이 밖에서 바뀌었습니다. 먼저 다시 불러오세요"; return; }
   mine.hist.busy = true;
   btn.disabled = true;
@@ -2056,12 +2077,13 @@ async function nameNow(name, btn, note) {
     if (first) first.focus({ preventScroll: true });
   } catch (e) {
     if (!alive(mine) || e.error === "aborted") return;
+    const live = (mine.nodes.hist && mine.nodes.hist.querySelector(".hist-form .hist-err")) || note;   // the panel may have been redrawn
     if (e.error === "conti_changed") {
       mine.conflict = true;
       renderConflict();
-      note.textContent = STALE_TEXT;
+      live.textContent = STALE_TEXT;
     } else {
-      note.textContent = e.message;
+      live.textContent = e.message;
     }
   } finally {
     if (alive(mine)) { mine.hist.busy = false; btn.disabled = false; }
@@ -2108,13 +2130,13 @@ function pickBar() {
   const bar = h("div", { class: "hist-bar", role: "group", "aria-label": "고른 버전으로 할 일" });
   if (!H.pick.length) { bar.hidden = true; return bar; }
   if (H.pick.length === 2) {
-    const both = h("button", { type: "button", class: "btn btn-sm btn-primary" }, "둘 비교");
+    const both = h("button", { type: "button", class: "btn btn-sm btn-primary", disabled: H.loadingDiff }, "둘 비교");
     both.addEventListener("click", () => { const [a, b] = [...H.pick].sort((x, y) => x - y); loadDiff(a, b); });
     bar.append(both);
     return bar;
   }
   const n = H.pick[0];
-  const cmp = h("button", { type: "button", class: "btn btn-sm" }, "지금과 비교");
+  const cmp = h("button", { type: "button", class: "btn btn-sm", disabled: H.loadingDiff }, "지금과 비교");
   cmp.addEventListener("click", () => loadDiff(n, null));
   const rest = h("button", { type: "button", class: "btn btn-sm", "data-restore": "1" }, "이 버전으로 되돌리기");
   rest.addEventListener("click", () => {
@@ -2141,14 +2163,17 @@ function restoreConfirm(n) {
     const b = S.nodes.hist.querySelector("[data-restore]");
     if (b) b.focus();
   });
+  const unsaved = [...S.forms].filter(([, d]) => Object.keys(d).length).map(([k]) => k).sort((a, b) => a - b);
   return h("div", { class: "hist-confirm" },
     h("p", { class: "hist-confirm-text" }, RESTORE_NOTE),
+    unsaved.length ? h("p", { class: "hist-confirm-text", "data-unsaved": "1" }, `저장하지 않은 입력(컷 ${unsaved.join(", ")})은 사라집니다`) : null,
     h("div", { class: "btn-row" }, ok, no), note);
 }
 
 async function restoreTo(n, buttons, note) {
   const mine = S;
-  if (mine.hist.busy || mine.editing || mine.saving) return;
+  if (mine.hist.busy) return;
+  if (mine.editing || mine.saving) { note.textContent = BUSY_TEXT; return; }
   if (mine.conflict) { note.textContent = "파일이 밖에서 바뀌었습니다. 먼저 다시 불러오세요"; return; }
   mine.hist.busy = true;
   for (const b of buttons) b.disabled = true;
@@ -2176,12 +2201,13 @@ async function restoreTo(n, buttons, note) {
     if (!alive(mine) || e.error === "aborted") return;
     for (const b of buttons) b.disabled = false;
     buttons[0].textContent = "되돌리기";
+    const live = (mine.nodes.hist && mine.nodes.hist.querySelector(".hist-confirm .hist-err")) || note;
     if (e.error === "conti_changed") {
       mine.conflict = true;
       renderConflict();
-      note.textContent = STALE_TEXT;
+      live.textContent = STALE_TEXT;
     } else {
-      note.textContent = e.message;
+      live.textContent = e.message;
     }
   } finally {
     if (alive(mine)) mine.hist.busy = false;
@@ -2190,20 +2216,25 @@ async function restoreTo(n, buttons, note) {
 
 async function loadDiff(a, b, quiet = false) {
   const mine = S;
-  mine.hist.loadingDiff = true;
+  const H = mine.hist;
+  const tok = ++H.seq;
+  const stale = () => !alive(mine) || mine.hist !== H || !H.open || H.seq !== tok;
+  H.loadingDiff = true;
+  if (!quiet) renderHistory();                      // shows aria-busy and the disabled buttons
   try {
     const q = `path=${encodeURIComponent(mine.data.path)}&a=${a}` + (b === null ? "" : `&b=${b}`);
     const res = await mine.ctx.api("GET", `/api/conti/history/diff?${q}`);
-    if (!alive(mine) || !mine.hist.open) return;
-    mine.hist.view = { a, b, diff: res };
-    if (!quiet) mine.hist.mode = "list";
+    if (stale()) return;
+    H.view = { a, b, diff: res };
+    if (!quiet) H.mode = "list";
   } catch (e) {
-    if (!alive(mine) || e.error === "aborted" || !mine.hist.open) return;
+    if (e.error === "aborted" || stale()) return;
+    H.loadingDiff = false;
     mine.ctx.toast(e.message, "error");
-  } finally {
-    if (alive(mine)) mine.hist.loadingDiff = false;
+    renderHistory();
+    return;
   }
-  if (!alive(mine) || !mine.hist.open || !mine.hist.view) return;
+  H.loadingDiff = false;
   renderHistory();
   if (!quiet) {
     const t = mine.nodes.hist.querySelector("#hist-title");
@@ -2222,6 +2253,8 @@ function compareView() {
   const { a, b, diff } = H.view;
   const back = h("button", { type: "button", class: "btn btn-sm" }, "← 이력 목록");
   back.addEventListener("click", () => {
+    H.seq += 1;                                     // a diff still on its way must not bring the view back
+    H.loadingDiff = false;
     H.view = null;
     renderHistory();
     const box = S.nodes.hist.querySelector(`#hist-pick-${a}`);
@@ -2249,7 +2282,7 @@ function compareView() {
   else if (!diff.changes.length) kids.push(h("p", { class: "muted", role: "status" }, "바뀐 점이 없어요"));
   else {
     kids.push(h("ul", { class: "hist-changes", "aria-label": "바뀐 점" },
-      ...diff.changes.map((c) => h("li", { class: `hist-change is-${c.kind}` }, changeText(c, c.kind === "added" ? sectionName(c) : "")))));
+      ...collapseChanges(diff.changes).map((c) => h("li", { class: `hist-change is-${c.kind}` }, changeText(c, c.kind === "added" ? sectionName(c) : "")))));
   }
   return h("div", { class: "hist-cmp" }, ...kids);
 }
@@ -2281,8 +2314,9 @@ function sideBySide(diff) {
     h("ol", { class: "hist-side-list", "aria-label": "컷 나란히 보기" },
       ...rows.map((r) => {
         const word = STATUS_TEXT[r.status];
+        const what = r.fields.length ? `${word}: ${r.fields.map(fieldText).join(", ")}. ` : `${word}. `;
         return h("li", { class: `hist-pair is-${r.status}` },
-          word ? h("span", { class: "sr-only" }, `${word}: `) : null,
+          word ? h("span", { class: "sr-only" }, what) : null,
           cellFor(r.l, r.status, "l", r.fields), cellFor(r.r, r.status, "r", r.fields));
       })));
 }
@@ -2301,5 +2335,6 @@ export function unmount() {
   stopPolling();
   closeMenu(false);
   clearUndo();
+  document.removeEventListener("keydown", onHistKey);
   S = null;
 }

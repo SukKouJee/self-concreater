@@ -131,3 +131,17 @@ def test_align_cuts_moved_and_by_index():
     assert run_js(moved) == [["same", "b", "b"], ["same", "c", "c"], ["moved", "a", "a"]]
     by_index = ("m.alignCuts([{n:1},{n:2}], [{n:1}], [{kind:'removed',n_from:2,n_to:null}]).map(r => r.status)")
     assert run_js(by_index) == ["same", "removed"]
+
+
+def test_collapse_changes_merges_time_only_section_runs():
+    code = ("m.collapseChanges([{kind:'added',n_from:null,n_to:1},{kind:'total',field:'total_sec',from:1200,to:1204},"
+            "{kind:'changed',field:'script',section:0,from:'a',to:'a'},{kind:'changed',field:'script',section:1,from:'b',to:'b'},"
+            "{kind:'changed',field:'script',section:2,from:'c',to:'x'},{kind:'changed',field:'script',section:3,from:'d',to:'d'}])"
+            ".map(c => c.kind === 'shifted' ? m.changeText(c) : c.kind + ':' + (c.section ?? ''))")
+    assert run_js(code) == ["added:", "total:", "뒤 섹션 2개 시간이 밀렸어요 (+0:04)", "changed:2", "뒤 섹션 1개 시간이 밀렸어요 (+0:04)"]
+
+
+def test_collapse_changes_without_total_has_no_delta():
+    code = ("m.collapseChanges([{kind:'changed',field:'script',section:0,from:'a',to:'a'}]).map(m.changeText)")
+    assert run_js(code) == ["뒤 섹션 1개 시간이 밀렸어요"]
+    assert run_js("m.collapseChanges([{kind:'removed',n_from:2}]).length") == 1
