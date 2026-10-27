@@ -135,6 +135,20 @@ async function load() {
   if (alive(mine)) paintAll();
 }
 
+// "다시 시도": reload once; clicks while that request is in flight are ignored.
+async function retryLoad(key) {
+  const mine = F;
+  if (!mine || mine.busy.has(key)) return;
+  mine.busy.add(key);
+  markBusy(key, true);
+  try {
+    await load();
+  } finally {
+    mine.busy.delete(key);
+    if (alive(mine)) markBusy(key, false);
+  }
+}
+
 // One verdict / folder / suggestion action. Returns the response or null (error shown as a toast).
 async function act(key, method, route, body) {
   const mine = F;
@@ -179,7 +193,7 @@ function paintHead() {
 
 function folderSlot() {
   if (F.error && !F.view) {
-    return [h("p", { class: "error", role: "alert" }, F.error), btn("다시 시도", { "data-fkey": "retry" }, () => load())];
+    return [h("p", { class: "error", role: "alert" }, F.error), btn("다시 시도", { "data-fkey": "retry", "aria-disabled": busy("retry") }, () => retryLoad("retry"))];
   }
   if (!F.view) return [h("p", { class: "muted", role: "status" }, "불러오는 중…")];
   const v = F.view;
@@ -415,7 +429,7 @@ function cutsSlot() {
   const v = F.view;
   // A failed reload keeps the last view on screen; say so (folderSlot only shows errors before the first view).
   const top = F.error && F.view
-    ? [h("p", { class: "error", role: "alert" }, F.error), btn("다시 시도", { "data-fkey": "retry-view" }, () => load())]
+    ? [h("p", { class: "error", role: "alert" }, F.error), btn("다시 시도", { "data-fkey": "retry-view", "aria-disabled": busy("retry-view") }, () => retryLoad("retry-view"))]
     : [];
   if (!v || !v.folders.length) return top;
   const matched = !!v.matched_at || v.cuts.some((c) => c.user);

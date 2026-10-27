@@ -986,3 +986,11 @@ def test_view_survives_corrupt_scene_cache(client, rel, saved):
     assert status == 200, body
     cut = next(c for c in body["cuts"] if c["id"] == cid)
     assert cut["choice"]["frames"] == [] and cut["choice"]["name"] is None
+
+
+def test_complete_reprocesses_corrupt_transcript(home, saved):
+    seed_scenes(FID, [])
+    (footage.footage_dir(FID) / "transcript.json").write_text("{half", encoding="utf-8")
+    assert api_footage._complete(FID) is None
+    (footage.footage_dir(FID) / "transcript.json").write_text(json.dumps({"segments": []}), encoding="utf-8")
+    assert api_footage._complete(FID) is not None

@@ -417,6 +417,12 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+def _read_record(base: Path) -> dict[str, Any] | None:
+    """scenes.json 캐시. 없거나 깨졌거나 status가 없으면 None(다시 처리한다)."""
+    record = _read_json(base / "scenes.json")
+    return record if record is not None and isinstance(record.get("status"), str) else None
+
+
 def _scene_record(path: Path, fid: str, base: Path, report: Progress | None) -> dict[str, Any]:
     """장면을 뽑아 scenes.json에 남긴다. retry(잠김 등)는 남기지 않아 다음 처리 때 다시 해 본다."""
     record: dict[str, Any] = {"schema": SCHEMA, "fid": fid, "name": path.name}
@@ -467,7 +473,7 @@ def process_file(path: str | Path, progress: Progress | None = None, run_stt: bo
     base.mkdir(parents=True, exist_ok=True)
     report = safe_progress(progress)
 
-    record = _read_json(base / "scenes.json") or _scene_record(path, fid, base, report)
+    record = _read_record(base) or _scene_record(path, fid, base, report)
     if record["status"] != "done":
         return _result(record, None)
     transcript = _transcript(path, base, report) if run_stt else _read_json(base / "transcript.json")
@@ -478,7 +484,7 @@ def _result(record: dict[str, Any], transcript: dict[str, Any] | None) -> dict[s
     result = {k: v for k, v in record.items() if k != "schema"}
     result["transcript"] = None
     if transcript is not None:
-        result["transcript"] = transcript["segments"]
+        result["transcript"] = transcript.get("segments")
         if transcript.get("stt_missing"):
             result["stt_missing"] = True
         if transcript.get("error"):
@@ -490,7 +496,7 @@ def cached_result(fid: str) -> dict[str, Any] | None:
     """process_file이 남긴 캐시만 읽는다(처리하지 않는다). scenes.json이 없으면 None.
     받아쓰기를 아직 안 했으면(transcript.json 없음) transcript는 None."""
     base = footage_dir(fid)
-    record = _read_json(base / "scenes.json")
+    record = _read_record(base)
     if record is None:
         return None
     transcript = _read_json(base / "transcript.json") if record["status"] == "done" else None

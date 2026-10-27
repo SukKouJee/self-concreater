@@ -147,8 +147,8 @@ def _complete(fid: str) -> dict | None:
     cached = footage.cached_result(fid)
     if cached is None:
         return None
-    if cached["status"] == "done" and not (footage.footage_dir(fid) / "transcript.json").is_file():
-        return None
+    if cached["status"] == "done" and footage._read_json(footage.footage_dir(fid) / "transcript.json") is None:
+        return None                            # 받아쓰기가 없거나 깨졌다: 다시 처리한다
     return cached
 
 

@@ -514,7 +514,7 @@ def test_rematch_offers_unseen_scenes_first_when_capped(saved, fake):
     state = fm.match(saved, files)
     first = offered_starts(f.calls)
     assert first == [i * 2.0 for i in range(120)]
-    assert state["seen_scenes"] == sorted(f"{FID_B}@{i * 2.0:.2f}" for i in range(120))
+    assert state["seen_scenes"] == {f"{FID_B}@{i * 2.0:.2f}": 1 for i in range(120)}
     f.calls.clear()
     fm.match(saved, files)
     second = offered_starts(f.calls)
@@ -585,3 +585,101 @@ def test_failed_batch_keeps_previous_verdict_of_its_cuts(saved, fake, monkeypatc
     assert cuts[ids[0]]["kind"] == "auto" and cuts[ids[0]]["choice"] == before[ids[0]]["choice"]
     assert cuts[ids[1]]["kind"] == "review" and cuts[ids[1]]["reason"] == fm.FAIL_REASON
     assert cuts[ids[1]]["candidates"] == before[ids[1]]["candidates"]
+
+
+# --- Residual fixes ---------------------------------------------------------------------
+
+def high_at_230(ids):
+    def respond(payload, fl):
+        if any(s["start"] == 230.0 for s in payload.get("scenes", [])):
+            return answer({ids[3]: [m(FID_B, 230.0, 232.0, "high")]})
+        return answer()
+    return respond
+
+
+def test_edited_cut_is_rejudged_not_carried(saved, fake):
+    ids = cut_ids(saved)
+    files = many_scenes()
+    fake(high_at_230(ids))
+    assert fm.match(saved, files)["cuts"][ids[3]]["kind"] == "auto"
+    n = next(c["n"] for c in conti._load_conti(saved)["cuts"] if c["id"] == ids[3])
+    conti.update_cut(saved, n, {"guide": "완전히 다른 장면: 젓가락 클로즈업"})
+    fake(lambda p, fl: answer())
+    entry = fm.match(saved, files)["cuts"][ids[3]]
+    assert entry["kind"] == "review" and entry["candidates"] == []
+
+
+def test_text_candidate_not_carried_when_cut_becomes_image_cut(saved, fake):
+    ids = cut_ids(saved)
+    fake(verdict_responder(ids))
+    assert fm.match(saved, talk_files())["cuts"][ids[0]]["kind"] == "auto"     # 글자로 찾음
+    fake(lambda p, fl: answer())
+    files = [result(FID_A, [], []), *many_scenes()]                         # 받아쓰기 없음 → 사진 컷
+    entry = fm.match(saved, files)["cuts"][ids[0]]
+    assert entry["kind"] == "review" and entry["candidates"] == []
+
+
+def test_rematch_cycles_least_recently_seen_scenes(saved, fake):
+    files = many_scenes()
+    f = fake(lambda p, fl: answer())
+    fm.match(saved, files)
+    fm.match(saved, files)
+    f.calls.clear()
+    fm.match(saved, files)
+    third = offered_starts(f.calls)
+    assert third[:10] == [i * 2.0 for i in range(110, 120)]                # 가장 오래전에 본 장면부터
+    assert len(third) == 120
+
+
+def test_old_list_form_of_seen_scenes_is_read(saved, fake):
+    state = fm.load_state(saved)
+    state["seen_scenes"] = [f"{FID_B}@{i * 2.0:.2f}" for i in range(120)]
+    fm.save_state(saved, state)
+    f = fake(lambda p, fl: answer())
+    fm.match(saved, many_scenes())
+    assert offered_starts(f.calls)[:10] == [i * 2.0 for i in range(120, 130)]
+
+
+def test_seen_scenes_of_unusable_files_are_pruned(saved, fake):
+    state = fm.load_state(saved)
+    state["seen_scenes"] = {f"{FID_C}@1.00": 3}
+    fm.save_state(saved, state)
+    fake(lambda p, fl: answer())
+    seen = fm.match(saved, many_scenes(10))["seen_scenes"]
+    assert f"{FID_C}@1.00" not in seen and f"{FID_B}@0.00" in seen
+
+
+def test_failed_image_batch_drops_old_candidate_rejected_by_other_batch(saved, fake):
+    ids = cut_ids(saved)
+    files = many_scenes(24)
+
+    def first(payload, fl):
+        if payload["scenes"][0]["start"] == 0.0:
+            return answer({ids[3]: [m(FID_B, 0.0, 2.0, "high")]})
+        return answer()
+    fake(first)
+    assert fm.match(saved, files)["cuts"][ids[3]]["kind"] == "auto"
+
+    def second(payload, fl):
+        if payload["scenes"][0]["start"] == 16.0:
+            raise ScriptError("claude_failed", "실패")
+        return answer()                                   # 0초 장면을 다시 보고 아니라고 했다
+    fake(second)
+    with pytest.raises(ScriptError):
+        fm.match(saved, files)
+    entry = fm.load_state(saved)["cuts"][ids[3]]
+    assert entry["kind"] == "review" and entry["candidates"] == [] and entry["reason"] == fm.FAIL_REASON
+
+
+@pytest.mark.parametrize("bad", [True, float("nan"), float("inf")])
+def test_carry_rejects_bool_and_non_finite_spans(saved, fake, bad):
+    ids = cut_ids(saved)
+    files = many_scenes()
+    fake(high_at_230(ids))
+    fm.match(saved, files)
+    state = fm.load_state(saved)
+    state["cuts"][ids[3]]["candidates"][0]["end"] = bad
+    fm.save_state(saved, state)
+    fake(lambda p, fl: answer())
+    entry = fm.match(saved, files)["cuts"][ids[3]]
+    assert entry["kind"] == "review" and entry["candidates"] == []

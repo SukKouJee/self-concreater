@@ -1052,6 +1052,14 @@ def test_footage_reload_error_shown_when_view_exists():
     body = js[start: js.index("\n}\n", start)]
     assert "F.error && F.view" in body
     assert 'h("p", { class: "error", role: "alert" }, F.error)' in body
-    assert 'btn("다시 시도", { "data-fkey": "retry-view" }, () => load())' in body
+    assert 'btn("다시 시도", { "data-fkey": "retry-view", "aria-disabled": busy("retry-view") }, () => retryLoad("retry-view"))' in body
     # the error goes first, before the no-folders early return
     assert body.index("F.error && F.view") < body.index("if (!v || !v.folders.length)")
+
+
+def test_footage_retry_ignores_clicks_while_reloading():
+    js = (STATIC_DIR / "footage-area.js").read_text(encoding="utf-8")
+    start = js.index("async function retryLoad(")
+    body = js[start: js.index("\n}\n", start)]
+    assert "mine.busy.has(key)" in body and "await load()" in body and "markBusy(key, false)" in body
+    assert js.count("() => retryLoad(") == 2 and "() => load())" not in js

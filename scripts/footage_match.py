@@ -7,8 +7,9 @@
 - 사진은 장면 모음 이미지 1장 = 1장. 호출당 IMAGES_PER_CALL장, 한 번 처리에 IMAGES_PER_RUN장.
   사진 컷은 한 호출에 같이 묶여 같은 사진들을 보고, 말이 적은 장면부터 보낸다(말 없는 컷은 대개 말 없는 장면).
   상한 때문에 못 본 장면이 남았는데 확신도 높은 후보가 없는 사진 컷은 review + CAP_REASON.
-  보낸 장면은 seen_scenes(scene_key)에 남겨 다음 맞추기는 보낸 적 없는 장면부터 보낸다(상한이 있어도 차례로 모두 본다).
-  이번에 다시 보내지 않은 장면에서 앞서 찾은 AI 후보는 이어받는다(파일을 아직 쓸 수 있으면).
+  보낸 장면은 seen_scenes({scene_key: 맞추기 번호})에 남겨 다음 맞추기는 보낸 적 없는 장면, 그다음 가장 오래전에
+  보낸 장면부터 보낸다(상한이 있어도 돌아가며 모두 본다). 이번에 다시 보내지 않은 장면에서 앞서 찾은 AI 후보는
+  컷 지문(sig: 컷 내용 + 맞춘 방식)이 같은 사진 컷만 이어받는다(파일을 아직 쓸 수 있으면).
 - 판정 kind: auto(확신도 high 후보를 선택), review(후보는 있지만 high 없음 / 상한), missing(후보 없음),
   사용자 pinned(고른 구간 고정) / not_filmed(못 찍음 고정). 사용자 판정(user: true)은 다시 맞춰도 그대로 둔다.
 - 저장은 파일 지문(fid)만 쓴다. 원본이 사라졌는지는 화면에 보일 때 연결 폴더로 따로 확인한다(F7).
@@ -18,11 +19,12 @@
   후보는 key(파일 + 구간)로 가리킨다(다시 맞추면 순서가 바뀌므로 번호로 가리키지 않는다).
 - 묶음 하나가 실패해도(시간 초과, 다시 물어도 형식 오류) 나머지 묶음은 계속 묻고, 성공한 결과를 저장한 뒤
   첫 오류를 다시 던진다. 실패한 묶음의 컷은 review + FAIL_REASON(high 후보를 다른 묶음에서 찾았으면 auto).
-  새 후보를 하나도 못 받았으면 이전 판정(후보)을 그대로 두고 이유만 FAIL_REASON.
+  새 후보를 하나도 못 받은 글자 컷은 이전 판정(후보)을 그대로 두고 이유만 FAIL_REASON(사진 컷은 이어받을 후보로).
   로그인·설치·설정 문제(FATAL_CODES)는 남은 묶음을 부르지 않고 멈춘다(그 컷들도 FAIL_REASON).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import threading
@@ -313,6 +315,21 @@ def _cut_view(cut: dict, labels: list[str]) -> dict[str, Any]:
             "guide": cut.get("guide") or "", "action": cut.get("action") or "", "size": cut.get("size") or ""}
 
 
+SIG_KEYS = ("section", "line", "guide", "action", "size")
+
+
+def cut_sig(cut: dict, labels: list[str], mode: str) -> str:
+    """컷 내용(섹션·대사·가이드·행동·샷 크기)과 맞춘 방식(text|images)의 지문. 판정에 남겨, 컷을 고쳤거나
+    방식이 바뀌면 앞서 찾은 후보를 이어받지 않고 다시 판정한다(번호·id는 넣지 않는다: 앞에 컷을 넣어도 그대로)."""
+    view = _cut_view(cut, labels)
+    body = json.dumps({**{k: view[k] for k in SIG_KEYS}, "mode": mode}, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha1(body.encode("utf-8")).hexdigest()[:12]
+
+
+def _finite(value: Any) -> bool:
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+
+
 def _chunks(items: list[Any], size: int) -> Iterable[list[Any]]:
     for i in range(0, len(items), size):
         yield items[i:i + size]
@@ -332,11 +349,21 @@ def scene_key(fid: str, start: float) -> str:
     return f"{fid}@{float(start):.2f}"
 
 
+def _seen_runs(value: Any) -> dict[str, int]:
+    """seen_scenes: {scene_key: 마지막으로 AI에 보낸 맞추기 번호}. 예전 목록 형식은 모두 0번으로 읽는다."""
+    if isinstance(value, dict):
+        return {k: int(v) for k, v in value.items() if isinstance(k, str) and _finite(v)}
+    if isinstance(value, list):
+        return {k: 0 for k in value if isinstance(k, str)}
+    return {}
+
+
 def _scene_pool(usable: list[dict], transcripts: dict[str, list[dict]],
-                seen: set[str] | frozenset[str] = frozenset()) -> list[_Scene]:
-    """모음 이미지가 있는 장면. 지난 맞추기에서 AI에 보낸 적 없는 장면(seen에 없음)부터,
-    그 안에서는 말이 적은 장면부터(같으면 파일·시간 순)."""
-    pool: list[tuple[bool, int, int, _Scene]] = []
+                seen: dict[str, int] | None = None) -> list[_Scene]:
+    """모음 이미지가 있는 장면. AI에 보낸 적 없는 장면부터, 그다음은 가장 오래전에 보낸 장면부터
+    (여러 번 맞추면 모든 장면을 돌아가며 본다). 같으면 말이 적은 장면부터, 그다음 파일·시간 순."""
+    seen = seen or {}
+    pool: list[tuple[int, int, int, _Scene]] = []
     for order, r in enumerate(usable):
         base = footage.footage_dir(r["fid"])
         for s in r.get("scenes") or []:
@@ -345,7 +372,7 @@ def _scene_pool(usable: list[dict], transcripts: dict[str, list[dict]],
                 continue
             start, end = float(s["start"]), float(s["end"])
             text = _speech(transcripts, r["fid"], start, end)
-            pool.append((scene_key(r["fid"], start) in seen, len(_norm(text)), order,
+            pool.append((seen.get(scene_key(r["fid"], start), -1), len(_norm(text)), order,
                          _Scene(r["fid"], start, end, text, image)))
     pool.sort(key=lambda p: (p[0], p[1], p[2], p[3].start))
     return [p[3] for p in pool]
@@ -468,7 +495,7 @@ def match(conti_path: str | Path, files_results: list[dict], now: float | None =
     unseen = False
     looked: list[_Scene] = []          # 이번에 AI가 답한 묶음의 장면
     if image_cuts:
-        pool = _scene_pool(usable, transcripts, set(before.get("seen_scenes") or []))
+        pool = _scene_pool(usable, transcripts, _seen_runs(before.get("seen_scenes")))
         shown = min(len(pool), IMAGES_PER_RUN)
         unseen = len(pool) > shown
         cuts_payload = [_cut_view(c, labels) for c in image_cuts]
@@ -484,6 +511,8 @@ def match(conti_path: str | Path, files_results: list[dict], now: float | None =
 
     image_ids = {c["id"] for c in image_cuts}
     usable_fids = {r["fid"] for r in usable}
+    sigs = {c["id"]: cut_sig(c, labels, "images") for c in image_cuts}
+    sigs.update({c["id"]: cut_sig(c, labels, "text") for c, _ in text_cuts})
 
     def reason(cid: str) -> str | None:
         if cid in batches.failed:
@@ -491,14 +520,16 @@ def match(conti_path: str | Path, files_results: list[dict], now: float | None =
         return CAP_REASON if unseen and cid in image_ids else None
 
     def carried(cid: str) -> list[dict]:
-        """지난 AI 후보 중 이번에 다시 보지 않은 장면의 것(상한 때문에 매번 보내는 장면이 바뀌어도 앞서 찾은 것을 남긴다)."""
-        if cid not in image_ids:
+        """지난 AI 후보 중 이번에 다시 보지 않은 장면의 것(상한 때문에 매번 보내는 장면이 바뀌어도 앞서 찾은 것을 남긴다).
+        사진 컷이고 컷 내용·맞춘 방식이 지난번과 같을 때만(sig). 고친 컷은 처음부터 다시 판정한다."""
+        prev = before["cuts"].get(cid) or {}
+        if cid not in image_ids or prev.get("sig") != sigs.get(cid):
             return []
         out = []
-        for c in (before["cuts"].get(cid) or {}).get("candidates") or []:
+        for c in prev.get("candidates") or []:
             fid = c.get("fid")
             if fid not in usable_fids or c.get("score") not in CONFIDENCES \
-                    or not all(isinstance(c.get(k), (int, float)) for k in ("start", "end")):
+                    or not (_finite(c.get("start")) and _finite(c.get("end")) and c["start"] < c["end"]):
                 continue                   # 손으로 고쳐 형식이 틀린 후보는 이어받지 않는다
             start, end = float(c["start"]), float(c["end"])
             if any(s.fid == fid and _overlap(s.start, s.end, start, end) > 0 for s in looked):
@@ -507,11 +538,15 @@ def match(conti_path: str | Path, files_results: list[dict], now: float | None =
                         "why": str(c.get("why") or "")})
         return out
 
-    # 실패한 묶음에서 새 후보를 하나도 못 받은 컷은 None: 저장할 때 이전 판정을 두고 이유만 FAIL_REASON
-    entries: dict[str, dict[str, Any] | None] = {
-        cid: None if cid in batches.failed and not found
-        else _entry_from(found + carried(cid), transcripts, reason(cid))
-        for cid, found in batches.matches.items()}
+    # 글자 컷이 실패해 새 후보를 하나도 못 받았으면 None: 저장할 때 이전 판정을 두고 이유만 FAIL_REASON.
+    # 사진 컷은 이어받을 후보(carried: 이번에 다시 보고 아니라고 한 장면·쓸 수 없는 파일은 뺀다)로 다시 정한다.
+    entries: dict[str, dict[str, Any] | None] = {}
+    for cid, found in batches.matches.items():
+        if cid in batches.failed and not found and cid not in image_ids:
+            entries[cid] = None
+        else:
+            entry = _entry_from(found + carried(cid), transcripts, reason(cid))
+            entries[cid] = {**entry, "sig": sigs[cid]} if cid in sigs else entry
     offered = {scene_key(s.fid, s.start) for s in looked}
     suggestions = batches.suggestions
     for s in suggestions:
@@ -524,7 +559,11 @@ def match(conti_path: str | Path, files_results: list[dict], now: float | None =
             if previous.get("user"):
                 continue
             state["cuts"][cid] = entry if entry is not None else _ai_verdict({**previous, "reason": FAIL_REASON})
-        state["seen_scenes"] = sorted(set(state.get("seen_scenes") or []) | offered)
+        runs = {k: v for k, v in _seen_runs(state.get("seen_scenes")).items()
+                if k.rsplit("@", 1)[0] in usable_fids}          # 지금 쓸 수 없는 파일의 장면은 잊는다
+        run = max(runs.values(), default=0) + 1
+        runs.update({k: run for k in offered})
+        state["seen_scenes"] = dict(sorted(runs.items()))
         chosen = [{"fid": e["choice"]["fid"], "start": e["choice"]["start"], "end": e["choice"]["end"]}
                   for e in state["cuts"].values() if e.get("choice")]
         state["suggestions"] = _merge_suggestions(state["suggestions"], suggestions, chosen)

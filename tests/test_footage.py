@@ -515,3 +515,11 @@ def test_cached_result_treats_corrupt_cache_as_missing(home, name):
         assert cached is None                  # 다음 처리 때 다시 뽑는다
     else:
         assert cached is not None and cached["transcript"] is None
+
+
+def test_cached_result_none_when_record_has_no_status(home):
+    fid = "0123456789ab-100-1"
+    base = footage.footage_dir(fid)
+    base.mkdir(parents=True, exist_ok=True)
+    (base / "scenes.json").write_text(json.dumps({"schema": 1, "fid": fid}), encoding="utf-8")
+    assert footage.cached_result(fid) is None
