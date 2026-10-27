@@ -13,25 +13,6 @@ def _review_item(item_id: str) -> dict:
     return dict(new_item(item_id), state="awaiting", ask="review")
 
 
-def test_append_items_returns_new_indexes() -> None:
-    job = Job("collect", [new_item("a")])
-
-    indexes = job.append_items([new_item("b"), new_item("c")])
-
-    assert indexes == [1, 2]
-    assert [i["id"] for i in job.items] == ["a", "b", "c"]
-
-
-def test_append_items_copies_input() -> None:
-    job = Job("collect")
-    source = new_item("a")
-
-    job.append_items([source])
-    source["state"] = "failed"
-
-    assert job.items[0]["state"] == "waiting"
-
-
 def test_task_queue_is_fifo_and_zero_timeout_does_not_block() -> None:
     job = Job("collect")
     job.push_task({"kind": "x", "n": 1})
@@ -164,22 +145,16 @@ def test_close_failed_still_keeps_review_items() -> None:
     assert job.items[1]["state"] == "failed"
 
 
-def test_review_done_and_idle_status() -> None:
+def test_review_done_false_while_a_review_waits() -> None:
     job = Job("collect", [_review_item("a")])
 
-    job.set_idle_status()
-
-    assert job.status == "awaiting"
     assert not job.review_done()
 
 
 def test_review_done_true_when_no_awaiting_review() -> None:
     job = Job("collect", [dict(new_item("a"), state="saved")])
 
-    job.set_idle_status()
-
     assert job.review_done()
-    assert job.status == "running"
 
 
 # ---- Task 3: queue open/close, status sync, adopting reviews ----------------------------

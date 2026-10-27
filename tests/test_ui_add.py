@@ -212,10 +212,6 @@ def review(client, job_id, item_id, **body):
     return client.json("POST", f"/api/add/{job_id}/review/{item_id}", body)
 
 
-def save_all(client, job_id):
-    return client.json("POST", f"/api/add/{job_id}/save-all", {})
-
-
 def in_review(i):
     return lambda job: job["items"][i]["state"] == "awaiting" and job["items"][i]["ask"] == "review"
 
@@ -386,58 +382,6 @@ def test_status_done_when_last_review_resolved_while_idle(client, fakes):
     assert job["summary"] == {"saved": 1, "skipped": 1, "failed": 0, "stage_text": "단계 1"}
 
 
-def test_save_all_saves_only_current_reviews_and_reports_each(client, fakes):
-    entered, release = gate(fakes, C)
-    job = start_add(client, [url(A), url(B), url(C)])
-    wait_for(client, job["id"], lambda j: in_review(0)(j) and in_review(1)(j))
-    assert entered.wait(5)
-
-    status, data = save_all(client, job["id"])
-
-    assert status == 200
-    assert data["results"] == [{"id": A, "ok": True, "message": None}, {"id": B, "ok": True, "message": None}]
-    assert [i["state"] for i in data["job"]["items"][:2]] == ["saved", "saved"]
-    release.set()
-    job = wait_for(client, job["id"], in_review(2))   # 그 뒤에 끝난 영상은 다시 확인을 받는다
-    time.sleep(0.2)
-    assert snap(client, job["id"])["items"][2]["state"] == "awaiting"
-    assert [w["vid"] for w in fakes.writes] == [A, B]
-
-
-def test_save_all_continues_after_one_failure(client, fakes):
-    fakes.write_errors = [ScriptError("write_failed", "md를 쓰지 못했습니다")]
-    job = start_add(client, [url(A), url(B)])
-    wait_for(client, job["id"], lambda j: in_review(0)(j) and in_review(1)(j))
-
-    status, data = save_all(client, job["id"])
-
-    assert status == 200
-    assert data["results"] == [{"id": A, "ok": False, "message": "md를 쓰지 못했습니다"},
-                               {"id": B, "ok": True, "message": None}]
-    a, b = data["job"]["items"]
-    assert (a["state"], a["ask"], a["message"]) == ("awaiting", "review", "md를 쓰지 못했습니다")
-    assert b["state"] == "saved"
-    assert [w["vid"] for w in fakes.writes] == [B]
-
-
-def test_save_all_reports_unexpected_error_and_keeps_review(client, fakes):
-    fakes.write_errors = [OSError("디스크 가득 참")]
-    job = start_add(client, [url(A)])
-    wait_for(client, job["id"], in_review(0))
-    status, data = save_all(client, job["id"])
-    assert status == 200
-    assert data["results"][0]["ok"] is False and "OSError" in data["results"][0]["message"]
-    assert in_review(0)(data["job"])
-
-
-def test_save_all_with_nothing_to_review(client, fakes):
-    fakes.fetch_status[A] = "exists"
-    job = start_add(client, [url(A)])
-    wait_for(client, job["id"], finished)
-    status, data = save_all(client, job["id"])
-    assert status == 200 and data["results"] == []
-
-
 def test_reviews_survive_cancel(client, fakes):
     entered, release = gate(fakes, B)
     job = start_add(client, [url(A), url(B)])
@@ -538,22 +482,40 @@ def test_new_job_adopts_leftover_reviews(client, fakes):
     assert fakes.shot_ctx_calls == [A]
 
 
-def test_new_job_adopts_reviews_even_after_shots_only_job(client, fakes):
+def test_shots_only_is_refused_while_reviews_wait(client, fakes):
     fakes.fetch_errors[B] = ScriptError("blocked", "유튜브가 요청을 막았습니다")
     old = start_add(client, [url(A), url(B)])
     old = wait_for(client, old["id"], finished)
     assert old["status"] == "stopped" and in_review(0)(old)
     fakes.pending = [C]
+
+    status, body = client.json("POST", "/api/add/shots-only", {"category": CAT})
+
+    assert status == 400 and body["error"] == "reviews_pending"
+    assert body["message"] == "확인을 기다리는 영상이 있어요. 먼저 저장하거나 건너뛰어 주세요"
+    status, body = client.json("GET", "/api/jobs/current?kind=collect")
+    assert body["job"]["id"] == old["id"] and in_review(0)(body["job"])
+    review(client, old["id"], A, action="skip")
     status, body = client.json("POST", "/api/add/shots-only", {"category": CAT})
     assert status == 200
     wait_for(client, body["job"]["id"], finished)
 
-    new = start_add(client, [url(D)])
 
-    assert [i["id"] for i in new["items"]] == [A, url(D)]
-    assert in_review(0)(new) and new["items"][0]["preview"]["summary"] == "한 줄 요약"
-    moved = snap(client, old["id"])["items"][0]
-    assert (moved["state"], moved["message"]) == ("skipped", "새 작업으로 옮김")
+def test_current_prefers_stopped_job_with_reviews_over_newer_finished_job(client, fakes):
+    fakes.fetch_errors[B] = ScriptError("blocked", "유튜브가 요청을 막았습니다")
+    old = start_add(client, [url(A), url(B)])
+    old = wait_for(client, old["id"], finished)
+    assert in_review(0)(old)
+    newer = client.app.jobs.start("collect", lambda job: job.finish("done", None), items=[jobs.new_item(C, step="shots")],
+                                  category=CAT)
+    wait_for(client, newer.id, finished)
+
+    status, body = client.json("GET", "/api/jobs/current?kind=collect")
+
+    assert status == 200 and body["job"]["id"] == old["id"]
+    review(client, old["id"], A, action="skip")
+    status, body = client.json("GET", "/api/jobs/current?kind=collect")
+    assert body["job"]["id"] == newer.id
 
 
 def test_add_while_cancelled_job_winds_down_says_stopping(client, fakes):
@@ -660,8 +622,6 @@ def test_review_routes_refuse_non_collect_job(client, fakes):
     job = wait_for(client, body["job"]["id"], finished)
     status, body = review(client, job["id"], A, action="save")
     assert status == 400 and body["error"] == "not_awaiting"
-    status, body = save_all(client, job["id"])
-    assert status == 200 and body["results"] == []
 
 
 def test_old_decision_route_refuses_collect(client, fakes):

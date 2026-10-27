@@ -3,7 +3,7 @@
 작업 줄 모델: 워커 하나(`Collector`)가 줄에서 할 일을 하나씩 꺼낸다(받기·분석은 영상 하나씩).
 - collect: fetch → cuts → videomd.context → Claude 분석 → 확인 대기(`state="awaiting", ask="review"`).
   확인을 기다리지 않고 곧바로 다음 할 일로 간다.
-- 저장(`POST /api/add/<작업>/review/<항목>` save, save-all)은 요청을 받은 HTTP 스레드가 `take_review` 관문을 지나
+- 저장(`POST /api/add/<작업>/review/<항목>` save)은 요청을 받은 HTTP 스레드가 `take_review` 관문을 지나
   바로 md를 쓴다. 샷 분류 옵션이면 그 영상의 shots 할 일을 줄 뒤에 붙인다. 다시 분석(reanalyze)도 줄 뒤에 붙는다.
 - 줄이 비고 확인 대기가 없으면 작업이 done으로 끝난다. 작업 중에 넣은 링크는 같은 줄 끝에 붙고(같은 영상은 빼고),
   옵션·카테고리는 항목마다 `opts`로 들고 있다.
@@ -71,6 +71,7 @@ MSG_REANALYZE_FAILED = "다시 분석하지 못했습니다"
 MSG_JOB_STOPPED = "작업이 멈춰 다시 분석할 수 없습니다. 링크를 다시 넣어 주세요"
 MSG_JOB_STOPPING = "작업을 멈추는 중입니다. 잠시 뒤 다시 넣어 주세요"
 MSG_USE_REVIEW = "레퍼런스 확인은 /api/add/<작업>/review/<항목> 경로로 보내 주세요"
+MSG_REVIEWS_PENDING = "확인을 기다리는 영상이 있어요. 먼저 저장하거나 건너뛰어 주세요"
 MSG_NO_FRAMES = "컷 통계가 없어 샷 분류를 건너뜁니다"
 COLLECT_ROWS = ("fetch", "cuts", "analyze")
 SHOTS_ROW = "shots"
@@ -918,31 +919,14 @@ def _shots_pending(req: Request) -> dict:
 @route("POST", "/api/add/shots-only")
 def _shots_only(req: Request) -> dict:
     category = _category(req.json)
+    if req.app.jobs.latest_where(KIND, _has_leftover_reviews) is not None:
+        # 샷 분류 보강도 collect 작업이라, 돌기 시작하면 멈춘 작업의 확인 대기 카드가 화면에서 가려진다
+        raise ScriptError("reviews_pending", MSG_REVIEWS_PENDING)
     llm.check()
     pending = shots.pending(category)["pending"]
     items = [new_item(vid, step="shots") for vid in pending]
     job = req.app.jobs.start(KIND, run_shots_only(category), items=items, category=category)
     return {"job": job.snapshot()}
-
-
-@route("POST", r"/api/add/(?P<job_id>[^/]+)/save-all")
-def _save_all(req: Request, job_id: str) -> dict:
-    """지금 확인 대기인 영상을 모두 저장한다. 하나가 실패해도 나머지는 계속하고, 영상별 결과를 돌려준다."""
-    job = req.app.jobs.get(job_id)
-    collector = _collector(job)
-    results: list[dict[str, Any]] = []
-    if collector is None:
-        return {"job": job.snapshot(), "results": results}
-    ids = [i["id"] for i in job.items if i["state"] == "awaiting" and i.get("ask") == "review"]
-    for item_id in ids:
-        try:
-            message = collector.save_review(job, item_id, None)
-        except ScriptError as e:
-            results.append({"id": item_id, "ok": False, "message": e.message})
-            continue
-        results.append({"id": item_id, "ok": True, "message": message})
-    collector.after_review(job)
-    return {"job": job.snapshot(), "results": results}
 
 
 @route("POST", r"/api/add/(?P<job_id>[^/]+)/review/(?P<item_id>.+)")
@@ -971,7 +955,11 @@ def _review(req: Request, job_id: str, item_id: str) -> dict:
 
 @route("GET", "/api/jobs/current")
 def _current(req: Request) -> dict:
-    job = req.app.jobs.current(req.query.get("kind") or KIND)
+    """그 kind의 가장 최근 작업. collect는 끝난 작업이면 확인 대기가 남은 멈춘 작업을 먼저 돌려준다(그 카드를 잃지 않게)."""
+    kind = req.query.get("kind") or KIND
+    job = req.app.jobs.current(kind)
+    if kind == KIND and job is not None and not job.is_active():
+        job = req.app.jobs.latest_where(KIND, _has_leftover_reviews) or job
     return {"job": job.snapshot() if job else None}
 
 

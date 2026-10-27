@@ -12,7 +12,7 @@
 - 결정 대기: 작업 스레드가 `update(i, state="awaiting")` 뒤 `wait_decision(item_id)`로 Event를 기다리고,
   HTTP 스레드가 `decide(item_id, decision)`로 결정을 넣고 깨운다. Event는 먼저 오는 쪽이 만든다(경합 없음).
 - collect는 "작업 줄" 모델이다: 워커 스레드 하나가 `next_task()`로 줄에서 할 일을 꺼내 처리하고, 새 링크·저장 요청은
-  HTTP 스레드가 `append_items()`/`push_task()`로 붙인다. 줄 대기는 `_lock`에 묶인 Condition이라 상태 확인과 대기가 원자적이고,
+  HTTP 스레드가 `append_queued()`/`push_task()`로 붙인다. 줄 대기는 `_lock`에 묶인 Condition이라 상태 확인과 대기가 원자적이고,
   `cancel()`이 기다리는 `next_task()`도 깨운다(JobCancelled).
   저장 확인을 기다리는 항목(`state=="awaiting"`, `ask=="review"`)은 분석 워커가 멈춰도 그대로 남고(`_close`가 건드리지 않음),
   `take_review()`가 잠금 안에서 `running`으로 바꾸는 쪽만 저장을 진행한다(저장 버튼 중복 클릭 방지).
@@ -142,13 +142,6 @@ class Job:
         if self._cancelled.is_set():
             raise JobCancelled
 
-    def append_items(self, items: list[dict]) -> list[int]:
-        """항목을 끝에 붙이고 새 인덱스들을 돌려준다."""
-        with self._lock:
-            start = len(self._items)
-            self._items.extend(dict(i) for i in items)
-            return list(range(start, len(self._items)))
-
     def push_task(self, task: dict) -> None:
         """워커 줄 끝에 할 일을 넣고 기다리는 `next_task()`를 깨운다."""
         with self._tasks_cond:
@@ -258,12 +251,6 @@ class Job:
     def set_summary(self, summary: dict | None) -> None:
         with self._lock:
             self._summary = summary
-
-    def set_idle_status(self) -> None:
-        """워커가 할 일이 없을 때: 확인 대기 항목이 있으면 status를 awaiting으로, 없으면 그대로."""
-        with self._lock:
-            if self._status in ACTIVE and any(i["state"] == "awaiting" for i in self._items):
-                self._status = "awaiting"
 
     def review_done(self) -> bool:
         """확인 대기(`ask=="review"`) 항목이 하나도 남지 않았으면 True."""
