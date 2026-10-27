@@ -572,6 +572,9 @@ function renderEditor() {
   S.nodes.list.addEventListener("keydown", onListKey);
   wireDrag(S.nodes.list);
   S.nodes.list.parentElement.addEventListener("scroll", closeMenu, { passive: true });
+  if (typeof ResizeObserver === "function") {
+    new ResizeObserver(() => S.nodes.list.parentElement.style.setProperty("--tools-h", `${S.nodes.tools.hidden ? 0 : S.nodes.tools.offsetHeight}px`)).observe(S.nodes.tools);
+  }
   renderHeader();
   renderCutList();
   renderPanel();
@@ -1187,6 +1190,8 @@ function openMenu(btn, cut) {
     it.addEventListener("click", () => {
       if (en.disabled) return;
       closeMenu(false);
+      const row = S.nodes.list.querySelector(`[data-nav="cut:${cut.id}"]`);
+      if (row) row.focus({ preventScroll: true });
       en.run();
     });
     return it;
@@ -1573,7 +1578,7 @@ function editForm(cut) {
 // ---- save one cut --------------------------------------------------------------------------
 
 function setPanelBusy(busy) {
-  for (const b of S.nodes.panel.querySelectorAll("button, input, textarea")) {
+  for (const b of S.nodes.panel.querySelectorAll("button, input, textarea, select")) {
     if (busy) { if (!b.disabled) { b.disabled = true; b.dataset.busy = "1"; } }
     else if (b.dataset.busy) { b.disabled = false; delete b.dataset.busy; }
   }
@@ -1582,7 +1587,7 @@ function setPanelBusy(busy) {
 
 async function saveCut(n, fields, focusKey) {
   const mine = S;
-  if (mine.saving) return;
+  if (mine.saving || mine.editing) return;
   if (mine.conflict) { mine.ctx.toast("파일이 밖에서 바뀌었습니다. 먼저 다시 불러오세요", "error"); return; }
   mine.saving = true;
   setPanelBusy(true);
@@ -1651,6 +1656,7 @@ async function editCuts(op) {
   if (mine.conflict) { mine.ctx.toast("파일이 밖에서 바뀌었습니다. 먼저 다시 불러오세요", "error"); return null; }
   mine.editing = true;
   mine.nodes.list.setAttribute("aria-busy", "true");
+  setPanelBusy(true);
   renderTools();
   try {
     const res = await mine.ctx.api("POST", "/api/conti/cuts", { path: mine.data.path, hash: mine.hash, ...op });
@@ -1681,6 +1687,7 @@ async function editCuts(op) {
       mine.editing = false;
       mine.nodes.list.removeAttribute("aria-busy");
       renderTools();
+      if (mine.nodes.panel) setPanelBusy(false);
     }
   }
 }
@@ -1745,7 +1752,9 @@ async function deleteCut(id) {
   if (!res) return;
   const next = res.cuts[Math.min(index, res.cuts.length - 1)];
   showEdited(next ? next.id : null, false);
-  showUndo({ n: cut.n, index, section: cut.section, fields });
+  const prev = cuts[index - 1];
+  const nextCut = cuts[index + 1];
+  showUndo({ n: cut.n, index, section: cut.section, fields, prevId: prev ? prev.id : null, nextId: nextCut ? nextCut.id : null });
 }
 
 // 8-second toast with a 되돌리기 button. Stays while the pointer or focus is on it. The restored cut gets a new
@@ -1757,6 +1766,24 @@ function clearUndo() {
   clearTimeout(u.timer);
   u.el.remove();
   document.removeEventListener("keydown", u.onKey);
+}
+
+// Where the deleted cut goes back, from the current list: right after its old previous neighbour, else right
+// before its old next neighbour, else the old index clamped. The old section is only sent when it still fits
+// between the neighbours (otherwise the server infers it).
+function undoPlace(data, info) {
+  const cuts = data.cuts;
+  const pi = info.prevId ? cuts.findIndex((c) => c.id === info.prevId) : -1;
+  const ni = info.nextId ? cuts.findIndex((c) => c.id === info.nextId) : -1;
+  let at;
+  if (pi >= 0) at = pi + 1;
+  else if (ni >= 0) at = ni;
+  else at = Math.min(info.index, cuts.length);
+  const before = cuts[at - 1];
+  const after = cuts[at];
+  const fits = (!before || before.section <= info.section) && (!after || info.section <= after.section)
+    && info.section < data.fm.script.length;
+  return fits ? { at, section: info.section } : { at };
 }
 
 function showUndo(info) {
@@ -1772,11 +1799,13 @@ function showUndo(info) {
   el.addEventListener("focusin", hold);
   el.addEventListener("focusout", arm);
   const run = async () => {
-    if (mine.undo !== u) return;
-    clearUndo();
-    const at = Math.min(info.index, mine.data.cuts.length);
-    const res = await editCuts({ op: "insert", at, section: Math.min(info.section, mine.data.fm.script.length - 1), cut: info.fields });
-    if (res) showEdited(res.cut_id, true);
+    if (mine.undo !== u || mine.editing || mine.saving) return;
+    const place = undoPlace(mine.data, info);
+    hold();
+    const res = await editCuts({ op: "insert", ...place, cut: info.fields });
+    if (!alive(mine)) return;
+    if (res) { if (mine.undo === u) clearUndo(); showEdited(res.cut_id, true); }
+    else if (mine.undo === u) arm();
   };
   undo.addEventListener("click", run);
   u.onKey = (e) => {
