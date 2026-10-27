@@ -4,14 +4,16 @@
   연결 폴더 목록(`folders`)도 거기에 둔다(정규화한 절대 경로, 더하기·빼기는 STATE_LOCK 안에서).
 - 처리 작업: 연결 폴더의 영상을 파일 하나씩 `footage.process_file`로 처리한 뒤(끝난 파일은 캐시로 건너뜀)
   마지막 '맞추기' 항목에서 `footage_match.match`에 **연결된 모든 파일의 결과**를 넘긴다(앞서 처리한 파일도 —
-  빠지면 그 파일로 정한 자동 판정이 지워진다). 취소는 파일 사이와 맞추기 직전에 확인한다(맞추기 호출 도중은 못 멈춤).
+  빠지면 그 파일로 정한 자동 판정이 지워진다). 연결 폴더가 잠시 없으면(드라이브 분리) 지난 처리 때 그 폴더에서 본
+  지문(상태 `folder_fids`)의 캐시 결과도 넘긴다(F7). 취소는 파일 사이와 맞추기 직전에 확인한다(맞추기 호출 도중은 못 멈춤).
   Claude가 준비됐는지는 작업 전에 확인한다(llm.check → 400). collect·footage_clips와는 동시에 돌지 않는다
   (jobs.EXCLUSIVE → `busy`).
 - 화면 응답(`footage_view`): 지금 콘티의 컷만. 후보·선택·새 컷 후보가 가리키는 파일이 지금 연결 폴더에 없으면
   `missing_source: true`(원본 없음, F7). 같은 파일이 같은 자리에 돌아오면(같은 지문) 자동으로 되살아난다.
 - 원본 서빙(`/api/footage/media/<fid>?path=<콘티>`): 그 콘티의 연결 폴더 바로 아래에서 지금 찾은 파일만 내준다.
   실제 경로를 다시 풀어 폴더 밖(링크 탈출·하위 폴더)이면 거절하고, 지문을 다시 계산해 맞을 때만 내준다.
-  폴더를 빼면 곧바로 404. Range(206, Content-Range, Accept-Ranges)를 지원하고 나눠 읽어 보낸다(수 GB 파일).
+  폴더를 빼면 곧바로 404. Range(206, Content-Range, Accept-Ranges)를 지원하고 나눠 읽어 보낸다(수 GB 파일,
+  server.range_response — /files의 컷 파일도 같은 방식).
 - 사진 서빙(`/api/footage/frame/<fid>/<rel>`): footage_dir(fid) 안의 .jpg만. 화면 응답의 후보·선택·새 컷 후보는
   구간과 겹치는 장면의 대표 사진 경로(`frames`, CARD_FRAMES장까지)를 함께 싣는다(카드 사진·재생 못 할 때 대신 보임).
 - 결과물(footage_out): `remaining`(폰용 남은 컷 HTML)·`csv`(위치 목록)는 바로 쓰고 경로·/files 주소를 돌려준다.
@@ -22,7 +24,6 @@ from __future__ import annotations
 
 import ctypes
 import os
-import re
 import sys
 import threading
 import time
@@ -38,14 +39,24 @@ from scripts.common import ScriptError
 from scripts.features import SHOT_SIZES
 from scripts.ui.api_conti import _file_url, rel_path, view_of
 from scripts.ui.jobs import Job, new_item
-from scripts.ui.server import NOT_FOUND, STREAM_CHUNK, FileSlice, Request, Response, _contained, route
+from scripts.ui.server import (  # noqa: F401 - byte_range·RangeNotSatisfiable: 예전 위치에서도 쓸 수 있게
+    MAX_OPEN_RANGE,
+    NOT_FOUND,
+    STREAM_CHUNK,
+    RangeNotSatisfiable,
+    Request,
+    Response,
+    _contained,
+    byte_range,
+    range_response,
+    route,
+)
 
 KIND = "footage"
 CLIPS_KIND = "footage_clips"
 MSG_REENCODED = "다시 압축함"
 MATCH_ITEM = "match"
 CHUNK = STREAM_CHUNK
-MAX_OPEN_RANGE = 8 * 1024 * 1024   # 끝을 정하지 않은 Range(bytes=N-)에 한 번에 내주는 상한
 MEDIA_CACHE_SEC = 5.0             # fid → 파일 찾기 결과를 다시 쓰는 시간(재생 중 잇단 Range 요청)
 DRIVE_REMOTE = 4                  # GetDriveTypeW: 네트워크 드라이브
 MSG_NETWORK = "네트워크 폴더는 아직 지원하지 않아요. PC 폴더로 복사해서 연결해 주세요"
@@ -342,7 +353,25 @@ def _process_one(job: Job, index: int, file: dict) -> dict | None:
     return result
 
 
-def process_target(path: Path, rel: str, files: list[dict]) -> Callable[[Job], None]:
+def _remember_folder_fids(path: Path, linked: list[_Linked]) -> list[str]:
+    """찾은 폴더의 파일 지문을 상태(folder_fids)에 남기고, 지금 없는(분리된) 폴더에서 지난번에 본 지문을 돌려준다.
+    빠진 폴더의 파일도 맞추기에 캐시 결과로 넘겨야 그 파일로 정한 자동 판정이 지워지지 않는다(F7)."""
+    with fmatch.STATE_LOCK:
+        state = fmatch.load_state(path)
+        known: dict[str, list[str]] = dict(state.get("folder_fids") or {})
+        away: list[str] = []
+        for item in linked:
+            if item.missing:
+                away.extend(fid for fid in known.get(item.folder) or [] if isinstance(fid, str))
+            else:
+                known[item.folder] = [f["fid"] for f in item.files]
+        state["folder_fids"] = {k: v for k, v in known.items() if k in state["folders"]}
+        fmatch.save_state(path, state)
+    return away
+
+
+def process_target(path: Path, rel: str, files: list[dict], away: list[str] | None = None) -> Callable[[Job], None]:
+    """away: 분리된 연결 폴더에 있던 지문. 처리하지 않고 끝난 캐시 결과만 맞추기에 넘긴다."""
     def target(job: Job) -> None:
         results: list[dict] = []
         tally = {"processed": 0, "cached": 0, "failed": 0}
@@ -365,6 +394,11 @@ def process_target(path: Path, rel: str, files: list[dict]) -> Callable[[Job], N
                 result = footage.cached_result(file["fid"])
             if result is not None:
                 results.append(result)
+        have = {r.get("fid") for r in results}
+        for fid in dict.fromkeys(away or []):
+            cached = footage.cached_result(fid) if footage.valid_fid(fid) and fid not in have else None
+            if cached is not None and cached["status"] == "done":
+                results.append(cached)
         job.check_cancelled()
         last = len(files)
         job.update(last, state="running", started_at=time.time())
@@ -391,10 +425,12 @@ def _process(req: Request) -> dict:
     state = fmatch.load_state(path)
     if not state["folders"]:
         raise ScriptError("no_folders", MSG_NO_FOLDERS)
-    files = [f for item in _scan_linked(state["folders"]) for f in item.files]
+    linked = _scan_linked(state["folders"])
+    files = [f for item in linked for f in item.files]
     if not files:
         raise ScriptError("no_files", MSG_NO_FILES)
     llm.check()              # claude가 없으면 처리하기 전에 400으로 알린다
+    away = _remember_folder_fids(path, linked)
     items = []
     for f in files:
         item = new_item(f["fid"], title=f["name"], step="scenes")
@@ -402,7 +438,7 @@ def _process(req: Request) -> dict:
             item.update(state="done", step="done", message=MSG_CACHED)
         items.append(item)
     items.append(new_item(MATCH_ITEM, title="맞추기", step="match"))
-    job = req.app.jobs.start(KIND, process_target(path, rel, files), items=items, summary={"path": rel})
+    job = req.app.jobs.start(KIND, process_target(path, rel, files, away), items=items, summary={"path": rel})
     return {"job": job.snapshot()}
 
 
@@ -472,7 +508,12 @@ def _insert(req: Request) -> dict:
     try:
         with fmatch.STATE_LOCK:                # 고정과 숨기기를 한 덩어리로(맞추기 병합이 사이에 끼지 않게)
             fmatch.choose(path, result["cut_id"], found["fid"], start, end)
-            fmatch.hide_suggestion(path, key)  # 넣은 후보는 다시 나오지 않게
+            try:
+                fmatch.hide_suggestion(path, key)  # 넣은 후보는 다시 나오지 않게
+            except ScriptError as e:
+                if e.code != "suggestion_not_found":
+                    raise
+                # 그 사이 맞추기가 끝나 후보 목록이 바뀌었다: 컷은 이미 이었으니 숨길 것이 없을 뿐
     except ScriptError as e:
         raise ScriptError(
             "cut_not_linked",
@@ -540,39 +581,6 @@ def _clips(req: Request) -> dict:
 
 # ---- 원본·사진 서빙 ---------------------------------------------------------------------------
 
-class RangeNotSatisfiable(Exception):
-    """Range가 파일 밖을 가리킨다(416)."""
-
-
-_RANGE_RE = re.compile(r"\s*bytes\s*=\s*(\d*)\s*-\s*(\d*)\s*")
-
-
-def byte_range(header: str | None, size: int, open_cap: int | None = None) -> tuple[int, int] | None:
-    """HTTP Range 한 구간 → (시작, 끝 포함). 없거나 형식이 틀리거나 여러 구간이면 None(전체, RFC 9110은 무시를 허용).
-    파일 밖이면 RangeNotSatisfiable. open_cap: 끝을 정하지 않은 bytes=N-는 이만큼만 내준다
-    (브라우저가 이어서 다시 요청한다 — 멈춘 재생이 원본 파일 핸들과 수 GB 응답을 붙잡고 있지 않게)."""
-    if not header or "," in header:
-        return None
-    m = _RANGE_RE.fullmatch(header)
-    if m is None or not (m.group(1) or m.group(2)):
-        return None
-    if not m.group(1):                         # bytes=-N: 끝에서 N바이트
-        n = int(m.group(2))
-        if n == 0 or size == 0:
-            raise RangeNotSatisfiable
-        return max(0, size - n), size - 1
-    start = int(m.group(1))
-    if m.group(2):
-        end = int(m.group(2))
-    else:
-        end = size - 1 if open_cap is None else start + open_cap - 1
-    if start >= size:
-        raise RangeNotSatisfiable
-    if end < start:
-        return None                            # 끝이 시작보다 앞: 틀린 형식이라 무시한다
-    return start, min(end, size - 1)
-
-
 # (콘티 경로, fid) → (연결 폴더, 파일 경로, 만료 시각). 폴더를 빼면 비운다. 꺼낼 때도 아래 확인을 모두 다시 한다.
 _MEDIA_CACHE: dict[tuple[str, str], tuple[str, str, float]] = {}
 _MEDIA_CACHE_LOCK = threading.Lock()
@@ -629,16 +637,7 @@ def _media(req: Request, fid: str) -> Response | tuple[int, dict]:
     except OSError:
         return NOT_FOUND                       # 확인한 뒤 곧바로 지워졌거나 드라이브가 빠졌다
     ctype = MEDIA_TYPES.get(real.suffix.lower(), "application/octet-stream")
-    ranges = [("Accept-Ranges", "bytes")]
-    try:
-        span = byte_range(req.headers.get("range"), size, MAX_OPEN_RANGE)
-    except RangeNotSatisfiable:
-        return Response(416, b"", "text/plain; charset=utf-8", [*ranges, ("Content-Range", f"bytes */{size}")])
-    if span is None:
-        return Response(200, b"", ctype, ranges, file=FileSlice(real, 0, size, CHUNK))
-    start, end = span
-    return Response(206, b"", ctype, [*ranges, ("Content-Range", f"bytes {start}-{end}/{size}")],
-                    file=FileSlice(real, start, end - start + 1, CHUNK))
+    return range_response(real, size, ctype, req.headers.get("range"), MAX_OPEN_RANGE, CHUNK)
 
 
 @route("GET", r"/api/footage/frame/(?P<fid>[^/]+)/(?P<rel>.+)")

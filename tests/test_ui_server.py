@@ -459,3 +459,54 @@ def test_fixed_port_in_use_is_rejected(monkeypatch, tmp_path):
         assert err.value.code == "port_unavailable"
     finally:
         _stop(srv, thread)
+
+
+# --- /files 영상: Range로 나눠 보낸다(컷 파일 미리보기, 4K는 수백 MB) ----------------------------
+
+CLIP = bytes(range(256)) * 8          # 2048 bytes
+
+
+@pytest.fixture
+def clip_file(tmp_path):
+    path = tmp_path / "drafts" / "a-cuts" / "01_a.mp4"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(CLIP)
+    return "/files/drafts/a-cuts/01_a.mp4"
+
+
+@pytest.fixture
+def no_whole_read(monkeypatch):
+    def boom(path):
+        raise AssertionError(f"read whole file: {path}")
+    monkeypatch.setattr(server, "_file_response", boom)
+
+
+def test_files_video_serves_byte_range(client, clip_file, no_whole_read):
+    status, headers, raw = client.call("GET", clip_file, headers={"Range": "bytes=10-19"})
+    assert status == 206 and raw == CLIP[10:20]
+    assert headers["Content-Range"] == f"bytes 10-19/{len(CLIP)}" and headers["Accept-Ranges"] == "bytes"
+    assert headers["Content-Type"] == "video/mp4"
+
+
+def test_files_video_without_range_streams_whole_file(client, clip_file, no_whole_read):
+    status, headers, raw = client.call("GET", clip_file)
+    assert status == 200 and raw == CLIP and headers["Accept-Ranges"] == "bytes"
+
+
+def test_files_video_open_range_is_capped(client, clip_file, monkeypatch):
+    monkeypatch.setattr(server, "MAX_OPEN_RANGE", 100)
+    status, headers, raw = client.call("GET", clip_file, headers={"Range": "bytes=0-"})
+    assert status == 206 and raw == CLIP[:100]
+    assert headers["Content-Range"] == f"bytes 0-99/{len(CLIP)}"
+
+
+def test_files_video_range_outside_file_is_416(client, clip_file):
+    status, headers, _ = client.call("GET", clip_file, headers={"Range": f"bytes={len(CLIP)}-"})
+    assert status == 416 and headers["Content-Range"] == f"bytes */{len(CLIP)}"
+
+
+def test_byte_range_lives_in_server_and_is_shared():
+    from scripts.ui import api_footage
+    assert api_footage.byte_range is server.byte_range
+    assert api_footage.RangeNotSatisfiable is server.RangeNotSatisfiable
+    assert server.MAX_OPEN_RANGE == api_footage.MAX_OPEN_RANGE == 8 * 1024 * 1024

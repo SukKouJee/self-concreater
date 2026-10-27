@@ -413,9 +413,13 @@ async function stopJob() {
 
 function cutsSlot() {
   const v = F.view;
-  if (!v || !v.folders.length) return [];
+  // A failed reload keeps the last view on screen; say so (folderSlot only shows errors before the first view).
+  const top = F.error && F.view
+    ? [h("p", { class: "error", role: "alert" }, F.error), btn("다시 시도", { "data-fkey": "retry-view" }, () => load())]
+    : [];
+  if (!v || !v.folders.length) return top;
   const matched = !!v.matched_at || v.cuts.some((c) => c.user);
-  const out = [h("h3", { class: "fc-h" }, "컷별 판정")];
+  const out = [...top, h("h3", { class: "fc-h" }, "컷별 판정")];
   if (!matched) {
     out.push(h("p", { class: "muted hint" }, "아직 맞추지 않았어요. 위의 ‘새 파일 처리하고 맞추기’를 누르면 컷마다 찍었는지 알려 드려요"));
     return out;

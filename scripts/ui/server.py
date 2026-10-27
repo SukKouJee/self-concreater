@@ -7,6 +7,7 @@
   쿠키 이름에 포트를 넣어 같은 127.0.0.1의 다른 포트 서버(이전 실행 등)와 쿠키가 섞이지 않게 한다.
   그 밖의 모든 경로(`/static/` 포함)는 쿠키 `ytc_key_<port>` 또는 헤더 `X-YTC-Key`가 필요하다. 실패는 403 `bad_token`.
 - `/files/<path>`는 작업 폴더 안의 `workspace/frames`, `drafts`, `reports`만 내준다. 그 밖은 모두 404.
+  영상(VIDEO_SUFFIXES, 예: 컷 파일)은 통째로 읽지 않고 Range(`byte_range`, `range_response`)로 나눠 보낸다.
 
 라우트 등록 규약 (다음 Task들이 이 방식으로 붙인다)
 - `@route(method, pattern)`으로 모듈 전역 표 `ROUTES`에 등록한다. pattern은 경로(쿼리 제외, 퍼센트 인코딩 그대로)에
@@ -51,6 +52,8 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 FILE_DIRS: tuple[tuple[str, ...], ...] = (("workspace", "frames"), ("drafts",), ("reports",))
 MAX_BODY = 10 * 1024 * 1024
 STREAM_CHUNK = 1024 * 1024
+MAX_OPEN_RANGE = 8 * 1024 * 1024   # 끝을 정하지 않은 Range(bytes=N-)에 한 번에 내주는 상한
+VIDEO_SUFFIXES = frozenset({".mp4", ".m4v", ".mov", ".mkv", ".webm"})   # /files에서 Range로 나눠 보내는 영상
 PING_TIMEOUT = 1.0
 
 # 라우트 모듈: Task 5/6이 여기에 이름을 더한다(예: "scripts.ui.api_add").
@@ -78,6 +81,11 @@ _CONTENT_TYPES = {
     ".webp": "image/webp",
     ".gif": "image/gif",
     ".ico": "image/x-icon",
+    ".mp4": "video/mp4",
+    ".m4v": "video/mp4",
+    ".mov": "video/quicktime",
+    ".mkv": "video/x-matroska",
+    ".webm": "video/webm",
 }
 
 
@@ -196,6 +204,54 @@ def _file_response(path: Path) -> Response:
     return Response(200, path.read_bytes(), content_type(path))
 
 
+class RangeNotSatisfiable(Exception):
+    """Range가 파일 밖을 가리킨다(416)."""
+
+
+_RANGE_RE = re.compile(r"\s*bytes\s*=\s*(\d*)\s*-\s*(\d*)\s*")
+
+
+def byte_range(header: str | None, size: int, open_cap: int | None = None) -> tuple[int, int] | None:
+    """HTTP Range 한 구간 → (시작, 끝 포함). 없거나 형식이 틀리거나 여러 구간이면 None(전체, RFC 9110은 무시를 허용).
+    파일 밖이면 RangeNotSatisfiable. open_cap: 끝을 정하지 않은 bytes=N-는 이만큼만 내준다
+    (브라우저가 이어서 다시 요청한다 — 멈춘 재생이 원본 파일 핸들과 수 GB 응답을 붙잡고 있지 않게)."""
+    if not header or "," in header:
+        return None
+    m = _RANGE_RE.fullmatch(header)
+    if m is None or not (m.group(1) or m.group(2)):
+        return None
+    if not m.group(1):                         # bytes=-N: 끝에서 N바이트
+        n = int(m.group(2))
+        if n == 0 or size == 0:
+            raise RangeNotSatisfiable
+        return max(0, size - n), size - 1
+    start = int(m.group(1))
+    if m.group(2):
+        end = int(m.group(2))
+    else:
+        end = size - 1 if open_cap is None else start + open_cap - 1
+    if start >= size:
+        raise RangeNotSatisfiable
+    if end < start:
+        return None                            # 끝이 시작보다 앞: 틀린 형식이라 무시한다
+    return start, min(end, size - 1)
+
+
+def range_response(path: Path, size: int, ctype: str, header: str | None, open_cap: int | None,
+                   chunk: int = STREAM_CHUNK) -> Response:
+    """파일을 Range(206·416, Accept-Ranges)에 맞춰 나눠 읽어 보내는 응답. 본문을 메모리에 올리지 않는다."""
+    ranges = [("Accept-Ranges", "bytes")]
+    try:
+        span = byte_range(header, size, open_cap)
+    except RangeNotSatisfiable:
+        return Response(416, b"", "text/plain; charset=utf-8", [*ranges, ("Content-Range", f"bytes */{size}")])
+    if span is None:
+        return Response(200, b"", ctype, ranges, file=FileSlice(path, 0, size, chunk))
+    start, end = span
+    return Response(206, b"", ctype, [*ranges, ("Content-Range", f"bytes {start}-{end}/{size}")],
+                    file=FileSlice(path, start, end - start + 1, chunk))
+
+
 NOT_FOUND = (404, {"error": "not_found", "message": "없는 경로입니다"})
 
 
@@ -227,6 +283,12 @@ def _files(req: Request, rel: str) -> Response | tuple[int, dict]:
     parts = path.relative_to(req.app.root.resolve()).parts
     if not any(parts[: len(prefix)] == prefix and len(parts) > len(prefix) for prefix in FILE_DIRS):
         return NOT_FOUND
+    if path.suffix.lower() in VIDEO_SUFFIXES:     # 컷 파일(4K는 수백 MB): 통째로 읽지 않고 Range로
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return NOT_FOUND
+        return range_response(path, size, content_type(path), req.headers.get("range"), MAX_OPEN_RANGE)
     return _file_response(path)
 
 

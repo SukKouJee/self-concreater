@@ -1044,3 +1044,14 @@ def test_footage_insert_keeps_editor_drafts_and_waits_for_saves():
     assert "편집을 저장한 뒤 넣어 주세요" in area and "getEditorBusy()" in area
     # a playing <video> survives repaints; the error handler checks the area is still mounted
     assert "F.players" in area and "if (!alive(mine)) return;\n    mine.unplayable.add(key);" in area
+
+
+def test_footage_reload_error_shown_when_view_exists():
+    js = (STATIC_DIR / "footage-area.js").read_text(encoding="utf-8")
+    start = js.index("function cutsSlot()")
+    body = js[start: js.index("\n}\n", start)]
+    assert "F.error && F.view" in body
+    assert 'h("p", { class: "error", role: "alert" }, F.error)' in body
+    assert 'btn("다시 시도", { "data-fkey": "retry-view" }, () => load())' in body
+    # the error goes first, before the no-folders early return
+    assert body.index("F.error && F.view") < body.index("if (!v || !v.folders.length)")

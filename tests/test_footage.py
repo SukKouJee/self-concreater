@@ -498,3 +498,20 @@ def test_cli_process_missing_file(home, tmp_path):
     with pytest.raises(ScriptError) as exc:
         footage.main(["process", str(tmp_path / "none.mov")])
     assert exc.value.code == "file_not_found"
+
+
+@pytest.mark.parametrize("name", ["scenes.json", "transcript.json"])
+def test_cached_result_treats_corrupt_cache_as_missing(home, name):
+    fid = "0123456789ab-100-1"
+    base = footage.footage_dir(fid)
+    base.mkdir(parents=True, exist_ok=True)
+    record = {"schema": 1, "fid": fid, "name": "a.mp4", "status": "done", "decoder": "pyav",
+              "duration_sec": 3.0, "scenes": []}
+    (base / "scenes.json").write_text(json.dumps(record), encoding="utf-8")
+    (base / "transcript.json").write_text(json.dumps({"segments": []}), encoding="utf-8")
+    (base / name).write_text("{half writ", encoding="utf-8")
+    cached = footage.cached_result(fid)
+    if name == "scenes.json":
+        assert cached is None                  # 다음 처리 때 다시 뽑는다
+    else:
+        assert cached is not None and cached["transcript"] is None

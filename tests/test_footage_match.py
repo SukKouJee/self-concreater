@@ -496,3 +496,92 @@ def test_load_state_rejects_broken_file(saved):
     with pytest.raises(ScriptError) as e:
         fm.load_state(saved)
     assert e.value.code == "bad_state"
+
+
+# --- Final fix wave -----------------------------------------------------------------------
+
+def many_scenes(n=130):
+    return [result(FID_B, [scene(i, i * 2.0, i * 2.0 + 2.0, FID_B) for i in range(n)], [])]
+
+
+def offered_starts(calls):
+    return [s["start"] for c in calls for s in c["payload"].get("scenes", [])]
+
+
+def test_rematch_offers_unseen_scenes_first_when_capped(saved, fake):
+    files = many_scenes()
+    f = fake(lambda p, fl: answer())
+    state = fm.match(saved, files)
+    first = offered_starts(f.calls)
+    assert first == [i * 2.0 for i in range(120)]
+    assert state["seen_scenes"] == sorted(f"{FID_B}@{i * 2.0:.2f}" for i in range(120))
+    f.calls.clear()
+    fm.match(saved, files)
+    second = offered_starts(f.calls)
+    assert second[:10] == [i * 2.0 for i in range(120, 130)]       # 지난번에 못 본 장면부터
+    assert second[10:] == [i * 2.0 for i in range(110)]
+    assert len(fm.load_state(saved)["seen_scenes"]) == 130
+
+
+def test_scenes_of_failed_image_batch_are_not_marked_seen(saved, fake):
+    def respond(payload, files):
+        if payload["scenes"][0]["start"] == 16.0:
+            raise ScriptError("claude_failed", "실패")
+        return answer()
+    fake(respond)
+    with pytest.raises(ScriptError):
+        fm.match(saved, many_scenes(24))
+    seen = set(fm.load_state(saved)["seen_scenes"])
+    assert f"{FID_B}@{16.0:.2f}" not in seen and f"{FID_B}@{0.0:.2f}" in seen
+
+
+def test_rematch_keeps_ai_candidate_from_scene_not_reoffered(saved, fake):
+    ids = cut_ids(saved)
+    files = many_scenes()
+
+    def first(payload, fl):
+        if any(s["start"] == 230.0 for s in payload["scenes"]):
+            return answer({ids[3]: [m(FID_B, 230.0, 232.0, "high", "컵이 보여요")]})
+        return answer()
+    fake(first)
+    assert fm.match(saved, files)["cuts"][ids[3]]["kind"] == "auto"
+    f = fake(lambda p, fl: answer())
+    state = fm.match(saved, files)
+    assert 230.0 not in offered_starts(f.calls)                        # 이번에는 그 장면을 다시 보내지 않았다
+    entry = state["cuts"][ids[3]]
+    assert entry["kind"] == "auto" and entry["choice"] == {"fid": FID_B, "start": 230.0, "end": 232.0}
+    assert entry["candidates"][0]["why"] == "컵이 보여요"
+
+
+def test_rematch_drops_old_candidate_when_scene_was_reoffered(saved, fake):
+    ids = cut_ids(saved)
+    files = many_scenes()
+
+    def first(payload, fl):
+        if payload["scenes"][0]["start"] == 0.0:
+            return answer({ids[3]: [m(FID_B, 0.0, 2.0, "high")]})
+        return answer()
+    fake(first)
+    fm.match(saved, files)
+    fake(lambda p, fl: answer())                                       # 다시 보고 아니라고 했다
+    entry = fm.match(saved, files)["cuts"][ids[3]]
+    assert entry["kind"] == "review" and entry["candidates"] == [] and entry["reason"] == fm.CAP_REASON
+
+
+def test_failed_batch_keeps_previous_verdict_of_its_cuts(saved, fake, monkeypatch):
+    ids = cut_ids(saved)
+    monkeypatch.setattr(fm, "TEXT_CUTS_PER_CALL", 1)
+    fake(verdict_responder(ids))
+    before = fm.match(saved, talk_files())["cuts"]
+
+    def respond(payload, files):
+        if [c["id"] for c in payload["cuts"]] in ([ids[0]], [ids[1]]):
+            raise ScriptError("claude_failed", "시간 초과")
+        return verdict_responder(ids)(payload, files)
+    fake(respond)
+    with pytest.raises(ScriptError):
+        fm.match(saved, talk_files())
+    cuts = fm.load_state(saved)["cuts"]
+    assert cuts[ids[0]]["kind"] == "auto" and cuts[ids[0]]["choice"] == before[ids[0]]["choice"]
+    assert cuts[ids[1]]["kind"] == "review" and cuts[ids[1]]["reason"] == fm.FAIL_REASON
+    assert cuts[ids[1]]["candidates"] == before[ids[1]]["candidates"]

@@ -88,8 +88,9 @@ def chosen(fid, start, end, kind="auto"):
 
 
 def review(fid, start, end):
-    return {"kind": "review", "choice": None, "reason": "확신도 중간",
-            "candidates": [{"fid": fid, "start": start, "end": end, "confidence": "medium", "speech": "1단계"}]}
+    """맞추기가 실제로 남기는 모양(footage_match._entry_from): 후보는 score·why·text(받아쓴 말)."""
+    match = {"fid": fid, "start": start, "end": end, "confidence": "medium", "why": "그릇이 비슷해요"}
+    return fm._entry_from([match], {fid: [{"start": start, "end": end, "text": "1단계 갑니다 <b>"}]}, None)
 
 
 @pytest.fixture
@@ -377,7 +378,7 @@ def test_remux_seek_overshoot_falls_back_to_reencode(two_cuts, monkeypatch):
 
 @pytest.mark.parametrize("value, expected", [
     ("=cmd|' /C calc'!A0", "'=cmd|' /C calc'!A0"), ("+1", "'+1"), ("-x", "'-x"), ("@sum", "'@sum"),
-    ("a.mp4", "a.mp4"), ("", ""),
+    ("\t=1+1", "'\t=1+1"), ("\r=1+1", "'\r=1+1"), ("a.mp4", "a.mp4"), ("", ""),
 ])
 def test_csv_cell_neutralizes_formulas(value, expected):
     assert footage_out.csv_cell(value) == expected
@@ -419,3 +420,9 @@ def test_remaining_html_keeps_not_filmed_cuts(scene_setup, home):
     path, _, _ = scene_setup
     text = (home / footage_out.remaining_html(path)).read_text("utf-8")
     assert 'class="badge not_filmed">못 찍음' in text
+
+
+def test_remaining_html_shows_candidate_speech(scene_setup, home):
+    path, _, _ = scene_setup
+    text = (home / footage_out.remaining_html(path)).read_text("utf-8")
+    assert "“1단계 갑니다 &lt;b&gt;”" in text             # 후보의 받아쓴 말(text), 이스케이프

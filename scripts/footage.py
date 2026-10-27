@@ -407,10 +407,14 @@ def _write_json(path: Path, data: dict[str, Any]) -> None:
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
+    """캐시 json. 없거나 깨졌으면(반쯤 쓴 파일, 손으로 고친 파일) None: 없는 캐시처럼 다시 만든다."""
     if not path.exists():
         return None
-    data: dict[str, Any] = json.loads(path.read_text("utf-8"))
-    return data
+    try:
+        data = json.loads(path.read_text("utf-8"))
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _scene_record(path: Path, fid: str, base: Path, report: Progress | None) -> dict[str, Any]:

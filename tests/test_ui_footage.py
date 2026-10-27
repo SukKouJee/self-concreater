@@ -905,3 +905,84 @@ def test_view_survives_bad_scene_entries_in_cache(client, rel, saved):
     assert status == 200, body
     cut = next(c for c in body["cuts"] if c["id"] == cid)
     assert cut["choice"]["frames"] == ["frames/s002_0.jpg"]
+
+
+# --- Final fix wave ----------------------------------------------------------------------
+
+def test_unplugged_folder_keeps_its_auto_verdicts_on_rematch(client, rel, saved, tmp_path, fake_process,
+                                                             fake_llm, monkeypatch):
+    day1 = shoot(tmp_path, "1일차", files=("a.mp4",))
+    day2 = shoot(tmp_path, "2일차", files=("b.mp4",))
+    link(client, rel, day1)
+    link(client, rel, day2)
+    ids = [c["id"] for c in conti._load_conti(saved)["cuts"]]
+    fake_process(transcripts={"a.mp4": [{"start": 1.0, "end": 3.0, "text": "4단계 다 먹을 수 있을까요"}]})
+    fake_llm(say_responder(ids))
+    job = client.json("POST", "/api/footage/process", {"path": rel})[1]["job"]
+    assert wait_for(client, job["id"], finished)["status"] == "done"
+    fid_a = footage.fingerprint(day1 / "a.mp4")
+    assert fm.load_state(rel)["cuts"][ids[0]]["kind"] == "auto"
+    day1.rename(day1.with_name("1일차-빠짐"))                       # 외장 드라이브 분리
+    seen = []
+    real = fm.match
+
+    def spy(path, results, now=None):
+        seen.append(sorted(r["name"] for r in results))
+        return real(path, results, now)
+    monkeypatch.setattr(fm, "match", spy)
+    job = client.json("POST", "/api/footage/process", {"path": rel})[1]["job"]
+    assert wait_for(client, job["id"], finished)["status"] == "done"
+    assert seen == [["a.mp4", "b.mp4"]]                         # 빠진 폴더의 파일도 캐시 결과로 넘긴다
+    view = client.json("GET", f"/api/footage?path={q(rel)}")[1]
+    cut0 = view["cuts"][0]
+    assert cut0["kind"] == "auto" and cut0["choice"]["fid"] == fid_a and cut0["choice"]["missing_source"] is True
+
+
+def test_removed_folder_results_not_matched(client, rel, saved, tmp_path, fake_process, fake_llm, monkeypatch):
+    day1 = shoot(tmp_path, "1일차", files=("a.mp4",))
+    day2 = shoot(tmp_path, "2일차", files=("b.mp4",))
+    link(client, rel, day1)
+    link(client, rel, day2)
+    fake_process()
+    fake_llm(lambda payload, files: answer())
+    job = client.json("POST", "/api/footage/process", {"path": rel})[1]["job"]
+    wait_for(client, job["id"], finished)
+    assert client.json("POST", "/api/footage/folders/remove", {"path": rel, "folder": str(day1)})[0] == 200
+    seen = []
+    real = fm.match
+
+    def spy(path, results, now=None):
+        seen.append(sorted(r["name"] for r in results))
+        return real(path, results, now)
+    monkeypatch.setattr(fm, "match", spy)
+    job = client.json("POST", "/api/footage/process", {"path": rel})[1]["job"]
+    wait_for(client, job["id"], finished)
+    assert seen == [["b.mp4"]]                         # 직접 뺀 폴더는 지금처럼 맞추기에서 빠진다
+
+
+def test_insert_suggestion_ok_when_suggestion_vanished_after_pin(client, rel, saved, monkeypatch):
+    key = suggestion_state(rel)
+    before = conti._load_conti(saved)["cuts"]
+
+    def gone(*a, **k):
+        raise ScriptError("suggestion_not_found", "새 컷 후보가 없습니다. 화면을 다시 불러오세요")
+    monkeypatch.setattr(fm, "hide_suggestion", gone)       # 그 사이 맞추기가 끝나 후보 목록이 바뀌었다
+    status, body = client.json("POST", "/api/footage/suggestions/insert",
+                               {"path": rel, "key": key, "after_cut": before[0]["id"],
+                                "hash": conti.content_hash(saved)})
+    assert status == 200, body
+    cut = next(c for c in body["footage"]["cuts"] if c["id"] == body["cut_id"])
+    assert cut["kind"] == "pinned"
+
+
+def test_view_survives_corrupt_scene_cache(client, rel, saved):
+    cid = conti._load_conti(saved)["cuts"][0]["id"]
+    assert client.json("POST", "/api/footage/choose",
+                       {"path": rel, "cut": cid, "fid": FID, "start": 1.0, "end": 2.0})[0] == 200
+    base = footage.footage_dir(FID)
+    base.mkdir(parents=True, exist_ok=True)
+    (base / "scenes.json").write_text("{broken", encoding="utf-8")
+    status, body = client.json("GET", f"/api/footage?path={q(rel)}")
+    assert status == 200, body
+    cut = next(c for c in body["cuts"] if c["id"] == cid)
+    assert cut["choice"]["frames"] == [] and cut["choice"]["name"] is None

@@ -160,7 +160,7 @@ def _candidate_lines(verdict: dict, names: _Names, present: dict[str, Path]) -> 
         fid = cand.get("fid")
         name = names(fid) or "알 수 없는 파일"
         missing = f' <span class="miss">{MISSING_SOURCE}</span>' if fid not in present else ""
-        speech = f" · “{conti._esc(cand['speech'])}”" if cand.get("speech") else ""
+        speech = f" · “{conti._esc(cand['text'])}”" if cand.get("text") else ""
         items.append(f"<li>{conti._esc(name)} {clock(float(cand.get('start') or 0))}–"
                      f"{clock(float(cand.get('end') or 0))}{speech}{missing}</li>")
     return '<ul class="cands">' + "".join(items) + "</ul>" if items else ""
@@ -245,11 +245,11 @@ def remaining_html(conti_file: str | Path, now: float | None = None) -> str:
 
 # ---- 위치 CSV ------------------------------------------------------------------------------
 
-FORMULA_START = ("=", "+", "-", "@")
+FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
 
 
 def csv_cell(value: str) -> str:
-    """엑셀이 수식으로 읽지 않게: =, +, -, @로 시작하는 칸은 앞에 '를 붙인다(파일 이름 등 사용자 문자열)."""
+    """엑셀이 수식으로 읽지 않게: =, +, -, @, 탭, CR로 시작하는 칸은 앞에 '를 붙인다(파일 이름 등 사용자 문자열)."""
     return "'" + value if value.startswith(FORMULA_START) else value
 
 
