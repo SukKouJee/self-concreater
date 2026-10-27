@@ -981,3 +981,50 @@ code { background: var(--chip); padding: 1px 6px; border-radius: 4px; }
 .guide-badge { margin-left: var(--sp-2); font-size: 11px; font-weight: 600; color: var(--muted); border: 1px solid var(--axis);
   border-radius: 6px; padding: 0 8px; line-height: 20px; white-space: nowrap; }
 .guide-badge-done { color: var(--on-ok); background: var(--ok); border-color: var(--ok); }
+
+/* conti history panel: drawer on the right (full-width overlay on narrow screens) */
+.hist-panel { position: fixed; top: var(--topbar-h); right: 0; bottom: 0; width: min(400px, 100vw); z-index: 40; overflow-y: auto;
+  background: var(--surface); border-left: 1px solid var(--grid); box-shadow: var(--elev-2); padding: var(--sp-4); overscroll-behavior: contain; }
+.hist-panel.is-wide { width: min(920px, 100vw); }
+.hist-head, .hist-cmp-bar { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); margin-bottom: var(--sp-3); }
+.hist-head h2 { font-size: 18px; }
+.hist-form { display: flex; flex-direction: column; gap: var(--sp-2); padding-bottom: var(--sp-4); margin-bottom: var(--sp-4); border-bottom: 1px solid var(--grid); }
+.hist-label { font-size: 13px; font-weight: 600; color: var(--ink2); }
+.hist-ideas { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.hist-row { display: flex; gap: var(--sp-2); }
+.hist-name { flex: 1; min-width: 0; min-height: 32px; padding: 4px var(--sp-3); font-size: 14px; }
+.hist-name[aria-invalid="true"] { border-color: var(--danger); }
+.hist-err { margin: 0; font-size: 13px; }
+.hist-err:empty { display: none; }
+.hist-hint { font-size: 13px; margin: 0 0 var(--sp-2); }
+.hist-bar { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-bottom: var(--sp-3); padding: var(--sp-2) var(--sp-3); background: var(--accent-soft); border-radius: var(--radius-sm); }
+.hist-bar[hidden] { display: none; }
+.hist-confirm { flex-basis: 100%; }
+.hist-confirm-text { margin: 0 0 var(--sp-2); font-size: 13px; }
+.hist-list { list-style: none; margin: 0; padding: 0; }
+.hist-item { display: flex; align-items: flex-start; gap: var(--sp-3); padding: var(--sp-2) var(--sp-1); border-top: 1px solid var(--grid); }
+.hist-item.is-picked { background: var(--accent-soft); }
+.hist-item input { margin: 5px 0 0; width: 18px; height: 18px; flex: none; }
+.hist-item-label { display: grid; gap: 1px; min-width: 0; flex: 1; cursor: pointer; }
+.hist-when { font-size: 12px; color: var(--muted); }
+.hist-kind { font-weight: 500; overflow-wrap: anywhere; }
+.hist-kind.is-named { font-weight: 700; }
+.hist-meta { font-size: 12px; }
+.hist-cmp-title { font-size: 13px; margin: 0 0 var(--sp-3); overflow-wrap: anywhere; }
+.hist-changes { list-style: none; margin: 0; padding: 0; }
+.hist-change { padding: var(--sp-2) var(--sp-3); border-top: 1px solid var(--grid); border-left: 3px solid var(--axis); overflow-wrap: anywhere; }
+.hist-change.is-total { font-weight: 600; }
+.hist-side-head, .hist-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--sp-2); }
+.hist-side-head { font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: var(--sp-1); }
+.hist-side-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--sp-2); }
+.hist-cell { border: 1px solid var(--grid); border-radius: var(--radius-sm); padding: var(--sp-2); font-size: 13px; min-width: 0; overflow-wrap: anywhere; }
+.hist-cell-top { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; font-size: 12px; color: var(--ink2); margin-bottom: 2px; }
+.hist-cell.is-empty { border-style: dashed; background: var(--chip); display: flex; align-items: center; }
+.hist-pair.is-removed .hist-cell:first-child { border-style: dashed; }
+.hist-pair.is-removed .hist-cell:first-child .hist-cell-top ~ div { text-decoration: line-through; }
+.hist-pair.is-added .hist-cell:last-child, .hist-pair.is-changed .hist-cell:last-child, .hist-pair.is-moved .hist-cell:last-child { border-color: var(--ink2); border-width: 2px; }
+.hist-tag { font-weight: 700; color: var(--ink); background: var(--chip); border: 1px solid var(--axis); border-radius: 6px; padding: 0 6px; }
+.is-diff { background: var(--accent-soft); outline: 1px solid var(--axis); border-radius: 3px; text-decoration: underline; text-underline-offset: 3px; }
+.hist-sub { font-size: 12px; }
+@media (max-width: 900px) { .hist-panel, .hist-panel.is-wide { left: 0; width: auto; border-left: 0; } }
+@media (max-width: 520px) { .hist-panel { padding: var(--sp-3); } .hist-row { flex-wrap: wrap; } .hist-cell { padding: 6px; font-size: 12px; } }

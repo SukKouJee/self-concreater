@@ -82,3 +82,52 @@ def test_step_move():
 def test_shot_sizes_match_server():
     from scripts.features import SHOT_SIZES
     assert run_js("m.SHOT_SIZES") == SHOT_SIZES
+
+
+# ---- history panel helpers ----
+
+def test_kind_text_and_version_label():
+    assert run_js("m.KIND_TEXT") == {"created": "처음 만듦", "auto": "자동", "named": None,
+                                     "before_recreate": "다시 만들기 전", "external": "md 직접 수정", "restored": "되돌림"}
+    assert run_js("m.versionLabel({kind:'named',name:'촬영 전'})") == "촬영 전"
+    assert run_js("m.versionLabel({kind:'auto',name:null})") == "자동"
+    assert run_js("m.versionLabel({kind:'restored',name:'되돌림: 촬영 전'})") == "되돌림: 촬영 전"
+    assert run_js("m.versionLabel({kind:'restored',name:null})") == "되돌림"
+
+
+def test_fmt_when():
+    assert run_js("m.fmtWhen('2026-10-27T09:03:05')") == "10/27 09:03"
+    assert run_js("m.fmtWhen('nonsense')") == "nonsense"
+
+
+def test_change_text_six_kinds():
+    assert run_js("m.changeText({kind:'changed',n_from:3,n_to:3,field:'line',from:'A',to:'B'})") == "컷 3 대사: 「A」 → 「B」"
+    assert run_js("m.changeText({kind:'removed',n_from:7,n_to:null})") == "컷 7 삭제"
+    assert run_js("m.changeText({kind:'added',n_from:null,n_to:9}, '본문')") == "컷 9 새로 생김(본문)"
+    assert run_js("m.changeText({kind:'added',n_from:null,n_to:9})") == "컷 9 새로 생김"
+    assert run_js("m.changeText({kind:'moved',n_from:4,n_to:6})") == "컷 4 → 6으로 옮김"
+    assert run_js("m.changeText({kind:'moved',n_from:6,n_to:4})") == "컷 6 → 4로 옮김"
+    assert run_js("m.changeText({kind:'changed',n_from:2,n_to:2,field:'sec',from:4,to:6})") == "컷 2 길이 4초 → 6초"
+    assert run_js("m.changeText({kind:'total',field:'total_sec',from:900,to:908})") == "총 길이 15:00 → 15:08"
+
+
+def test_change_text_section_and_edge_values():
+    assert run_js("m.changeText({kind:'changed',field:'script',section:1,from:'a',to:'b'})") == "섹션 2 대사 바뀜"
+    assert run_js("m.changeText({kind:'changed',field:'script',section:0,from:'a',to:'a'})") == "섹션 1 시간 바뀜"
+    assert run_js("m.changeText({kind:'changed',n_from:1,n_to:1,field:'caption',from:'x',to:''})") == "컷 1 자막: 「x」 → (비움)"
+    long = "가" * 40
+    assert run_js(f"m.changeText({{kind:'changed',n_from:1,n_to:1,field:'guide',from:'{long}',to:'b'}})") == f"컷 1 가이드: 「{'가' * 24}…」 → 「b」"
+
+
+def test_align_cuts_by_id():
+    code = ("m.alignCuts([{id:'a',n:1},{id:'b',n:2},{id:'c',n:3}], [{id:'a',n:1},{id:'c',n:2},{id:'d',n:3}], "
+            "[{kind:'changed',n_from:3,n_to:2,field:'line'}]).map(r => [r.status, r.l && r.l.id, r.r && r.r.id, r.fields])")
+    assert run_js(code) == [["same", "a", "a", []], ["removed", "b", None, []], ["changed", "c", "c", ["line"]], ["added", None, "d", []]]
+
+
+def test_align_cuts_moved_and_by_index():
+    moved = ("m.alignCuts([{id:'a',n:1},{id:'b',n:2},{id:'c',n:3}], [{id:'b',n:1},{id:'c',n:2},{id:'a',n:3}], "
+             "[{kind:'moved',n_from:1,n_to:3}]).map(r => [r.status, r.l.id, r.r.id])")
+    assert run_js(moved) == [["same", "b", "b"], ["same", "c", "c"], ["moved", "a", "a"]]
+    by_index = ("m.alignCuts([{n:1},{n:2}], [{n:1}], [{kind:'removed',n_from:2,n_to:null}]).map(r => r.status)")
+    assert run_js(by_index) == ["same", "removed"]

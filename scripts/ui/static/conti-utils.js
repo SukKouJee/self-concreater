@@ -72,3 +72,93 @@ export function stepMove(cuts, id, dir) {
 
 // Same list as scripts/features.py SHOT_SIZES (tests/test_conti_utils_js.py keeps the two in step).
 export const SHOT_SIZES = ["익스트림 클로즈업", "클로즈업", "바스트", "미디엄", "와이드", "탑뷰", "POV", "인서트"];
+
+// ---- history panel ----------------------------------------------------------------------------
+
+// Version kinds as shown in the list. `named` has no fixed text: the name the user gave is the label.
+export const KIND_TEXT = {
+  created: "처음 만듦", auto: "자동", named: null, before_recreate: "다시 만들기 전", external: "md 직접 수정", restored: "되돌림",
+};
+
+export function versionLabel(v) {
+  if (v.kind === "named") return v.name || "이름 붙인 버전";
+  if (v.kind === "restored") return v.name || KIND_TEXT.restored;
+  return KIND_TEXT[v.kind] || v.kind;
+}
+
+// "2026-10-27T09:03:05" -> "10/27 09:03" (the server writes local time without a zone).
+export function fmtWhen(iso) {
+  const m = /^\d{4}-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(String(iso || ""));
+  return m ? `${m[1]}/${m[2]} ${m[3]}:${m[4]}` : String(iso || "");
+}
+
+const FIELD_TEXT = {
+  line: "대사", caption: "자막", action: "장면 설명", guide: "가이드", sfx: "효과음", size: "샷 크기", angle: "앵글",
+  sec: "길이", ref_frame: "참고 프레임", section: "섹션",
+};
+export const CUT_FIELD_KEYS = ["section", "size", "angle", "sec", "action", "line", "caption", "sfx", "guide", "ref_frame"];
+export const fieldText = (f) => FIELD_TEXT[f] || f;
+
+function plain(v) {
+  if (v === null || v === undefined || v === "") return "(비움)";
+  return typeof v === "number" ? String(Math.round(v * 100) / 100) : String(v);
+}
+
+function quoted(v) {
+  const s = plain(v);
+  if (s === "(비움)") return s;
+  const chars = [...s];
+  return `「${chars.length > 24 ? `${chars.slice(0, 24).join("")}…` : s}」`;
+}
+
+// 으로/로 after a number: 3 삼, 6 육, 0 영/십/백 end in a consonant (not ㄹ).
+const euro = (n) => (/[360]$/.test(String(n)) ? "으로" : "로");
+
+// One line of the change list. `sectionName` (optional) is the section a new cut sits in.
+export function changeText(c, sectionName) {
+  if (c.kind === "total") return `총 길이 ${clock(c.from)} → ${clock(c.to)}`;
+  if (c.kind === "removed") return `컷 ${c.n_from} 삭제`;
+  if (c.kind === "added") return `컷 ${c.n_to} 새로 생김${sectionName ? `(${sectionName})` : ""}`;
+  if (c.kind === "moved") return `컷 ${c.n_from} → ${c.n_to}${euro(c.n_to)} 옮김`;
+  if (c.field === "script") return `섹션 ${Number(c.section) + 1} ${c.from === c.to ? "시간" : "대사"} 바뀜`;
+  const n = c.n_to ?? c.n_from;
+  if (c.field === "sec") return `컷 ${n} 길이 ${plain(c.from)}초 → ${plain(c.to)}초`;
+  if (c.field === "size" || c.field === "angle" || c.field === "section") return `컷 ${n} ${fieldText(c.field)}: ${plain(c.from)} → ${plain(c.to)}`;
+  return `컷 ${n} ${fieldText(c.field)}: ${quoted(c.from)} → ${quoted(c.to)}`;
+}
+
+// Pair the two cut lists of a diff row by row for the side-by-side view. Walks the right (newer) side in order;
+// a left cut with no partner is a "removed" row where it stood, a right cut with no partner is "added".
+// Cuts are matched by id when all have one, else by position (same rule as the server).
+export function alignCuts(left, right, changes) {
+  const byId = [...left, ...right].every((c) => c.id);
+  const partner = (r, i) => (byId ? left.find((l) => l.id === r.id) : left[i]);
+  const hasPartner = (l, i) => (byId ? right.some((r) => r.id === l.id) : i < right.length);
+  const fieldsOf = (r) => changes.filter((c) => c.kind === "changed" && c.field !== "script" && c.n_to === r.n).map((c) => c.field);
+  const movedTo = new Set(changes.filter((c) => c.kind === "moved").map((c) => c.n_to));
+  const used = new Set();
+  const rows = [];
+  let li = 0;
+  let ri = 0;
+  while (li < left.length || ri < right.length) {
+    while (li < left.length && used.has(left[li])) li += 1;
+    if (li < left.length && !hasPartner(left[li], li)) {
+      rows.push({ status: "removed", l: left[li], r: null, fields: [] });
+      li += 1;
+    } else if (ri < right.length) {
+      const l = partner(right[ri], ri);
+      if (!l) {
+        rows.push({ status: "added", l: null, r: right[ri], fields: [] });
+      } else {
+        used.add(l);
+        const fields = fieldsOf(right[ri]);
+        const status = movedTo.has(right[ri].n) ? "moved" : fields.length ? "changed" : "same";
+        rows.push({ status, l, r: right[ri], fields });
+      }
+      ri += 1;
+    } else {
+      break;
+    }
+  }
+  return rows;
+}

@@ -5,7 +5,9 @@
 // 모든 컷 저장은 마지막으로 받은 hash를 보낸다. 파일이 밖에서 바뀌면 서버가 conti_changed로 거절한다.
 import { h, filesUrl } from "/static/dom.js";
 import { sectionLabelName } from "/static/labels.js";
-import { SHOT_SIZES, canRemove, dropTarget, fmtClock, fmtDelta, snapSec, stepMove } from "/static/conti-utils.js";
+import {
+  SHOT_SIZES, alignCuts, canRemove, changeText, dropTarget, fmtClock, fmtDelta, fmtWhen, snapSec, stepMove, versionLabel,
+} from "/static/conti-utils.js";
 
 const POLL_MS = 1000;
 const POLL_MAX_MS = 15000;
@@ -110,7 +112,7 @@ function freshState(el, params, ctx) {
     data: null, hash: null, sel: null, conflict: false,
     scenes: new Map(), alts: new Map(), forms: new Map(),
     nodes: {}, live: null, lastAnnounce: "",
-    editing: false, undo: null, menu: null, drag: null,
+    editing: false, undo: null, menu: null, drag: null, hist: freshHist(),
   };
 }
 
@@ -583,6 +585,7 @@ function renderEditor() {
   renderHeader();
   renderCutList();
   renderPanel();
+  mountHistory();
 }
 
 function renderHeader() {
@@ -596,6 +599,7 @@ function renderHeader() {
     h("span", {}, `말 속도 ${fm.speech_cps}자/초`));
   if (fm.category) meta.append(h("span", { class: "tag" }, fm.category));
   const actions = h("div", { class: "btn-row" });
+  actions.append(historyButton());
   if (d.html) actions.append(h("a", { class: "btn", href: filesUrl(d.html), target: "_blank", rel: "noopener" }, "스토리보드 HTML"));
   head.replaceChildren(h("div", { class: "conti-title" }, h("h1", {}, fm.title || d.path), actions), meta, srtRow());
   const warns = d.warnings || [];
@@ -1605,6 +1609,7 @@ async function saveCut(n, fields, focusKey) {
     if ("size" in fields) mine.scenes.delete(n);
     if ("sec" in fields) { const alt = mine.alts.get(n); if (alt) alt.max = null; }
     mine.ctx.toast(SAVED_TOAST, "info");
+    refreshHistory();
     // Stay "saving" through the reload so a second save cannot race it with a stale hash.
     await loadEditor(true);
     if (!alive(mine)) return;
@@ -1715,6 +1720,7 @@ function showEdited(focusId, select) {
     }
     announce(`컷 ${cut.n}`);
   }
+  refreshHistory();
 }
 
 async function insertCut(at, section) {
@@ -1904,6 +1910,381 @@ function dropCut(id, place) {
   if (target.to === from && target.section === cuts[from].section) return;
   if (target.section !== cuts[from].section && !canRemove(cuts, id)) { S.ctx.toast(LAST_CUT_TEXT, "error"); return; }
   moveCut(id, target.to, target.section);
+}
+
+// ---- history panel ----------------------------------------------------------------------------
+// 이력 button in the header opens a panel on the right (a full-width overlay on narrow screens): name the current
+// state, pick up to two versions, compare (change list, or two cut lists side by side) and restore. Esc closes
+// it and gives the focus back to the button. Server calls: GET /api/conti/history (+ /diff), POST /name, /restore.
+
+const NAME_MAX = 30;
+const NAME_IDEAS = ["촬영 전", "편집 시작 전", "컷 순서 확정"];
+const RESTORE_NOTE = "지금 상태도 이력에 남아 있어 다시 되돌릴 수 있어요";
+const STATUS_TEXT = { same: "", changed: "바뀜", moved: "옮김", removed: "빠짐", added: "새 컷" };
+
+function freshHist() {
+  return { open: false, versions: null, error: null, pick: [], view: null, mode: "list", confirm: null, busy: false, loadingDiff: false };
+}
+
+function histBtn() {
+  return S.nodes.header && S.nodes.header.querySelector("[data-hist-btn]");
+}
+
+function historyButton() {
+  const btn = h("button", {
+    type: "button", class: "btn", "data-hist-btn": "1", "aria-expanded": String(S.hist.open), "aria-controls": "hist-panel",
+  }, "이력");
+  btn.addEventListener("click", () => (S.hist.open ? closeHistory(true) : openHistory()));
+  return btn;
+}
+
+function mountHistory() {
+  const old = S.nodes.hist;
+  if (old) old.remove();
+  S.nodes.hist = null;
+  if (!S.hist.open) return;
+  const panel = h("aside", { class: "hist-panel", id: "hist-panel", "aria-labelledby": "hist-title" });
+  panel.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !e.defaultPrevented) { e.preventDefault(); closeHistory(true); }
+  });
+  S.nodes.hist = panel;
+  S.el.append(panel);
+  renderHistory();
+}
+
+function renderHistory() {
+  const panel = S.nodes.hist;
+  if (!panel) return;
+  const H = S.hist;
+  const close = h("button", { type: "button", class: "btn btn-sm", "aria-label": "이력 닫기" }, "닫기");
+  close.addEventListener("click", () => closeHistory(true));
+  panel.classList.toggle("is-wide", !!H.view && H.mode === "side");
+  panel.setAttribute("aria-busy", String(H.busy || H.loadingDiff));
+  const kids = [h("div", { class: "hist-head" }, h("h2", { id: "hist-title", tabindex: "-1" }, "이력"), close)];
+  if (H.view) kids.push(compareView());
+  else kids.push(nameBox(), versionList());
+  const focusId = panel.contains(document.activeElement) ? document.activeElement.id : "";
+  panel.replaceChildren(...kids);
+  const again = focusId && panel.querySelector(`#${CSS.escape(focusId)}`);
+  if (again && !again.disabled) again.focus({ preventScroll: true });   // a redraw must not drop the focus
+}
+
+async function openHistory() {
+  S.hist.open = true;
+  const btn = histBtn();
+  if (btn) btn.setAttribute("aria-expanded", "true");
+  mountHistory();
+  const t = S.nodes.hist.querySelector("#hist-title");
+  if (t) t.focus({ preventScroll: true });
+  await loadHistory();
+}
+
+function closeHistory(restoreFocus) {
+  if (!S || !S.hist.open) return;
+  S.hist = freshHist();
+  mountHistory();
+  const btn = histBtn();
+  if (btn) { btn.setAttribute("aria-expanded", "false"); if (restoreFocus) btn.focus(); }
+}
+
+async function loadHistory() {
+  const mine = S;
+  try {
+    const res = await mine.ctx.api("GET", `/api/conti/history?path=${encodeURIComponent(mine.data.path)}`);
+    if (!alive(mine) || !mine.hist.open) return;
+    mine.hist.versions = res.versions;
+    mine.hist.error = null;
+    mine.hist.pick = mine.hist.pick.filter((n) => res.versions.some((v) => v.n === n));
+  } catch (e) {
+    if (!alive(mine) || e.error === "aborted" || !mine.hist.open) return;
+    mine.hist.error = e.message;
+  }
+  if (mine.hist.view) return;                       // the compare view does not list versions; keep what is on screen
+  renderHistory();
+}
+
+// After an edit elsewhere on the screen: the newest version may have changed, and "지금과 비교" is stale.
+function refreshHistory() {
+  if (!S || !S.hist.open) return;
+  loadHistory();
+  const v = S.hist.view;
+  if (v && v.b === null) loadDiff(v.a, null, true);
+}
+
+function nameBox() {
+  const H = S.hist;
+  const input = h("input", { type: "text", id: "hist-name", class: "hist-name", maxlength: String(NAME_MAX), autocomplete: "off", placeholder: "예: 촬영 전" });
+  const save = h("button", { type: "submit", class: "btn btn-primary btn-sm" }, "이름 붙이기");
+  const note = h("p", { class: "error hist-err", role: "alert" });
+  const ideas = h("div", { class: "hist-ideas", role: "group", "aria-label": "이름 후보" },
+    ...NAME_IDEAS.map((t) => {
+      const b = h("button", { type: "button", class: "btn btn-sm" }, t);
+      b.addEventListener("click", () => { input.value = t; input.focus(); });
+      return b;
+    }));
+  const form = h("form", { class: "hist-form" },
+    h("label", { for: "hist-name", class: "hist-label" }, "지금 상태에 이름 붙이기"),
+    ideas,
+    h("div", { class: "hist-row" }, input, save), note);
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = input.value.trim();
+    if (!name) { note.textContent = "이름을 적어 주세요"; input.setAttribute("aria-invalid", "true"); input.focus(); return; }
+    note.textContent = "";
+    input.removeAttribute("aria-invalid");
+    await nameNow(name, save, note);
+  });
+  save.disabled = H.busy;
+  return form;
+}
+
+async function nameNow(name, btn, note) {
+  const mine = S;
+  if (mine.hist.busy || mine.editing || mine.saving) return;
+  if (mine.conflict) { note.textContent = "파일이 밖에서 바뀌었습니다. 먼저 다시 불러오세요"; return; }
+  mine.hist.busy = true;
+  btn.disabled = true;
+  try {
+    const res = await mine.ctx.api("POST", "/api/conti/history/name", { path: mine.data.path, name, hash: mine.hash });
+    if (!alive(mine)) return;
+    mine.hash = res.hash;
+    mine.ctx.toast(`「${name}」 이름을 붙였어요`, "info");
+    announce(`이력에 ${name} 버전을 남겼습니다`);
+    mine.hist.busy = false;
+    await loadHistory();
+    const first = mine.nodes.hist && mine.nodes.hist.querySelector("#hist-name");
+    if (first) first.focus({ preventScroll: true });
+  } catch (e) {
+    if (!alive(mine) || e.error === "aborted") return;
+    if (e.error === "conti_changed") {
+      mine.conflict = true;
+      renderConflict();
+      note.textContent = STALE_TEXT;
+    } else {
+      note.textContent = e.message;
+    }
+  } finally {
+    if (alive(mine)) { mine.hist.busy = false; btn.disabled = false; }
+  }
+}
+
+function versionList() {
+  const H = S.hist;
+  if (H.error) {
+    const retry = h("button", { type: "button", class: "btn btn-sm" }, "다시 시도");
+    retry.addEventListener("click", loadHistory);
+    return h("div", { class: "hist-list-box" }, h("p", { class: "error", role: "alert" }, H.error), retry);
+  }
+  if (!H.versions) return h("p", { class: "muted", role: "status" }, "불러오는 중…");
+  if (!H.versions.length) return h("p", { class: "muted" }, "아직 남은 이력이 없어요. 편집하면 자동으로 쌓입니다.");
+  const full = H.pick.length >= 2;
+  const items = H.versions.map((v) => {
+    const checked = H.pick.includes(v.n);
+    const box = h("input", { type: "checkbox", id: `hist-pick-${v.n}`, disabled: !checked && full });
+    box.checked = checked;
+    box.addEventListener("change", () => {
+      H.pick = box.checked ? [...H.pick, v.n] : H.pick.filter((n) => n !== v.n);
+      H.confirm = null;
+      renderHistory();
+      const again = S.nodes.hist.querySelector(`#hist-pick-${v.n}`);
+      if (again) again.focus();
+    });
+    const s = v.summary || {};
+    const meta = [`컷 ${s.cuts}개`, fmtClock(s.total_sec), s.changed ? `바뀐 컷 ${s.changed}개` : "바뀐 컷 없음"].join(" · ");
+    const label = h("label", { for: `hist-pick-${v.n}`, class: "hist-item-label" },
+      h("span", { class: "hist-when num" }, fmtWhen(v.at)),
+      h("span", { class: "hist-kind" + (v.kind === "named" ? " is-named" : "") }, versionLabel(v)),
+      h("span", { class: "hist-meta muted" }, meta));
+    return h("li", { class: "hist-item" + (checked ? " is-picked" : "") }, box, label);
+  });
+  const list = h("ul", { class: "hist-list", "aria-label": "이력 목록, 최신순" }, ...items);
+  return h("div", { class: "hist-list-box" },
+    h("p", { class: "muted hist-hint" }, full ? "둘을 골랐어요. 다른 버전을 고르려면 하나를 해제하세요" : "하나를 고르면 지금과 비교하거나 되돌릴 수 있고, 둘을 고르면 서로 비교해요"),
+    pickBar(), list);
+}
+
+function pickBar() {
+  const H = S.hist;
+  const bar = h("div", { class: "hist-bar", role: "group", "aria-label": "고른 버전으로 할 일" });
+  if (!H.pick.length) { bar.hidden = true; return bar; }
+  if (H.pick.length === 2) {
+    const both = h("button", { type: "button", class: "btn btn-sm btn-primary" }, "둘 비교");
+    both.addEventListener("click", () => { const [a, b] = [...H.pick].sort((x, y) => x - y); loadDiff(a, b); });
+    bar.append(both);
+    return bar;
+  }
+  const n = H.pick[0];
+  const cmp = h("button", { type: "button", class: "btn btn-sm" }, "지금과 비교");
+  cmp.addEventListener("click", () => loadDiff(n, null));
+  const rest = h("button", { type: "button", class: "btn btn-sm", "data-restore": "1" }, "이 버전으로 되돌리기");
+  rest.addEventListener("click", () => {
+    H.confirm = n;
+    renderHistory();
+    const ok = S.nodes.hist.querySelector("[data-restore-ok]");
+    if (ok) ok.focus();
+  });
+  bar.append(cmp, rest);
+  if (H.confirm === n) bar.append(restoreConfirm(n));
+  return bar;
+}
+
+function restoreConfirm(n) {
+  const H = S.hist;
+  const ok = h("button", { type: "button", class: "btn btn-sm btn-primary", "data-restore-ok": "1" }, "되돌리기");
+  ok.id = "hist-restore-ok";
+  const no = h("button", { type: "button", class: "btn btn-sm" }, "취소");
+  const note = h("p", { class: "error hist-err", role: "alert" });
+  ok.addEventListener("click", () => restoreTo(n, [ok, no], note));
+  no.addEventListener("click", () => {
+    H.confirm = null;
+    renderHistory();
+    const b = S.nodes.hist.querySelector("[data-restore]");
+    if (b) b.focus();
+  });
+  return h("div", { class: "hist-confirm" },
+    h("p", { class: "hist-confirm-text" }, RESTORE_NOTE),
+    h("div", { class: "btn-row" }, ok, no), note);
+}
+
+async function restoreTo(n, buttons, note) {
+  const mine = S;
+  if (mine.hist.busy || mine.editing || mine.saving) return;
+  if (mine.conflict) { note.textContent = "파일이 밖에서 바뀌었습니다. 먼저 다시 불러오세요"; return; }
+  mine.hist.busy = true;
+  for (const b of buttons) b.disabled = true;
+  buttons[0].textContent = "되돌리는 중…";
+  try {
+    const res = await mine.ctx.api("POST", "/api/conti/history/restore", { path: mine.data.path, n, hash: mine.hash });
+    if (!alive(mine)) return;
+    mine.hash = res.hash;
+    mine.forms.clear();
+    mine.alts.clear();
+    mine.scenes.clear();
+    mine.sel = null;
+    mine.hist.confirm = null;
+    mine.hist.pick = [];
+    mine.hist.view = null;
+    mine.ctx.toast("되돌렸어요 · 이전 상태도 이력에 남아 있어요", "info");
+    announce("이력 버전으로 되돌렸습니다");
+    await loadEditor(true);
+    if (!alive(mine) || !mine.hist.open) return;
+    mine.hist.busy = false;
+    await loadHistory();
+    const t = mine.nodes.hist && mine.nodes.hist.querySelector("#hist-title");
+    if (t) t.focus({ preventScroll: true });
+  } catch (e) {
+    if (!alive(mine) || e.error === "aborted") return;
+    for (const b of buttons) b.disabled = false;
+    buttons[0].textContent = "되돌리기";
+    if (e.error === "conti_changed") {
+      mine.conflict = true;
+      renderConflict();
+      note.textContent = STALE_TEXT;
+    } else {
+      note.textContent = e.message;
+    }
+  } finally {
+    if (alive(mine)) mine.hist.busy = false;
+  }
+}
+
+async function loadDiff(a, b, quiet = false) {
+  const mine = S;
+  mine.hist.loadingDiff = true;
+  try {
+    const q = `path=${encodeURIComponent(mine.data.path)}&a=${a}` + (b === null ? "" : `&b=${b}`);
+    const res = await mine.ctx.api("GET", `/api/conti/history/diff?${q}`);
+    if (!alive(mine) || !mine.hist.open) return;
+    mine.hist.view = { a, b, diff: res };
+    if (!quiet) mine.hist.mode = "list";
+  } catch (e) {
+    if (!alive(mine) || e.error === "aborted" || !mine.hist.open) return;
+    mine.ctx.toast(e.message, "error");
+  } finally {
+    if (alive(mine)) mine.hist.loadingDiff = false;
+  }
+  if (!alive(mine) || !mine.hist.open || !mine.hist.view) return;
+  renderHistory();
+  if (!quiet) {
+    const t = mine.nodes.hist.querySelector("#hist-title");
+    if (t) t.focus({ preventScroll: true });
+  }
+}
+
+function sideName(n) {
+  if (n === null) return "지금";
+  const v = (S.hist.versions || []).find((x) => x.n === n);
+  return v ? `${fmtWhen(v.at)} ${versionLabel(v)}` : `${n}번 버전`;
+}
+
+function compareView() {
+  const H = S.hist;
+  const { a, b, diff } = H.view;
+  const back = h("button", { type: "button", class: "btn btn-sm" }, "← 이력 목록");
+  back.addEventListener("click", () => {
+    H.view = null;
+    renderHistory();
+    const box = S.nodes.hist.querySelector(`#hist-pick-${a}`);
+    if (box) box.focus();
+  });
+  const mode = h("button", { type: "button", class: "btn btn-sm", "aria-pressed": String(H.mode === "side") }, "나란히 보기");
+  mode.addEventListener("click", () => {
+    H.mode = H.mode === "side" ? "list" : "side";
+    renderHistory();
+    const m = S.nodes.hist.querySelector("[aria-pressed]");
+    if (m) m.focus();
+  });
+  // A new cut's section name is only known for "지금" (the labels come from the open conti).
+  const sectionName = (change) => {
+    if (b !== null) return "";
+    const cut = diff.right.find((c) => c.n === change.n_to);
+    const sec = cut && S.data.fm.script[cut.section];
+    return sec ? sectionLabelName(sec.label) : "";
+  };
+  const kids = [
+    h("div", { class: "hist-cmp-bar" }, back, mode),
+    h("p", { class: "hist-cmp-title" }, h("strong", {}, sideName(a)), " → ", h("strong", {}, sideName(b))),
+  ];
+  if (H.mode === "side") kids.push(sideBySide(diff));
+  else if (!diff.changes.length) kids.push(h("p", { class: "muted", role: "status" }, "바뀐 점이 없어요"));
+  else {
+    kids.push(h("ul", { class: "hist-changes", "aria-label": "바뀐 점" },
+      ...diff.changes.map((c) => h("li", { class: `hist-change is-${c.kind}` }, changeText(c, c.kind === "added" ? sectionName(c) : "")))));
+  }
+  return h("div", { class: "hist-cmp" }, ...kids);
+}
+
+function cellFor(cut, status, side, fields) {
+  if (!cut) {
+    return h("div", { class: "hist-cell is-empty" }, h("span", { class: "muted" }, side === "l" ? "(이전엔 없음)" : "(없어짐)"));
+  }
+  let tag = "";
+  if (side === "l" && status === "removed") tag = "빠짐";
+  else if (side === "r" && status !== "same") tag = STATUS_TEXT[status];
+  const mark = (f, text) => h("span", { class: fields.includes(f) && side === "r" ? "is-diff" : "" }, text);
+  return h("div", { class: `hist-cell is-${status}` },
+    h("div", { class: "hist-cell-top" },
+      h("span", { class: "num" }, `#${cut.n}`),
+      mark("size", cut.size || ""),
+      mark("sec", fmtSec(cut.sec)),
+      tag ? h("span", { class: "hist-tag" }, tag) : null),
+    h("div", { class: cut.line ? "" : "muted" }, mark("line", cut.line || "(대사 없음)")),
+    cut.action ? h("div", { class: "hist-sub muted" }, mark("action", cut.action)) : null,
+    cut.caption ? h("div", { class: "hist-sub muted" }, mark("caption", `자막 ${cut.caption}`)) : null);
+}
+
+function sideBySide(diff) {
+  const rows = alignCuts(diff.left, diff.right, diff.changes);
+  if (!rows.length) return h("p", { class: "muted" }, "컷이 없어요");
+  return h("div", { class: "hist-side" },
+    h("div", { class: "hist-side-head", "aria-hidden": "true" }, h("span", {}, "이전"), h("span", {}, "이후")),
+    h("ol", { class: "hist-side-list", "aria-label": "컷 나란히 보기" },
+      ...rows.map((r) => {
+        const word = STATUS_TEXT[r.status];
+        return h("li", { class: `hist-pair is-${r.status}` },
+          word ? h("span", { class: "sr-only" }, `${word}: `) : null,
+          cellFor(r.l, r.status, "l", r.fields), cellFor(r.r, r.status, "r", r.fields));
+      })));
 }
 
 // ---- page contract ------------------------------------------------------------------------
