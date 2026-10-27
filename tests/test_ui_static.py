@@ -293,7 +293,7 @@ def test_typify_page_contract_and_safety():
     js = (STATIC_DIR / "pages" / "typify.js").read_text(encoding="utf-8")
     for token in ["export async function mount", "export function unmount", "export function onCategory",
                   "isCurrent()", "ctx.api(", "/api/typify", "/api/typify/run", "/api/typify/save", "kind=typify",
-                  "유형화 실행", "저장", "typify_changed", "invalid_notes", "레퍼런스 추가로 가기",
+                  "유형화 실행", "저장", "typify_changed", "invalid_notes", "레퍼런스 넣기",
                   "이전 이름 그대로", "lb-", "#/refs/"]:
         assert token in js, token
     for bad in ["innerHTML", "insertAdjacentHTML", "outerHTML"]:

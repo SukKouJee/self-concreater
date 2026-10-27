@@ -409,7 +409,7 @@ function render() {
   ];
   const notes = [];
   if (d.ref === 0) {
-    notes.push(h("span", {}, "먼저 레퍼런스를 넣어 주세요 ", h("a", { href: "#/add" }, "레퍼런스 추가로 가기")));
+    notes.push(h("span", {}, "먼저 레퍼런스를 넣어 주세요 ", h("a", { href: "#/add" }, "레퍼런스 넣기")));
   }
   if (!d.has_profile) notes.push("프로필이 없어 카드가 일반적으로 나옵니다 — /yt-coach:yt-init 으로 만들 수 있어요");
   if (d.stage === 3 && !d.has_typify) {

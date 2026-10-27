@@ -30,7 +30,7 @@ def test_help_page_from_hash():
 
 def test_help_page_ignores_query_and_odd_hash():
     assert run_js('["#/report/review/2026-W01", "#main", "#/add?x=1", "#/Draft"].map(m.helpPage)') == [
-        "report", "home", "add", "home"]
+        "report", "home", "refs", "home"]
 
 
 def test_trim_history_keeps_last_six():

@@ -6,7 +6,8 @@ const POLL_MAX_MS = 15000;
 // "#/draft/view/x" -> "draft", "#/guide/long" -> "guide", "" / "#/" / non-route hash -> "home".
 export function helpPage(hash) {
   const m = /^#\/([a-z][a-z0-9-]*)/.exec(String(hash || ""));
-  return m ? m[1] : "home";
+  if (!m) return "home";
+  return m[1] === "add" ? "refs" : m[1]; // #/add is the 레퍼런스 screen with the add area open
 }
 
 // Last `max` items (the server only reads the latest 6 anyway).
