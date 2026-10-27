@@ -257,6 +257,7 @@ def name(conti_path: str | Path, label: str, expected_hash: str | None, now: flo
     with conti.HISTORY_LOCK:
         path = conti._resolve(conti_path)
         _guard(path, expected_hash)
+        conti.ensure_ids(path)
         text = str(label or "").strip()
         if not 1 <= len(text) <= NAME_MAX:
             raise ScriptError("invalid_name", f"이름은 1~{NAME_MAX}자여야 합니다")
@@ -274,13 +275,15 @@ def restore(conti_path: str | Path, n: int, expected_hash: str | None, now: floa
 def _restore_locked(conti_path: str | Path, n: int, expected_hash: str | None, now: float | None) -> dict:
     path = conti._resolve(conti_path)
     _guard(path, expected_hash)
+    conti.ensure_ids(path)
     version = get_version(path, n)
     current = conti.read_conti(path)
     loaded = conti.validated(current.stored)
     check_external(path, loaded, now)                    # 덮어쓰기 전에 손으로 고친 상태를 이력에 남긴다
     state = version["state"]
     fm = conti.retime({**loaded, "script": [dict(s) for s in state["script"]],
-                       "cuts": [dict(c) for c in state["cuts"]], "target_sec": state["target_sec"]})
+                       "cuts": [dict(c) for c in state["cuts"]], "target_sec": state["target_sec"]},
+                       rebuild=set())          # 그 버전에 저장된 섹션 대사를 그대로 둔다
     written, html_path = conti._write_conti_file(current, fm)
     label = version["name"] or datetime.fromisoformat(version["at"]).strftime("%Y-%m-%d %H:%M")
     recorded = record(path, fm, "restored", name=f"되돌림: {label}", now=now)
@@ -290,7 +293,10 @@ def _restore_locked(conti_path: str | Path, n: int, expected_hash: str | None, n
 
 def current_state(conti_path: str | Path) -> dict:
     """파일의 지금 상태(비교용)."""
-    return state_of(conti._load_conti(conti._resolve(conti_path)))
+    path = conti._resolve(conti_path)
+    with conti.HISTORY_LOCK:
+        conti.ensure_ids(path)
+        return state_of(conti._load_conti(path))
 
 
 def diff_versions(conti_path: str | Path, a: int, b: int | None = None) -> dict:

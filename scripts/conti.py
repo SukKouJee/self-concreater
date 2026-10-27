@@ -697,7 +697,7 @@ def _write_conti_file(cf: ContiFile, fm: dict) -> tuple[ContiFile, Path]:
     memo = memo_from_body(cf.body).replace("\r\n", "\n")
     body = render_md(fm, memo).replace("\n", nl)
     data = refstore.join_frontmatter(fm, body, nl).encode("utf-8")
-    cf.path.write_bytes(data)
+    refstore.write_atomic(cf.path, data)
     return ContiFile(cf.path, data, fm, body), _write_html(cf.path, fm)
 
 

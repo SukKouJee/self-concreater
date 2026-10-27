@@ -386,3 +386,37 @@ def test_version_file_changed_on_disk_is_read_again(saved):
     path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     assert ch.get_version(saved, 2)["name"] == "밖에서 붙인 이름"
     assert versions(saved)[0]["name"] == "밖에서 붙인 이름"
+
+
+def test_restore_keeps_section_text_stored_in_the_version(saved):
+    fm = fm_of(saved)
+    fm["script"][0]["text"] = "AI가 따로 쓴 섹션 전체 대사"
+    conti._write_conti_file(conti.read_conti(saved), fm)
+    ch.record(saved, fm_of(saved), "named", name="원본", now=T0 + 1)
+    stored = [s["text"] for s in ch.get_version(saved, 2)["state"]["script"]]
+    assert stored[0] == "AI가 따로 쓴 섹션 전체 대사"
+    edit_line(saved, "바뀐 대사", T0 + 5)
+    ch.restore(saved, 2, conti.content_hash(saved), now=T0 + 10)
+    assert [s["text"] for s in fm_of(saved)["script"]] == stored
+    assert ch.same_state(ch.get_version(saved, 2)["state"], ch.current_state(saved))
+
+
+def _strip_ids(path):
+    fm, body = refstore.read_md(path)
+    for c in fm["cuts"]:
+        c.pop("id")
+    fm["schema_version"] = 2
+    path.write_bytes(refstore.join_frontmatter(fm, body).encode("utf-8"))
+
+
+def test_name_restore_diff_on_v2_file_assign_ids_first(saved):
+    _strip_ids(saved)
+    ch.name(saved, "이름", conti.content_hash(saved), now=T0 + 1)
+    assert all(c.get("id") for c in refstore.read_md(saved)[0]["cuts"])
+    assert ch.same_state(ch.get_version(saved, 2)["state"], ch.current_state(saved))
+    _strip_ids(saved)
+    ch.diff_versions(saved, 1)
+    assert all(c.get("id") for c in refstore.read_md(saved)[0]["cuts"])
+    _strip_ids(saved)
+    ch.restore(saved, 1, conti.content_hash(saved), now=T0 + 9)
+    assert all(c.get("id") for c in refstore.read_md(saved)[0]["cuts"])

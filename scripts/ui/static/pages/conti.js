@@ -2185,6 +2185,7 @@ async function restoreTo(n, buttons, note) {
     mine.forms.clear();
     mine.alts.clear();
     mine.scenes.clear();
+    clearUndo();
     mine.sel = null;
     mine.hist.confirm = null;
     mine.hist.pick = [];

@@ -719,7 +719,7 @@ def test_get_conti_external_edit_adds_one_version(client, home, draft_md):
 
 
 @pytest.mark.parametrize("extra", [{"op": "delete", "n": 1, "fields": {}}, {"op": "insert", "at": 0, "id": "x"},
-                                   {"op": "bogus"}, {}])
+                                   {"op": "bogus"}, {"op": ["delete"]}, {"op": 3}, {}])
 def test_cuts_route_rejects_unknown_keys(client, home, draft_md, extra):
     src = saved_conti(home, draft_md)
     before = src.read_bytes()

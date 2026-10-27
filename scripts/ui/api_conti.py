@@ -273,7 +273,7 @@ def _cuts(req: Request) -> dict:
     path = _safe_path(body.get("path"), conti_file=True)
     expected = _hash(body)
     op = {k: v for k, v in body.items() if k not in ("path", "hash")}
-    allowed = OP_KEYS.get(op.get("op"))
+    allowed = OP_KEYS.get(op["op"]) if isinstance(op.get("op"), str) else None
     if allowed is None:
         raise ScriptError("invalid_edit", f"알 수 없는 편집입니다: {op.get('op')!r} ({', '.join(OP_KEYS)})")
     unknown = sorted(set(op) - allowed)
