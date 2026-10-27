@@ -27,6 +27,7 @@ const KEYFRAME_NOTE = "시작이 몇 초 앞당겨질 수 있어요 (다시 압�
 const UNPLAYABLE = "이 영상은 브라우저에서 재생할 수 없어요";
 const MISSING_SOURCE = "원본 없음";
 const OUT_ROUTES = { remaining: "/api/footage/remaining", csv: "/api/footage/csv" };
+const EDITOR_BUSY = "편집을 저장한 뒤 넣어 주세요";
 const FILTERS = [["all", "전체"], ["remaining", "남은 컷"], ["review", "확인 필요"]];
 
 let F = null;
@@ -77,6 +78,17 @@ function paintAll() {
   paint("outputs", outputsSlot);
 }
 
+// aria-disabled (not disabled) for a request in flight: the clicked button keeps the focus.
+function busy(key) {
+  return F.busy.has(key) ? "true" : false;
+}
+
+function markBusy(key, on) {
+  const el = F.root.querySelector(`[data-fkey="${CSS.escape(key)}"]`);
+  if (!el) return;
+  if (on) el.setAttribute("aria-disabled", "true"); else el.removeAttribute("aria-disabled");
+}
+
 function btn(label, attrs, onClick) {
   const b = h("button", { type: "button", class: "btn btn-sm", ...attrs }, label);
   b.addEventListener("click", onClick);
@@ -101,6 +113,7 @@ function emitVerdicts() {
 
 function setView(view) {
   F.view = view;
+  for (const key of [...F.players.keys()]) if (!F.playing.has(key)) F.players.delete(key);
   F.error = null;
   emitVerdicts();
 }
@@ -127,7 +140,7 @@ async function act(key, method, route, body) {
   const mine = F;
   if (mine.busy.has(key)) return null;
   mine.busy.add(key);
-  paintAll();
+  markBusy(key, true);
   try {
     const res = await mine.ctx.api(method, route, body);
     if (!alive(mine)) return null;
@@ -137,7 +150,7 @@ async function act(key, method, route, body) {
     mine.ctx.toast(e.message, "error");
     return null;
   } finally {
-    if (alive(mine)) { mine.busy.delete(key); paintAll(); }
+    if (alive(mine)) { mine.busy.delete(key); markBusy(key, false); }
   }
 }
 
@@ -177,7 +190,7 @@ function folderSlot() {
     const ul = h("ul", { class: "fc-folders" });
     for (const f of v.folders) {
       const key = `rm:${f.path}`;
-      const rm = btn("빼기", { "aria-label": `${f.path} 빼기`, "data-fkey": key, disabled: F.busy.has(key) || isActive(F.job) },
+      const rm = btn("빼기", { "aria-label": `${f.path} 빼기`, "data-fkey": key, disabled: isActive(F.job), "aria-disabled": busy(key) },
         () => removeFolder(f.path));
       ul.append(h("li", { class: "fc-folder" + (f.missing ? " is-missing" : "") },
         h("div", { class: "fc-folder-text" },
@@ -194,7 +207,7 @@ function folderSlot() {
     "aria-invalid": F.folderError ? "true" : false,
   });
   input.addEventListener("input", () => { F.folderText = input.value; });
-  const add = h("button", { type: "submit", class: "btn", "data-fkey": "folder-add", disabled: F.busy.has("add") }, "폴더 더하기");
+  const add = h("button", { type: "submit", class: "btn", "data-fkey": "folder-add", "aria-disabled": busy("add") }, "폴더 더하기");
   const form = h("form", { class: "fc-add" },
     h("div", { class: "field" }, h("label", { for: inputId }, "촬영 폴더 경로"), h("div", { class: "fc-add-row" }, input, add)),
     h("p", { class: "error field-error", id: "footage-folder-err", role: "alert" }, F.folderError || ""));
@@ -453,12 +466,12 @@ function cutItem(c) {
   if (c.choice && !c.choice.missing_source) actions.append(playButton(`choice:${c.id}`));
   if (c.kind !== "not_filmed") {
     const key = `nf:${c.id}`;
-    actions.append(btn("못 찍음으로", { "data-fkey": key, disabled: F.busy.has(key), "aria-label": `컷 ${c.n} 못 찍음으로` },
+    actions.append(btn("못 찍음으로", { "data-fkey": key, "aria-disabled": busy(key), "aria-label": `컷 ${c.n} 못 찍음으로` },
       () => verdict(key, "/api/footage/not-filmed", { cut: c.id }, `컷 ${c.n}을 못 찍음으로 바꿨어요`)));
   }
   if (c.user) {
     const key = `reset:${c.id}`;
-    actions.append(btn("AI 판정으로 되돌리기", { "data-fkey": key, disabled: F.busy.has(key), "aria-label": `컷 ${c.n} AI 판정으로 되돌리기` },
+    actions.append(btn("AI 판정으로 되돌리기", { "data-fkey": key, "aria-disabled": busy(key), "aria-label": `컷 ${c.n} AI 판정으로 되돌리기` },
       () => verdict(key, "/api/footage/reset", { cut: c.id }, `컷 ${c.n}을 AI 판정으로 되돌렸어요`)));
   }
   if (actions.childElementCount) top.append(actions);
@@ -496,7 +509,7 @@ function candItem(c, x, i) {
   const actions = h("div", { class: "btn-row" });
   if (chosen) actions.append(h("span", { class: "badge fc-chosen" }, "고른 구간"));
   else {
-    actions.append(btn("이걸로", { "data-fkey": `pick:${key}`, disabled: F.busy.has(`pick:${key}`), "aria-label": `컷 ${c.n}: ${name} ${fmtRange(x.start, x.end)} 이걸로` },
+    actions.append(btn("이걸로", { "data-fkey": `pick:${key}`, "aria-disabled": busy(`pick:${key}`), "aria-label": `컷 ${c.n}: ${name} ${fmtRange(x.start, x.end)} 이걸로` },
       () => verdict(`pick:${key}`, "/api/footage/choose", { cut: c.id, fid: x.fid, start: x.start, end: x.end }, `컷 ${c.n}에 이 구간을 골랐어요`)));
   }
   if (!x.missing_source) actions.append(playButton(key));
@@ -520,7 +533,7 @@ function playButton(key) {
   const on = F.playing.has(key);
   const b = h("button", { type: "button", class: "btn btn-sm", "aria-expanded": String(on), "data-fkey": `play:${key}` }, on ? "재생 닫기" : "재생");
   b.addEventListener("click", () => {
-    if (F.playing.has(key)) F.playing.delete(key); else F.playing.add(key);
+    if (F.playing.has(key)) { F.playing.delete(key); F.players.delete(key); } else F.playing.add(key);
     paintAll();
     if (F.playing.has(key)) {
       const v = F.root.querySelector(`[data-play="${CSS.escape(key)}"] video`);
@@ -532,7 +545,11 @@ function playButton(key) {
 
 // Inline <video> for a range (#t=start,end). When the browser cannot decode it (HEVC in Chrome) the photos stay.
 function player(key, item) {
+  const sig = `${item.fid}@${item.start}-${item.end}`;
+  const cached = F.players.get(key);
+  if (cached && cached.sig === sig) return cached.box;
   const box = h("div", { class: "fc-player", "data-play": key });
+  F.players.set(key, { sig, box });
   if (F.unplayable.has(key)) {
     box.append(strip(item, "장면 사진"), h("p", { class: "muted hint" }, UNPLAYABLE));
     return box;
@@ -541,9 +558,10 @@ function player(key, item) {
     class: "fc-video", controls: true, preload: "metadata", playsinline: true,
     src: mediaUrl(item.fid, F.opts.path, item.start, item.end), "aria-label": `${item.name || "영상"} ${fmtRange(item.start, item.end)} 재생`,
   });
+  const mine = F;
   video.addEventListener("error", () => {
-    if (!F) return;
-    F.unplayable.add(key);
+    if (!alive(mine)) return;
+    mine.unplayable.add(key);
     const had = box.contains(document.activeElement);
     box.replaceChildren(strip(item, "장면 사진"), h("p", { class: "muted hint", role: "status" }, UNPLAYABLE));
     if (had) focusKey(`play:${key}`);
@@ -580,9 +598,9 @@ function suggestSlot() {
     if (dl.childElementCount) body.append(dl);
     const insKey = `ins:${k}`;
     const hideKey = `hide:${k}`;
-    const insert = btn("이 컷 뒤에 넣기", { "data-fkey": insKey, disabled: F.busy.has(insKey) || !cuts.length },
+    const insert = btn("이 컷 뒤에 넣기", { "data-fkey": insKey, disabled: !cuts.length, "aria-disabled": busy(insKey) },
       () => insertSuggestion(s));
-    const hide = btn("숨기기", { "data-fkey": hideKey, disabled: F.busy.has(hideKey) }, () => hideSuggestion(s));
+    const hide = btn("숨기기", { "data-fkey": hideKey, "aria-disabled": busy(hideKey) }, () => hideSuggestion(s));
     const actions = h("div", { class: "fc-insert" },
       h("div", { class: "field" }, h("label", { for: selId }, "넣을 자리"), select),
       h("div", { class: "btn-row" }, insert, hide, s.missing_source ? null : playButton(`sug:${k}`)));
@@ -607,9 +625,10 @@ async function insertSuggestion(s) {
   const mine = F;
   const key = `ins:${s.key}`;
   if (mine.busy.has(key)) return;
+  if (mine.opts.getEditorBusy()) { mine.ctx.toast(EDITOR_BUSY, "error"); return; }
   const after = mine.after.get(s.key);
   mine.busy.add(key);
-  paintAll();
+  markBusy(key, true);
   try {
     const res = await mine.ctx.api("POST", "/api/footage/suggestions/insert",
       { path: mine.opts.path, key: s.key, after_cut: after, hash: mine.opts.getHash() });
@@ -642,8 +661,8 @@ function outputsSlot() {
   if (!v || !v.folders.length) return [];
   const o = v.outputs || {};
   const clipsBusy = isActive(F.clipsJob) || !!F.clipsStarting;
-  const remaining = btn("폰용 남은 컷 만들기", { class: "btn", "data-fkey": "out:remaining", disabled: F.busy.has("out:remaining") }, () => writeOut("remaining"));
-  const csv = btn("CSV 받기", { class: "btn", "data-fkey": "out:csv", disabled: F.busy.has("out:csv") }, () => writeOut("csv"));
+  const remaining = btn("폰용 남은 컷 만들기", { class: "btn", "data-fkey": "out:remaining", "aria-disabled": busy("out:remaining") }, () => writeOut("remaining"));
+  const csv = btn("CSV 받기", { class: "btn", "data-fkey": "out:csv", "aria-disabled": busy("out:csv") }, () => writeOut("csv"));
   const clips = btn("컷 파일 만들기", { class: "btn", "data-fkey": "out:clips", disabled: clipsBusy || isActive(F.job) }, startClips);
   const out = [h("h3", { class: "fc-h" }, "편집 준비"),
     h("p", { class: "muted hint" }, "폰용 남은 컷은 한 파일(HTML)이라 카톡·드라이브로 폰에 옮겨 현장에서 보면 돼요"),
@@ -807,7 +826,7 @@ export function mountFootageArea(ctx, opts) {
   const root = h("section", { class: "footage card", "aria-label": "촬영 영상" }, live, head, body);
   F = {
     ctx, opts, root, head, body, slots, live, open: false, view: null, error: null,
-    filter: "all", folderText: "", folderError: "", busy: new Set(), playing: new Set(), unplayable: new Set(),
+    filter: "all", folderText: "", folderError: "", busy: new Set(), playing: new Set(), players: new Map(), unplayable: new Set(),
     expanded: new Set(), after: new Map(), job: null, lastJob: null, jobError: "", starting: false, stopping: false,
     timer: null, pollErrors: 0, offset: 0, ringMax: null,
     clipsJob: null, clipsTimer: null, clipsErrors: 0, clipsStarting: false, clipsStopping: false, clipsError: "",

@@ -1139,7 +1139,7 @@ code { background: var(--chip); padding: 1px 6px; border-radius: 4px; }
 .fc-add .field-error:empty { display: none; }
 .fc-prog { margin: 0; }
 .prog-foot { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; }
-.prog-foot .btn[aria-disabled="true"] { opacity: .5; cursor: not-allowed; }
+.prog-foot .btn[aria-disabled="true"], .footage .btn[aria-disabled="true"] { opacity: .5; cursor: not-allowed; }
 .fc-last p { margin: 0; font-size: 13px; }
 .fc-fail-list { margin: var(--sp-1) 0 0; padding-left: var(--sp-5); font-size: 13px; }
 .fc-file { font-weight: 600; overflow-wrap: anywhere; }

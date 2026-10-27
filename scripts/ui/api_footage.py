@@ -160,6 +160,17 @@ def _folder_view(linked: _Linked) -> dict:
 
 # ---- 화면 응답 ---------------------------------------------------------------------------
 
+def _overlaps(scene: Any, lo: float, hi: float) -> bool:
+    """캐시 장면 하나가 구간과 겹치는가. 형식이 틀린 장면은 건너뛴다(화면 응답 전체가 실패하지 않게)."""
+    if not isinstance(scene, dict) or not isinstance(scene.get("frames"), list):
+        return False
+    try:
+        start, end = float(scene["start"]), float(scene["end"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return start < hi and end > lo
+
+
 class _Sources:
     """fid → 파일 이름과 원본이 지금 연결 폴더에 있는지."""
 
@@ -185,8 +196,7 @@ class _Sources:
             lo, hi = float(start), float(end)
         except (TypeError, ValueError):
             return []
-        found = [rel for s in (cached or {}).get("scenes") or []
-                 if float(s.get("start", 0)) < hi and float(s.get("end", 0)) > lo
+        found = [rel for s in (cached or {}).get("scenes") or [] if _overlaps(s, lo, hi)
                  for rel in s.get("frames") or [] if isinstance(rel, str)]
         if len(found) <= CARD_FRAMES:
             return found

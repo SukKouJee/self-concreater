@@ -1031,3 +1031,16 @@ def test_footage_files_served(client):
     for rel in ["footage-area.js", "footage-utils.js"]:
         status, headers, _ = client.call("GET", f"/static/{rel}")
         assert status == 200 and "javascript" in headers["Content-Type"], rel
+
+
+def test_footage_insert_keeps_editor_drafts_and_waits_for_saves():
+    js = (STATIC_DIR / "pages" / "conti.js").read_text(encoding="utf-8")
+    start = js.index("async function reloadAfterFootageInsert")
+    body = js[start: js.index("\n}\n", start)]
+    for token in ["remapByCutId(mine.forms", "remapByCutId(mine.alts", "mine.scenes.clear()", "mine.hash = data.hash"]:
+        assert token in body, token
+    assert "getEditorBusy: () => mine.editing || mine.saving || mine.conflict" in js
+    area = (STATIC_DIR / "footage-area.js").read_text(encoding="utf-8")
+    assert "편집을 저장한 뒤 넣어 주세요" in area and "getEditorBusy()" in area
+    # a playing <video> survives repaints; the error handler checks the area is still mounted
+    assert "F.players" in area and "if (!alive(mine)) return;\n    mine.unplayable.add(key);" in area

@@ -891,3 +891,17 @@ def test_view_items_without_cache_have_no_frames(client, rel, saved):
     body = client.json("POST", "/api/footage/choose", {"path": rel, "cut": cid, "fid": FID, "start": 1.0, "end": 2.0})[1]
     cut = next(c for c in body["cuts"] if c["id"] == cid)
     assert cut["choice"]["frames"] == []
+
+
+def test_view_survives_bad_scene_entries_in_cache(client, rel, saved):
+    seed_scenes(FID, [
+        {"i": 0, "start": None, "end": 3.0, "frames": ["frames/bad.jpg"]},
+        {"i": 1, "start": "x", "end": "y", "frames": ["frames/bad2.jpg"]},
+        "not a scene",
+        {"i": 2, "start": 0.0, "end": 3.0, "frames": ["frames/s002_0.jpg", 7]},
+    ])
+    cid = conti._load_conti(saved)["cuts"][0]["id"]
+    status, body = client.json("POST", "/api/footage/choose", {"path": rel, "cut": cid, "fid": FID, "start": 1.0, "end": 2.0})
+    assert status == 200, body
+    cut = next(c for c in body["cuts"] if c["id"] == cid)
+    assert cut["choice"]["frames"] == ["frames/s002_0.jpg"]

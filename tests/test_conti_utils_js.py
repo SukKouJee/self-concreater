@@ -145,3 +145,14 @@ def test_collapse_changes_without_total_has_no_delta():
     code = ("m.collapseChanges([{kind:'changed',field:'script',section:0,from:'a',to:'a'}]).map(m.changeText)")
     assert run_js(code) == ["뒤 섹션 1개 시간이 밀렸어요"]
     assert run_js("m.collapseChanges([{kind:'removed',n_from:2}]).length") == 1
+
+
+def test_remap_by_cut_id_follows_cuts_after_an_insert():
+    # a draft on #2 (id 'y') must stay with 'y' after a cut is inserted before it (y becomes #3)
+    expr = ("(() => { const before = {cuts:[{n:1,id:'x'},{n:2,id:'y'},{n:3,id:'z'}]};"
+            " const after = {cuts:[{n:1,id:'x'},{n:2,id:'new'},{n:3,id:'y'},{n:4,id:'z'}]};"
+            " const map = new Map([[2,'draft-y'],[3,'draft-z'],[9,'gone']]);"
+            " m.remapByCutId(map, before, after); return [...map.entries()].sort(); })()")
+    assert run_js(expr) == [[3, "draft-y"], [4, "draft-z"]]
+    assert run_js("m.idOfN({cuts:[{n:1,id:'x'}]}, 1)") == "x"
+    assert run_js("m.idOfN({cuts:[{n:1,id:'x'}]}, 2)") is None

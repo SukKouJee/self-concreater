@@ -182,3 +182,22 @@ export function collapseChanges(changes) {
   }
   return out;
 }
+
+// Cut id at number n in a conti answer, or null.
+export function idOfN(data, n) {
+  const c = data.cuts.find((x) => x.n === n);
+  return c ? c.id : null;
+}
+
+// Maps keyed by cut number (drafts, alternatives) follow their cut by id after cuts come, go or move;
+// entries whose cut is gone are dropped.
+// Remaps from a snapshot: in place, a cut moving to a number that is still waiting to be moved would overwrite it.
+export function remapByCutId(map, before, after) {
+  const entries = [...map.entries()];
+  map.clear();
+  for (const [n, value] of entries) {
+    const id = idOfN(before, n);
+    const moved = id && after.cuts.find((c) => c.id === id);
+    if (moved) map.set(moved.n, value);
+  }
+}

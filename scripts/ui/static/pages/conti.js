@@ -6,8 +6,8 @@
 import { h, filesUrl } from "/static/dom.js";
 import { sectionLabelName } from "/static/labels.js";
 import {
-  SHOT_SIZES, alignCuts, canRemove, changeText, collapseChanges, dropTarget, fieldText, fmtClock, fmtDelta, fmtWhen, snapSec, stepMove,
-  versionLabel,
+  SHOT_SIZES, alignCuts, canRemove, changeText, collapseChanges, dropTarget, fieldText, fmtClock, fmtDelta, fmtWhen, idOfN,
+  remapByCutId, snapSec, stepMove, versionLabel,
 } from "/static/conti-utils.js";
 import { mountFootageArea } from "/static/footage-area.js";
 import { KIND_TEXT, kindGroup } from "/static/footage-utils.js";
@@ -604,17 +604,15 @@ function footageArea() {
     path: S.data.path,
     getConti: () => mine.data,
     getHash: () => mine.hash,
+    // Inserting a cut while a cut save/edit is in flight (or the file changed outside) would race the editor's hash.
+    getEditorBusy: () => mine.editing || mine.saving || mine.conflict,
     onVerdicts: (map) => {
+      const same = map.size === mine.verdicts.size
+        && [...map].every(([id, v]) => { const o = mine.verdicts.get(id); return o && o.kind === v.kind; });
       mine.verdicts = map;
-      if (alive(mine) && mine.nodes.list) renderCutList();
+      if (!same && alive(mine) && mine.nodes.list) renderCutList();
     },
-    onContiChanged: async ({ cutId } = {}) => {
-      if (!alive(mine)) return;
-      await loadEditor(true);
-      if (!alive(mine) || !cutId) return;
-      const cut = mine.data.cuts.find((c) => c.id === cutId);
-      if (cut) showEdited(cut.id, true);
-    },
+    onContiChanged: ({ cutId } = {}) => reloadAfterFootageInsert(mine, cutId),
     onSelectCut: (id) => {
       if (!alive(mine)) return;
       const cut = mine.data.cuts.find((c) => c.id === id);
@@ -625,6 +623,35 @@ function footageArea() {
     },
   });
   return S.footage;
+}
+
+// After the footage area inserted a cut: like the editor's own insert, drafts, alternatives and the selection follow
+// their cut by id (numbers shifted), scene lists are dropped. The area already has its new view: no footage refresh.
+async function reloadAfterFootageInsert(mine, cutId) {
+  if (!alive(mine)) return;
+  try {
+    const data = await mine.ctx.api("GET", `/api/conti?path=${encodeURIComponent(mine.params.path)}`);
+    if (!alive(mine)) return;
+    const before = mine.data;
+    const selId = idOfN(before, mine.sel);
+    remapByCutId(mine.forms, before, data);
+    remapByCutId(mine.alts, before, data);
+    mine.scenes.clear();
+    mine.data = data;
+    mine.hash = data.hash;
+    mine.conflict = false;
+    const keep = selId && data.cuts.find((c) => c.id === selId);
+    mine.sel = keep ? keep.n : null;
+    const added = cutId && data.cuts.find((c) => c.id === cutId);
+    if (added) { showEdited(added.id, true, false); return; }
+    renderHeader();
+    renderCutList();
+    renderPanel();
+    refreshHistory();
+  } catch (e) {
+    if (!alive(mine) || e.error === "aborted") return;
+    mine.ctx.toast(e.message, "error");
+  }
 }
 
 const DOT_TEXT = { filmed: "촬영: 찍음", review: "촬영: 확인 필요", remaining: "촬영: 남은 컷" };
@@ -1695,21 +1722,6 @@ async function saveCut(n, fields, focusKey) {
 // screen is redrawn from it. Drafts typed in the edit form and cached alternatives follow their cut by id
 // because the cut numbers (n) shift when cuts come and go.
 
-function idOfN(data, n) {
-  const c = data.cuts.find((x) => x.n === n);
-  return c ? c.id : null;
-}
-
-function remapByCutId(map, before, after) {
-  for (const n of [...map.keys()]) {
-    const id = idOfN(before, n);
-    const moved = id && after.cuts.find((c) => c.id === id);
-    const value = map.get(n);
-    map.delete(n);
-    if (moved) map.set(moved.n, value);
-  }
-}
-
 // Returns the answer, or null when nothing was changed (error shown, busy, or the screen was left).
 async function editCuts(op) {
   const mine = S;
@@ -1754,7 +1766,7 @@ async function editCuts(op) {
 }
 
 // Draw the answer and put focus on a cut (the new/moved one, or the one that took the deleted cut's place).
-function showEdited(focusId, select) {
+function showEdited(focusId, select, refreshFootage = true) {
   const cut = S.data.cuts.find((c) => c.id === focusId) || S.data.cuts[0];
   if (select && cut) S.sel = cut.n;
   renderHeader();
@@ -1772,7 +1784,7 @@ function showEdited(focusId, select) {
     announce(`컷 ${cut.n}`);
   }
   refreshHistory();
-  if (S.footage) S.footage.refresh();
+  if (refreshFootage && S.footage) S.footage.refresh();
 }
 
 async function insertCut(at, section) {
