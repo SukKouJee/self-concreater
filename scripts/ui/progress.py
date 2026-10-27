@@ -58,6 +58,13 @@ class ItemTiming:
                     data["expected"] = self._expected(row)
             self._publish()
 
+    def rebind(self, job: _JobLike, index: int) -> None:
+        """항목이 다른 작업으로 옮겨졌을 때: 지금까지의 진행을 새 작업·인덱스에 게시하고 이후도 거기에 게시한다."""
+        with self._lock:
+            self._job = job
+            self._index = index
+            self._publish()
+
     def start(self, row: str, sub: str | None = None) -> None:
         with self._lock:
             if self._current is not None:

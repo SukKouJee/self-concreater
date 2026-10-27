@@ -16,6 +16,10 @@
   `cancel()`이 기다리는 `next_task()`도 깨운다(JobCancelled).
   저장 확인을 기다리는 항목(`state=="awaiting"`, `ask=="review"`)은 분석 워커가 멈춰도 그대로 남고(`_close`가 건드리지 않음),
   `take_review()`가 잠금 안에서 `running`으로 바꾸는 쪽만 저장을 진행한다(저장 버튼 중복 클릭 방지).
+  줄은 열림/닫힘이 있다: `append_queued()`/`requeue()`는 줄이 열려 있고 작업이 진행 중일 때만 받는다(멈춘 작업에 넣은 일이
+  조용히 사라지지 않게). `close_if_idle()`은 줄이 비고 모든 항목이 끝났을 때만 done으로 닫고, `close_queue()`는 멈출 때
+  남은 할 일을 돌려준다. `sync_status()`는 확인 대기 유무로 running/awaiting을 올리고 내린다.
+  `release_reviews()`는 멈춘 작업의 확인 대기를 새 작업으로 옮길 때 쓴다.
 - 같은 kind 중 `SINGLE_KINDS`(collect, typify, motif, draft, polish, srtfit, caption_video, diagnose, mission, mission_feedback, review, library_summary, help_chat)는 진행 중(running/awaiting)인 작업이 하나뿐이다.
 """
 from __future__ import annotations
@@ -76,7 +80,9 @@ class Job:
         self._waits: dict[str, threading.Event] = {}
         self._decisions: dict[str, dict] = {}
         self._cancelled = threading.Event()
+        self._queue_open = True
         self._thread: threading.Thread | None = None
+        self.target: Callable[[Job], None] | None = None   # JobManager.start가 넣는다(작업 함수 객체)
 
     # ---- 읽기 -------------------------------------------------------------------
 
@@ -168,6 +174,90 @@ class Job:
                 if remaining <= 0:
                     return None
                 self._tasks_cond.wait(remaining)
+
+    def _can_queue(self) -> bool:
+        """잠금 안에서 부른다: 워커가 아직 줄을 받을 수 있으면 True."""
+        return self._queue_open and not self._cancelled.is_set() and self._status in ACTIVE
+
+    def append_queued(
+        self, items: list[dict], kind: str, same: Callable[[dict, dict], bool],
+    ) -> list[int] | None:
+        """줄을 받을 수 있으면 항목을 끝에 붙이고 항목마다 `{"kind": kind, "index": i}`를 줄에 넣는다.
+
+        아직 끝나지 않은 항목이나 앞서 붙인 새 항목과 `same(old, new)`인 항목은 붙이지 않는다.
+        줄이 닫혔으면(끝남·멈춤·취소) 아무것도 바꾸지 않고 None.
+        """
+        with self._tasks_cond:
+            if not self._can_queue():
+                return None
+            kept: list[dict] = []
+            pending = [i for i in self._items if i["state"] not in ITEM_DONE]
+            for new in items:
+                if any(same(old, new) for old in [*pending, *kept]):
+                    continue
+                kept.append(dict(new))
+            start = len(self._items)
+            self._items.extend(kept)
+            indexes = list(range(start, len(self._items)))
+            for index in indexes:
+                self._tasks.append({"kind": kind, "index": index})
+            if indexes:
+                self._tasks_cond.notify()
+            return indexes
+
+    def requeue(self, index: int, task: dict, **fields: Any) -> bool:
+        """줄을 받을 수 있으면 항목을 fields로 바꾸고 task를 줄에 넣는다(한 잠금 안에서). 아니면 그대로 두고 False."""
+        with self._tasks_cond:
+            if not self._can_queue():
+                return False
+            self._items[index].update(fields)
+            self._tasks.append(dict(task))
+            self._tasks_cond.notify()
+            return True
+
+    def close_queue(self) -> list[dict]:
+        """줄을 닫고(이후 requeue·append_queued는 거절) 남은 할 일을 꺼내 돌려준다. status는 바꾸지 않는다."""
+        with self._tasks_cond:
+            self._queue_open = False
+            leftovers = list(self._tasks)
+            self._tasks.clear()
+            return leftovers
+
+    def close_if_idle(self, summarize: Callable[[list[dict]], dict]) -> bool:
+        """줄이 비고 모든 항목이 끝났으면(확인 대기·저장 중 없음) 줄을 닫고 done으로 끝낸다.
+
+        summarize는 잠금 안에서 항목 목록(사본)으로 요약을 만든다(이 Job의 메서드를 부르면 안 된다).
+        """
+        with self._tasks_cond:
+            if not self._can_queue() or self._tasks:
+                return False
+            if any(i["state"] not in ITEM_DONE for i in self._items):
+                return False
+            self._queue_open = False
+            self._status = "done"
+            self._summary = summarize(copy.deepcopy(self._items))
+            return True
+
+    def sync_status(self) -> None:
+        """진행 중이면 확인 대기 항목이 있을 때 awaiting, 없으면 running으로 맞춘다(올리고 내린다)."""
+        with self._lock:
+            if self._status in ACTIVE:
+                waiting = any(i["state"] == "awaiting" for i in self._items)
+                self._status = "awaiting" if waiting else "running"
+
+    def release_reviews(self, message: str) -> list[tuple[int, dict]]:
+        """확인 대기(`ask=="review"`) 항목을 넘겨준다: 사본(그대로 awaiting)을 돌려주고 여기서는 skipped/message로 둔다."""
+        with self._lock:
+            released: list[tuple[int, dict]] = []
+            for index, item in enumerate(self._items):
+                if item["state"] == "awaiting" and item.get("ask") == "review":
+                    released.append((index, copy.deepcopy(item)))
+                    item.update(state="skipped", message=message)
+            return released
+
+    def set_summary(self, summary: dict | None) -> None:
+        with self._lock:
+            self._summary = summary
 
     def set_idle_status(self) -> None:
         """워커가 할 일이 없을 때: 확인 대기 항목이 있으면 status를 awaiting으로, 없으면 그대로."""
@@ -316,12 +406,17 @@ class JobManager:
         *,
         items: list[dict] | None = None,
         category: str | None = None,
+        tasks: list[dict] | None = None,
     ) -> Job:
+        """tasks: 작업 스레드가 돌기 전에 줄에 넣어 둘 할 일(collect 작업 줄 모델)."""
         with self._lock:
             current = self._latest.get(kind)
             if kind in SINGLE_KINDS and current is not None and current.is_active():
                 raise ScriptError("job_running", SINGLE_KINDS[kind])
             job = Job(kind, items, category)
+            job.target = target
+            for task in tasks or []:
+                job.push_task(task)
             self._jobs[job.id] = job
             self._latest[kind] = job
             job._thread = threading.Thread(target=job._run, args=(target,), name=f"job-{kind}-{job.id}",

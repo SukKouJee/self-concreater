@@ -180,3 +180,173 @@ def test_review_done_true_when_no_awaiting_review() -> None:
 
     assert job.review_done()
     assert job.status == "running"
+
+
+# ---- Task 3: queue open/close, status sync, adopting reviews ----------------------------
+
+def _same_url(a: dict, b: dict) -> bool:
+    return a["url"] == b["url"]
+
+
+def test_append_queued_adds_items_and_tasks() -> None:
+    job = Job("collect", [dict(new_item("a", url="u1"), state="running")])
+
+    indexes = job.append_queued([new_item("b", url="u2")], "collect", _same_url)
+
+    assert indexes == [1]
+    assert job.next_task(0) == {"kind": "collect", "index": 1}
+
+
+def test_append_queued_skips_items_matching_unfinished_or_new_ones() -> None:
+    job = Job("collect", [dict(new_item("a", url="u1"), state="running"),
+                          dict(new_item("s", url="u3"), state="saved")])
+
+    indexes = job.append_queued(
+        [new_item("x", url="u1"), new_item("y", url="u2"), new_item("z", url="u2"), new_item("w", url="u3")],
+        "collect", _same_url,
+    )
+
+    assert [job.items[i]["id"] for i in indexes or []] == ["y", "w"]
+
+
+def test_append_queued_refuses_closed_queue() -> None:
+    job = Job("collect")
+    job.close_queue()
+
+    assert job.append_queued([new_item("b", url="u2")], "collect", _same_url) is None
+    assert job.items == []
+
+
+def test_append_queued_refuses_cancelled_job() -> None:
+    job = Job("collect")
+    job.cancel()
+
+    assert job.append_queued([new_item("b", url="u2")], "collect", _same_url) is None
+
+
+def test_requeue_updates_item_and_pushes_when_open() -> None:
+    job = Job("collect", [dict(new_item("a"), state="running")])
+
+    ok = job.requeue(0, {"kind": "reanalyze", "index": 0}, state="waiting", step="analyze")
+
+    assert ok is True
+    assert job.items[0]["state"] == "waiting" and job.items[0]["step"] == "analyze"
+    assert job.next_task(0) == {"kind": "reanalyze", "index": 0}
+
+
+@pytest.mark.parametrize("close", ["queue", "cancel", "finish"])
+def test_requeue_refuses_when_job_cannot_run_it(close: str) -> None:
+    job = Job("collect", [dict(new_item("a"), state="running")])
+    if close == "queue":
+        job.close_queue()
+    elif close == "cancel":
+        job.cancel()
+    else:
+        job.finish("stopped")
+
+    ok = job.requeue(0, {"kind": "reanalyze", "index": 0}, state="waiting")
+
+    assert ok is False
+    assert job.items[0]["state"] == "running"
+
+
+def test_close_queue_returns_leftover_tasks_and_closes() -> None:
+    job = Job("collect", [new_item("a")])
+    job.push_task({"kind": "collect", "index": 0})
+
+    leftovers = job.close_queue()
+
+    assert leftovers == [{"kind": "collect", "index": 0}]
+    assert job.next_task(0) is None
+    assert job.requeue(0, {"kind": "x"}) is False
+
+
+def test_close_if_idle_finishes_done_when_all_items_finished() -> None:
+    job = Job("collect", [dict(new_item("a"), state="saved"), dict(new_item("b"), state="skipped")])
+
+    closed = job.close_if_idle(lambda items: {"n": len(items)})
+
+    assert closed is True
+    assert job.status == "done" and job.summary == {"n": 2}
+    assert job.requeue(0, {"kind": "x"}) is False
+
+
+@pytest.mark.parametrize("state", ["awaiting", "running", "waiting"])
+def test_close_if_idle_waits_for_unfinished_items(state: str) -> None:
+    job = Job("collect", [dict(new_item("a"), state=state, ask="review")])
+
+    assert job.close_if_idle(lambda items: {}) is False
+    assert job.status == "running"
+
+
+def test_close_if_idle_waits_for_queued_tasks() -> None:
+    job = Job("collect", [dict(new_item("a"), state="saved")])
+    job.push_task({"kind": "x"})
+
+    assert job.close_if_idle(lambda items: {}) is False
+
+
+def test_sync_status_lowers_awaiting_when_no_review_left() -> None:
+    job = Job("collect", [_review_item("a")])
+    job.sync_status()
+    assert job.status == "awaiting"
+
+    job.update(0, state="saved", ask=None)
+    job.sync_status()
+
+    assert job.status == "running"
+
+
+def test_sync_status_leaves_finished_job_alone() -> None:
+    job = Job("collect", [_review_item("a")])
+    job.finish("stopped")
+
+    job.sync_status()
+
+    assert job.status == "stopped"
+
+
+def test_release_reviews_marks_moved_and_returns_copies() -> None:
+    job = Job("collect", [dict(_review_item("a"), preview={"x": 1}), dict(new_item("b"), state="saved")])
+    job.finish("stopped")
+
+    released = job.release_reviews("새 작업으로 옮김")
+
+    assert [(i, item["id"], item["state"], item["preview"]) for i, item in released] == [(0, "a", "awaiting", {"x": 1})]
+    assert job.items[0]["state"] == "skipped" and job.items[0]["message"] == "새 작업으로 옮김"
+    assert job.items[1]["state"] == "saved"
+
+
+def test_set_summary_keeps_status_and_message() -> None:
+    job = Job("collect")
+    job.finish("stopped", {"saved": 0}, "중단됨")
+
+    job.set_summary({"saved": 1})
+
+    snap = job.snapshot()
+    assert (snap["status"], snap["message"], snap["summary"]) == ("stopped", "중단됨", {"saved": 1})
+
+
+def test_manager_keeps_target_on_job() -> None:
+    from scripts.ui.jobs import JobManager
+
+    def target(job: Job) -> None:
+        return None
+
+    mgr = JobManager()
+    job = mgr.start("collect", target)
+    job.join(5)
+
+    assert job.target is target
+
+
+def test_manager_queues_start_tasks_before_the_worker_runs() -> None:
+    from scripts.ui.jobs import JobManager
+
+    seen: list[dict | None] = []
+    mgr = JobManager()
+    job = mgr.start("collect", lambda j: seen.append(j.next_task(0)), items=[new_item("a")],
+                    tasks=[{"kind": "collect", "index": 0}])
+    job.join(5)
+
+    assert seen == [{"kind": "collect", "index": 0}]
