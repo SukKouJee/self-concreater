@@ -112,3 +112,13 @@ def test_item_category_falls_back_to_the_job():
     assert run_js("m.itemCategory({opts: {category: 'a'}}, {category: 'b'})") == "a"
     assert run_js("m.itemCategory({}, {category: 'b'})") == "b"
     assert run_js("m.itemCategory({}, null)") == ""
+
+
+def test_save_all_plan_edited_carry_analysis_and_each_id_once():
+    items = [{"id": "a"}, {"id": "b"}, {"id": "a"}, {"id": "c"}]
+    plan = run_js(f"m.saveAllPlan({json.dumps(items)}, {{b: {{sections: [1]}}}})")
+    assert [p["id"] for p in plan] == ["a", "b", "c"]
+    assert plan[0]["body"] == {"action": "save"}
+    assert plan[1]["body"] == {"action": "save", "analysis": {"sections": [1]}}
+    assert plan[2]["body"] == {"action": "save"}
+    assert run_js("m.saveAllPlan(null, null)") == []

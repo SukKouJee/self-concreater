@@ -928,7 +928,7 @@ def test_add_area_resume_only_for_jobs_that_need_attention():
 def test_add_area_review_queue_and_progress_card_wiring():
     js = (STATIC_DIR / "pages" / "add.js").read_text(encoding="utf-8")
     css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
-    for token in ["/save-all", "/review/", "/cancel", "모두 저장", "자세히", "확인 대기", "aria-expanded",
+    for token in ["saveAllPlan(", "/review/", "/cancel", "모두 저장", "자세히", "확인 대기", "aria-expanded",
                   "UI 서버를 끄면 사라져요", "멈추기", "고칠 점 적고 다시 분석", "작업이 멈춰 다시 분석할 수 없어요",
                   "카테고리에서", "보기", "tabindex", "reviewItems(", "queueLine(", "/static/section-band.js",
                   "onSaved"]:
@@ -943,12 +943,9 @@ def test_add_area_review_queue_and_progress_card_wiring():
     assert "/static/section-band.js" in refs and "function sectionBand" not in refs
 
 
-def test_save_all_sends_edited_cards_through_the_review_route_first():
+def test_save_all_uses_the_review_route_per_card_and_stop_keeps_focus():
     js = (STATIC_DIR / "pages" / "add.js").read_text(encoding="utf-8")
     body = js[js.index("async function saveAll"):js.index("function lengthOf")]
-    assert body.index("filter(isEdited)") < body.index("/save-all")
-    assert 'action: "save", analysis: mine.edits.get(item.id).a' in body
-    assert "/review/" in body
-    # stop button keeps focus across card rebuilds
+    assert "saveAllPlan(" in body and "/review/" in body and "/save-all" not in body
     assert 'data-act": "stop"' in js and "hadFocus" in js and '"aria-disabled"' in js
     assert 'S.headSig = ""' in js[js.index("function ensurePanel"):js.index("function renderJobPanel")]

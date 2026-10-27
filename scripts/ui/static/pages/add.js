@@ -3,7 +3,7 @@
 // 서버 작업(kind "collect")이 이미 있으면 칸을 마운트할 때 그 작업을 이어서 보여 준다.
 import { h, filesUrl } from "/static/dom.js";
 import {
-  STATUS_TEXT, splitLinks, removeLine, startLabel, summaryText, needsAttention, itemCategory, reviewItems, queueLine,
+  STATUS_TEXT, splitLinks, removeLine, startLabel, summaryText, needsAttention, itemCategory, reviewItems, queueLine, saveAllPlan,
 } from "/static/add-utils.js";
 import { sectionBand } from "/static/section-band.js";
 import { bodySubName, formatName, hookName, narrativeName, sectionLabelName, sectionName } from "/static/labels.js";
@@ -760,29 +760,35 @@ async function saveAll() {
   mine.failMsg.clear();
   renderJobPanel();
   try {
-    // Cards with edited labels go through the single-save route first (save-all sends no analysis).
+    // One request per card through the review route, so edited labels travel with their card and a failure
+    // leaves that card (and its edits) in place. The server save-all route stays available but is not used here.
+    const items = reviewItems(mine.job, mine.category);
+    const edited = {};
+    for (const item of items) if (isEdited(item)) edited[item.id] = mine.edits.get(item.id).a;
     const results = [];
-    for (const item of reviewItems(mine.job, mine.category).filter(isEdited)) {
+    let lastJob = null;
+    for (const step of saveAllPlan(items, edited)) {
       try {
-        await mine.ctx.api("POST",
-          `/api/add/${encodeURIComponent(mine.job.id)}/review/${encodeURIComponent(item.id)}`,
-          { action: "save", analysis: mine.edits.get(item.id).a });
-        results.push({ id: item.id, ok: true });
+        const data = await mine.ctx.api("POST",
+          `/api/add/${encodeURIComponent(mine.job.id)}/review/${encodeURIComponent(step.id)}`, step.body);
+        if (S !== mine || !mine.ctx.isCurrent()) return;
+        lastJob = data.job;
+        results.push({ id: step.id, ok: true });
       } catch (e) {
         if (S !== mine || !mine.ctx.isCurrent() || e.error === "aborted") return;
-        results.push({ id: item.id, ok: false, message: e.message });
+        results.push({ id: step.id, ok: false, message: e.message });
       }
     }
-    const data = await mine.ctx.api("POST", `/api/add/${encodeURIComponent(mine.job.id)}/save-all`, {});
-    if (S !== mine || !mine.ctx.isCurrent()) return;
-    results.push(...(Array.isArray(data.results) ? data.results : []));
     const failed = results.filter((r) => !r.ok);
+    const saved = results.length - failed.length;
     for (const r of failed) mine.failMsg.set(r.id, r.message || "저장하지 못했어요");
     mine.savingAll = false;
-    applyJob(data.job);
+    applyJob(lastJob || await fetchJob(mine.job.id));
+    if (S !== mine || !mine.ctx.isCurrent()) return;
     if (isActive(mine.job) && !mine.timer) schedulePoll();
-    if (results.some((r) => r.ok) && mine.hooks.onSaved) mine.hooks.onSaved();
-    if (failed.length) mine.ctx.toast(`${failed.length}개는 저장하지 못했어요. 카드에 이유를 적어 두었어요`, "error");
+    if (saved > 0 && mine.hooks.onSaved) mine.hooks.onSaved();
+    if (failed.length) mine.ctx.toast(`${saved}개 저장, ${failed.length}개는 저장하지 못했어요. 카드에 이유를 적어 두었어요`, "error");
+    else if (saved > 0) mine.ctx.toast(`${saved}개를 저장했어요`, "info");
     if (!(failed.length && focusAct("save", failed[0].id))) focusAfter([], "");
   } catch (e) {
     if (S !== mine || !mine.ctx.isCurrent() || e.error === "aborted") return;

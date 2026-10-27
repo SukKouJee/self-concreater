@@ -73,3 +73,16 @@ export function queueLine(job) {
   const review = items.filter((i) => i.ask === "review" && i.state === "awaiting").length;
   return review > 0 ? `확인을 기다리는 영상 ${review}개` : "";
 }
+
+// 모두 저장 plan: one review-route request per item, once each. `edited` maps item id -> edited analysis (only edited cards).
+export function saveAllPlan(items, edited) {
+  const seen = new Set();
+  const plan = [];
+  for (const item of items || []) {
+    if (!item || seen.has(item.id)) continue;
+    seen.add(item.id);
+    const a = edited && Object.prototype.hasOwnProperty.call(edited, item.id) ? edited[item.id] : null;
+    plan.push({ id: item.id, body: a ? { action: "save", analysis: a } : { action: "save" } });
+  }
+  return plan;
+}
