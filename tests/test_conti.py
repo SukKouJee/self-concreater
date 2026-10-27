@@ -1126,3 +1126,22 @@ def test_saved_conti_round_trips_byte_for_byte(saved):
     _edit(saved, {"op": "update", "n": 2, "fields": {"caption": "최애 1위 🏆"}})
     fm, body = refstore.read_md(saved)
     assert refstore.join_frontmatter(fm, body).encode("utf-8") == saved.read_bytes()
+
+
+def test_trash_moves_footage_outputs_and_state_with_conti(saved, draft_md, home):
+    stem = draft_md.stem
+    html_r, csv_f = draft_md.with_name(f"{stem}-remaining.html"), draft_md.with_name(f"{stem}-footage.csv")
+    cuts_dir = draft_md.with_name(f"{stem}-cuts")
+    cuts_dir.mkdir()
+    (cuts_dir / "01_a.mp4").write_bytes(b"x")
+    for p in (html_r, csv_f):
+        p.write_bytes(b"x")
+    state = home / "workspace" / "footage_match" / f"{saved.stem}.json"
+    state.parent.mkdir(parents=True, exist_ok=True)
+    state.write_text("{}", encoding="utf-8")
+    result = draft.trash(draft_md)
+    trash = home / result["trash"]
+    assert not html_r.exists() and not csv_f.exists() and not cuts_dir.exists() and not state.exists()
+    assert (trash / "drafts" / html_r.name).is_file() and (trash / "drafts" / csv_f.name).is_file()
+    assert (trash / "drafts" / cuts_dir.name / "01_a.mp4").is_file()
+    assert (trash / "workspace" / "footage_match" / state.name).is_file()

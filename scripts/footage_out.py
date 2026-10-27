@@ -17,6 +17,9 @@
   2) 재포장이 실패한 파일만 그 구간을 PyAV로 다시 압축한다(H.264 + AAC, reencoded: true, 시작은 정확).
   출력 폴더(drafts/<기획안>-cuts/)는 이 기능 전용: 만들기 전에 그 폴더의 이전 컷 파일(NN_*.mp4 등)만 지운다.
   원본은 읽기만 한다. 파일은 임시 이름으로 쓴 뒤 바꿔 끼운다(중간에 멈춰도 반쯤 쓴 파일이 남지 않게).
+  다른 프로그램이 컷 파일을 열어 두었으면(윈도 잠금) 그 컷만 failed('열려 있어요'), 예상치 못한 오류도 그 컷만 실패하고
+  나머지 컷은 계속 만든다. 탐색이 고른 시작을 SEEK_SLACK 넘게 지나치면(색인 없는 mkv) 다시 압축한다.
+  HEVC는 hvc1 태그로 담는다. CSV는 =,+,-,@로 시작하는 칸 앞에 '를 붙인다(수식 주입 방지).
 """
 from __future__ import annotations
 
@@ -46,6 +49,7 @@ FILMED = frozenset({"auto", "pinned"})
 REMAINING = ("review", "missing", "not_filmed")    # 남은 컷 HTML에 싣는 판정
 CSV_COLUMNS = ["컷", "섹션", "판정", "파일", "시작", "끝", "원본 경로"]
 MISSING_SOURCE = "원본 없음"
+MSG_LOCKED = "{name}이(가) 다른 프로그램에서 열려 있어요. 닫고 다시 해 주세요"
 MSG_NO_CLIPS = "고른 구간이 있는 컷이 없습니다. 먼저 촬영 영상을 맞추거나 구간을 골라 주세요"
 CLIP_EXT = ".mp4"
 CLIP_NAME_RE = re.compile(r"\d{2,}_.+\.(?:mp4|mov|m4v|mkv)", re.IGNORECASE)   # 이 기능이 만든 컷 파일 이름
@@ -241,6 +245,14 @@ def remaining_html(conti_file: str | Path, now: float | None = None) -> str:
 
 # ---- 위치 CSV ------------------------------------------------------------------------------
 
+FORMULA_START = ("=", "+", "-", "@")
+
+
+def csv_cell(value: str) -> str:
+    """엑셀이 수식으로 읽지 않게: =, +, -, @로 시작하는 칸은 앞에 '를 붙인다(파일 이름 등 사용자 문자열)."""
+    return "'" + value if value.startswith(FORMULA_START) else value
+
+
 def csv_rows(fm: dict, cuts: list[dict], present: dict[str, Path]) -> list[list[str]]:
     names = _Names(present)
     rows = [CSV_COLUMNS]
@@ -255,7 +267,7 @@ def csv_rows(fm: dict, cuts: list[dict], present: dict[str, Path]) -> list[list[
                     str(source) if source else MISSING_SOURCE]
         else:
             row += ["", "", "", ""]
-        rows.append(row)
+        rows.append([csv_cell(cell) for cell in row])
     return rows
 
 
@@ -317,6 +329,21 @@ def _track_start(stream: Any) -> float:
     return _seconds(stream.start_time, stream.time_base)
 
 
+SEEK_SLACK = 0.05        # 재포장 시작이 고른 시작보다 이만큼 넘게 늦으면(탐색이 지나침) 다시 압축한다
+
+
+def _seek(container: Any, stream: Any, seconds: float) -> None:
+    """seconds(원본 시각) 이전의 키프레임으로 간다."""
+    container.seek(int(seconds / stream.time_base), stream=stream, backward=True, any_frame=False)
+
+
+def _tag_hevc(out_stream: Any, source: Any) -> None:
+    """HEVC는 mp4에 hvc1 태그로 담는다(ffmpeg 기본 hev1은 QuickTime·사진 앱·CapCut 일부에서 안 열림).
+    코덱은 원본 트랙(디코더 이름)으로 본다 — 템플릿으로 만든 출력 트랙의 이름은 인코더(libx265 등)다."""
+    if source.codec_context.name == "hevc":
+        out_stream.codec_context.codec_tag = "hvc1"
+
+
 def _remux(src: Path, dst: Path, start: float, end: float) -> float:
     """시작 이전의 키프레임부터 끝까지 영상·소리 패킷을 그대로 옮긴다. -> 실제 시작(장면 시각 기준, 초)."""
     av = _av()
@@ -329,8 +356,9 @@ def _remux(src: Path, dst: Path, start: float, end: float) -> float:
         begin, stop = origin + start, origin + end
         with av.open(str(dst), "w") as out:
             ov = out.add_stream_from_template(video)
+            _tag_hevc(ov, video)
             oa = out.add_stream_from_template(audio) if audio is not None else None
-            inp.seek(int(begin / video.time_base), stream=video, backward=True, any_frame=False)
+            _seek(inp, video, begin)
             offset: float | None = None          # 첫 키프레임의 dts(초): 모든 패킷 시각을 이만큼 당긴다
             first_pts = 0.0
             video_done = False
@@ -348,6 +376,8 @@ def _remux(src: Path, dst: Path, start: float, end: float) -> float:
                             continue
                         offset = _seconds(packet.dts, tb)
                         first_pts = _seconds(packet.pts, tb)
+                        if first_pts > begin + SEEK_SLACK:
+                            raise ValueError(f"키프레임 탐색이 시작을 지나쳤습니다({first_pts - begin:.2f}초)")
                     if _seconds(packet.dts, tb) >= stop:
                         video_done = True
                     else:
@@ -419,7 +449,7 @@ def _reencode(src: Path, dst: Path, start: float, end: float) -> float:
                 oa.layout = "stereo"
                 resampler = av.AudioResampler(format="fltp", layout="stereo", rate=AUDIO_RATE,
                                               frame_size=oa.codec_context.frame_size or 1024)
-            inp.seek(int(begin / video.time_base), stream=video, backward=True, any_frame=False)
+            _seek(inp, video, begin)
             last_pts = -1
             samples = 0
             sized = False
@@ -499,7 +529,10 @@ def cut_clip(target: dict[str, Any], out_dir: Path) -> dict[str, Any]:
                 actual = _reencode(src, tmp, start, end)
             except _remux_errors() as e2:
                 raise ScriptError("clip_failed", f"컷 파일을 만들지 못했습니다: {src.name}: {e2}") from e2
-        os.replace(tmp, dst)
+        try:
+            os.replace(tmp, dst)
+        except OSError as e:
+            raise ScriptError("clip_failed", MSG_LOCKED.format(name=dst.name)) from e
     return {"cut": target["cut"], "n": target["n"], "name": src.name, "file": _rel(dst),
             "start": round(max(0.0, actual), 3), "end": end, "reencoded": reencoded}
 
@@ -510,7 +543,10 @@ def clear_clips(out_dir: Path) -> None:
         return
     for entry in out_dir.iterdir():
         if entry.is_file() and CLIP_NAME_RE.fullmatch(entry.name):
-            entry.unlink()
+            try:
+                entry.unlink()
+            except OSError:
+                pass   # 다른 프로그램이 열어 둠: 같은 이름이면 그 컷에서 '열려 있어요'로 알리고, 아니면 남는다
 
 
 def export_clips(conti_file: str | Path, progress: ClipProgress | None = None,
@@ -541,9 +577,10 @@ def export_clips(conti_file: str | Path, progress: ClipProgress | None = None,
         else:
             try:
                 info = cut_clip(target, out_dir)
-            except ScriptError as e:
-                info = {**base, "reason": e.message}
-                if e.code == "source_missing":
+            except Exception as e:  # noqa: BLE001 - 컷 하나의 오류로 나머지 컷을 멈추지 않는다
+                reason = e.message if isinstance(e, ScriptError) else f"예상치 못한 오류: {type(e).__name__}: {e}"
+                info = {**base, "reason": reason}
+                if isinstance(e, ScriptError) and e.code == "source_missing":
                     result["skipped"].append(info)
                     event = "skipped"
                 else:

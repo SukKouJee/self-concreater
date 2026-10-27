@@ -4,6 +4,7 @@ import io
 import re
 import shutil
 from fractions import Fraction
+from pathlib import Path
 
 import av
 import numpy as np
@@ -305,3 +306,116 @@ def test_remaining_html_embeds_each_reference_image_once(scene_setup, home, monk
     text = (home / footage_out.remaining_html(path)).read_text("utf-8")
     assert text.count("data:image/jpeg;base64,") == 1            # 컷 3개가 같은 사진: 한 번만 싣는다
     assert text.count('class="ref img0"') == 3 and "참고 · 같은 장면" in text
+
+
+# --- Fix round 1 ------------------------------------------------------------------------------
+
+@pytest.fixture
+def two_cuts(saved, tmp_path, av_video):
+    folder, [f] = shoot(tmp_path, av_video)
+    seed(saved, folder, {0: chosen(f["fid"], 0.0, 1.0), 1: chosen(f["fid"], 2.0, 3.0)})
+    return saved
+
+
+def test_export_clips_contains_locked_output_to_its_cut(two_cuts, home, monkeypatch):
+    import os
+    real = os.replace
+
+    def replace(src, dst):
+        if Path(dst).name.startswith("01_"):
+            raise PermissionError(13, "The process cannot access the file")
+        return real(src, dst)
+
+    monkeypatch.setattr(os, "replace", replace)
+    result = footage_out.export_clips(two_cuts)
+    [failed] = result["failed"]
+    assert failed["n"] == 1 and "다른 프로그램에서 열려 있어요" in failed["reason"]
+    assert [c["n"] for c in result["clips"]] == [2] and (home / result["clips"][0]["file"]).is_file()
+
+
+def test_clear_clips_ignores_locked_old_clip(two_cuts, home, monkeypatch):
+    out_dir = footage_out.clips_dir(two_cuts)
+    out_dir.mkdir()
+    (out_dir / "07_old.mp4").write_bytes(b"x")
+    real = Path.unlink
+
+    def unlink(self, missing_ok=False):
+        if self.name == "07_old.mp4":
+            raise PermissionError(13, "locked")
+        return real(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    result = footage_out.export_clips(two_cuts)
+    assert [c["n"] for c in result["clips"]] == [1, 2]
+
+
+def test_export_clips_unexpected_error_fails_only_that_cut(two_cuts, monkeypatch):
+    real = footage_out.cut_clip
+
+    def flaky(target, out_dir):
+        if target["n"] == 1:
+            raise RuntimeError("boom")
+        return real(target, out_dir)
+
+    monkeypatch.setattr(footage_out, "cut_clip", flaky)
+    result = footage_out.export_clips(two_cuts)
+    assert result["failed"][0]["reason"] == "예상치 못한 오류: RuntimeError: boom"
+    assert [c["n"] for c in result["clips"]] == [2]
+
+
+def test_remux_seek_overshoot_falls_back_to_reencode(two_cuts, monkeypatch):
+    real, calls = footage_out._seek, []
+
+    def overshoot(container, stream, seconds):
+        calls.append(seconds)                        # 컷마다 재포장(홀수 번째) → 다시 압축(짝수 번째)
+        real(container, stream, seconds + (1.0 if len(calls) % 2 else 0.0))   # 색인 없는 mkv처럼 지나친다
+
+    monkeypatch.setattr(footage_out, "_seek", overshoot)
+    result = footage_out.export_clips(two_cuts)
+    assert all(c["reencoded"] for c in result["clips"]) and len(result["clips"]) == 2
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("=cmd|' /C calc'!A0", "'=cmd|' /C calc'!A0"), ("+1", "'+1"), ("-x", "'-x"), ("@sum", "'@sum"),
+    ("a.mp4", "a.mp4"), ("", ""),
+])
+def test_csv_cell_neutralizes_formulas(value, expected):
+    assert footage_out.csv_cell(value) == expected
+
+
+def test_csv_escapes_formula_file_name(saved, tmp_path, sample_video, home):  # noqa: F811
+    folder, [f] = shoot(tmp_path, sample_video, names=["=HYPERLINK.mp4"])
+    seed(saved, folder, {0: chosen(f["fid"], 1.0, 2.0)})
+    rows = read_csv(home / footage_out.csv_export(saved))
+    assert rows[1][3] == "'=HYPERLINK.mp4"
+
+
+@pytest.fixture(scope="module")
+def hevc_video(tmp_path_factory):
+    path = tmp_path_factory.mktemp("hevc") / "hevc.mp4"
+    with av.open(str(path), "w") as out:
+        v = out.add_stream("libx265", rate=30)
+        v.width, v.height, v.pix_fmt = 160, 120, "yuv420p"
+        v.options = {"x265-params": "log-level=none:keyint=30"}
+        for i in range(60):
+            frame = av.VideoFrame.from_ndarray(np.full((120, 160, 3), i * 4, dtype=np.uint8), format="rgb24")
+            frame.pts = i
+            out.mux(v.encode(frame))
+        out.mux(v.encode())
+    return path
+
+
+def test_remux_tags_hevc_as_hvc1(saved, tmp_path, hevc_video, home):
+    folder, [f] = shoot(tmp_path, hevc_video)
+    seed(saved, folder, {0: chosen(f["fid"], 0.0, 1.5)})
+    [clip] = footage_out.export_clips(saved)["clips"]
+    assert clip["reencoded"] is False
+    with av.open(str(home / clip["file"])) as c:
+        v = c.streams.video[0]
+        assert v.codec_context.name == "hevc" and v.codec_context.codec_tag == "hvc1"
+
+
+def test_remaining_html_keeps_not_filmed_cuts(scene_setup, home):
+    path, _, _ = scene_setup
+    text = (home / footage_out.remaining_html(path)).read_text("utf-8")
+    assert 'class="badge not_filmed">못 찍음' in text

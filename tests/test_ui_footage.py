@@ -842,3 +842,18 @@ def test_clips_refused_while_footage_job_runs(client, rel, saved, tmp_path, samp
     finally:
         gate.set()
         running.join(5)
+
+
+@pytest.mark.parametrize("kind", ["footage", "footage_clips"])
+def test_trash_refused_while_footage_job_runs_on_that_conti(client, rel, saved, draft_md, kind):  # noqa: F811
+    gate = threading.Event()
+    running = client.app.jobs.start(kind, lambda job: gate.wait(5), items=[new_item("x")], summary={"path": rel})
+    try:
+        status, body = client.json("POST", "/api/conti/trash", {"path": rel})
+        assert status == 400 and body["error"] == "conti_busy" and saved.exists()
+        draft_rel = draft_md.relative_to(saved.parents[1]).as_posix()
+        status, body = client.json("POST", "/api/draft/trash", {"path": draft_rel})
+        assert status == 400 and body["error"] == "draft_busy" and draft_md.exists()
+    finally:
+        gate.set()
+        running.join(5)

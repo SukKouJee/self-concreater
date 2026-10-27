@@ -1134,19 +1134,22 @@ def export_srt(conti: str | Path, track: str = "caption", video: str | Path | No
 
 
 def conti_outputs(path: Path) -> list[Path]:
-    """콘티 md와 그 콘티로 만든 파일(스토리보드 HTML, SRT 두 종류, 자막 영상) 중 있는 것. 기획안은 넣지 않는다."""
+    """콘티 md와 그 콘티로 만든 파일(스토리보드 HTML, SRT 두 종류, 자막 영상, 촬영 영상의 남은 컷 HTML·위치 CSV)
+    중 있는 것. 기획안은 넣지 않는다."""
     base = path.stem[: -len(CONTI_SUFFIX)]
     names = [path.name, path.with_suffix(".html").name,
-             *(f"{base}-{suffix}.srt" for _, suffix in SRT_TRACKS.values()), f"{base}-captions.mp4"]
+             *(f"{base}-{suffix}.srt" for _, suffix in SRT_TRACKS.values()), f"{base}-captions.mp4",
+             f"{base}-remaining.html", f"{base}-footage.csv"]
     return [path.with_name(n) for n in names if path.with_name(n).is_file()]
 
 
 def trash_targets(path: Path) -> list[Path]:
-    """콘티를 지울 때 함께 옮길 것: 산출물 + 이력 폴더(있으면)."""
-    from scripts import conti_history
+    """콘티를 지울 때 함께 옮길 것: 산출물 + 이력 폴더 + 컷 파일 폴더 + 촬영 영상 판정 파일(있으면)."""
+    from scripts import conti_history, footage_match
 
-    history = conti_history.history_dir(path)
-    return [*conti_outputs(path), *([history] if history.is_dir() else [])]
+    folders = [conti_history.history_dir(path), path.with_name(f"{path.stem[: -len(CONTI_SUFFIX)]}-cuts")]
+    state = footage_match.state_path(path)
+    return [*conti_outputs(path), *(f for f in folders if f.is_dir()), *([state] if state.is_file() else [])]
 
 
 def trash(conti: str | Path) -> dict:

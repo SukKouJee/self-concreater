@@ -343,6 +343,6 @@ def _trash(req: Request) -> dict:
     # 다듬기·콘티 만들기는 기획안을, 자막 작업은 그 콘티를 읽는다.
     conti_rel = _rel(conti.conti_path(path))
     if job_running_on(req.app, ("polish", "conti"), rel) or job_running_on(req.app, FILE_JOB_KINDS, conti_rel):
-        raise ScriptError("draft_busy", "이 기획안으로 작업하는 중입니다(다듬기·콘티·자막). 끝나거나 멈춘 뒤에 삭제하세요")
+        raise ScriptError("draft_busy", "이 기획안으로 작업하는 중입니다(다듬기·콘티·자막·촬영 영상). 끝나거나 멈춘 뒤에 삭제하세요")
     with _FILMED_LOCK:                   # 촬영함 체크가 같은 파일을 쓰는 중이면 기다린다
         return draft.trash(rel)
