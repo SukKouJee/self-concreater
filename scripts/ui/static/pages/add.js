@@ -275,6 +275,7 @@ function ensurePanel() {
   S.jobEl.replaceChildren(live, notices, progSlot, queue, foot);
   S.lastAnnounce = "";
   S.noticeSig = "";
+  S.headSig = "";
   S.prog = { el: null, id: null, sig: "" };
   S.panel = { live, notices, progSlot, queue, head, list, foot };
   return S.panel;
@@ -327,7 +328,10 @@ function renderNotices(p, job) {
   S.noticeSig = sig;
   p.notices.replaceChildren(...rows.map((r) => {
     const go = h("button", { type: "button", class: "btn btn-link" }, "보기");
-    go.addEventListener("click", () => S.ctx.setCategory(r.cat));
+    go.addEventListener("click", () => {
+      S.ctx.setCategory(r.cat);
+      if (S.f) S.f.ta.focus();
+    });
     return h("p", { class: "other-cat-line" }, h("span", {}, `${r.text} — `), go);
   }));
 }
@@ -424,8 +428,10 @@ function progressCard(item, line) {
   if (item && item.message) card.append(h("p", { class: "muted item-msg" }, item.message));
   const foot = h("div", { class: "prog-foot" });
   if (line) foot.append(h("p", { class: "muted prog-queue" }, line));
-  const stop = h("button", { type: "button", class: "btn", disabled: !!S.stopping }, S.stopping ? "멈추는 중…" : "멈추기");
-  stop.addEventListener("click", stopJob);
+  // aria-disabled (not disabled) keeps the button focusable while stopping.
+  const stop = h("button", { type: "button", class: "btn", "data-act": "stop", "aria-disabled": String(!!S.stopping) },
+    S.stopping ? "멈추는 중…" : "멈추기");
+  stop.addEventListener("click", () => { if (!S.stopping) stopJob(); });
   foot.append(stop);
   card.append(foot);
   return card;
@@ -440,10 +446,12 @@ function renderProgress(p, job, mine) {
     sig = JSON.stringify([current.id, current.title, current.step, current.message, timingSig(current.timing), line, !!S.stopping]);
   } else sig = JSON.stringify(["idle", line, !!S.stopping]);
   if (sig === S.prog.sig) return;
+  const hadFocus = !!p.progSlot.querySelector('[data-act="stop"]:focus');
   S.prog.sig = sig;
   S.prog.id = current ? current.id : null;
   S.prog.el = sig === "none" ? null : progressCard(current || null, line);
   if (S.prog.el) p.progSlot.replaceChildren(S.prog.el); else p.progSlot.replaceChildren();
+  if (hadFocus && S.prog.el) S.prog.el.querySelector('[data-act="stop"]').focus();
 }
 
 // Updates only text and bar widths of the progress card; it is never rebuilt here.
@@ -752,9 +760,22 @@ async function saveAll() {
   mine.failMsg.clear();
   renderJobPanel();
   try {
+    // Cards with edited labels go through the single-save route first (save-all sends no analysis).
+    const results = [];
+    for (const item of reviewItems(mine.job, mine.category).filter(isEdited)) {
+      try {
+        await mine.ctx.api("POST",
+          `/api/add/${encodeURIComponent(mine.job.id)}/review/${encodeURIComponent(item.id)}`,
+          { action: "save", analysis: mine.edits.get(item.id).a });
+        results.push({ id: item.id, ok: true });
+      } catch (e) {
+        if (S !== mine || !mine.ctx.isCurrent() || e.error === "aborted") return;
+        results.push({ id: item.id, ok: false, message: e.message });
+      }
+    }
     const data = await mine.ctx.api("POST", `/api/add/${encodeURIComponent(mine.job.id)}/save-all`, {});
     if (S !== mine || !mine.ctx.isCurrent()) return;
-    const results = Array.isArray(data.results) ? data.results : [];
+    results.push(...(Array.isArray(data.results) ? data.results : []));
     const failed = results.filter((r) => !r.ok);
     for (const r of failed) mine.failMsg.set(r.id, r.message || "저장하지 못했어요");
     mine.savingAll = false;

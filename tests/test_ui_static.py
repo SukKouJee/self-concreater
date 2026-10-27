@@ -941,3 +941,14 @@ def test_add_area_review_queue_and_progress_card_wiring():
     assert "export function sectionBand" in sb and "marginLeft" in sb
     refs = (STATIC_DIR / "pages" / "refs.js").read_text(encoding="utf-8")
     assert "/static/section-band.js" in refs and "function sectionBand" not in refs
+
+
+def test_save_all_sends_edited_cards_through_the_review_route_first():
+    js = (STATIC_DIR / "pages" / "add.js").read_text(encoding="utf-8")
+    body = js[js.index("async function saveAll"):js.index("function lengthOf")]
+    assert body.index("filter(isEdited)") < body.index("/save-all")
+    assert 'action: "save", analysis: mine.edits.get(item.id).a' in body
+    assert "/review/" in body
+    # stop button keeps focus across card rebuilds
+    assert 'data-act": "stop"' in js and "hadFocus" in js and '"aria-disabled"' in js
+    assert 'S.headSig = ""' in js[js.index("function ensurePanel"):js.index("function renderJobPanel")]
