@@ -290,3 +290,75 @@ def test_cli_history_name_restore_diff(saved, home, monkeypatch):
     assert conti.main(["history-diff", rel, "--a", "2"])["changes"]
     assert conti.main(["history-restore", rel, "--n", "2"])["status"] == "restored"
     assert fm_of(saved)["cuts"][0]["line"] == "4단계 다 먹을 수 있을까?"
+
+
+# --- 수정 1차: 손편집 보존 · 동시성 · 무변경 편집 · 큰 번호 ------------------------------------
+
+def hand_edit(path, line):
+    fm, _ = refstore.read_md(path)
+    fm["cuts"][0]["line"] = line
+    conti._write_conti(path, path.read_bytes(), conti.retime(fm))
+
+
+def test_restore_after_hand_edit_keeps_the_hand_edit_in_history(saved):
+    hand_edit(saved, "손으로 고친 대사")
+    ch.restore(saved, 1, None, now=T0 + 5)
+    kinds = [v["kind"] for v in versions(saved)]
+    assert kinds == ["restored", "external", "created"]
+    assert ch.get_version(saved, 2)["state"]["cuts"][0]["line"] == "손으로 고친 대사"
+
+
+def test_name_after_hand_edit_records_external_first(saved):
+    hand_edit(saved, "손으로 고친 대사")
+    ch.name(saved, "촬영 후", None, now=T0 + 5)
+    assert [v["kind"] for v in versions(saved)] == ["named", "external", "created"]
+
+
+def test_update_cut_with_bad_number_records_nothing(saved):
+    hand_edit(saved, "손으로 고친 대사")
+    with pytest.raises(ScriptError) as e:
+        conti.update_cut(saved, 99, {"line": "x"}, now=T0 + 5)
+    assert e.value.code == "cut_not_found" and len(versions(saved)) == 1
+
+
+def test_concurrent_updates_with_same_hash_one_wins(saved):
+    import threading
+    h = conti.content_hash(saved)
+    outcomes = []
+    gate = threading.Barrier(2)
+
+    def worker(text):
+        gate.wait()
+        try:
+            conti.update_cut(saved, 1, {"line": text}, expected_hash=h, now=T0 + 5)
+            outcomes.append("ok")
+        except ScriptError as e:
+            outcomes.append(e.code)
+
+    threads = [threading.Thread(target=worker, args=(t,)) for t in ("가", "나")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(outcomes) == ["conti_changed", "ok"]
+    assert [v["n"] for v in versions(saved)] == [2, 1]
+    assert not [p for p in ch.history_dir(saved).iterdir() if p.suffix == ".tmp"]
+
+
+def test_noop_auto_edit_only_touches_last_touch(saved):
+    edit_line(saved, "바뀜", T0 + 10)
+    edit_line(saved, "바뀜", T0 + 10 + 200)             # 같은 값: 새 버전 없음
+    edit_line(saved, "다시", T0 + 10 + 200 + 280)       # 앞 no-op의 시각에서 5분 안 → 같은 묶음
+    assert [v["n"] for v in versions(saved)] == [2, 1]
+    assert ch.get_version(saved, 2)["last_touch"] == T0 + 490
+
+
+def test_version_numbers_beyond_9999_sort_numerically(saved):
+    folder = ch.history_dir(saved)
+    src = folder / "0001.json"
+    for n in (9999, 10000):
+        data = json.loads(src.read_text("utf-8"))
+        data["n"] = n
+        (folder / f"{n:04d}.json").write_text(json.dumps(data), encoding="utf-8")
+    assert [v["n"] for v in versions(saved)] == [10000, 9999, 1]
+    assert ch.record(saved, fm_of(saved), "named", name="x", now=T0 + 1)["n"] == 10001

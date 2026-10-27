@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -22,7 +23,7 @@ KINDS = ("created", "auto", "named", "before_recreate", "external", "restored")
 GROUP_SEC = 300                      # 마지막 손길에서 5분 안의 편집은 같은 auto 버전에 묶는다
 NAME_MAX = 30
 CUT_FIELDS = ("section", "size", "angle", "sec", "action", "line", "caption", "sfx", "guide", "ref_frame")
-_VERSION_RE = re.compile(r"^(\d{4})\.json$")
+_VERSION_RE = re.compile(r"^(\d{4,})\.json$")
 
 
 # --- 상태 ---------------------------------------------------------------------------
@@ -136,7 +137,7 @@ def _changed_cuts(result: dict) -> int:
 def _paths(folder: Path) -> list[Path]:
     if not folder.is_dir():
         return []
-    return sorted(p for p in folder.iterdir() if _VERSION_RE.match(p.name))
+    return sorted((p for p in folder.iterdir() if _VERSION_RE.match(p.name)), key=lambda p: int(p.stem))
 
 
 def _read(path: Path) -> dict:
@@ -147,7 +148,7 @@ def _read(path: Path) -> dict:
 
 
 def _write_atomic(path: Path, data: dict) -> None:
-    tmp = path.with_name(f".{path.name}.tmp")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8", newline="\n")
     os.replace(tmp, path)
 
@@ -173,6 +174,10 @@ def record(conti_path: str | Path, fm: dict, kind: str, name: str | None = None,
         before = _read(paths[-2]) if len(paths) > 1 else None
     else:
         n, before = (latest["n"] + 1 if latest else 1), latest
+    if kind == "auto" and latest and latest["kind"] == "auto" and same_state(latest["state"], state):
+        latest["last_touch"] = stamp                    # 바뀐 게 없는 편집: 새 버전 없이 묶음 시각만 갱신
+        _write_atomic(paths[-1], latest)
+        return _summary(latest)
     changed = _changed_cuts(diff(before["state"], state)) if before else 0
     version = {"n": n, "kind": kind, "name": name, "at": at, "last_touch": stamp, "state": state,
                "summary": {"cuts": len(state["cuts"]), "total_sec": _total(state), "changed": changed}}
@@ -213,19 +218,28 @@ def _guard(path: Path, expected_hash: str | None) -> None:
 
 
 def name(conti_path: str | Path, label: str, expected_hash: str | None, now: float | None = None) -> dict:
-    path = conti._resolve(conti_path)
-    _guard(path, expected_hash)
-    text = str(label or "").strip()
-    if not 1 <= len(text) <= NAME_MAX:
-        raise ScriptError("invalid_name", f"이름은 1~{NAME_MAX}자여야 합니다")
-    return record(path, conti._load_conti(path), "named", name=text, now=now)
+    with conti.HISTORY_LOCK:
+        path = conti._resolve(conti_path)
+        _guard(path, expected_hash)
+        text = str(label or "").strip()
+        if not 1 <= len(text) <= NAME_MAX:
+            raise ScriptError("invalid_name", f"이름은 1~{NAME_MAX}자여야 합니다")
+        current = conti._load_conti(path)
+        check_external(path, current, now)               # 손으로 고친 상태도 이력에 남긴다
+        return record(path, current, "named", name=text, now=now)
 
 
 def restore(conti_path: str | Path, n: int, expected_hash: str | None, now: float | None = None) -> dict:
     """그 버전의 상태로 프런트매터를 쓰고(메모·줄바꿈 보존, 시간 다시 계산, HTML) restored로 남긴다."""
+    with conti.HISTORY_LOCK:
+        return _restore_locked(conti_path, n, expected_hash, now)
+
+
+def _restore_locked(conti_path: str | Path, n: int, expected_hash: str | None, now: float | None) -> dict:
     path = conti._resolve(conti_path)
     _guard(path, expected_hash)
     version = get_version(path, n)
+    check_external(path, conti._load_conti(path), now)   # 덮어쓰기 전에 손으로 고친 상태를 이력에 남긴다
     raw = path.read_bytes()
     state = version["state"]
     fm = conti.retime({**conti._load_conti(path), "script": [dict(s) for s in state["script"]],

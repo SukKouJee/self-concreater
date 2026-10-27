@@ -31,6 +31,7 @@ import json
 import re
 import secrets
 import statistics
+import threading
 from collections.abc import Callable
 from datetime import date
 from pathlib import Path
@@ -47,6 +48,7 @@ CONTI_SUFFIX = "-conti"
 SEC_TOLERANCE = 0.3
 OVERFLOW_SLACK = 1.15          # 말 속도 × 컷 길이의 115%까지는 허용
 SCHEMA_VERSION = 3
+HISTORY_LOCK = threading.RLock()   # 해시 확인 → md 쓰기 → 이력 기록을 한 덩어리로(같은 프로세스의 동시 요청)
 EDITABLE_FIELDS = ("line", "guide", "caption", "sfx", "ref_frame")
 
 _HEAD_RE = re.compile(r"^### (\d+:\d{2})–(\d+:\d{2}) · (\w+)(?:/(\w+))? \(")
@@ -532,6 +534,11 @@ def _write_html(md_path: Path, fm: dict) -> Path:
 
 
 def save(draft: str | Path, conti_json: Path, force: bool = False, now: float | None = None) -> dict:
+    with HISTORY_LOCK:
+        return _save_locked(draft, conti_json, force, now)
+
+
+def _save_locked(draft: str | Path, conti_json: Path, force: bool, now: float | None) -> dict:
     from scripts import conti_history       # conti_history가 이 모듈을 쓰므로 함수 안에서 불러온다
 
     draft_path = _resolve(draft)
@@ -673,6 +680,11 @@ def ensure_ids(path: str | Path) -> bool:
 def update_cut(conti: str | Path, n: int, fields: dict, expected_hash: str | None = None,
                now: float | None = None) -> dict:
     """컷 하나의 line·guide·caption·sfx·ref_frame을 고친다. 본문은 다시 그리되 '## 내 메모'와 줄바꿈 방식은 보존."""
+    with HISTORY_LOCK:
+        return _update_cut_locked(conti, n, fields, expected_hash, now)
+
+
+def _update_cut_locked(conti: str | Path, n: int, fields: dict, expected_hash: str | None, now: float | None) -> dict:
     from scripts import conti_history
 
     path = _resolve(conti)
@@ -682,7 +694,9 @@ def update_cut(conti: str | Path, n: int, fields: dict, expected_hash: str | Non
         raise ScriptError("conti_changed", "파일이 밖에서 바뀌었습니다. 다시 불러오세요")
     edit = _check_edit(fields)
     ensure_ids(path)                                     # 편집 전 상태를 이력에 남기려면 id가 파일에 있어야 한다
-    conti_history.check_external(path, _load_conti(path), now)
+    fm = _load_conti(path)
+    _find_cut(fm["cuts"], n)                             # 없는 컷 번호면 이력을 남기기 전에 실패한다
+    conti_history.check_external(path, fm, now)
     raw = path.read_bytes()
     fm = _load_conti(path)
     cut = _find_cut(fm["cuts"], n)
