@@ -4,9 +4,9 @@ youtube-transcript-api>=1.0
 scenedetect>=0.6.4
 opencv-python-headless>=4.9
 numpy>=1.26
-av>=12.0
+av>=19.0
 scikit-learn>=1.4
 pytest>=8.0
-# av(PyAV): 촬영 영상(footage.py)의 기본 디코더(실패하면 OpenCV)이자 STT 디코더. 휠에 ffmpeg가 들어 있다
+# av(PyAV): 촬영 영상(footage.py)의 기본 디코더(실패하면 OpenCV)이자 STT 디코더. 휠에 ffmpeg가 들어 있다. 19 미만은 frame.rotation·av.error.FFmpegError가 없어 회전 정보를 조용히 잃는다
 # 선택: 자막이 없을 때 STT (stt.py), 촬영 영상 받아쓰기(footage.py)에도 쓰인다
 # faster-whisper>=1.0   (av 19와 내장 디코더가 충돌해 stt.py가 PyAV로 직접 디코딩한다)
