@@ -20,7 +20,9 @@
   조용히 사라지지 않게). `close_if_idle()`은 줄이 비고 모든 항목이 끝났을 때만 done으로 닫고, `close_queue()`는 멈출 때
   남은 할 일을 돌려준다. `sync_status()`는 확인 대기 유무로 running/awaiting을 올리고 내린다.
   `release_reviews()`는 멈춘 작업의 확인 대기를 새 작업으로 옮길 때 쓴다.
-- 같은 kind 중 `SINGLE_KINDS`(collect, typify, motif, draft, polish, srtfit, caption_video, diagnose, mission, mission_feedback, review, library_summary, help_chat)는 진행 중(running/awaiting)인 작업이 하나뿐이다.
+- 같은 kind 중 `SINGLE_KINDS`(collect, typify, motif, draft, polish, srtfit, caption_video, diagnose, mission, mission_feedback, review, library_summary, help_chat, footage, footage_clips)는 진행 중(running/awaiting)인 작업이 하나뿐이다.
+- `EXCLUSIVE`: CPU를 많이 쓰는 kind끼리는 동시에 돌지 않는다(collect ↔ footage·footage_clips, footage ↔ footage_clips).
+  상대 kind가 진행 중이면 `start()`가 같은 잠금 안에서 `ScriptError("busy", 상대 kind의 문구)`로 거절한다.
 """
 from __future__ import annotations
 
@@ -52,6 +54,17 @@ SINGLE_KINDS = {
     "review": "이미 회고를 쓰는 중입니다",
     "library_summary": "이미 섹션 요약을 받는 중입니다",
     "help_chat": "이미 답을 만드는 중입니다",
+    "footage": "이미 촬영 영상을 처리하는 중입니다",
+    "footage_clips": "이미 컷 파일을 만드는 중입니다",
+}
+# 시작하려는 kind → {진행 중이면 막는 kind: 거절 문구}
+MSG_AFTER_COLLECT = "레퍼런스 분석이 끝난 뒤 시작해 주세요"
+MSG_AFTER_FOOTAGE = "촬영 영상 처리가 끝난 뒤 시작해 주세요"
+MSG_AFTER_CLIPS = "컷 파일 만들기가 끝난 뒤 시작해 주세요"
+EXCLUSIVE: dict[str, dict[str, str]] = {
+    "collect": {"footage": MSG_AFTER_FOOTAGE, "footage_clips": MSG_AFTER_FOOTAGE},
+    "footage": {"collect": MSG_AFTER_COLLECT, "footage_clips": MSG_AFTER_CLIPS},
+    "footage_clips": {"collect": MSG_AFTER_COLLECT, "footage": MSG_AFTER_FOOTAGE},
 }
 STOP_MESSAGE = "중단됨"
 
@@ -394,14 +407,20 @@ class JobManager:
         items: list[dict] | None = None,
         category: str | None = None,
         tasks: list[dict] | None = None,
+        summary: dict | None = None,
     ) -> Job:
-        """tasks: 작업 스레드가 돌기 전에 줄에 넣어 둘 할 일(collect 작업 줄 모델)."""
+        """tasks: 작업 스레드가 돌기 전에 줄에 넣어 둘 할 일(collect 작업 줄 모델).
+        summary: 시작할 때의 요약(예: 어느 콘티의 작업인지). 작업 함수가 끝낼 때 바꿀 수 있다."""
         with self._lock:
             current = self._latest.get(kind)
             if kind in SINGLE_KINDS and current is not None and current.is_active():
                 raise ScriptError("job_running", SINGLE_KINDS[kind])
+            for other, message in EXCLUSIVE.get(kind, {}).items():
+                if any(j.kind == other and j.is_active() for j in self._jobs.values()):
+                    raise ScriptError("busy", message)
             job = Job(kind, items, category)
             job.target = target
+            job.set_summary(summary)
             for task in tasks or []:
                 job.push_task(task)
             self._jobs[job.id] = job

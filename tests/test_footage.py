@@ -183,6 +183,21 @@ def test_process_reuses_cache_without_decoding(home, sample_video, monkeypatch):
     assert footage.process_file(sample_video, run_stt=False) == first
 
 
+def test_cached_result_reads_cache_without_processing(home, sample_video, monkeypatch):
+    fid = footage.fingerprint(sample_video)
+    assert footage.cached_result(fid) is None
+    first = footage.process_file(sample_video, run_stt=False)
+
+    def boom(*a, **k):
+        raise AssertionError("decoded again")
+
+    monkeypatch.setattr(footage, "_read_opencv", boom)
+    monkeypatch.setattr(footage, "_read_pyav", boom)
+    assert footage.cached_result(fid) == first and first["transcript"] is None
+    with pytest.raises(ScriptError):
+        footage.cached_result("../x")
+
+
 def test_process_restarts_cleanly_after_interrupted_run(home, sample_video):
     base = footage.footage_dir(footage.fingerprint(sample_video))
     (base / "frames").mkdir(parents=True)

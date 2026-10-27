@@ -464,11 +464,15 @@ def process_file(path: str | Path, progress: Progress | None = None, run_stt: bo
     report = safe_progress(progress)
 
     record = _read_json(base / "scenes.json") or _scene_record(path, fid, base, report)
+    if record["status"] != "done":
+        return _result(record, None)
+    transcript = _transcript(path, base, report) if run_stt else _read_json(base / "transcript.json")
+    return _result(record, transcript)
+
+
+def _result(record: dict[str, Any], transcript: dict[str, Any] | None) -> dict[str, Any]:
     result = {k: v for k, v in record.items() if k != "schema"}
     result["transcript"] = None
-    if record["status"] != "done":
-        return result
-    transcript = _transcript(path, base, report) if run_stt else _read_json(base / "transcript.json")
     if transcript is not None:
         result["transcript"] = transcript["segments"]
         if transcript.get("stt_missing"):
@@ -476,6 +480,17 @@ def process_file(path: str | Path, progress: Progress | None = None, run_stt: bo
         if transcript.get("error"):
             result["transcript_error"] = transcript["error"]
     return result
+
+
+def cached_result(fid: str) -> dict[str, Any] | None:
+    """process_file이 남긴 캐시만 읽는다(처리하지 않는다). scenes.json이 없으면 None.
+    받아쓰기를 아직 안 했으면(transcript.json 없음) transcript는 None."""
+    base = footage_dir(fid)
+    record = _read_json(base / "scenes.json")
+    if record is None:
+        return None
+    transcript = _read_json(base / "transcript.json") if record["status"] == "done" else None
+    return _result(record, transcript)
 
 
 def main(argv: list[str]) -> Any:

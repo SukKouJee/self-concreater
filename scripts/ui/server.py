@@ -17,6 +17,8 @@
   `make_app()`이 `register_routes()`로 그 모듈들을 import하고, import 때 데코레이터가 같은 `ROUTES`에 등록한다.
   (라우트 모듈은 `from scripts.ui.server import route`만 하면 되고, 순환 import가 생기지 않는다.)
 - `App.jobs`는 `make_app()`이 붙이는 `jobs.JobManager`다. `/api/shutdown`은 진행 중인 작업을 먼저 멈춘다.
+- 큰 파일(촬영 영상)은 `Response(file=FileSlice(path, start, length))`로 돌려준다. 본문을 메모리에 올리지 않고
+  `STREAM_CHUNK`씩 읽어 보낸다. 브라우저가 재생 위치를 옮기며 연결을 끊는 것은 정상이라 조용히 연결만 닫는다.
 """
 from __future__ import annotations
 
@@ -48,13 +50,14 @@ HEADER = "X-YTC-Key"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 FILE_DIRS: tuple[tuple[str, ...], ...] = (("workspace", "frames"), ("drafts",), ("reports",))
 MAX_BODY = 10 * 1024 * 1024
+STREAM_CHUNK = 1024 * 1024
 PING_TIMEOUT = 1.0
 
 # 라우트 모듈: Task 5/6이 여기에 이름을 더한다(예: "scripts.ui.api_add").
 ROUTE_MODULES: list[str] = ["scripts.ui.api_add", "scripts.ui.api_conti", "scripts.ui.api_refs", "scripts.ui.api_typify",
                            "scripts.ui.api_motif", "scripts.ui.api_draft", "scripts.ui.api_polish",
                            "scripts.ui.api_diagnose", "scripts.ui.api_mission", "scripts.ui.api_report",
-                           "scripts.ui.api_library", "scripts.ui.api_help"]
+                           "scripts.ui.api_library", "scripts.ui.api_help", "scripts.ui.api_footage"]
 
 BAD_TOKEN = {"error": "bad_token", "message": "주소의 key가 맞지 않습니다. 터미널에 나온 새 주소로 여세요"}
 
@@ -97,14 +100,25 @@ class Request:
     app: App
 
 
+@dataclass(frozen=True)
+class FileSlice:
+    """파일의 [start, start + length) 구간. 응답 본문으로 나눠 읽어 보낸다."""
+
+    path: Path
+    start: int
+    length: int
+    chunk: int = STREAM_CHUNK
+
+
 @dataclass
 class Response:
-    """JSON이 아닌 응답(HTML, 파일)."""
+    """JSON이 아닌 응답(HTML, 파일). file이 있으면 body 대신 그 구간을 나눠 보낸다."""
 
     status: int
     body: bytes
     content_type: str
     headers: list[tuple[str, str]] = field(default_factory=list)
+    file: FileSlice | None = None
 
 
 Handler = Callable[..., Any]
@@ -361,15 +375,37 @@ class _Handler(BaseHTTPRequestHandler):
             resp = Response(code, body, "application/json; charset=utf-8")
         self.send_response(resp.status)
         self.send_header("Content-Type", resp.content_type)
-        self.send_header("Content-Length", str(len(resp.body)))
+        self.send_header("Content-Length", str(resp.file.length if resp.file else len(resp.body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         for key, value in resp.headers:
             self.send_header(key, value)
         self.end_headers()
-        if self.command != "HEAD":
+        if self.command == "HEAD":
+            return
+        if resp.file is None:
             self.wfile.write(resp.body)
+            return
+        try:
+            self._stream(resp.file)
+        except ConnectionError:
+            self.close_connection = True   # 브라우저가 재생 위치를 옮기며 끊었다(정상)
+        except OSError as e:
+            # 헤더를 이미 보냈으니 오류 응답은 못 한다: 연결을 끊어 브라우저가 불완전한 응답임을 알게 한다
+            print(f"파일을 보내다 멈췄습니다: {resp.file.path.name}: {e}", file=sys.stderr)
+            self.close_connection = True
+
+    def _stream(self, part: FileSlice) -> None:
+        with part.path.open("rb") as f:
+            f.seek(part.start)
+            left = part.length
+            while left > 0:
+                data = f.read(min(part.chunk, left))
+                if not data:
+                    raise OSError("파일이 보내는 도중에 짧아졌습니다")
+                self.wfile.write(data)
+                left -= len(data)
 
 
 class _Server(ThreadingHTTPServer):
