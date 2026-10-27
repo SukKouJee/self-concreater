@@ -257,6 +257,11 @@ def _existing_memo(path: Path) -> str:
     if not path.exists():
         return ""
     _, body = refstore.read_md(path)
+    return memo_from_body(body)
+
+
+def memo_from_body(body: str) -> str:
+    """본문의 '## 내 메모' 아래 내용(없으면 "")."""
     marker = "## 내 메모"
     idx = body.find(marker)
     if idx < 0:

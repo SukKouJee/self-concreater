@@ -1038,3 +1038,91 @@ def test_line_edit_and_move_rebuild_affected_sections(saved):
     _edit(saved, {"op": "move", "id": ids[2], "to": 3})               # 섹션 1에서 섹션 2로
     fm, _ = refstore.read_md(saved)
     assert fm["script"][1]["text"] == "새 대사" and fm["script"][2]["text"] == "와 순하다"
+
+
+# --- 되돌리기: 컷 정체성 유지 · 한 번만 읽기 ----------------------------------------------------
+
+def _stored_cut(path, i):
+    return {k: v for k, v in _cuts(path)[i].items() if k not in ("n", "start", "end")}
+
+
+def test_undo_insert_keeps_deleted_cut_id_and_angle(saved):
+    fm, _ = refstore.read_md(saved)
+    fm["cuts"][1]["angle"] = "로우앵글"
+    refstore.update_frontmatter(saved, {"cuts": fm["cuts"]})
+    cut = _stored_cut(saved, 1)
+    _edit(saved, {"op": "delete", "id": cut["id"]})
+    out = _edit(saved, {"op": "insert", "at": 1, "section": 1, "cut": cut})
+    back = _stored_cut(saved, 1)
+    assert out["cut_id"] == cut["id"] == back["id"]
+    assert back == cut and back["angle"] == "로우앵글"
+
+
+def test_insert_with_used_or_malformed_id_gets_new_id(saved):
+    for given in ("used", "BAD-ID!!", 12345678, "abc"):
+        ids = _ids(saved)
+        out = _edit(saved, {"op": "insert", "at": 1, "cut": {"id": ids[0] if given == "used" else given}})
+        assert out["cut_id"] not in ids and conti._ID_RE.fullmatch(out["cut_id"])
+        assert _ids(saved)[1] == out["cut_id"] and len(set(_ids(saved))) == len(ids) + 1
+
+
+def test_insert_angle_null_and_section_hint(saved):
+    out = _edit(saved, {"op": "insert", "at": 1, "cut": {"angle": None, "section": 1}})
+    cuts = _cuts(saved)
+    assert cuts[1]["id"] == out["cut_id"] and cuts[1]["angle"] is None and cuts[1]["section"] == 1
+    _edit(saved, {"op": "insert", "at": 1, "cut": {"angle": "  ", "section": 2}})    # 맞지 않는 섹션은 자리에 맞춘다
+    cuts = _cuts(saved)
+    assert cuts[1]["angle"] is None and cuts[1]["section"] == 0
+
+
+@pytest.mark.parametrize("cut", [{"n": 3}, {"start": 0}, {"bogus": 1}, {"angle": 5}, {"angle": ["a"]},
+                                 {"section": "1"}, {"section": 9}, {"section": True}])
+def test_insert_rejects_unknown_or_bad_cut_keys(saved, cut):
+    before = saved.read_bytes()
+    with pytest.raises(ScriptError) as exc:
+        _edit(saved, {"op": "insert", "at": 1, "cut": cut})
+    assert exc.value.code == "invalid_edit" and saved.read_bytes() == before
+
+
+def count_reads(monkeypatch, target):
+    """target 파일을 디스크에서 읽은 횟수(read_bytes/read_text)."""
+    seen = []
+    real_bytes, real_text = Path.read_bytes, Path.read_text
+
+    def read_bytes(self):
+        if Path(self).resolve() == target.resolve():
+            seen.append("bytes")
+        return real_bytes(self)
+
+    def read_text(self, *args, **kwargs):
+        if Path(self).resolve() == target.resolve():
+            seen.append("text")
+        return real_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    monkeypatch.setattr(Path, "read_text", read_text)
+    return seen
+
+
+@pytest.mark.parametrize("op", [{"op": "update", "n": 2, "fields": {"line": "새 대사"}}, {"op": "insert", "at": 1},
+                                {"op": "delete", "n": 2}, {"op": "move", "n": 2, "to": 0}])
+def test_edit_reads_the_conti_md_at_most_three_times(saved, monkeypatch, op):
+    _edit(saved, {"op": "update", "n": 1, "fields": {"sfx": "쿵"}})    # 이력·id가 이미 있는 평소 상태
+    expected = conti.content_hash(saved)
+    seen = count_reads(monkeypatch, saved)
+    out = conti.edit_cuts(saved, op, expected)
+    assert len(seen) <= 3, seen
+    monkeypatch.undo()
+    assert out["hash"] == conti.content_hash(saved)
+
+
+def test_ensure_ids_reads_once_when_nothing_to_fix(saved, monkeypatch):
+    seen = count_reads(monkeypatch, saved)
+    assert conti.ensure_ids(saved) is False
+    assert len(seen) == 1, seen
+
+
+def test_saved_conti_round_trips_byte_for_byte(saved):
+    _edit(saved, {"op": "update", "n": 2, "fields": {"caption": "최애 1위 🏆"}})
+    fm, body = refstore.read_md(saved)
+    assert refstore.join_frontmatter(fm, body).encode("utf-8") == saved.read_bytes()

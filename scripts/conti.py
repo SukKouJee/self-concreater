@@ -33,6 +33,7 @@ import secrets
 import statistics
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -41,7 +42,7 @@ from scripts import features, fetch, motif, refstore
 from scripts.common import TEMPLATES_DIR, ArgParser, ScriptError, move_to_trash, run, work_root, workspace_dir
 from scripts.features import SHOT_SIZES
 from scripts.report import SLOTS, _vars
-from scripts.videomd import LABELS, _existing_memo, fmt_time, load_cuts
+from scripts.videomd import LABELS, _existing_memo, fmt_time, load_cuts, memo_from_body
 
 DEFAULT_CPS = float(json.loads((TEMPLATES_DIR / "thresholds.json").read_text("utf-8"))["speech_default_cps"])
 CONTI_SUFFIX = "-conti"
@@ -579,36 +580,57 @@ def render(conti: str | Path) -> dict:
     path = _resolve(conti)
     if not path.exists():
         raise ScriptError("conti_not_found", f"콘티가 없습니다: {_rel(path)}")
-    ensure_ids(path)                                     # id가 없던 옛 파일은 먼저 저장해 HTML과 파일의 id를 맞춘다
-    fm, _ = refstore.read_md(path)
-    if not fm.get("cuts") or not fm.get("script"):
-        raise ScriptError("invalid_conti", "콘티 프런트매터에 script·cuts가 없습니다")
-    sections = [{"idx": i, "label": s["label"], "start": float(s["start"]), "end": float(s["end"])}
-                for i, s in enumerate(fm["script"])]
-    script, cuts = validate({"script": fm["script"], "cuts": fm["cuts"]}, sections)  # 고친 시간·순서를 다시 계산
-    fm = {**fm, "script": script, "cuts": cuts}
+    _, fm, _ = ensure_ids_file(read_conti(path))         # id가 없던 옛 파일은 먼저 저장해 HTML과 파일의 id를 맞춘다
     html_path = _write_html(path, fm)
-    return {"status": "rendered", "html": _rel(html_path), "abs_html": str(html_path), "cuts": len(cuts),
-            "warnings": warnings(script, cuts, fm["speech_cps"])}
+    return {"status": "rendered", "html": _rel(html_path), "abs_html": str(html_path), "cuts": len(fm["cuts"]),
+            "warnings": warnings(fm["script"], fm["cuts"], fm["speech_cps"])}
 
 
 # --- 컷 하나 편집 · 장면 후보 ----------------------------------------------------------
 
 def content_hash(path: str | Path) -> str:
     """파일 바이트 sha256. 화면이 불러온 뒤 파일이 밖에서 바뀌었는지 확인하는 데 쓴다."""
-    return hashlib.sha256(_resolve(path).read_bytes()).hexdigest()
+    return bytes_hash(_resolve(path).read_bytes())
+
+
+def bytes_hash(raw: bytes) -> str:
+    """이미 읽은(또는 막 쓴) 파일 바이트의 content_hash."""
+    return hashlib.sha256(raw).hexdigest()
+
+
+@dataclass(frozen=True)
+class ContiFile:
+    """콘티 md를 한 번 읽은 결과. 한 요청 안에서 같은 파일을 다시 읽고 파싱하지 않도록 넘겨 쓴다.
+    raw = 디스크 바이트, stored = 프런트매터 그대로(검증 전), body = 본문('## 내 메모' 포함)."""
+    path: Path
+    raw: bytes
+    stored: dict
+    body: str
+
+
+def read_conti(path: Path) -> ContiFile:
+    if not path.exists():
+        raise ScriptError("conti_not_found", f"콘티가 없습니다: {_rel(path)}")
+    return parse_conti(path, path.read_bytes())
+
+
+def parse_conti(path: Path, raw: bytes) -> ContiFile:
+    stored, body = refstore.parse_md(raw, path)
+    return ContiFile(path, raw, stored, body)
+
+
+def validated(stored: dict) -> dict:
+    """프런트매터 → 검증하고 컷 번호·시간을 붙인 fm."""
+    if not stored.get("cuts") or not stored.get("script"):
+        raise ScriptError("invalid_conti", "콘티 프런트매터에 script·cuts가 없습니다")
+    sections = [{"idx": i, "label": s["label"], "start": float(s["start"]), "end": float(s["end"])}
+                for i, s in enumerate(stored["script"])]
+    script, cuts = validate({"script": stored["script"], "cuts": stored["cuts"]}, sections)
+    return {**stored, "script": script, "cuts": cuts}
 
 
 def _load_conti(path: Path) -> dict:
-    if not path.exists():
-        raise ScriptError("conti_not_found", f"콘티가 없습니다: {_rel(path)}")
-    fm, _ = refstore.read_md(path)
-    if not fm.get("cuts") or not fm.get("script"):
-        raise ScriptError("invalid_conti", "콘티 프런트매터에 script·cuts가 없습니다")
-    sections = [{"idx": i, "label": s["label"], "start": float(s["start"]), "end": float(s["end"])}
-                for i, s in enumerate(fm["script"])]
-    script, cuts = validate({"script": fm["script"], "cuts": fm["cuts"]}, sections)
-    return {**fm, "script": script, "cuts": cuts}
+    return validated(read_conti(path).stored)
 
 
 def _find_cut(cuts: list[dict], n: int) -> dict:
@@ -663,13 +685,20 @@ def _check_edit(fields: dict) -> dict:
 
 
 def _write_conti(path: Path, raw: bytes, fm: dict) -> Path:
-    """fm으로 md·html을 다시 쓴다. '## 내 메모'와 줄바꿈 방식(CRLF/LF)은 보존. 새 HTML 경로를 돌려준다."""
+    """fm으로 md·html을 다시 쓴다(메모는 지금 파일에서 읽는다). 새 HTML 경로를 돌려준다."""
+    return _write_conti_file(ContiFile(path, raw, {}, "## 내 메모\n" + _existing_memo(path)), fm)[1]
+
+
+def _write_conti_file(cf: ContiFile, fm: dict) -> tuple[ContiFile, Path]:
+    """fm으로 md·html을 다시 쓴다. '## 내 메모'와 줄바꿈 방식(CRLF/LF)은 이미 읽은 cf에서 가져와 보존한다.
+    (방금 쓴 내용(stored = 쓴 fm), 새 HTML 경로)를 돌려준다."""
     fm["schema_version"] = SCHEMA_VERSION
-    nl = "\r\n" if raw.lstrip(b"\xef\xbb\xbf").startswith(b"---\r\n") else "\n"
-    memo = _existing_memo(path).replace("\r\n", "\n")
+    nl = "\r\n" if cf.raw.lstrip(b"\xef\xbb\xbf").startswith(b"---\r\n") else "\n"
+    memo = memo_from_body(cf.body).replace("\r\n", "\n")
     body = render_md(fm, memo).replace("\n", nl)
-    path.write_bytes(refstore.join_frontmatter(fm, body, nl).encode("utf-8"))
-    return _write_html(path, fm)
+    data = refstore.join_frontmatter(fm, body, nl).encode("utf-8")
+    cf.path.write_bytes(data)
+    return ContiFile(cf.path, data, fm, body), _write_html(cf.path, fm)
 
 
 def _section_lines(fm: dict) -> list[list[str]]:
@@ -693,17 +722,17 @@ def retime(fm: dict, rebuild: set[int] | None = None) -> dict:
 
 def ensure_ids(path: str | Path) -> bool:
     """파일 컷에 id가 없으면 붙여 다시 쓴다(schema 3). 이미 모두 있으면 아무것도 안 하고 False."""
-    p = _resolve(path)
-    if not p.exists():
-        raise ScriptError("conti_not_found", f"콘티가 없습니다: {_rel(p)}")
-    raw = p.read_bytes()
-    stored, _ = refstore.read_md(p)
-    loaded = _load_conti(p)
-    on_disk = [c.get("id") for c in stored.get("cuts") or []]
-    if stored.get("schema_version", 0) >= SCHEMA_VERSION and on_disk == [c["id"] for c in loaded["cuts"]]:
-        return False
-    _write_conti(p, raw, loaded)
-    return True
+    return ensure_ids_file(read_conti(_resolve(path)))[2]
+
+
+def ensure_ids_file(cf: ContiFile) -> tuple[ContiFile, dict, bool]:
+    """이미 읽은 콘티로 ensure_ids. (지금 파일 내용, 검증한 fm, 다시 썼는지)."""
+    loaded = validated(cf.stored)
+    on_disk = [c.get("id") for c in cf.stored.get("cuts") or []]
+    if cf.stored.get("schema_version", 0) >= SCHEMA_VERSION and on_disk == [c["id"] for c in loaded["cuts"]]:
+        return cf, loaded, False
+    written, _ = _write_conti_file(cf, loaded)
+    return written, loaded, True
 
 
 def update_cut(conti: str | Path, n: int, fields: dict, expected_hash: str | None = None,
@@ -714,11 +743,20 @@ def update_cut(conti: str | Path, n: int, fields: dict, expected_hash: str | Non
     return {**result, "cut": _find_cut(fm["cuts"], n)}
 
 
+def edit_cuts_fm(conti: str | Path, op: dict, expected_hash: str | None, now: float | None = None
+                 ) -> tuple[dict, dict]:
+    """edit_cuts와 같고, 쓴 fm(검증·시간 계산 끝)도 함께 돌려준다. 화면 응답을 파일을 다시 읽지 않고 만들 때 쓴다."""
+    with HISTORY_LOCK:
+        return _edit_locked(conti, op, expected_hash, now)
+
+
 def edit_cuts(conti: str | Path, op: dict, expected_hash: str | None, now: float | None = None) -> dict:
     """컷 구조 편집: insert / delete / move / duplicate / update. 섹션 시간은 컷 길이 합으로 다시 계산한다.
     move의 `to`는 컷을 뺀 뒤 결과 목록에서의 0부터 시작하는 최종 위치다. 예: 컷 [A,B,C,D]에서 A를
     `{"op": "move", "id": A, "to": 2}`로 옮기면 [B,C,A,D]. `section`을 생략하면 컷의 섹션을 유지하되 순서가
     거꾸로 되면 그 자리 앞 컷의 섹션(맨 앞이면 다음 컷의 섹션)을 따른다.
+    insert의 `cut`은 INSERT_FIELDS만 받는다. 지운 컷을 되돌릴 때 `id`(형식이 맞고 파일에서 안 쓰면 그대로)와
+    `angle`이 살아난다.
     반환: {"status", "path", "html", "abs_html", "hash", "cut_id"(새로 생기거나 고친 컷, 없으면 None), "warnings"}."""
     with HISTORY_LOCK:
         return _edit_locked(conti, op, expected_hash, now)[0]
@@ -770,6 +808,25 @@ def _fit_section(cuts: list[dict], pos: int, section: int | None, current: int |
     return nxt if nxt is not None else 0
 
 
+INSERT_FIELDS = ("id", "section", "angle", *UPDATABLE_FIELDS)
+
+
+def _check_insert(extra: dict, sections: int) -> dict:
+    """insert의 cut. 지운 컷을 되살릴 때 id·angle·section까지 받는다.
+    id는 형식이 맞을 때만 후보(파일에서 쓰는 중이면 새로 발급), section은 그 자리에 맞으면 따르는 힌트."""
+    unknown = sorted(set(extra) - set(INSERT_FIELDS))
+    if unknown:
+        raise ScriptError("invalid_edit", f"넣을 수 없는 컷 항목입니다: {', '.join(unknown)} (허용: {', '.join(INSERT_FIELDS)})")
+    angle = extra.get("angle")
+    if angle is not None and not isinstance(angle, str):
+        raise ScriptError("invalid_edit", "angle은 문자열이나 null이어야 합니다")
+    section = None if extra.get("section") is None else _int_arg(extra, "section", 0, sections - 1)
+    cut_id = extra.get("id")
+    return {"id": cut_id if isinstance(cut_id, str) and _ID_RE.fullmatch(cut_id) else None,
+            "angle": (angle or "").strip() or None, "section": section,
+            "fields": _check_edit({k: v for k, v in extra.items() if k in UPDATABLE_FIELDS})}
+
+
 def _unused_id(cuts: list[dict]) -> str:
     taken = {c["id"] for c in cuts}
     cut_id = new_cut_id()
@@ -789,13 +846,16 @@ def _apply_op(fm: dict, op: dict) -> tuple[dict, str | None]:
         extra = op.get("cut") or {}
         if not isinstance(extra, dict):
             raise ScriptError("invalid_edit", "cut은 JSON 객체여야 합니다")
-        cut_id = _unused_id(cuts)
-        new = {"id": cut_id, "section": 0, "angle": None, "line": "", "caption": "", "sfx": "",
-               **CUT_DEFAULTS, **_check_edit(extra)}
+        given = _check_insert(extra, sections)
+        taken = {c["id"] for c in cuts}
+        cut_id = given["id"] if given["id"] is not None and given["id"] not in taken else _unused_id(cuts)
+        new = {"id": cut_id, "section": 0, "angle": given["angle"], "line": "", "caption": "", "sfx": "",
+               **CUT_DEFAULTS, **given["fields"]}
         if not new.get("ref_frame"):
             new.pop("ref_frame", None)
         cuts.insert(at, new)
-        new["section"] = _fit_section(cuts, at, _section_arg(op, sections), cuts[at - 1]["section"] if at > 0 else 0)
+        hint = given["section"] if given["section"] is not None else cuts[at - 1]["section"] if at > 0 else 0
+        new["section"] = _fit_section(cuts, at, _section_arg(op, sections), hint)
     elif kind == "delete":
         cuts.pop(_cut_ref(cuts, op))
     elif kind == "move":
@@ -836,19 +896,19 @@ def _edit_locked(conti: str | Path, op: dict, expected_hash: str | None, now: fl
     path = _resolve(conti)
     if not path.exists():
         raise ScriptError("conti_not_found", f"콘티가 없습니다: {_rel(path)}")
-    if expected_hash is not None and hashlib.sha256(path.read_bytes()).hexdigest() != expected_hash:
+    raw = path.read_bytes()                              # 이 편집에서 콘티 md를 읽는 것은 이 한 번뿐
+    if expected_hash is not None and bytes_hash(raw) != expected_hash:
         raise ScriptError("conti_changed", "파일이 밖에서 바뀌었습니다. 다시 불러오세요")
-    ensure_ids(path)                                     # 편집 전 상태를 이력에 남기려면 id가 파일에 있어야 한다
-    before = _load_conti(path)
+    # 편집 전 상태를 이력에 남기려면 id가 파일에 있어야 한다
+    current, before, _ = ensure_ids_file(parse_conti(path, raw))
     edited, cut_id = _apply_op(before, op)               # 잘못된 편집은 이력·파일을 건드리기 전에 실패한다
     old_lines, new_lines = _section_lines(before), _section_lines(edited)
     fm = retime(edited, {i for i, lines in enumerate(new_lines) if lines != old_lines[i]})   # 컷 대사가 달라진 섹션만 대사를 다시 이음
     conti_history.check_external(path, before, now)
-    raw = path.read_bytes()
-    html_path = _write_conti(path, raw, fm)
+    written, html_path = _write_conti_file(current, fm)
     conti_history.record(path, fm, "auto", now=now)
     result = {"status": "updated", "path": _rel(path), "html": _rel(html_path), "abs_html": str(html_path),
-              "hash": content_hash(path), "cut_id": cut_id,
+              "hash": bytes_hash(written.raw), "cut_id": cut_id,
               "warnings": warnings(fm["script"], fm["cuts"], fm["speech_cps"])}
     return result, fm
 

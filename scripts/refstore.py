@@ -42,12 +42,17 @@ _STAGE_INFO = {
 
 # --- 프런트매터 ---------------------------------------------------------------
 
+# 읽기는 libyaml(C) 파서가 있으면 그것으로(순수 파이썬보다 몇 배 빠르다). 쓰기는 순수 파이썬 SafeDumper 그대로:
+# libyaml 출력기는 이모지 같은 BMP 밖 문자(🏆)를 "\U0001F3C6" 같은 이스케이프로 바꿔 써서 지금 파일과 바이트가 달라진다.
+YAML_LOADER: type = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
+
 def split_frontmatter(text: str) -> tuple[dict, str]:
     m = _FRONTMATTER_RE.match(text)
     if not m:
         raise ScriptError("no_frontmatter", "md 파일이 '---' 프런트매터로 시작하지 않습니다")
     try:
-        fm = yaml.safe_load(m.group(2)) or {}
+        fm = yaml.load(m.group(2), Loader=YAML_LOADER) or {}
     except yaml.YAMLError as e:
         raise ScriptError("bad_frontmatter", f"프런트매터 YAML 오류: {e}") from e
     if not isinstance(fm, dict):
@@ -106,11 +111,16 @@ def write_atomic(path: Path, data: bytes) -> None:
         raise
 
 
-def read_md(path: Path) -> tuple[dict, str]:
+def parse_md(raw: bytes, path: Path) -> tuple[dict, str]:
+    """이미 읽은 md 바이트 → (프런트매터, 본문). 오류 메시지에 경로를 붙인다."""
     try:
-        return split_frontmatter(_read_text(path))
+        return split_frontmatter(raw.decode("utf-8-sig"))
     except ScriptError as e:
         raise ScriptError(e.code, f"{path}: {e.message}") from e
+
+
+def read_md(path: Path) -> tuple[dict, str]:
+    return parse_md(path.read_bytes(), path)
 
 
 def update_frontmatter(path: Path, updates: dict[str, Any], remove: Iterable[str] = ()) -> dict:

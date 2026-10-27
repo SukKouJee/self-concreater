@@ -362,3 +362,27 @@ def test_version_numbers_beyond_9999_sort_numerically(saved):
         (folder / f"{n:04d}.json").write_text(json.dumps(data), encoding="utf-8")
     assert [v["n"] for v in versions(saved)] == [10000, 9999, 1]
     assert ch.record(saved, fm_of(saved), "named", name="x", now=T0 + 1)["n"] == 10001
+
+
+# --- 읽기 · 쓰기 횟수 ------------------------------------------------------------------------
+
+def test_record_reuses_read_versions_and_writes_only_the_latest(saved, monkeypatch):
+    edit_line(saved, "첫 수정", T0 + 10)                    # 0002 auto
+    edit_line(saved, "둘째 수정", T0 + 10 + 6 * 60)         # 0003 auto (새 묶음)
+    reads, writes = [], []
+    real_load, real_write = ch._load_file, ch._write_atomic
+    monkeypatch.setattr(ch, "_load_file", lambda p: (reads.append(p.name), real_load(p))[1])
+    monkeypatch.setattr(ch, "_write_atomic", lambda p, d: (writes.append(p.name), real_write(p, d))[1])
+    edit_line(saved, "셋째 수정", T0 + 10 + 7 * 60)         # 0003에 묶임: 요약에는 0002 상태가 필요
+    assert reads == [] and writes == ["0003.json"]
+    assert ch.get_version(saved, 3)["summary"]["changed"] == 1
+
+
+def test_version_file_changed_on_disk_is_read_again(saved):
+    edit_line(saved, "첫 수정", T0 + 10)
+    path = ch.history_dir(saved) / "0002.json"
+    data = json.loads(path.read_text("utf-8"))
+    data["name"] = "밖에서 붙인 이름"
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    assert ch.get_version(saved, 2)["name"] == "밖에서 붙인 이름"
+    assert versions(saved)[0]["name"] == "밖에서 붙인 이름"

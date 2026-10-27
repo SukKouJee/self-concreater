@@ -298,3 +298,20 @@ def test_update_frontmatter_removes_keys_and_keeps_body(tmp_path):
     fm = refstore.update_frontmatter(p, {}, remove=["filmed_at", "nope"])
     assert "filmed_at" not in fm and fm["title"] == "a"
     assert p.read_text(encoding="utf-8").endswith("본문\n\n## 내 메모\n메모\n")
+
+
+# --- libyaml -------------------------------------------------------------------------
+
+def test_split_uses_libyaml_loader_when_available():
+    import yaml
+    expected = yaml.CSafeLoader if getattr(yaml, "__with_libyaml__", False) else yaml.SafeLoader
+    assert refstore.YAML_LOADER is expected
+
+
+def test_join_keeps_emoji_and_round_trips_bytes():
+    # libyaml's emitter escapes non-BMP characters ("\U0001F3C6"); the written text must keep them as-is
+    text = refstore.join_frontmatter(
+        {"title": "라면 🏆 1위", "cuts": [{"caption": "최애 1위 🏆", "line": "", "sec": 1.5}], "n": None}, "본문\n")
+    assert "title: 라면 🏆 1위" in text and "caption: 최애 1위 🏆" in text
+    fm, body = refstore.split_frontmatter(text)
+    assert refstore.join_frontmatter(fm, body) == text

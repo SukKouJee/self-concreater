@@ -1,4 +1,5 @@
 """Task 6: 콘티 API. claude 호출은 가짜로 바꾼다."""
+import os
 import shutil
 from urllib.parse import quote
 
@@ -724,3 +725,71 @@ def test_cuts_route_rejects_unknown_keys(client, home, draft_md, extra):
     before = src.read_bytes()
     status, resp = client.json("POST", "/api/conti/cuts", {"path": rel(home, src), "hash": conti.content_hash(src), **extra})
     assert status == 400 and resp["error"] == "invalid_edit" and src.read_bytes() == before
+
+
+# --- 큰 콘티: 한 번만 읽고 빨리 ---------------------------------------------------------------
+
+def test_cuts_route_and_get_read_the_conti_md_few_times(client, home, draft_md, monkeypatch):
+    from tests.test_conti import count_reads
+    src = saved_conti(home, draft_md)
+    view = _view(client, home, src)
+    seen = count_reads(monkeypatch, src)
+    status, resp = client.json("POST", "/api/conti/cuts", {"path": rel(home, src), "hash": view["hash"],
+                                                           "op": "update", "n": 2, "fields": {"sfx": "쿵"}})
+    assert status == 200 and resp["hash"] == conti.content_hash(src)
+    assert len(seen) - 1 <= 3, seen                       # content_hash 위 한 번은 테스트가 읽은 것
+    seen.clear()
+    _view(client, home, src)
+    assert len(seen) <= 3, seen
+
+
+def big_conti(home, draft_md, n_cuts=450, n_videos=10, frames=40):  # noqa: F811
+    """n_cuts 컷 콘티 + 레퍼런스 프레임(프레임별 샷 라벨, 30KB짜리 jpg)."""
+    import json
+    from scripts import refstore
+    from scripts.features import SHOT_SIZES
+    from tests.typify_fixtures import CAT
+    src = saved_conti(home, draft_md)
+    per = n_cuts // 3
+    cuts = [{"section": s, "size": SHOT_SIZES[i % len(SHOT_SIZES)], "angle": "45도" if i % 2 else None, "sec": 1,
+             "action": f"컷 {s}-{i}: 컵라면 뚜껑을 천천히 뜯으며 김이 오르는 모습을 담는다",
+             "line": f"{i}번째 대사, 이건 생각보다 훨씬 맵네요 🏆", "caption": f"자막 {i} | 맵기 단계",
+             "sfx": "후루룩", "guide": "카메라는 고정하고 손만 프레임 안에, 소리는 크게 담기"}
+            for s in range(3) for i in range(per)]
+    fm, _ = refstore.read_md(src)
+    script = [{"label": s["label"], "start": k * per, "end": (k + 1) * per, "text": f"섹션 {k} 전체 대사"}
+              for k, s in enumerate(fm["script"])]
+    refstore.update_frontmatter(src, {"cuts": cuts, "script": script, "target_sec": per * 3})
+    for v in range(n_videos):
+        vid = f"a{v:02d}"
+        labels = []
+        for i in range(frames):
+            rel_frame = f"workspace/frames/{vid}/scene{i + 1:03d}.jpg"
+            (home / rel_frame).parent.mkdir(parents=True, exist_ok=True)
+            (home / rel_frame).write_bytes(b"\xff\xd8\xff\xe0" + bytes([v, i]) * 15_000)
+            labels.append({"frame": rel_frame, "size": SHOT_SIZES[(v + i) % len(SHOT_SIZES)], "section": "body"})
+        shots = home / "workspace" / "shots" / f"{vid}.json"
+        shots.parent.mkdir(parents=True, exist_ok=True)
+        shots.write_text(json.dumps({"labels": labels}), encoding="utf-8")
+    assert refstore.read_md(home / "refs" / f"ref_{CAT}" / "videos" / "a00.md")[0]["role"] == "ref"
+    return src
+
+
+@pytest.mark.skipif(os.environ.get("YTC_SKIP_TIMING") == "1", reason="느린 CI에서는 YTC_SKIP_TIMING=1로 건너뛴다")
+def test_big_conti_edit_and_get_are_fast(client, home, draft_md):
+    import time
+    src = big_conti(home, draft_md)
+    # 처음 한 번(id 붙이기 · 이력 기준선 · 막 만든 프레임 파일 첫 열기)은 재지 않는다. 막 만든 파일을 처음 열 때
+    # 백신 검사로 파일마다 수 ms가 걸려 HTTP 클라이언트의 5초 제한을 넘을 수 있어 서버를 거치지 않고 부른다.
+    assert len(api_conti.conti_view(src)["cuts"]) == 450
+    t0 = time.perf_counter()
+    view = _view(client, home, src)
+    get_sec = time.perf_counter() - t0
+    t0 = time.perf_counter()
+    status, resp = client.json("POST", "/api/conti/cuts", {"path": rel(home, src), "hash": view["hash"],
+                                                           "op": "update", "id": view["cuts"][200]["id"],
+                                                           "fields": {"caption": "고친 자막"}})
+    edit_sec = time.perf_counter() - t0
+    print(f"\n450 cuts: GET {get_sec:.2f}s, POST /api/conti/cuts {edit_sec:.2f}s")
+    assert status == 200 and resp["cuts"][200]["caption"] == "고친 자막"
+    assert get_sec < 4 and edit_sec < 4

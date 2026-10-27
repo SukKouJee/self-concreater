@@ -173,10 +173,12 @@ def _stale(path: Path, outputs: list[Path]) -> bool:
 
 def conti_view(path: Path) -> dict:
     """GET /api/conti 응답. 불러올 때 id를 붙이고 밖에서 고친 내용을 이력에 남긴다(편집과 겹치지 않게 잠금 안에서)."""
-    with conti.HISTORY_LOCK:
-        conti_history.baseline(path)
-        fm = conti._load_conti(path)
-        digest = conti.content_hash(path)
+    _, fm, digest = conti_history.baseline_state(path)
+    return view_of(path, fm, digest)
+
+
+def view_of(path: Path, fm: dict, digest: str) -> dict:
+    """이미 읽은(또는 막 쓴) fm과 그 파일의 content hash로 화면 응답을 만든다. 콘티 md를 다시 읽지 않는다."""
     sections = [{"label": s["label"]} for s in fm["script"]]
     pool = conti.frame_pool(fm.get("category"))
     matched = conti.match_frames(fm["cuts"], sections, pool)
@@ -277,8 +279,8 @@ def _cuts(req: Request) -> dict:
     unknown = sorted(set(op) - allowed)
     if unknown:
         raise ScriptError("invalid_edit", f"{op['op']}에서 쓸 수 없는 항목입니다: {', '.join(unknown)}")
-    result = conti.edit_cuts(path, op, expected)
-    return {**conti_view(path), "cut_id": result["cut_id"]}
+    result, fm = conti.edit_cuts_fm(path, op, expected)
+    return {**view_of(path, fm, result["hash"]), "cut_id": result["cut_id"]}
 
 
 # ---- 이력 ------------------------------------------------------------------------------

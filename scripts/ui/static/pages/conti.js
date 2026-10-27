@@ -573,7 +573,12 @@ function renderEditor() {
   wireDrag(S.nodes.list);
   S.nodes.list.parentElement.addEventListener("scroll", closeMenu, { passive: true });
   if (typeof ResizeObserver === "function") {
-    new ResizeObserver(() => S.nodes.list.parentElement.style.setProperty("--tools-h", `${S.nodes.tools.hidden ? 0 : S.nodes.tools.offsetHeight}px`)).observe(S.nodes.tools);
+    const mine = S;
+    const ro = new ResizeObserver(() => {
+      if (S !== mine) { ro.disconnect(); return; }
+      mine.nodes.list.parentElement.style.setProperty("--tools-h", `${mine.nodes.tools.hidden ? 0 : mine.nodes.tools.offsetHeight}px`);
+    });
+    ro.observe(S.nodes.tools);
   }
   renderHeader();
   renderCutList();
@@ -1737,8 +1742,9 @@ function moveStep(id, dir) {
   });
 }
 
-// The fields a deleted cut needs to be put back (the server only takes these; angle is derived from the size).
-const RESTORE_KEYS = ["size", "sec", "action", "guide", "line", "caption", "sfx", "ref_frame"];
+// The fields a deleted cut needs to be put back. With its id the server keeps the same cut (drafts and
+// alternatives keyed by id come back) unless that id is taken by then.
+const RESTORE_KEYS = ["id", "size", "angle", "sec", "action", "guide", "line", "caption", "sfx", "ref_frame"];
 
 async function deleteCut(id) {
   const cuts = S.data.cuts;
@@ -1757,8 +1763,8 @@ async function deleteCut(id) {
   showUndo({ n: cut.n, index, section: cut.section, fields, prevId: prev ? prev.id : null, nextId: nextCut ? nextCut.id : null });
 }
 
-// 8-second toast with a 되돌리기 button. Stays while the pointer or focus is on it. The restored cut gets a new
-// id (the server always issues one), the same fields and the same place.
+// 8-second toast with a 되돌리기 button. Stays while the pointer or focus is on it. The restored cut keeps its
+// id (a new one only if that id is in use again), the same fields and the same place.
 function clearUndo() {
   const u = S && S.undo;
   if (!u) return;

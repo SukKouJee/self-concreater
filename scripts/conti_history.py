@@ -12,11 +12,12 @@ import os
 import re
 import threading
 import time
+from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from scripts import conti, refstore
+from scripts import conti
 from scripts.common import ScriptError, workspace_dir
 
 KINDS = ("created", "auto", "named", "before_recreate", "external", "restored")
@@ -140,17 +141,52 @@ def _paths(folder: Path) -> list[Path]:
     return sorted((p for p in folder.iterdir() if _VERSION_RE.match(p.name)), key=lambda p: int(p.stem))
 
 
-def _read(path: Path) -> dict:
+# 버전 파일 읽기 캐시: 경로 → ((수정 시각 ns, 크기), 내용). 편집마다 최신·직전 버전을 다시 읽고 파싱하지 않도록.
+# 디스크의 수정 시각이나 크기가 다르면 다시 읽는다. 돌려준 dict는 읽기 전용으로 다룬다(고치려면 복사).
+CACHE_SIZE = 16
+_cache: OrderedDict[str, tuple[tuple[int, int], dict]] = OrderedDict()
+_cache_lock = threading.Lock()
+
+
+def _stamp(path: Path) -> tuple[int, int]:
+    st = path.stat()
+    return st.st_mtime_ns, st.st_size
+
+
+def _remember(path: Path, stamp: tuple[int, int], data: dict) -> None:
+    with _cache_lock:
+        _cache[str(path)] = (stamp, data)
+        _cache.move_to_end(str(path))
+        while len(_cache) > CACHE_SIZE:
+            _cache.popitem(last=False)
+
+
+def _load_file(path: Path) -> dict:
     try:
         return json.loads(path.read_text("utf-8"))
     except (OSError, json.JSONDecodeError) as e:
         raise ScriptError("history_corrupt", f"이력 파일을 읽을 수 없습니다: {path.name} ({e})") from e
 
 
+def _read(path: Path) -> dict:
+    try:
+        stamp = _stamp(path)
+    except OSError as e:
+        raise ScriptError("history_corrupt", f"이력 파일을 읽을 수 없습니다: {path.name} ({e})") from e
+    with _cache_lock:
+        hit = _cache.get(str(path))
+    if hit is not None and hit[0] == stamp:
+        return hit[1]
+    data = _load_file(path)
+    _remember(path, stamp, data)
+    return data
+
+
 def _write_atomic(path: Path, data: dict) -> None:
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8", newline="\n")
     os.replace(tmp, path)
+    _remember(path, _stamp(path), data)
 
 
 def _summary(version: dict) -> dict:
@@ -175,9 +211,9 @@ def record(conti_path: str | Path, fm: dict, kind: str, name: str | None = None,
     else:
         n, before = (latest["n"] + 1 if latest else 1), latest
     if kind == "auto" and latest and latest["kind"] == "auto" and same_state(latest["state"], state):
-        latest["last_touch"] = stamp                    # 바뀐 게 없는 편집: 새 버전 없이 묶음 시각만 갱신
-        _write_atomic(paths[-1], latest)
-        return _summary(latest)
+        touched = {**latest, "last_touch": stamp}        # 바뀐 게 없는 편집: 새 버전 없이 묶음 시각만 갱신
+        _write_atomic(paths[-1], touched)
+        return _summary(touched)
     changed = _changed_cuts(diff(before["state"], state)) if before else 0
     version = {"n": n, "kind": kind, "name": name, "at": at, "last_touch": stamp, "state": state,
                "summary": {"cuts": len(state["cuts"]), "total_sec": _total(state), "changed": changed}}
@@ -239,16 +275,17 @@ def _restore_locked(conti_path: str | Path, n: int, expected_hash: str | None, n
     path = conti._resolve(conti_path)
     _guard(path, expected_hash)
     version = get_version(path, n)
-    check_external(path, conti._load_conti(path), now)   # 덮어쓰기 전에 손으로 고친 상태를 이력에 남긴다
-    raw = path.read_bytes()
+    current = conti.read_conti(path)
+    loaded = conti.validated(current.stored)
+    check_external(path, loaded, now)                    # 덮어쓰기 전에 손으로 고친 상태를 이력에 남긴다
     state = version["state"]
-    fm = conti.retime({**conti._load_conti(path), "script": [dict(s) for s in state["script"]],
+    fm = conti.retime({**loaded, "script": [dict(s) for s in state["script"]],
                        "cuts": [dict(c) for c in state["cuts"]], "target_sec": state["target_sec"]})
-    html_path = conti._write_conti(path, raw, fm)
+    written, html_path = conti._write_conti_file(current, fm)
     label = version["name"] or datetime.fromisoformat(version["at"]).strftime("%Y-%m-%d %H:%M")
     recorded = record(path, fm, "restored", name=f"되돌림: {label}", now=now)
     return {"status": "restored", "version": recorded, "path": conti._rel(path), "html": conti._rel(html_path),
-            "hash": conti.content_hash(path)}
+            "hash": conti.bytes_hash(written.raw)}
 
 
 def current_state(conti_path: str | Path) -> dict:
@@ -265,10 +302,14 @@ def diff_versions(conti_path: str | Path, a: int, b: int | None = None) -> dict:
 
 def baseline(conti_path: str | Path, now: float | None = None) -> dict | None:
     """불러올 때: id를 먼저 붙이고(있으면 그대로) 이력 기준선·external을 확인한다."""
+    return baseline_state(conti_path, now)[0]
+
+
+def baseline_state(conti_path: str | Path, now: float | None = None) -> tuple[dict | None, dict, str]:
+    """baseline과 같고, 그때 읽은 파일의 fm(검증 끝)과 content hash도 돌려준다(화면 응답용, 다시 읽지 않게)."""
     path = conti._resolve(conti_path)
     with conti.HISTORY_LOCK:                             # 편집과 겹쳐 같은 버전 번호를 두 번 쓰지 않도록
         conti.ensure_ids(path)
-        fm, _ = refstore.read_md(path)
-        if not fm.get("cuts") or not fm.get("script"):
-            raise ScriptError("invalid_conti", "콘티 프런트매터에 script·cuts가 없습니다")
-        return check_external(path, conti._load_conti(path), now)
+        current = conti.read_conti(path)
+        fm = conti.validated(current.stored)
+        return check_external(path, fm, now), fm, conti.bytes_hash(current.raw)
