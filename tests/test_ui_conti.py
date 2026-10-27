@@ -715,3 +715,12 @@ def test_get_conti_external_edit_adds_one_version(client, home, draft_md):
     _view(client, home, src)
     status, listing = client.json("GET", "/api/conti/history?path=" + path)
     assert [v["kind"] for v in listing["versions"]] == ["external", "created"]
+
+
+@pytest.mark.parametrize("extra", [{"op": "delete", "n": 1, "fields": {}}, {"op": "insert", "at": 0, "id": "x"},
+                                   {"op": "bogus"}, {}])
+def test_cuts_route_rejects_unknown_keys(client, home, draft_md, extra):
+    src = saved_conti(home, draft_md)
+    before = src.read_bytes()
+    status, resp = client.json("POST", "/api/conti/cuts", {"path": rel(home, src), "hash": conti.content_hash(src), **extra})
+    assert status == 400 and resp["error"] == "invalid_edit" and src.read_bytes() == before

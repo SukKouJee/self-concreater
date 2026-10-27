@@ -260,12 +260,23 @@ def _hash(body: dict) -> str:
     return expected
 
 
+OP_KEYS = {"insert": {"op", "at", "section", "cut"}, "delete": {"op", "id", "n"},
+           "move": {"op", "id", "n", "to", "section"}, "duplicate": {"op", "id", "n"},
+           "update": {"op", "id", "n", "fields"}}
+
+
 @route("POST", "/api/conti/cuts")
 def _cuts(req: Request) -> dict:
     body = req.json
     path = _safe_path(body.get("path"), conti_file=True)
     expected = _hash(body)
     op = {k: v for k, v in body.items() if k not in ("path", "hash")}
+    allowed = OP_KEYS.get(op.get("op"))
+    if allowed is None:
+        raise ScriptError("invalid_edit", f"알 수 없는 편집입니다: {op.get('op')!r} ({', '.join(OP_KEYS)})")
+    unknown = sorted(set(op) - allowed)
+    if unknown:
+        raise ScriptError("invalid_edit", f"{op['op']}에서 쓸 수 없는 항목입니다: {', '.join(unknown)}")
     result = conti.edit_cuts(path, op, expected)
     return {**conti_view(path), "cut_id": result["cut_id"]}
 
@@ -283,14 +294,18 @@ def _history(req: Request) -> dict:
 @route("GET", "/api/conti/history/version")
 def _history_version(req: Request) -> dict:
     path = _safe_path(req.query.get("path"), conti_file=True)
-    return {"version": conti_history.get_version(path, _int(req.query.get("n"), "n"))}
+    n = _int(req.query.get("n"), "n")
+    with conti.HISTORY_LOCK:
+        return {"version": conti_history.get_version(path, n)}
 
 
 @route("GET", "/api/conti/history/diff")
 def _history_diff(req: Request) -> dict:
     path = _safe_path(req.query.get("path"), conti_file=True)
     b = req.query.get("b")
-    return conti_history.diff_versions(path, _int(req.query.get("a"), "a"), None if b in (None, "") else _int(b, "b"))
+    a_n, b_n = _int(req.query.get("a"), "a"), None if b in (None, "") else _int(b, "b")
+    with conti.HISTORY_LOCK:                             # 편집이 파일을 쓰는 도중에 읽지 않도록
+        return conti_history.diff_versions(path, a_n, b_n)
 
 
 @route("POST", "/api/conti/history/name")

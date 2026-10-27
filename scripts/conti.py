@@ -672,13 +672,18 @@ def _write_conti(path: Path, raw: bytes, fm: dict) -> Path:
     return _write_html(path, fm)
 
 
-def retime(fm: dict) -> dict:
-    """컷 순서·길이(sec)대로 섹션 시간·대사와 컷 n/start/end를 다시 계산한 새 fm. 섹션은 0에서 이어 붙는다."""
+def _section_lines(fm: dict) -> list[list[str]]:
+    return [[c.get("line") or "" for c in fm["cuts"] if c["section"] == i] for i in range(len(fm["script"]))]
+
+
+def retime(fm: dict, rebuild: set[int] | None = None) -> dict:
+    """컷 순서·길이(sec)대로 섹션 시간과 컷 n/start/end를 다시 계산한 새 fm. 섹션은 0에서 이어 붙는다.
+    섹션 대사(text)는 rebuild에 든 섹션만 컷 line을 이어 다시 만든다(None이면 전부). 나머지는 손으로 고친 값을 둔다."""
     script, t = [], 0.0
     for i, s in enumerate(fm["script"]):
         mine = [c for c in fm["cuts"] if c["section"] == i]
         length = sum(float(c["sec"]) for c in mine)
-        text = " ".join(c["line"] for c in mine if c.get("line"))
+        text = " ".join(c["line"] for c in mine if c.get("line")) if rebuild is None or i in rebuild else s.get("text") or ""
         script.append({"label": s["label"], "start": round(t, 2), "end": round(t + length, 2), "text": text})
         t += length
     sections = [{"idx": i, "label": s["label"], "start": s["start"], "end": s["end"]} for i, s in enumerate(script)]
@@ -711,6 +716,9 @@ def update_cut(conti: str | Path, n: int, fields: dict, expected_hash: str | Non
 
 def edit_cuts(conti: str | Path, op: dict, expected_hash: str | None, now: float | None = None) -> dict:
     """컷 구조 편집: insert / delete / move / duplicate / update. 섹션 시간은 컷 길이 합으로 다시 계산한다.
+    move의 `to`는 컷을 뺀 뒤 결과 목록에서의 0부터 시작하는 최종 위치다. 예: 컷 [A,B,C,D]에서 A를
+    `{"op": "move", "id": A, "to": 2}`로 옮기면 [B,C,A,D]. `section`을 생략하면 컷의 섹션을 유지하되 순서가
+    거꾸로 되면 그 자리 앞 컷의 섹션(맨 앞이면 다음 컷의 섹션)을 따른다.
     반환: {"status", "path", "html", "abs_html", "hash", "cut_id"(새로 생기거나 고친 컷, 없으면 None), "warnings"}."""
     with HISTORY_LOCK:
         return _edit_locked(conti, op, expected_hash, now)[0]
@@ -833,7 +841,8 @@ def _edit_locked(conti: str | Path, op: dict, expected_hash: str | None, now: fl
     ensure_ids(path)                                     # 편집 전 상태를 이력에 남기려면 id가 파일에 있어야 한다
     before = _load_conti(path)
     edited, cut_id = _apply_op(before, op)               # 잘못된 편집은 이력·파일을 건드리기 전에 실패한다
-    fm = retime(edited)
+    old_lines, new_lines = _section_lines(before), _section_lines(edited)
+    fm = retime(edited, {i for i, lines in enumerate(new_lines) if lines != old_lines[i]})   # 컷 대사가 달라진 섹션만 대사를 다시 이음
     conti_history.check_external(path, before, now)
     raw = path.read_bytes()
     html_path = _write_conti(path, raw, fm)

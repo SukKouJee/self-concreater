@@ -1010,3 +1010,31 @@ def test_baseline_holds_history_lock(saved, monkeypatch):
     monkeypatch.setattr(conti, "ensure_ids", lambda p: (seen.append(conti.HISTORY_LOCK._is_owned()), real(p))[1])
     conti_history.baseline(saved)
     assert seen == [True]
+
+
+def _hand_edit_text(path, idx, text):
+    fm, _ = refstore.read_md(path)
+    fm["script"][idx]["text"] = text
+    refstore.update_frontmatter(path, {"script": fm["script"]})
+
+
+def test_hand_edited_section_text_survives_unrelated_edit(saved):
+    _hand_edit_text(saved, 0, "손으로 고친 훅")
+    _edit(saved, {"op": "update", "n": 2, "fields": {"guide": "다른 가이드"}})
+    fm, _ = refstore.read_md(saved)
+    assert fm["script"][0]["text"] == "손으로 고친 훅"
+    _edit(saved, {"op": "update", "n": 1, "fields": {"sec": 3}})      # 길이만 바뀐 섹션도 대사는 그대로
+    fm, _ = refstore.read_md(saved)
+    assert fm["script"][0]["text"] == "손으로 고친 훅"
+
+
+def test_line_edit_and_move_rebuild_affected_sections(saved):
+    _hand_edit_text(saved, 0, "손으로 고친 훅")
+    _hand_edit_text(saved, 2, "손으로 고친 끝")
+    ids = _ids(saved)
+    _edit(saved, {"op": "update", "n": 2, "fields": {"line": "새 대사"}})
+    fm, _ = refstore.read_md(saved)
+    assert fm["script"][1]["text"] == "새 대사 와 순하다" and fm["script"][0]["text"] == "손으로 고친 훅"
+    _edit(saved, {"op": "move", "id": ids[2], "to": 3})               # 섹션 1에서 섹션 2로
+    fm, _ = refstore.read_md(saved)
+    assert fm["script"][1]["text"] == "새 대사" and fm["script"][2]["text"] == "와 순하다"
