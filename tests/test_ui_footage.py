@@ -726,3 +726,119 @@ def test_footage_refused_while_collect_has_work(client, rel, tmp_path, fake_proc
 
 def saved_path(rel):
     return conti.safe_draft_path(rel)
+
+
+# --- 결과물: 남은 컷 HTML, CSV, 컷 파일(작업 footage_clips) -----------------------------------------
+
+from tests.test_cuts import sample_video  # noqa: E402,F401 - fixture
+
+
+def real_shoot(tmp_path, video, names=("a.mp4", "b.mp4")):
+    """진짜 영상 사본이 든 촬영 폴더. -> (폴더, {이름: 지문})"""
+    import shutil
+    folder = tmp_path.parent / f"{tmp_path.name}-real" / "촬영"
+    folder.mkdir(parents=True, exist_ok=True)
+    fids = {}
+    for n in names:
+        shutil.copy(video, folder / n)
+        fids[n] = fid = footage.fingerprint(folder / n)
+        base = footage.footage_dir(fid)                           # 처리 캐시(원본이 사라져도 이름이 남는다)
+        base.mkdir(parents=True, exist_ok=True)
+        (base / "scenes.json").write_text(json.dumps(
+            {"schema": 1, "fid": fid, "name": n, "status": "done", "duration_sec": 6.0, "scenes": []}),
+            encoding="utf-8")
+    return folder, fids
+
+
+def pin_cuts(client, rel, saved, folder, picks):
+    """picks: [(컷 위치, fid, 시작, 끝)] → 연결하고 고정."""
+    link(client, rel, folder)
+    ids = [c["id"] for c in conti._load_conti(saved)["cuts"]]
+    for i, fid, start, end in picks:
+        fm.choose(saved, ids[i], fid, start, end)
+
+
+def test_remaining_and_csv_routes_write_files(client, rel, saved, tmp_path, sample_video):  # noqa: F811
+    folder, fids = real_shoot(tmp_path, sample_video, names=("a.mp4",))
+    pin_cuts(client, rel, saved, folder, [(0, fids["a.mp4"], 1.0, 3.0)])
+    base = rel[: -len("-conti.md")]
+    status, body = client.json("POST", "/api/footage/remaining", {"path": rel})
+    assert status == 200, body
+    assert body["path"] == f"{base}-remaining.html" and body["url"].startswith("/files/drafts/")
+    assert body["footage"]["outputs"]["remaining_html"] == body["path"]
+    status, headers, raw = client.call("GET", body["url"])
+    assert status == 200 and "찍음 1/4" in raw.decode("utf-8")
+    status, body = client.json("POST", "/api/footage/csv", {"path": rel})
+    assert status == 200, body
+    assert body["path"] == f"{base}-footage.csv" and body["footage"]["outputs"]["csv"] == body["path"]
+    status, _, raw = client.call("GET", body["url"])
+    assert status == 200 and raw.startswith(b"\xef\xbb\xbf")
+
+
+def test_output_routes_reject_non_conti_path(client):
+    for route in ("remaining", "csv", "clips"):
+        status, body = client.json("POST", f"/api/footage/{route}", {"path": "refs/x.md"})
+        assert status == 400 and body["error"] == "bad_path", route
+
+
+def test_clips_job_makes_files_and_skips_missing_source(client, rel, saved, tmp_path, sample_video,  # noqa: F811
+                                                        home):
+    folder, fids = real_shoot(tmp_path, sample_video)
+    pin_cuts(client, rel, saved, folder, [(0, fids["a.mp4"], 1.0, 3.0), (2, fids["b.mp4"], 0.0, 2.0)])
+    (folder / "b.mp4").unlink()                                  # 원본 없음
+    status, body = client.json("POST", "/api/footage/clips", {"path": rel})
+    assert status == 200, body
+    job = body["job"]
+    assert job["kind"] == "footage_clips" and [i["title"] for i in job["items"]] == ["#1 a.mp4", "#3 b.mp4"]
+    job = wait_for(client, job["id"], finished, timeout=30)
+    assert job["status"] == "done", job
+    made, skipped = job["items"]
+    assert made["state"] == "done" and made["preview"]["reencoded"] is False
+    assert made["preview"]["url"].startswith("/files/drafts/") and (home / made["preview"]["file"]).is_file()
+    assert skipped["state"] == "skipped" and "원본 없음" in skipped["message"]
+    assert job["summary"]["made"] == 1 and job["summary"]["skipped"] == 1 and job["summary"]["path"] == rel
+    view = client.json("GET", f"/api/footage?path={q(rel)}")[1]
+    assert view["outputs"]["clips_dir"] == made["preview"]["file"].rsplit("/", 1)[0]
+    assert view["clips_job"]["id"] == job["id"]
+    assert [c["choice"]["missing_source"] for c in view["cuts"] if c["choice"]] == [False, True]
+
+
+def test_clips_requires_a_chosen_cut(client, rel):
+    status, body = client.json("POST", "/api/footage/clips", {"path": rel})
+    assert status == 400 and body["error"] == "no_clips"
+
+
+def test_clips_cancel_between_cuts(client, rel, saved, tmp_path, sample_video, monkeypatch):  # noqa: F811
+    from scripts import footage_out
+    folder, fids = real_shoot(tmp_path, sample_video)
+    pin_cuts(client, rel, saved, folder, [(0, fids["a.mp4"], 1.0, 3.0), (1, fids["b.mp4"], 1.0, 3.0)])
+    gate, entered, calls = threading.Event(), threading.Event(), []
+    real = footage_out.cut_clip
+
+    def slow(target, out_dir):
+        calls.append(target["n"])
+        entered.set()
+        assert gate.wait(5)
+        return real(target, out_dir)
+
+    monkeypatch.setattr(footage_out, "cut_clip", slow)
+    job = client.json("POST", "/api/footage/clips", {"path": rel})[1]["job"]
+    assert entered.wait(5)
+    assert client.json("POST", f"/api/jobs/{job['id']}/cancel")[0] == 200
+    gate.set()
+    job = wait_for(client, job["id"], finished, timeout=30)
+    assert job["status"] == "stopped" and calls == [1]
+    assert [i["state"] for i in job["items"]] == ["done", "skipped"]
+
+
+def test_clips_refused_while_footage_job_runs(client, rel, saved, tmp_path, sample_video):  # noqa: F811
+    folder, fids = real_shoot(tmp_path, sample_video, names=("a.mp4",))
+    pin_cuts(client, rel, saved, folder, [(0, fids["a.mp4"], 1.0, 3.0)])
+    gate = threading.Event()
+    running = client.app.jobs.start("footage", lambda job: gate.wait(5), items=[new_item("x")])
+    try:
+        status, body = client.json("POST", "/api/footage/clips", {"path": rel})
+        assert status == 400 and body["error"] == "busy"
+    finally:
+        gate.set()
+        running.join(5)

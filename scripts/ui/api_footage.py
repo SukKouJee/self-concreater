@@ -13,6 +13,9 @@
   실제 경로를 다시 풀어 폴더 밖(링크 탈출·하위 폴더)이면 거절하고, 지문을 다시 계산해 맞을 때만 내준다.
   폴더를 빼면 곧바로 404. Range(206, Content-Range, Accept-Ranges)를 지원하고 나눠 읽어 보낸다(수 GB 파일).
 - 사진 서빙(`/api/footage/frame/<fid>/<rel>`): footage_dir(fid) 안의 .jpg만.
+- 결과물(footage_out): `remaining`(폰용 남은 컷 HTML)·`csv`(위치 목록)는 바로 쓰고 경로·/files 주소를 돌려준다.
+  `clips`(컷 파일)는 작업 kind "footage_clips" — 진행 항목은 고른 구간이 있는 컷마다 하나, 취소는 컷 사이에서.
+  원본이 없는 컷은 skipped(이유 `원본 없음`), 다시 압축한 컷은 message "다시 압축함".
 """
 from __future__ import annotations
 
@@ -28,15 +31,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from scripts import conti, footage, llm
+from scripts import conti, footage, footage_out, llm
 from scripts import footage_match as fmatch
 from scripts.common import ScriptError
 from scripts.features import SHOT_SIZES
-from scripts.ui.api_conti import rel_path, view_of
+from scripts.ui.api_conti import _file_url, rel_path, view_of
 from scripts.ui.jobs import Job, new_item
 from scripts.ui.server import NOT_FOUND, STREAM_CHUNK, FileSlice, Request, Response, _contained, route
 
 KIND = "footage"
+CLIPS_KIND = "footage_clips"
+MSG_REENCODED = "다시 압축함"
 MATCH_ITEM = "match"
 CHUNK = STREAM_CHUNK
 MAX_OPEN_RANGE = 8 * 1024 * 1024   # 끝을 정하지 않은 Range(bytes=N-)에 한 번에 내주는 상한
@@ -190,8 +195,8 @@ def _outputs(path: Path) -> dict:
             "clips_dir": rel_path(clips) if clips.is_dir() else None}
 
 
-def _job_for(app: Any, rel: str) -> dict | None:
-    job = app.jobs.latest_where(KIND, lambda j: (j.summary or {}).get("path") == rel)
+def _job_for(app: Any, rel: str, kind: str = KIND) -> dict | None:
+    job = app.jobs.latest_where(kind, lambda j: (j.summary or {}).get("path") == rel)
     return job.snapshot() if job is not None else None
 
 
@@ -214,7 +219,7 @@ def footage_view(app: Any, path: Path) -> dict:
     return {"path": rel, "folders": [_folder_view(item) for item in linked], "summary": _counts(cuts),
             "cuts": cuts, "suggestions": suggestions, "stt_missing": bool(state.get("stt_missing")),
             "images_used": state.get("images_used", 0), "matched_at": state.get("matched_at"),
-            "outputs": _outputs(path), "job": _job_for(app, rel)}
+            "outputs": _outputs(path), "job": _job_for(app, rel), "clips_job": _job_for(app, rel, CLIPS_KIND)}
 
 
 @route("GET", "/api/footage")
@@ -446,6 +451,60 @@ def _insert(req: Request) -> dict:
         ) from e
     return {"hash": result["hash"], "cut_id": result["cut_id"], "conti": view_of(path, written, result["hash"]),
             "footage": footage_view(req.app, path)}
+
+
+# ---- 결과물: 남은 컷 HTML, CSV, 컷 파일 --------------------------------------------------------
+
+def _written(app: Any, path: Path, rel: str) -> dict:
+    return {"path": rel, "url": _file_url(rel), "footage": footage_view(app, path)}
+
+
+@route("POST", "/api/footage/remaining")
+def _remaining(req: Request) -> dict:
+    path = _conti(req.json.get("path"))
+    return _written(req.app, path, footage_out.remaining_html(path))
+
+
+@route("POST", "/api/footage/csv")
+def _csv(req: Request) -> dict:
+    path = _conti(req.json.get("path"))
+    return _written(req.app, path, footage_out.csv_export(path))
+
+
+def clips_target(path: Path, rel: str, targets: list[dict]) -> Callable[[Job], None]:
+    def target(job: Job) -> None:
+        def progress(index: int, event: str, info: dict) -> None:
+            now = time.time()
+            if event == "start":
+                job.check_cancelled()                  # 컷 사이에서만 멈춘다(자르는 도중은 못 멈춤)
+                job.update(index, state="running", step="clip", message=None, started_at=now)
+            elif event == "done":
+                job.update(index, state="done", step="done", finished_at=now,
+                           message=MSG_REENCODED if info["reencoded"] else None,
+                           preview={**info, "url": _file_url(info["file"])})
+            else:                                      # skipped(원본 없음) | failed
+                job.update(index, state=event, step="done", message=info["reason"], finished_at=now)
+
+        result = footage_out.export_clips(path, progress, targets)
+        job.finish("done", {"path": rel, "dir": result["dir"], "made": len(result["clips"]),
+                            "reencoded": sum(c["reencoded"] for c in result["clips"]),
+                            "skipped": len(result["skipped"]), "failed": len(result["failed"])})
+
+    return target
+
+
+@route("POST", "/api/footage/clips")
+def _clips(req: Request) -> dict:
+    """고른 구간이 있는 컷마다 컷 파일을 만든다(작업). 원본 없음은 그 컷만 건너뛴다."""
+    path = _conti(req.json.get("path"))
+    rel = rel_path(path)
+    footage_out.check_ready()
+    targets = footage_out.clip_targets(path)
+    if not targets:
+        raise ScriptError("no_clips", footage_out.MSG_NO_CLIPS)
+    items = [new_item(t["cut"], title=f"#{t['n']} {t['name'] or '알 수 없는 파일'}", step="clip") for t in targets]
+    job = req.app.jobs.start(CLIPS_KIND, clips_target(path, rel, targets), items=items, summary={"path": rel})
+    return {"job": job.snapshot()}
 
 
 # ---- 원본·사진 서빙 ---------------------------------------------------------------------------

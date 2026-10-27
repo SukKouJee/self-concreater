@@ -41,7 +41,7 @@ from typing import Any, Callable
 from scripts.common import ScriptError
 
 ACTIVE = frozenset({"running", "awaiting"})
-ITEM_DONE = frozenset({"saved", "skipped", "failed"})
+ITEM_DONE = frozenset({"saved", "done", "skipped", "failed"})   # 끝난 항목: 멈춰도 그대로 둔다
 SINGLE_KINDS = {
     "collect": "이미 수집 중인 작업이 있습니다",
     "typify": "이미 유형화가 진행 중입니다",

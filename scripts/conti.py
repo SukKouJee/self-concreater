@@ -464,11 +464,32 @@ def _data_uri(rel: str) -> str | None:
     return "data:image/jpeg;base64," + base64.b64encode(path.read_bytes()).decode("ascii")
 
 
+def cut_refs(fm: dict) -> dict[int, dict]:
+    """컷 번호 → 참고 프레임. 사용자가 고정한 프레임(ref_frame, 파일이 있을 때)이 자동 매칭보다 먼저."""
+    sections = [{"label": s["label"]} for s in fm["script"]]
+    refs = match_frames(fm["cuts"], sections, frame_pool(fm.get("category")))
+    for c in fm["cuts"]:
+        pinned = c.get("ref_frame")
+        if pinned and (work_root() / pinned).exists():
+            refs[c["n"]] = {"frame": pinned, "title": Path(pinned).name, "match": "pinned"}
+    return refs
+
+
+def ref_figure(ref: dict | None) -> str:
+    """참고 프레임 한 칸(이미지는 base64로 넣는다). 없으면 빈 칸 안내."""
+    uri = _data_uri(ref["frame"]) if ref else None
+    if not uri or not ref:
+        return ('<figure><div class="noref">같은 샷의 레퍼런스 프레임 없음</div>'
+                '<figcaption>&nbsp;</figcaption></figure>')
+    tag = {"exact": "참고", "pinned": "참고(고정)"}.get(ref["match"], "참고(근사)")
+    return (f'<figure><img class="ref" src="{uri}" alt="참고 프레임: {_esc(ref["title"])}">'
+            f'<figcaption title="{_esc(ref["title"])}">{tag} · {_esc(ref["title"])}</figcaption></figure>')
+
+
 def render_html(fm: dict) -> str:
     script, cuts = fm["script"], fm["cuts"]
     vertical = fm["format"] == "shorts"
-    sections = [{"label": s["label"]} for s in script]
-    refs = match_frames(cuts, sections, frame_pool(fm.get("category")))
+    refs = cut_refs(fm)
     warn = {w["cut"]: w for w in warnings(script, cuts, fm["speech_cps"]) if w["kind"] == "line_too_long"}
     color = lambda label: f"var(--s{LABELS.index(label) + 1})" if label in LABELS else "var(--muted)"
     used = list(dict.fromkeys(s["label"] for s in script))
@@ -485,17 +506,7 @@ def render_html(fm: dict) -> str:
     cards = []
     for c in cuts:
         label = script[c["section"]]["label"]
-        ref = refs.get(c["n"])
-        pinned = c.get("ref_frame")
-        if pinned and (work_root() / pinned).exists():            # 사용자가 고정한 프레임이 자동 매칭보다 먼저
-            ref = {"frame": pinned, "title": Path(pinned).name, "match": "pinned"}
-        uri = _data_uri(ref["frame"]) if ref else None
-        tag = {"exact": "참고", "pinned": "참고(고정)"}.get(ref["match"] if ref else "", "참고(근사)")
-        ref_html = (f'<figure><img class="ref" src="{uri}" alt="참고 프레임: {_esc(ref["title"])}">'
-                    f'<figcaption title="{_esc(ref["title"])}">{tag} · '
-                    f'{_esc(ref["title"])}</figcaption></figure>'
-                    if uri else '<figure><div class="noref">같은 샷의 레퍼런스 프레임 없음</div>'
-                                '<figcaption>&nbsp;</figcaption></figure>')
+        ref_html = ref_figure(refs.get(c["n"]))
         rows = [("화면", _esc(c["action"]), ""), ("대사", _esc(c["line"]) or "—", "line"), ("자막", _esc(c["caption"]) or "—", ""),
                 ("효과음", _esc(c["sfx"]) or "—", ""), ("가이드", _esc(c["guide"]), "")]
         w = warn.get(c["n"])
@@ -515,8 +526,7 @@ def render_html(fm: dict) -> str:
                        f'<td>{_esc(c["line"])}</td><td>{_esc(c["caption"])}</td><td>{_esc(c["sfx"])}</td>'
                        f'<td>{_esc(c["guide"])}</td></tr>' for c in cuts)
              + "</tbody></table></div></details>")
-    approx = sum(1 for c in cuts if c["n"] in refs and refs[c["n"]]["match"] != "exact"
-                 and not (c.get("ref_frame") and (work_root() / c["ref_frame"]).exists()))
+    approx = sum(1 for c in cuts if c["n"] in refs and refs[c["n"]]["match"] not in ("exact", "pinned"))
     note = ('<p class="sub" style="margin-top:24px;font-size:12px">참고 프레임은 같은 샷 크기의 레퍼런스 장면으로, '
             "구도만 참고하세요. 도식은 샷 크기를 단순화한 그림입니다."
             + (f" '참고(근사)' {approx}장은 프레임별 샷 분류가 없어 섹션 대표 샷 크기로 고른 것이라 틀릴 수 있습니다. "
