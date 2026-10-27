@@ -3,7 +3,7 @@ import re
 from scripts.ui.server import STATIC_DIR
 from tests.test_ui_server import client, no_browser  # noqa: F401  (fixture 재사용)
 
-MENU_NAMES = ["홈", "레퍼런스 추가", "레퍼런스 목록", "공용 라이브러리", "유형화", "리포트", "모티브", "기획안", "콘티", "진단", "미션", "가이드"]
+MENU_NAMES = ["홈", "레퍼런스", "공용 라이브러리", "유형화", "리포트", "모티브", "기획안", "콘티", "진단", "미션", "가이드"]
 # yt-draft is no longer a terminal-only item: the draft screen is a live route.
 # diagnose is live too: its terminal command no longer appears in the menu definition.
 # mission and report are live too: no menu item shows a terminal command any more.
@@ -53,8 +53,8 @@ def test_page_contract_guards_present():
 
 
 ADD_OPTION_LABELS = [
-    "샷 분류도 함께", "이미 분석한 영상도 다시 분석",
-    "자막·컷을 새로 받기(요청이 늘어 차단될 수 있어요)", "추가 시작", "샷 분류만 보강",
+    "샷 분류도 함께", "영상마다 Claude 호출이 한 번 더 일어나요", "다시 분석", "자막·컷 새로 받기",
+    "자막이 없을 때", "음성 인식(기본)", "화면만 보고 분석", "건너뛰기", "카테고리에 넣습니다",
 ]
 SECTION_LABELS = ["hook", "intro", "body", "demo", "transition", "cta", "outro"]
 
@@ -69,10 +69,34 @@ def test_add_page_confirm_card_and_guards():
     text = (STATIC_DIR / "pages" / "add.js").read_text(encoding="utf-8")
     assert ", ".join(f'"{x}"' for x in SECTION_LABELS) in text
     for token in ["isCurrent()", "/api/jobs/current?kind=collect", "encodeURIComponent", "filesUrl",
-                  "clearTimeout", "음성 인식(STT)으로", "화면만 보고 분석", "남은 영상 모두 저장", "reviewed: true"]:
+                  "clearTimeout", "reviewed: true", "/review/"]:
         assert token in text, token
+    for gone in ["/decision", "save_all", "남은 영상 모두 저장", "음성 인식(STT)으로"]:
+        assert gone not in text, gone
     for banned in ["innerHTML", "window.confirm", "confirm(", "alert(", "prompt("]:
         assert banned not in text, banned
+
+
+def test_menu_has_one_refs_entry_and_add_route_opens_refs():
+    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert '"레퍼런스 추가"' not in app and '"레퍼런스 목록"' not in app
+    assert 'case "add": return { page: "refs", params: { add: true } }' in app
+    menu = (STATIC_DIR / "menu-utils.js").read_text(encoding="utf-8")
+    assert '"#/add"' in menu                                  # #/add also lights the 레퍼런스 menu
+
+
+def test_add_area_is_a_component_of_refs_not_a_route_page():
+    refs = (STATIC_DIR / "pages" / "refs.js").read_text(encoding="utf-8")
+    add = (STATIC_DIR / "pages" / "add.js").read_text(encoding="utf-8")
+    assert re.search(r'import \{[^}]*mountAddArea[^}]*\} from "/static/pages/add\.js"', refs)
+    assert "export function mountAddArea" in add and "export async function mount(" not in add
+    for token in ["+ 링크 추가", '"aria-expanded"', '"aria-controls"', "/api/add/shots-pending", "샷 분류 보강 (",
+                  "startShotsOnly"]:
+        assert token in refs, token
+    for token in ["/api/add/check", '"details"', "no_transcript", "startLabel(", "aria-live", "/static/add-utils.js"]:
+        assert token in add, token
+    assert "add-category" not in add and "setCategory" not in add     # 카테고리는 위쪽 선택칸 하나만 쓴다
+    assert "300" in add                                           # check debounce
 
 
 def test_add_page_shots_opt_in_and_polling_safety():
@@ -182,7 +206,7 @@ def test_refs_page_contract_and_safety():
     js = (STATIC_DIR / "pages" / "refs.js").read_text(encoding="utf-8")
     # "signal" is not asserted: ctx.api (bound per page in app.js) already carries ctx.signal, so using it is the contract.
     for token in ["export async function mount", "export function unmount", "export function onCategory",
-                  "isCurrent()", "ctx.api(", "/api/refs", "레퍼런스 추가로 가기", "경로 복사",
+                  "isCurrent()", "ctx.api(", "/api/refs", "경로 복사",
                   "최근 추가순", "길이순", "제목순", "noopener", "lb-",
                   "/trash?category=", "레퍼런스", "aria-expanded", "workspace/trash/"]:
         assert token in js, token

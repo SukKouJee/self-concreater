@@ -3,9 +3,13 @@
 // Menus whose detail screens live under "<route>/..." (e.g. #/refs/<id>) stay current on those screens.
 const PREFIX_ROUTES = ["#/refs", "#/conti", "#/draft", "#/diagnose", "#/report", "#/guide"];
 
+// Routes that open another menu item's screen (#/add is the add area of the 레퍼런스 screen).
+const ALIASES = { "#/refs": ["#/add"] };
+
 export function isActive(href, hash) {
   const current = hash || "#/home";
-  return current === href || (PREFIX_ROUTES.includes(href) && current.startsWith(href + "/"));
+  return current === href || (ALIASES[href] || []).includes(current)
+    || (PREFIX_ROUTES.includes(href) && current.startsWith(href + "/"));
 }
 
 // Name of the group holding the current screen, or null (top-level item or unknown route).

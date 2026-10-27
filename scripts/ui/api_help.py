@@ -28,8 +28,7 @@ GUIDE_PAGES: tuple[str, ...] = ("guide-shorts", "guide-long")
 # app.js MENU와 같은 순서·내용(tests가 대조한다).
 MENU: list[dict[str, str]] = [
     {"name": "홈", "route": "#/home"},
-    {"name": "레퍼런스 추가", "route": "#/add"},
-    {"name": "레퍼런스 목록", "route": "#/refs"},
+    {"name": "레퍼런스", "route": "#/refs"},
     {"name": "공용 라이브러리", "route": "#/library"},
     {"name": "유형화", "route": "#/typify"},
     {"name": "리포트", "route": "#/report"},

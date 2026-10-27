@@ -1,5 +1,6 @@
-// 레퍼런스 목록 화면 (보기 + 라벨 고치기)
-//   #/refs        카테고리의 영상 카드 목록 (필터 · 검색 · 정렬은 받은 목록에 클라이언트에서 적용)
+// 레퍼런스 화면 (추가 + 보기 + 라벨 고치기)
+//   #/refs        머리(제목 · 개수 · "+ 링크 추가") + 펼치는 추가 칸(pages/add.js) + 카테고리의 영상 카드 목록
+//                 (필터 · 검색 · 정렬은 받은 목록에 클라이언트에서 적용). #/add는 같은 화면을 추가 칸을 펼친 채 연다.
 //   #/refs/<id>   영상 하나의 상세 (섹션 흐름 · 장면 프레임 · 본문 · md 경로) + 섹션 라벨·유형 고치기
 // 고치기는 POST /api/refs/<id>/labels 한 곳만 쓴다(프런트매터 라벨만 저장). 고치는 중 다른 화면으로 가면 고친 값은 경고 없이 버린다.
 // api 호출은 ctx.api를 쓴다: 페이지별 ctx.api가 이미 ctx.signal(이동하면 abort)을 실어 보낸다. 중단된 요청(error "aborted")은 조용히 무시한다.
@@ -9,6 +10,7 @@ import {
   bandCaption, bodySubName, fmtCut, formatName, hookName, narrativeName, sectionLabelName, sectionName, topCamera,
 } from "/static/labels.js";
 import { renderMarkdown } from "/static/md.js";
+import { mountAddArea } from "/static/pages/add.js";
 
 const COUNT_DEBOUNCE_MS = 300;
 const ROLE_TEXT = { ref: "레퍼런스", mine: "내 영상" };
@@ -101,7 +103,10 @@ function syncView(category) {
 
 function freshState(el, params, ctx) {
   syncView(ctx.category);
-  return { el, params, ctx, seq: 0, videos: [], skipped: 0, nodes: {}, countTimer: null, trashing: false };
+  return {
+    el, params, ctx, seq: 0, videos: [], skipped: 0, nodes: {}, countTimer: null, trashing: false,
+    shell: null, area: null, areaOpen: !!(params && params.add), areaActive: false, autoOpenFor: null, shotsPending: 0,
+  };
 }
 
 function loading(title) {
@@ -115,34 +120,107 @@ function noCategory(title) {
       h("a", { class: "btn", href: "#/home" }, "홈으로")));
 }
 
-function loadError(title, e, retryFn) {
+function loadError(title, e, retryFn, into = null) {
   const retry = h("button", { type: "button", class: "btn" }, "다시 시도");
   retry.addEventListener("click", () => { if (S && S.ctx.isCurrent()) retryFn(); });
-  S.el.replaceChildren(
-    h("h1", {}, title),
+  fill(into || S.el,
+    into ? null : h("h1", {}, title),
     h("p", { class: "error", role: "alert" }, e.message || "불러오지 못했습니다"),
     h("div", { class: "btn-row" }, retry,
       S.params && S.params.id ? h("a", { class: "btn", href: "#/refs" }, "← 목록") : null),
   );
 }
 
+// ---- shell: head (title, count, add toggle) + add area + list ------------------
+
+function teardownShell() {
+  if (S.area) S.area.unmount();
+  S.area = null;
+  S.shell = null;
+}
+
+function ensureShell() {
+  if (S.shell) return;
+  const mine = S;
+  S.el.replaceChildren();
+  const count = h("p", { class: "lead" });
+  const toggle = h("button", {
+    type: "button", class: "btn btn-primary add-toggle", "aria-expanded": String(mine.areaOpen), "aria-controls": "add-area",
+  }, "+ 링크 추가");
+  const areaEl = h("section", { class: "card add-area", id: "add-area", "aria-label": "링크 추가" });
+  const listEl = h("div", { class: "refs-list" });
+  S.el.append(
+    h("div", { class: "page-head" }, h("div", { class: "page-head-text" }, h("h1", {}, "레퍼런스"), count), toggle),
+    areaEl, listEl);
+  S.shell = { count, toggle, areaEl, listEl };
+  S.area = mountAddArea(areaEl, mine.ctx, {
+    open: mine.areaOpen,
+    onSaved: () => { if (alive(mine)) loadList({ quiet: true }); },
+    onChange: ({ open, active }) => {
+      if (!alive(mine)) return;
+      const finished = mine.areaActive && !active;
+      mine.areaOpen = open;
+      mine.areaActive = active;
+      toggle.setAttribute("aria-expanded", String(open));
+      if (finished) loadList({ quiet: true });
+    },
+  });
+  toggle.addEventListener("click", () => {
+    if (!alive(mine) || !mine.area) return;
+    if (mine.areaOpen) mine.area.close(); else mine.area.open();
+  });
+}
+
 // ---- list ---------------------------------------------------------------------
 
-async function loadList() {
+// quiet: keep the cards while the new list loads (after saving a video in the add area).
+async function loadList(opts = {}) {
   const mine = S;
   const seq = ++mine.seq;
-  if (!mine.ctx.category) { noCategory("레퍼런스 목록"); return; }
-  loading("레퍼런스 목록");
+  if (!mine.ctx.category) { teardownShell(); noCategory("레퍼런스"); return; }
+  ensureShell();
+  if (!opts.quiet) fill(mine.shell.listEl, h("p", { class: "muted", role: "status" }, "불러오는 중…"));
   try {
     const data = await mine.ctx.api("GET", `/api/refs?category=${encodeURIComponent(mine.ctx.category)}`);
     if (!alive(mine) || seq !== mine.seq) return;
     mine.videos = Array.isArray(data.videos) ? data.videos : [];
     mine.skipped = num(data.skipped);
     renderList();
+    openWhenEmpty();
+    loadShotsPending();
   } catch (e) {
     if (!alive(mine) || seq !== mine.seq || ignorable(e)) return;
-    loadError("레퍼런스 목록", e, loadList);
+    loadError("레퍼런스", e, () => loadList(), mine.shell.listEl);
   }
+}
+
+// A category without any reference starts with the add area open (once per category, without taking focus).
+function openWhenEmpty() {
+  const cat = S.ctx.category;
+  if (S.autoOpenFor === cat) return;
+  S.autoOpenFor = cat;
+  if (!S.videos.some((v) => v.role === "ref") && !S.areaOpen && S.area) S.area.open({ focus: false });
+}
+
+async function loadShotsPending() {
+  const mine = S;
+  const cat = mine.ctx.category;
+  try {
+    const data = await mine.ctx.api("GET", `/api/add/shots-pending?category=${encodeURIComponent(cat)}`);
+    if (!alive(mine) || mine.ctx.category !== cat) return;
+    mine.shotsPending = num(data.count);
+  } catch (e) {
+    if (!alive(mine) || ignorable(e)) return;
+    mine.shotsPending = 0;
+  }
+  paintShotsButton();
+}
+
+function paintShotsButton() {
+  const btn = S.nodes.shots;
+  if (!btn || !btn.isConnected) return;
+  btn.hidden = !(S.shotsPending > 0);
+  btn.textContent = `샷 분류 보강 (${S.shotsPending}개)`;
 }
 
 function countText() {
@@ -166,23 +244,23 @@ function visibleVideos() {
 }
 
 function renderList() {
-  S.el.replaceChildren();
-  S.el.append(h("h1", {}, "레퍼런스 목록"), h("p", { class: "lead" }, countText()));
+  const box = S.shell.listEl;
+  S.shell.count.textContent = countText();
+  box.replaceChildren();
   if (S.skipped > 0) {
-    S.el.append(h("p", { class: "warn-text", role: "status" }, `읽지 못한 md ${S.skipped}개(프런트매터 확인)`));
+    box.append(h("p", { class: "warn-text", role: "status" }, `읽지 못한 md ${S.skipped}개(프런트매터 확인)`));
   }
   if (S.videos.length === 0) {
-    S.el.append(h("section", { class: "card empty" },
+    box.append(h("section", { class: "card empty" },
       h("h2", {}, "아직 영상이 없습니다"),
-      h("p", { class: "muted" }, "링크를 분석하면 이 카테고리의 영상이 여기에 모입니다."),
-      h("a", { class: "btn btn-primary", href: "#/add" }, "레퍼런스 추가로 가기")));
+      h("p", { class: "muted" }, "링크를 분석하면 이 카테고리의 영상이 여기에 모입니다.")));
     return;
   }
-  S.el.append(toolbar());
+  box.append(toolbar());
   S.nodes.result = h("p", { class: "muted small", role: "status", "aria-live": "polite" });
   S.nodes.grid = h("ul", { class: "ref-grid", "aria-label": "영상 목록" });
   S.nodes.empty = h("p", { class: "muted", hidden: true }, "조건에 맞는 영상이 없습니다");
-  S.el.append(S.nodes.result, S.nodes.grid, S.nodes.empty);
+  box.append(S.nodes.result, S.nodes.grid, S.nodes.empty);
   renderCards();
 }
 
@@ -210,9 +288,22 @@ function toolbar() {
   sort.value = VIEW.sort;
   sort.addEventListener("change", () => { VIEW.sort = sort.value; renderCards(); });
 
+  const shots = h("button", { type: "button", class: "btn ref-shots", hidden: true }, "샷 분류 보강");
+  shots.addEventListener("click", async () => {
+    const mine = S;
+    if (!alive(mine) || !mine.area || shots.disabled) return;
+    shots.disabled = true;
+    const ok = await mine.area.startShotsOnly();
+    if (!alive(mine)) return;
+    shots.disabled = false;
+    if (ok) { mine.shotsPending = 0; paintShotsButton(); }
+  });
+  S.nodes.shots = shots;
+
   bar.append(group,
     h("div", { class: "field ref-search" }, h("label", { for: "ref-search" }, "제목·채널 검색"), search),
-    h("div", { class: "field ref-sort" }, h("label", { for: "ref-sort" }, "정렬"), sort));
+    h("div", { class: "field ref-sort" }, h("label", { for: "ref-sort" }, "정렬"), sort),
+    shots);
   return bar;
 }
 
@@ -620,7 +711,10 @@ export async function mount(el, params, ctx) {
 }
 
 export function unmount() {
-  if (S) clearTimeout(S.countTimer);
+  if (S) {
+    clearTimeout(S.countTimer);
+    if (S.area) S.area.unmount();
+  }
   S = null;
 }
 
@@ -633,5 +727,7 @@ export function onCategory() {
   }
   syncView(S.ctx.category);
   S.videos = [];
+  S.shotsPending = 0;
+  if (S.area) S.area.onCategory(S.ctx.category);
   loadList();
 }

@@ -4,7 +4,7 @@ import {
 } from "/static/home-utils.js";
 
 const MENU_ROUTES = { add: "#/add", conti: "#/conti", typify: "#/typify", draft: "#/draft", diagnose: "#/diagnose" };
-const MENU_NAMES = { add: "레퍼런스 추가", conti: "콘티", typify: "유형화", draft: "기획안", diagnose: "진단" };
+const MENU_NAMES = { add: "레퍼런스", conti: "콘티", typify: "유형화", draft: "기획안", diagnose: "진단" };
 const KIND_LABELS = { conti: "콘티", report: "리포트", draft: "기획안" };
 const MISSION_STATUS = { done: "제출함", skipped: "건너뜀", replaced: "교체됨", pending: "진행 전", active: "진행 중" };
 // Category stage tags. The diagnose count is every diagnosis record of the category, not per video: "진단 기록".

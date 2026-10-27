@@ -1,12 +1,15 @@
-// 레퍼런스 추가 화면: 링크 입력 → 1초 폴링 진행 표시 → 영상별 확인 카드 → 마무리 요약.
-// 서버 작업(kind "collect")이 이미 있으면 화면에 들어올 때 그 작업을 이어서 보여 준다.
+// 레퍼런스 화면의 "링크 추가" 칸(라우트 페이지가 아니라 refs.js가 붙이는 컴포넌트).
+// 링크 입력(입력이 멈추면 줄마다 상태 확인) → 1초 폴링 진행 표시 → 영상별 확인 카드 → 마무리 요약.
+// 서버 작업(kind "collect")이 이미 있으면 칸을 마운트할 때 그 작업을 이어서 보여 준다.
 import { h, filesUrl } from "/static/dom.js";
+import { STATUS_TEXT, splitLinks, removeLine, startLabel, summaryText } from "/static/add-utils.js";
 import { bodySubName, hookName, narrativeName, sectionLabelName, sectionName } from "/static/labels.js";
 import {
   fmtDur, fmtClock, fmtRemain, spokenDur, rowView, itemProgress, stepWeights, monotonicFraction,
 } from "/static/progress-utils.js";
 
 const POLL_MS = 1000;
+const CHECK_DEBOUNCE_MS = 300;
 const LABELS = ["hook", "intro", "body", "demo", "transition", "cta", "outro"];
 const STEPS = [
   { key: "fetch", name: "자막" },
@@ -41,22 +44,40 @@ function isActive(job) {
 
 let S = null;
 
-function freshState(el, ctx) {
+function freshState(areaEl, ctx, hooks, startOpen) {
+  const title = h("h2", { class: "add-area-title" });
+  const body = h("div", { class: "add-area-body" });
+  areaEl.replaceChildren(title, body);
+  areaEl.hidden = !startOpen;
   return {
-    el, ctx, timer: null, clock: null, offset: 0, job: null, view: null,
+    area: areaEl, title, el: body, ctx, hooks, isOpen: !!startOpen, timer: null, clock: null, offset: 0, job: null, view: null,
     rows: new Map(),       // item key -> { li, sig }
     ringMax: new Map(),    // "<job id>:<item id>" -> highest whole-video fraction shown (cards are rebuilt per step)
     edits: new Map(),      // item id -> edited analysis (deep copy of preview)
     openFeedback: new Set(), // item ids whose feedback input is open
     feedbackText: new Map(),
     busy: new Map(),       // item id -> preview signature at decision time (cleared once the item moves on)
-    draft: { role: "ref", links: "", shots: false, force: false, refetch: false },
-    category: ctx.category, names: [],
+    draft: { role: "ref", links: "", shots: false, force: false, refetch: false, noTranscript: "stt" },
+    category: ctx.category,
+    check: { timer: null, seq: 0, rows: [], count: 0, pending: false, error: "" },
+    f: null,               // form element refs (null while the job view is shown)
   };
+}
+
+function emitChange() {
+  if (S && S.hooks.onChange) S.hooks.onChange({ open: S.isOpen, active: isActive(S.job) });
+}
+
+function paintTitle() {
+  S.title.textContent = S.category ? `${S.category} 카테고리에 넣습니다` : "카테고리가 없습니다";
 }
 
 function stopPolling() {
   if (S && S.timer) { clearTimeout(S.timer); S.timer = null; }
+}
+
+function stopCheck() {
+  if (S) { clearTimeout(S.check.timer); S.check.timer = null; S.check.seq += 1; }
 }
 
 function stopClock() {
@@ -133,22 +154,28 @@ async function startJob(path, body) {
   const mine = S;
   try {
     const data = await mine.ctx.api("POST", path, body);
-    if (S !== mine || !mine.ctx.isCurrent()) return;
-    mine.rows.clear();
-    mine.edits.clear();
-    mine.openFeedback.clear();
-    mine.feedbackText.clear();
+    if (S !== mine || !mine.ctx.isCurrent()) return false;
+    const appended = Array.isArray(data.appended) ? data.appended.length : 0;
+    if (appended) mine.ctx.toast(`진행 중인 작업 뒤에 ${appended}개를 붙였어요`, "info");
+    if (!mine.job || mine.job.id !== data.job.id) {
+      mine.rows.clear();
+      mine.edits.clear();
+      mine.openFeedback.clear();
+      mine.feedbackText.clear();
+    }
     mine.pollErrors = 0;
     applyJob(data.job);
     if (isActive(mine.job)) schedulePoll();
+    return true;
   } catch (e) {
-    if (S !== mine || !mine.ctx.isCurrent()) return;
+    if (S !== mine || !mine.ctx.isCurrent()) return false;
     if (e.error === "job_running") {
       mine.ctx.toast("이미 진행 중인 작업이 있습니다. 이어서 보여 드립니다", "error");
       await resume();
     } else if (e.error !== "aborted") {
       mine.ctx.toast(e.message, "error");
     }
+    return false;
   }
 }
 
@@ -160,6 +187,7 @@ async function resume() {
     if (data.job) {
       applyJob(data.job);
       if (isActive(data.job)) schedulePoll();
+      if (!mine.isOpen) openArea();
     }
   } catch (e) {
     if (S !== mine || !mine.ctx.isCurrent() || e.error === "aborted") return;
@@ -176,7 +204,7 @@ async function decide(item, payload) {
   try {
     const data = await mine.ctx.api(
       "POST",
-      `/api/jobs/${encodeURIComponent(mine.job.id)}/items/${encodeURIComponent(item.id)}/decision`,
+      `/api/add/${encodeURIComponent(mine.job.id)}/review/${encodeURIComponent(item.id)}`,
       payload,
     );
     if (S !== mine || !mine.ctx.isCurrent()) return;
@@ -186,6 +214,7 @@ async function decide(item, payload) {
     }
     applyJob(data.job);
     if (isActive(mine.job) && !mine.timer) schedulePoll();
+    if (payload.action === "save" && mine.hooks.onSaved) mine.hooks.onSaved();
   } catch (e) {
     if (S !== mine || !mine.ctx.isCurrent() || e.error === "aborted") return;
     mine.busy.delete(key);
@@ -209,11 +238,13 @@ function applyJob(job) {
   S.job = job;
   if (typeof job.now === "number") S.offset = job.now - Date.now() / 1000;
   renderJobView();
+  emitChange();
 }
 
 function setView(name) {
   if (S.view === name) return false;
   S.view = name;
+  if (name !== "form") { stopCheck(); S.f = null; S.check.pending = false; }
   S.el.replaceChildren();
   S.rows.clear();
   return true;
@@ -225,7 +256,6 @@ function renderJobView() {
   const fresh = setView("job");
   if (isActive(job)) startClock(); else stopClock();
   if (fresh) {
-    S.el.append(h("h1", {}, "레퍼런스 추가"));
     S.head = h("div", { class: "job-head" });
     S.list = h("ul", { class: "job-items", "aria-label": "영상별 진행 상황" });
     S.foot = h("div", { class: "job-foot" });
@@ -286,8 +316,8 @@ function renderJobFoot(job) {
     S.rows.clear();
     S.edits.clear();
     renderForm();
-    const first = S.el.querySelector("textarea");
-    if (first) first.focus();
+    emitChange();
+    S.f.ta.focus();
   });
   box.append(again);
   S.foot.replaceChildren(box);
@@ -543,29 +573,9 @@ function buildItem(item) {
   else if (item.state === "running" || item.state === "awaiting") li.append(stepChips(item));
   if (item.message) li.append(h("p", { class: item.state === "failed" ? "error item-msg" : "muted item-msg" }, item.message));
   if (item.state === "awaiting") {
-    if (item.ask === "no_transcript") li.append(noTranscriptCard(item));
-    else if (item.preview) li.append(confirmCard(item));
+    if (item.preview) li.append(confirmCard(item));
   }
   return li;
-}
-
-// ---- no transcript ----------------------------------------------------------
-
-function noTranscriptCard(item) {
-  const busy = S.busy.has(item.id);
-  const card = h("section", { class: "confirm", "aria-label": "자막 없음" });
-  card.append(h("p", { class: "confirm-title" }, "자막이 없습니다"),
-    h("p", { class: "muted" }, "음성 인식은 시간이 걸립니다. 화면만 보고 분석하면 빠르지만 대사는 반영되지 않습니다."));
-  const row = h("div", { class: "btn-row" });
-  const stt = h("button", { type: "button", class: "btn btn-primary", disabled: busy }, "음성 인식(STT)으로");
-  const screen = h("button", { type: "button", class: "btn", disabled: busy }, "화면만 보고 분석");
-  const skip = h("button", { type: "button", class: "btn", disabled: busy }, "건너뛰기");
-  stt.addEventListener("click", () => decide(item, { action: "stt" }));
-  screen.addEventListener("click", () => decide(item, { action: "screen" }));
-  skip.addEventListener("click", () => decide(item, { action: "skip" }));
-  row.append(stt, screen, skip);
-  card.append(row);
-  return card;
 }
 
 // ---- confirm card -----------------------------------------------------------
@@ -673,12 +683,10 @@ function confirmCard(item) {
   const row = h("div", { class: "btn-row" });
   const savePayload = (action) => (isEdited(item) ? { action, analysis: S.edits.get(item.id).a } : { action });
   const save = h("button", { type: "button", class: "btn btn-primary", disabled: busy }, "저장");
-  const saveAll = h("button", { type: "button", class: "btn", disabled: busy }, "남은 영상 모두 저장");
   const skip = h("button", { type: "button", class: "btn", disabled: busy }, "건너뛰기");
   const open = S.openFeedback.has(item.id);
   const redo = h("button", { type: "button", class: "btn", "aria-expanded": String(open), disabled: busy }, "고칠 점 입력 후 다시 분석");
   save.addEventListener("click", () => decide(item, savePayload("save")));
-  saveAll.addEventListener("click", () => decide(item, savePayload("save_all")));
   skip.addEventListener("click", () => decide(item, { action: "skip" }));
   redo.addEventListener("click", () => {
     if (S.openFeedback.has(item.id)) S.openFeedback.delete(item.id);
@@ -687,7 +695,7 @@ function confirmCard(item) {
     const ta = S.el.querySelector(`[data-fb="${CSS.escape(item.id)}"]`);
     if (ta) ta.focus();
   });
-  row.append(save, saveAll, skip, redo);
+  row.append(save, skip, redo);
   card.append(row);
 
   if (open) {
@@ -709,141 +717,222 @@ function confirmCard(item) {
   return card;
 }
 
+// ---- link check (debounced, newest answer wins) ------------------------------
+
+function checkRowsToSend() {
+  return S.check.rows.filter((r) => r.status === "new" || r.status === "reanalyze").map((r) => r.link);
+}
+
+function scheduleCheck() {
+  const mine = S;
+  const c = mine.check;
+  clearTimeout(c.timer);
+  c.seq += 1;                       // an answer still on its way is now stale
+  const links = splitLinks(mine.draft.links);
+  if (!mine.category || links.length === 0) {
+    c.rows = []; c.count = 0; c.pending = false; c.error = "";
+    paintCheck();
+    return;
+  }
+  c.pending = true;
+  paintCheck();
+  c.timer = setTimeout(() => runCheck(mine, links), CHECK_DEBOUNCE_MS);
+}
+
+async function runCheck(mine, links) {
+  const c = mine.check;
+  const seq = ++c.seq;
+  try {
+    const data = await mine.ctx.api("POST", "/api/add/check", {
+      category: mine.category, role: mine.draft.role, links, force: mine.draft.force,
+    });
+    if (S !== mine || !mine.ctx.isCurrent() || seq !== c.seq) return;
+    c.rows = Array.isArray(data.rows) ? data.rows : [];
+    c.count = Number(data.count) || 0;
+    c.error = "";
+  } catch (e) {
+    if (S !== mine || !mine.ctx.isCurrent() || seq !== c.seq || e.error === "aborted") return;
+    c.rows = []; c.count = 0;
+    c.error = e.message || "링크를 확인하지 못했습니다";
+  }
+  c.pending = false;
+  paintCheck();
+}
+
+function linkRow(row) {
+  const name = row.title || row.id || row.link;
+  const x = h("button", { type: "button", class: "btn link-x", "aria-label": `${name} 줄 지우기` }, "×");
+  x.addEventListener("click", () => {
+    S.f.ta.value = removeLine(S.f.ta.value, row.link);
+    S.draft.links = S.f.ta.value;
+    scheduleCheck();
+    S.f.ta.focus();
+  });
+  return h("li", { class: `link-row link-${row.status}` },
+    h("span", { class: `badge link-badge link-badge-${row.status}` }, STATUS_TEXT[row.status] || row.status),
+    h("span", { class: "link-name", title: row.link }, name),
+    x);
+}
+
+function paintCheck() {
+  const f = S && S.f;
+  if (!f) return;
+  const c = S.check;
+  const text = c.error || summaryText(c.rows);
+  if (f.summary.textContent !== text) f.summary.textContent = text;
+  f.summary.classList.toggle("error", !!c.error);
+  f.list.replaceChildren(...c.rows.map(linkRow));
+  f.list.hidden = c.rows.length === 0;
+  f.list.classList.toggle("is-pending", c.pending);
+  f.list.setAttribute("aria-busy", String(c.pending));
+  f.start.textContent = startLabel(c.count);
+  f.start.disabled = c.pending || c.count === 0 || !!f.sending;
+}
+
 // ---- rendering: form --------------------------------------------------------
+
+function checkField(key, text, hint) {
+  const cid = `add-opt-${key}`;
+  const hid = `${cid}-d`;
+  const cb = h("input", { type: "checkbox", id: cid, "aria-describedby": hint ? hid : false });
+  cb.checked = !!S.draft[key];
+  cb.addEventListener("change", () => {
+    S.draft[key] = cb.checked;
+    if (key === "force") scheduleCheck();
+  });
+  return h("div", { class: "check-wrap" },
+    h("label", { class: "check", for: cid }, cb, h("span", {}, text)),
+    hint ? h("p", { class: "muted hint check-hint", id: hid }, hint) : null);
+}
 
 function renderForm() {
   setView("form");
   S.el.replaceChildren();
   S.rows.clear();
   S.ringMax.clear();
-  S.el.append(h("h1", {}, "레퍼런스 추가"));
-  const card = h("section", { class: "card", "aria-label": "추가 설정" });
-  S.el.append(card);
-  const names = S.names;
-  if (names.length === 0) {
-    card.append(h("h2", {}, "카테고리가 없습니다"),
-      h("p", { class: "muted" }, "먼저 ", h("code", {}, "/yt-coach:yt-init"), " 또는 홈에서 폴더 만들기를 진행하세요."),
-      h("a", { class: "btn", href: "#/home" }, "홈으로"));
+  S.f = null;
+  paintTitle();
+  if (!S.category) {
+    S.el.append(h("p", { class: "muted" }, "먼저 ", h("code", {}, "/yt-coach:yt-init"), " 또는 홈에서 폴더 만들기를 진행하세요."));
     return;
   }
 
   const form = h("form", { class: "add-form", novalidate: "" });
-
-  const sel = h("select", { id: "add-category" });
-  for (const n of names) {
-    const o = h("option", { value: n }, n);
-    if (n === S.category) o.selected = true;
-    sel.append(o);
-  }
-  sel.addEventListener("change", () => { S.category = sel.value; S.ctx.setCategory(sel.value); });
-  form.append(h("div", { class: "field" }, h("label", { for: "add-category" }, "카테고리"), sel));
 
   const fs = h("fieldset", { class: "field seg" }, h("legend", {}, "구분"));
   for (const [val, text] of [["ref", "레퍼런스"], ["mine", "내 영상"]]) {
     const rid = `add-role-${val}`;
     const input = h("input", { type: "radio", name: "role", id: rid, value: val });
     input.checked = S.draft.role === val;
-    input.addEventListener("change", () => { S.draft.role = val; });
+    input.addEventListener("change", () => { S.draft.role = val; scheduleCheck(); });
     fs.append(h("label", { class: "seg-opt", for: rid }, input, h("span", {}, text)));
   }
   form.append(fs);
 
-  const ta = h("textarea", { id: "add-links", rows: "6", placeholder: "유튜브 링크를 한 줄에 하나씩 붙여 넣으세요", spellcheck: "false" });
+  const ta = h("textarea", { id: "add-links", rows: "5", placeholder: "유튜브 링크를 한 줄에 하나씩 붙여 넣으세요",
+    spellcheck: "false", "aria-describedby": "add-check-summary" });
   ta.value = S.draft.links;
-  ta.addEventListener("input", () => { S.draft.links = ta.value; err.hidden = true; });
-  const err = h("p", { class: "error field-error", id: "add-links-err", role: "alert", hidden: true }, "");
-  ta.setAttribute("aria-describedby", "add-links-err");
-  form.append(h("div", { class: "field" }, h("label", { for: "add-links" }, "링크"), ta, err));
+  ta.addEventListener("input", () => { S.draft.links = ta.value; scheduleCheck(); });
+  const summary = h("p", { class: "check-summary", id: "add-check-summary", "aria-live": "polite" });
+  const list = h("ul", { class: "link-list", "aria-label": "링크 확인 결과", hidden: true });
+  form.append(h("div", { class: "field" }, h("label", { for: "add-links" }, "링크"), ta, summary, list));
 
-  const opts = h("div", { class: "field checks" });
-  const checks = [
-    ["shots", "샷 분류도 함께", null],
-    ["force", "이미 분석한 영상도 다시 분석", null],
-    ["refetch", "자막·컷을 새로 받기(요청이 늘어 차단될 수 있어요)", null],
-  ];
-  for (const [key, text] of checks) {
-    const cid = `add-opt-${key}`;
-    const cb = h("input", { type: "checkbox", id: cid });
-    cb.checked = !!S.draft[key];
-    cb.addEventListener("change", () => { S.draft[key] = cb.checked; });
-    opts.append(h("label", { class: "check", for: cid }, cb, h("span", {}, text)));
+  form.append(checkField("shots", "샷 분류도 함께", "영상마다 Claude 호출이 한 번 더 일어나요"));
+
+  const adv = h("details", { class: "adv" }, h("summary", {}, "고급"));
+  adv.open = !!S.draft.advOpen;
+  adv.addEventListener("toggle", () => { S.draft.advOpen = adv.open; });
+  adv.append(
+    checkField("force", "다시 분석", "이미 분석한 영상도 처음부터 다시 분석합니다"),
+    checkField("refetch", "자막·컷 새로 받기", "요청이 늘어 차단될 수 있어요"));
+  const nt = h("fieldset", { class: "field radios" }, h("legend", {}, "자막이 없을 때"));
+  for (const [val, text] of [["stt", "음성 인식(기본)"], ["screen", "화면만 보고 분석"], ["skip", "건너뛰기"]]) {
+    const rid = `add-nt-${val}`;
+    const input = h("input", { type: "radio", name: "no_transcript", id: rid, value: val });
+    input.checked = S.draft.noTranscript === val;
+    input.addEventListener("change", () => { S.draft.noTranscript = val; });
+    nt.append(h("label", { class: "check", for: rid }, input, h("span", {}, text)));
   }
-  form.append(opts);
+  adv.append(nt);
+  form.append(adv);
 
-  const row = h("div", { class: "btn-row" });
-  const start = h("button", { type: "submit", class: "btn btn-primary" }, "추가 시작");
-  const shotsOnly = h("button", { type: "button", class: "btn" }, "샷 분류만 보강");
-  row.append(start, shotsOnly);
-  form.append(row);
+  const start = h("button", { type: "submit", class: "btn btn-primary" }, startLabel(0));
+  start.disabled = true;
+  form.append(h("div", { class: "btn-row" }, start));
   form.append(h("p", { class: "muted hint" }, "영상은 하나씩 처리합니다. 분석마다 Claude 호출이 일어납니다."));
 
+  S.f = { form, ta, summary, list, start, sending: false };
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const links = ta.value.split(/\s+/).map((x) => x.trim()).filter(Boolean);
-    if (links.length === 0) {
-      err.textContent = "분석할 유튜브 링크를 한 줄에 하나씩 넣어 주세요.";
-      err.hidden = false;
-      ta.setAttribute("aria-invalid", "true");
-      ta.focus();
-      return;
-    }
-    ta.removeAttribute("aria-invalid");
-    start.disabled = true;
-    shotsOnly.disabled = true;
-    await startJob("/api/add", {
-      category: sel.value, role: S.draft.role, links,
-      shots: S.draft.shots, force: S.draft.force, refetch: S.draft.refetch,
+    const mine = S;
+    const links = checkRowsToSend();
+    if (links.length === 0 || mine.check.pending || mine.f.sending) return;
+    mine.f.sending = true;
+    paintCheck();
+    const f = mine.f;
+    const ok = await startJob("/api/add", {
+      category: mine.category, role: mine.draft.role, links,
+      shots: mine.draft.shots, force: mine.draft.force, refetch: mine.draft.refetch,
+      no_transcript: mine.draft.noTranscript,
     });
-    if (S && S.ctx.isCurrent() && S.view === "form") { start.disabled = false; shotsOnly.disabled = false; }
+    if (S !== mine || !mine.ctx.isCurrent()) return;
+    if (ok) { mine.draft.links = ""; mine.check.rows = []; mine.check.count = 0; return; }
+    f.sending = false;
+    if (S.f === f) paintCheck();
   });
-  shotsOnly.addEventListener("click", async () => {
-    start.disabled = true;
-    shotsOnly.disabled = true;
-    await startJob("/api/add/shots-only", { category: sel.value });
-    if (S && S.ctx.isCurrent() && S.view === "form") { start.disabled = false; shotsOnly.disabled = false; }
-  });
-  card.append(form);
+  S.el.append(form);
+  if (S.draft.links) scheduleCheck();
 }
 
-// ---- page contract ----------------------------------------------------------
+// ---- component contract -----------------------------------------------------
 
-export async function mount(el, params, ctx) {
+function setOpen(on, focus) {
+  if (!S || S.isOpen === on) return;
+  S.isOpen = on;
+  S.area.hidden = !on;
+  emitChange();
+  if (on && focus && S.f) S.f.ta.focus();
+}
+
+function openArea() { setOpen(true, false); }
+
+// opts: { open, onSaved(), onChange({ open, active }) }. Returns a handle that refs.js drives.
+export function mountAddArea(el, ctx, opts = {}) {
   stopPolling();
   stopClock();
-  S = freshState(el, ctx);
-  el.replaceChildren(h("h1", {}, "레퍼런스 추가"), h("p", { class: "muted", role: "status" }, "불러오는 중…"));
-  const mine = S;
-  try {
-    const [cats, cur] = await Promise.all([
-      ctx.api("GET", "/api/categories"),
-      ctx.api("GET", "/api/jobs/current?kind=collect"),
-    ]);
-    if (S !== mine || !ctx.isCurrent()) return;
-    mine.names = (cats.categories || []).map((c) => c.category);
-    if (!mine.names.includes(mine.category)) mine.category = mine.names[0] || null;
-    if (cur.job) {
-      applyJob(cur.job);
-      if (isActive(cur.job)) schedulePoll();
-    } else {
-      renderForm();
-    }
-  } catch (e) {
-    if (S !== mine || !ctx.isCurrent() || e.error === "aborted") return;
-    const retry = h("button", { type: "button", class: "btn" }, "다시 시도");
-    retry.addEventListener("click", () => { if (ctx.isCurrent()) mount(el, params, ctx); });
-    el.replaceChildren(h("h1", {}, "레퍼런스 추가"), h("p", { class: "error", role: "alert" }, e.message), retry);
-  }
+  stopCheck();
+  S = freshState(el, ctx, { onSaved: opts.onSaved, onChange: opts.onChange }, !!opts.open);
+  paintTitle();
+  renderForm();
+  resume();      // an unfinished collect job opens the area and is shown here
+  return {
+    open: (o) => setOpen(true, !(o && o.focus === false)),
+    close: () => setOpen(false, false),
+    unmount,
+    onCategory,
+    startShotsOnly,
+  };
+}
+
+async function startShotsOnly() {
+  if (!S || !S.category) return false;
+  openArea();
+  return startJob("/api/add/shots-only", { category: S.category });
 }
 
 export function unmount() {
   stopPolling();
   stopClock();
+  stopCheck();
   S = null;
 }
 
 export function onCategory(category) {
   if (!S) return;
   S.category = category;
-  const sel = S.el.querySelector("#add-category");
-  if (sel && category && sel.value !== category) sel.value = category;
+  paintTitle();
+  if (S.view === "form") {
+    if (!S.f || !category) renderForm();   // category list was empty before, or just became empty
+    else scheduleCheck();
+  }
 }
