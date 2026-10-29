@@ -430,7 +430,7 @@ def test_motif_page_contract_and_safety():
     js = (STATIC_DIR / "pages" / "motif.js").read_text(encoding="utf-8")
     for token in ["export async function mount", "export function unmount", "export function onCategory",
                   "isCurrent()", "ctx.api(", "/api/motif", "/api/motif/run", "/api/motif/save", "/api/motif/star",
-                  "kind=motif", "새 카드 뽑기", "선택한 카드 저장", "저장하면서 ★", "기획안 만들기",
+                  "kind=motif", "새 카드 뽑기", "선택한 카드 저장", "저장하면서 ★", "이 카드로 새 영상 시작",
                   "기법 모음 정리해줘", "#/typify", "#/add", "#/refs/",
                   "프로필이 없어 카드가 일반적으로 나옵니다", "유형화를 먼저 하면 흐름·조합 카드가 나옵니다",
                   "먼저 레퍼런스를 넣어 주세요", "즐겨찾기만", "res.warning", "job_id: mine.jobId"]:
@@ -1279,3 +1279,42 @@ def test_css_fix_round_1():
     assert re.search(r"\.leave-ask \{[^}]*position: sticky", css)
     assert re.search(r"\.shoot-stub \{[^}]*min-height: calc\(100dvh - var\(--topbar-h\)\)", css)
     assert re.search(r"\.subnav \{[^}]*overflow-y: hidden", css)
+
+
+# ---- Phase 4: motif cards, detail panel / bottom sheet, start-video flow ----------------------
+
+def test_motif_page_cards_detail_and_start_flow():
+    js = _js("pages/motif.js")
+    for token in ['from "/static/motif-utils.js"', 'from "/static/ui.js"', "oneLine(", "kindCounts(", "filterCards(",
+                  "새 카드 뽑기 · 약 30초", "새 카드 주제 (선택)", "근거 영상 ", "이렇게 찍어 보세요", "이 카드로 만든 영상",
+                  "이 카드로 새 영상 시작", "#/draft/new/", "/api/refs?category=", "/api/draft/list?category=",
+                  "filesUrl(", "export function unsavedNote", "aria-expanded", "aria-controls"]:
+        assert token in js, token
+    # no terminal / command copy on the screen
+    for bad in ["yt-inspire", "/yt-coach:", "터미널", '기획안 만들기"']:
+        assert bad not in js, bad
+
+
+def test_motif_detail_is_a_modal_sheet_on_phones():
+    js = _js("pages/motif.js")
+    for token in ['"role", "dialog"', '"aria-modal", "true"', '"Escape"', '"Tab"', "matchMedia(", "returnFocus",
+                  "닫기"]:
+        assert token in js, token
+    css = _js("app.css")
+    assert re.search(r"\.motif-cards \{[^}]*grid-template-columns: repeat\(auto-fill, minmax\(230px, 1fr\)\)", css)
+    assert re.search(r"\.motif-layout \{[^}]*grid-template-columns: minmax\(0, 1fr\) 380px", css)
+    phone = "\n".join(_media_blocks(css, 640))
+    assert re.search(r"\.motif-detail \{[^}]*position: fixed", phone)
+
+
+def test_motif_progress_has_a_hook_for_the_status_chip():
+    js = _js("pages/motif.js")
+    assert 'data-job-kind": "motif"' in js and "Phase 6" in js
+
+
+def test_draft_save_lands_on_the_new_video_workspace():
+    draft = _js("pages/draft.js")
+    save = draft[draft.index("async function save()"):]
+    save = save[:save.index("\n}\n")]
+    assert 'navigate(videoHref(videoId(res.path), "plan"))' in save
+    assert "location.hash = viewHref(res.path)" not in save

@@ -7,6 +7,7 @@
 import { h, fill } from "/static/dom.js";
 import { hookName, narrativeName, sectionLabelName, sectionName } from "/static/labels.js";
 import { renderMarkdown } from "/static/md.js";
+import { videoHref, videoId } from "/static/video-utils.js";
 
 const POLL_MS = 1000;
 const POLL_MAX_MS = 15000;
@@ -883,7 +884,7 @@ async function save() {
     if (!alive(mine)) return;
     mine.ctx.toast("기획안을 저장했습니다", "info");
     mine.saving = false;
-    location.hash = viewHref(res.path);          // hashchange mounts the detail page
+    mine.ctx.navigate(videoHref(videoId(res.path), "plan"));     // the new video's workspace (plan tab)
   } catch (e) {
     // An aborted request (page left mid-save) may still have been saved by the server: never restore that preview.
     if (e && e.error === "aborted") markHandled(mine.jobId);

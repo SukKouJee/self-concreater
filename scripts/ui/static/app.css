@@ -1346,3 +1346,83 @@ code { background: var(--chip); padding: 1px 6px; border-radius: 4px; }
     min-height: calc(100dvh - var(--topbar-h) - var(--tabbar-h) - env(safe-area-inset-bottom)); }
   .vp-actions .btn-rec { min-height: 44px; }
 }
+
+/* motif (Phase 4): header + topic form, filter chips, scan-friendly card grid, detail panel (desktop) /
+   bottom sheet (phone, modal). Star color reuses the angle tag ink (no new color token). */
+.motif-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: var(--sp-4); margin-bottom: var(--sp-4); }
+.motif-head-text { display: flex; flex-direction: column; gap: var(--sp-1); min-width: 0; }
+.motif-h1 { margin: 0; font-size: 30px; font-weight: 900; line-height: 1.3; letter-spacing: -.02em;
+  padding-left: 14px; border-left: 6px solid var(--rec); }
+.motif-lead { margin: 0; font-size: 14px; font-weight: 500; color: var(--ink-2); }
+.motif-runbar { display: flex; align-items: flex-end; gap: var(--sp-2); flex-wrap: wrap; }
+.motif-topic { width: 240px; max-width: 100%; }
+.motif-topic > label { font-size: 12px; font-weight: 500; color: var(--muted); margin: 0; }
+.motif-topic input { min-height: 32px; padding: 0 10px; width: 100%; font-size: 14px; }
+.motif-progress { display: flex; flex-direction: column; gap: var(--sp-2); margin-bottom: var(--sp-3); }
+.motif-progress:empty { display: none; }
+.motif-progress .inline-confirm { margin-top: 0; max-width: 560px; }
+.motif-progress-line { display: flex; align-items: center; gap: var(--sp-2); font-size: 13px; color: var(--ink-2); }
+.motif-progress-bar { width: 120px; height: 6px; accent-color: var(--ink); }
+.motif-lib { margin-bottom: var(--sp-3); font-size: 13px; }
+.motif-lib > summary { cursor: pointer; color: var(--ink-2); padding: var(--sp-1) 0; width: fit-content; }
+.motif-foot { margin-top: var(--sp-5); }
+.motif-filters { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-bottom: var(--sp-4); }
+.motif-layout { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: var(--sp-5); align-items: start; }
+.motif-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; min-width: 0; }
+.motif-tile { position: relative; display: flex; flex-direction: column; gap: 10px; padding: 14px; min-width: 0;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card); }
+.motif-tile:hover { border-color: var(--border-strong); }
+.motif-tile.is-selected { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+.motif-tile-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); }
+.motif-tile .star-btn { position: relative; z-index: 1; width: 36px; height: 36px; padding: 0; font-size: 20px; line-height: 1; color: var(--muted); }
+.motif-tile .star-btn[aria-pressed="true"] { color: var(--kind-angle-fg); }
+.motif-tile-title { margin: 0; font-size: 16px; line-height: 1.4; font-weight: 700; overflow-wrap: anywhere; }
+.motif-open { font: inherit; color: inherit; background: none; border: 0; padding: 0; margin: 0; text-align: left; cursor: pointer; }
+.motif-open::after { content: ""; position: absolute; inset: 0; border-radius: var(--radius-card); }
+.motif-open:focus-visible { box-shadow: none; }
+.motif-open:focus-visible::after { box-shadow: var(--focus-ring); }
+.motif-one { margin: 0; font-size: 13px; line-height: 1.55; color: var(--ink-2); }
+.motif-ev { display: flex; align-items: center; gap: 6px; margin-top: auto; }
+.motif-thumb { flex: none; width: 44px; height: 26px; border-radius: 4px; object-fit: cover; background: var(--border); }
+.motif-thumb.is-empty, .motif-ev-thumb.is-empty { display: inline-block; }
+.motif-ev-n { font-size: 12px; color: var(--muted); margin-left: 2px; }
+.motif-empty { margin: 0; }
+.motif-detail-wrap { position: sticky; top: calc(var(--topbar-h) + var(--sp-4)); min-width: 0; }
+.motif-detail { display: flex; flex-direction: column; gap: 14px; padding: 20px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 14px; max-height: calc(100vh - var(--topbar-h) - var(--sp-6)); overflow-y: auto; }
+.motif-detail-empty { margin: 0; font-size: 13px; }
+.motif-detail-head { display: flex; align-items: center; gap: var(--sp-2); }
+.motif-detail-id { font-size: 12px; color: var(--muted); }
+.motif-gap { flex: 1; }
+.motif-detail-title { margin: 0; font-size: 22px; line-height: 1.4; font-weight: 900; letter-spacing: -.01em; overflow-wrap: anywhere; }
+.motif-detail-idea { margin: 0; font-size: 14px; line-height: 1.65; }
+.motif-detail-sec { display: flex; flex-direction: column; gap: var(--sp-2); }
+.motif-detail-sec h3 { margin: 0; font-size: 13px; font-weight: 700; }
+.motif-detail .motif-how { color: var(--ink-2); line-height: 1.6; display: flex; flex-direction: column; gap: var(--sp-1); }
+.motif-detail-basis { margin: 0; font-size: 13px; color: var(--ink-2); }
+.motif-ev-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--sp-2); }
+.motif-ev-list a { display: flex; gap: 10px; align-items: center; color: var(--ink); text-decoration: none; font-size: 13px; line-height: 1.4; }
+.motif-ev-list a:hover span { text-decoration: underline; }
+.motif-ev-thumb { flex: none; width: 72px; height: 42px; border-radius: 6px; object-fit: cover; background: var(--border); }
+.motif-made { margin: 0; font-size: 13px; color: var(--muted); }
+.motif-start { width: 100%; min-height: 44px; font-size: 15px; }
+.motif-scrim { display: none; }
+@media (max-width: 900px) {
+  .motif-layout { grid-template-columns: minmax(0, 1fr); }
+  .motif-detail-wrap { position: static; }
+  .motif-detail { max-height: none; }
+}
+@media (max-width: 640px) {
+  .motif-h1 { font-size: 24px; }
+  .motif-runbar, .motif-topic { width: 100%; }
+  .motif-topic input { min-height: 44px; }
+  .motif-run-btn { width: 100%; }
+  .motif-detail { position: fixed; left: 0; right: 0; bottom: 0; z-index: 56; max-height: 85dvh;
+    border-radius: 14px 14px 0 0; border-bottom: 0; box-shadow: var(--elev-2);
+    padding: 20px var(--sp-4) calc(var(--sp-4) + env(safe-area-inset-bottom)); }
+  .motif-detail:not(.is-open) { display: none; }
+  .motif-detail-close { min-height: 44px; min-width: 44px; }
+  .motif-scrim { display: block; position: fixed; inset: 0; z-index: 55; background: rgba(0, 0, 0, .45); }
+  .motif-scrim[hidden] { display: none; }
+  body.motif-sheet-open { overflow: hidden; }
+}

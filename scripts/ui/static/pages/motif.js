@@ -1,7 +1,12 @@
 // 모티브 화면
-//   상태(단계·허용 카드 종류·저장된 카드) → "새 카드 뽑기"(작업: 자료 모으기 → Claude) → 미리보기(편집·선택) → 저장.
+//   위: 제목·한 줄, 주제 입력 + "새 카드 뽑기"(작업: 자료 모으기 → Claude) → 미리보기(편집·선택) → 저장.
+//   아래: 필터 칩 + 카드 그리드(훑기용: 종류·★·제목·한 줄·근거 썸네일). 카드를 누르면 상세가
+//   데스크톱은 오른쪽 패널, 폰은 바텀시트(모달)로 열리고, "이 카드로 새 영상 시작"이 기획안 만들기로 이어진다.
 //   미리보기 단계에서는 index.md가 바뀌지 않는다. 저장은 사용자가 누른 뒤에만, 고른 카드만 보낸다.
-import { h, fill } from "/static/dom.js";
+import { h, fill, filesUrl } from "/static/dom.js";
+import { chip, tag } from "/static/ui.js";
+import { FILTERS, evidenceItems, filterCards, kindCounts, madeFrom, oneLine, tagKind } from "/static/motif-utils.js";
+import { videoHref, videoId } from "/static/video-utils.js";
 
 const POLL_MS = 1000;
 const POLL_MAX_MS = 15000;
@@ -9,11 +14,13 @@ const HANDLED_KEY = "ytc.motif.handled";
 const ACTIVE = new Set(["running", "awaiting"]);
 const MAX_TOPIC = 100;
 const TYPE_KO = { flow: "흐름", combo: "조합", technique: "기법", angle: "각도" };
-const FILTER_ORDER = ["flow", "combo", "technique", "angle"];
 const STEP_TEXT = { context: "자료 모으는 중", claude: "Claude가 카드 만드는 중" };
 const LIB_IDS_KEY = "ytc.motif.library_ids";      // set by the library screen ("모티브 재료로 쓰기"); chosen per run, not saved
 const MAX_LIB = 10;
 const CATALOG_HINT = "기법 모음 정리(같은 기법 합치기)는 Claude에게 “기법 모음 정리해줘”라고 말하면 돼요";
+const THUMBS = 3;                                  // evidence thumbnails on a card
+const DETAIL_ID = "motif-detail";
+const PHONE = "(max-width: 640px)";               // same breakpoint as the phone shell (bottom tabs)
 
 // ---- helpers ------------------------------------------------------------------
 
@@ -80,6 +87,7 @@ let S = null;
 function freshState(el, ctx, category) {
   return {
     el, ctx, category, data: null, cards: [], lib: null, job: null, jobId: null, preview: null, edits: [],
+    refs: null, drafts: null, selected: null, returnFocus: null,
     topic: "", filter: "all", starBusy: new Set(), pinned: new Set(), saveWarning: null, warnShown: false,
     timer: null, pollErrors: 0, running: false, saving: false,
     runError: null, saveError: null, listError: null, confirmRerun: false, confirmDiscard: false,
@@ -99,7 +107,9 @@ function ignorable(e) {
   return !e || e.error === "aborted";
 }
 
+// Moves focus to the page title after a run/save/discard; never behind an open bottom sheet.
 function focusStatus() {
+  if (S && sheetOpen()) return;
   const t = S && S.nodes.status;
   if (t) { t.setAttribute("tabindex", "-1"); t.focus({ preventScroll: true }); }
 }
@@ -110,10 +120,10 @@ async function load() {
   const mine = S;
   const cat = mine.category;
   if (!cat) {
-    fill(mine.el, h("h1", {}, "모티브"), h("p", { class: "muted" }, "카테고리가 없습니다. 홈에서 먼저 카테고리를 만드세요."));
+    fill(mine.el, h("h1", { class: "motif-h1" }, "모티브"), h("p", { class: "muted" }, "카테고리가 없습니다. 홈에서 먼저 카테고리를 만드세요."));
     return;
   }
-  fill(mine.el, h("h1", {}, "모티브"), h("p", { class: "muted", role: "status" }, "불러오는 중…"));
+  fill(mine.el, h("h1", { class: "motif-h1" }, "모티브"), h("p", { class: "muted", role: "status" }, "불러오는 중…"));
   try {
     const [data, cur, lib] = await Promise.all([
       mine.ctx.api("GET", `/api/motif?category=${encodeURIComponent(cat)}`),
@@ -136,16 +146,37 @@ async function load() {
     }
     render();
     if (isActive(mine.job)) schedulePoll();
+    loadExtras(mine);
   } catch (e) {
     if (!alive(mine) || ignorable(e)) return;
     loadError(e);
   }
 }
 
+// Reference frames for the evidence thumbnails (the motif API has none) and the videos made from each card.
+// Both are extras: when they fail, cards show neutral placeholders and no "이 카드로 만든 영상" line.
+async function loadExtras(mine) {
+  const cat = encodeURIComponent(mine.category);
+  const [refs, drafts] = await Promise.all([
+    mine.ctx.api("GET", `/api/refs?category=${cat}`).then((r) => r.videos || [], () => null),
+    mine.ctx.api("GET", `/api/draft/list?category=${cat}`).then((r) => r.drafts || [], () => null),
+  ]);
+  if (!alive(mine)) return;
+  mine.refs = refs;
+  mine.drafts = drafts;
+  const inDetail = !!mine.nodes.detail && mine.nodes.detail.contains(document.activeElement);
+  renderList();
+  renderDetail();
+  if (inDetail) {
+    const title = mine.nodes.detail.querySelector("#motif-detail-title");
+    if (title) title.focus({ preventScroll: true });
+  }
+}
+
 function loadError(e) {
   const retry = h("button", { type: "button", class: "btn" }, "다시 시도");
   retry.addEventListener("click", () => { if (S && S.ctx.isCurrent()) load(); });
-  fill(S.el, h("h1", {}, "모티브"),
+  fill(S.el, h("h1", { class: "motif-h1" }, "모티브"),
     h("p", { class: "error", role: "alert" }, e.message || "불러오지 못했습니다"),
     h("div", { class: "btn-row" }, retry));
 }
@@ -186,7 +217,7 @@ function requestRerun(from) {
     S.alertSig = null;
     renderRunBox();
     renderAlerts();
-    const box = from === "preview" ? S.nodes.alerts : S.nodes.run;
+    const box = from === "preview" ? S.nodes.alerts : S.nodes.progress;
     const yes = box && box.querySelector("[data-rerun-yes]");
     if (yes) yes.focus();
     return;
@@ -203,7 +234,7 @@ function rerunConfirm(from) {
     S.alertSig = null;
     renderRunBox();
     renderAlerts();
-    const back = from === "preview" ? S.nodes.rerunBtn : S.nodes.run.querySelector("button");
+    const back = from === "preview" ? S.nodes.rerunBtn : S.nodes.run.querySelector(".motif-run-btn");
     if (back) back.focus();
   });
   return h("div", { class: "inline-confirm", role: "alert" },
@@ -377,6 +408,7 @@ async function toggleStar(card) {
   card.starred = target;
   mine.pinned.add(card.id);                    // stays visible under the ★ filter until the request settles
   renderList(card.id);
+  renderDetail();
   try {
     const res = await mine.ctx.api("POST", "/api/motif/star", { category: mine.category, id: card.id, on: target });
     if (!alive(mine)) return;
@@ -390,23 +422,37 @@ async function toggleStar(card) {
   } finally {
     mine.starBusy.delete(card.id);
     mine.pinned.delete(card.id);
-    if (alive(mine)) renderList(card.id);
+    if (alive(mine)) { renderList(card.id); renderDetail(); }
   }
 }
 
 // ---- render -------------------------------------------------------------------
+
+function leadText(d) {
+  const n = S.cards.length;
+  if (!d.ref) return "레퍼런스를 넣으면 거기서 영상 아이디어 카드를 뽑아 드려요";
+  if (!n) return `레퍼런스 ${d.ref}개에서 영상 아이디어 카드를 뽑아 보세요`;
+  return `레퍼런스 ${d.ref}개에서 뽑은 아이디어 ${n}장 · 마음에 들면 ★, 바로 영상으로 시작`;
+}
 
 function render() {
   const d = S.data;
   S.nodes = {};
   S.runSig = null;
   S.alertSig = null;
-  S.nodes.status = h("h1", { id: "motif-title" }, "모티브");
-  const allowed = (d.allowed_ko || []).join("·") || "아직 없음";
-  const kids = [
-    S.nodes.status,
-    h("p", { class: "lead" }, `${d.stage}단계 · 만들 수 있는 카드: ${allowed}`),
-  ];
+  S.nodes.status = h("h1", { id: "motif-title", class: "motif-h1" }, "모티브");
+  S.nodes.lead = h("p", { class: "motif-lead" }, leadText(d));
+  const head = h("div", { class: "motif-head" }, h("div", { class: "motif-head-text" }, S.nodes.status, S.nodes.lead));
+  // Phase 6: the header status chip takes over this line (same job, kind "motif"); until then it sits under the title.
+  S.nodes.progress = h("div", { class: "motif-progress", "data-job-kind": "motif" });
+  S.nodes.lib = h("div", { class: "lib-choose" });
+  if (d.ref > 0) {            // without ref there is nothing to run: no empty form
+    S.nodes.run = h("section", { class: "motif-runbar", "aria-label": "새 카드 뽑기" });
+    head.append(S.nodes.run);
+  }
+  const kids = [head, S.nodes.progress];
+  if (d.ref > 0) kids.push(S.nodes.lib);
+
   const notes = [];
   if (d.ref === 0) {
     notes.push(h("span", {}, "먼저 레퍼런스를 넣어 주세요 ", h("a", { href: "#/add" }, "레퍼런스 넣기")));
@@ -415,21 +461,38 @@ function render() {
   if (d.stage === 3 && !d.has_typify) {
     notes.push(h("span", {}, "유형화를 먼저 하면 흐름·조합 카드가 나옵니다 ", h("a", { href: "#/typify" }, "유형화 하러 가기")));
   }
+  if (d.ref > 0 && (d.allowed_ko || []).length) notes.push(`지금 뽑을 수 있는 카드: ${d.allowed_ko.join("·")}`);
   for (const n of notes) kids.push(h("p", { class: "muted hint" }, n));
-  kids.push(h("p", { class: "muted small" }, CATALOG_HINT));
 
-  S.nodes.lib = h("div", { class: "lib-choose" });
   S.nodes.body = h("div", { class: "motif-body" });
   S.nodes.list = h("section", { class: "motif-sec", "aria-labelledby": "motif-list-title" });
-  if (d.ref > 0) {            // without ref there is nothing to run: no empty section
-    S.nodes.run = h("section", { class: "job-box motif-run", "aria-label": "새 카드 뽑기" });
-    kids.push(S.nodes.run);
-  }
-  kids.push(S.nodes.body, S.nodes.list);
+  kids.push(S.nodes.body, S.nodes.list, h("p", { class: "muted hint motif-foot" }, CATALOG_HINT));
   fill(S.el, ...kids);
   renderRunBox();
   renderBody();
   renderList();
+  renderDetail();
+}
+
+// Compact progress line (no banner): the page stays usable while Claude works.
+function renderProgress(active, failed, item0) {
+  const box = S.nodes.progress;
+  if (!box) return;
+  const job = S.job;
+  const kids = [];
+  if (active) {
+    const step = (item0 && STEP_TEXT[item0.step]) || "준비 중";
+    kids.push(h("div", { class: "motif-progress-line", role: "status" },
+      h("progress", { class: "motif-progress-bar", "aria-label": "카드 뽑기 진행" }),
+      h("span", {}, `${step}… 다른 카드를 보며 기다려도 돼요`)));
+  }
+  if (failed) {
+    kids.push(h("p", { class: "error", role: "alert" },
+      `${(item0 && item0.message) || job.message || "카드를 뽑지 못했습니다"} 저장된 카드는 그대로입니다.`));
+  }
+  if (S.runError) kids.push(h("p", { class: "error", role: "alert" }, S.runError));
+  if (S.confirmRerun === "run") kids.push(rerunConfirm("run"));
+  fill(box, ...kids);
 }
 
 // Topic input, run button, progress and errors. Re-rendered by polling without touching the (editable) preview below.
@@ -448,32 +511,17 @@ function renderRunBox() {
   if (d.ref === 0) { fill(box); return; }
   const busy = S.running || active || S.saving;
   const topic = h("input", {
-    id: "motif-topic", type: "text", maxlength: String(MAX_TOPIC), placeholder: "예: 편의점 라면", disabled: busy,
+    id: "motif-topic", type: "text", maxlength: String(MAX_TOPIC), placeholder: "예: 비 오는 날 실내 여행", disabled: busy,
   });
   topic.value = S.topic;
   topic.addEventListener("input", () => { S.topic = topic.value; });
-  const btn = h("button", { type: "button", class: "btn btn-primary", disabled: busy }, "새 카드 뽑기");
+  topic.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) requestRerun("run"); });
+  const btn = h("button", { type: "button", class: "btn btn-primary motif-run-btn", disabled: busy }, "새 카드 뽑기 · 약 30초");
   btn.addEventListener("click", () => requestRerun("run"));
-  const kids = [
-    h("div", { class: "field" }, h("label", { for: "motif-topic" }, "주제(선택)"), topic),
-    S.nodes.lib,
-    h("div", { class: "btn-row" }, btn, h("span", { class: "muted small" }, "Claude를 한 번 부릅니다(수십 초)")),
-  ];
-  if (S.confirmRerun === "run") kids.push(rerunConfirm("run"));
-  if (active) {
-    const step = (item0 && STEP_TEXT[item0.step]) || "준비 중";
-    kids.push(h("div", { class: "job-status", role: "status" },
-      h("progress", { class: "job-progress", "aria-label": "카드 뽑기 진행" }),
-      h("span", {}, `${step}…`)));
-  }
-  if (failed) {
-    kids.push(h("p", { class: "error", role: "alert" },
-      `${(item0 && item0.message) || job.message || "카드를 뽑지 못했습니다"} 저장된 카드는 그대로입니다.`));
-  }
-  if (S.runError) kids.push(h("p", { class: "error", role: "alert" }, S.runError));
   // Keep a half-typed topic and focus when only the status changed.
   const hadFocus = document.activeElement && document.activeElement.id === "motif-topic";
-  fill(box, ...kids);
+  fill(box, h("div", { class: "field motif-topic" }, h("label", { for: "motif-topic" }, "새 카드 주제 (선택)"), topic), btn);
+  renderProgress(active, failed, item0);
   renderLibChoose();
   if (hadFocus && !busy) topic.focus();
 }
@@ -486,7 +534,7 @@ function renderLibChoose(focusId) {
   if (!lib) { fill(box); return; }
   const busy = S.running || isActive(S.job) || S.saving;
   if (!lib.items.length) {
-    fill(box, h("p", { class: "muted small" }, "지인 기법: 받은 기법이 아직 없습니다. ", h("a", { href: "#/library" }, "공용 라이브러리에서 받기")));
+    fill(box, h("p", { class: "muted small" }, "지인 기법: 받은 기법이 아직 없습니다. ", h("a", { href: "#/refs?tab=library" }, "공용 라이브러리에서 받기")));
     return;
   }
   const n = lib.selected.size;
@@ -505,10 +553,16 @@ function renderLibChoose(focusId) {
     return h("label", { class: "check lib-choice" }, cb,
       h("span", {}, `${kind}${it.name}`, " ", h("span", { class: "muted small" }, `${it.author}${it.category ? ` · ${it.category}` : ""}`)));
   });
-  fill(box, h("fieldset", { class: "field lib-choose-set" },
-    h("legend", {}, `지인 기법(선택) ${n ? `· ${n}개 고름` : ""}`.trim()),
-    h("p", { class: "muted hint" }, `공용 라이브러리에서 받은 지인 기법을 재료로 더합니다(최대 ${MAX_LIB}개). 카드의 근거는 여전히 내 레퍼런스 영상입니다.`),
-    h("div", { class: "lib-choose-list" }, ...rows)));
+  // Folded by default (keeps the header short); open when friend techniques are already chosen.
+  if (S.libOpen === undefined) S.libOpen = n > 0;
+  const fold = h("details", { class: "motif-lib", open: S.libOpen },
+    h("summary", {}, `지인 기법 재료 더하기 ${n ? `· ${n}개 고름` : "(선택)"}`),
+    h("fieldset", { class: "field lib-choose-set" },
+      h("legend", { class: "sr-only" }, `지인 기법(선택) ${n ? `· ${n}개 고름` : ""}`.trim()),
+      h("p", { class: "muted hint" }, `공용 라이브러리에서 받은 지인 기법을 재료로 더합니다(최대 ${MAX_LIB}개). 카드의 근거는 여전히 내 레퍼런스 영상입니다.`),
+      h("div", { class: "lib-choose-list" }, ...rows)));
+  fold.addEventListener("toggle", () => { S.libOpen = fold.open; });
+  fill(box, fold);
   if (focusId) {
     const el = box.querySelector(`[data-lib-id="${CSS.escape(focusId)}"]`);
     if (el) el.focus({ preventScroll: true });
@@ -617,65 +671,81 @@ function renderAlerts() {
 
 // ---- saved cards --------------------------------------------------------------
 
+const cardById = (id) => S.cards.find((c) => c.id === id) || null;
+const kindLabel = (card) => card.type_ko || typeName(card.type);
+
+function thumbBox(item, cls) {
+  return item && item.thumb
+    ? h("img", { class: cls, src: filesUrl(item.thumb), alt: "", loading: "lazy" })
+    : h("span", { class: `${cls} is-empty`, "aria-hidden": "true" });
+}
+
+// Scan-friendly card: kind tag, star toggle, title (opens the detail), one line, evidence thumbnails.
 function savedCard(card) {
   const titleId = `motif-card-${card.id}`;
+  const open = S.selected === card.id;
   const star = h("button", {
-    type: "button", class: "btn btn-icon star-btn", "aria-pressed": String(!!card.starred),
+    type: "button", class: "btn btn-ghost star-btn", "aria-pressed": String(!!card.starred),
     "aria-label": `${card.title} 즐겨찾기`, "data-star-id": card.id,
   }, card.starred ? "★" : "☆");
   star.addEventListener("click", () => toggleStar(card));
-  const make = h("a", { class: "btn", href: `#/draft/new/${encodeURIComponent(card.id)}` }, "기획안 만들기");
-  const titles = new Map();
-  const ids = [];
-  for (const ev of card.evidence || []) {
-    if (ev && ev.id) { ids.push(ev.id); if (ev.title) titles.set(ev.id, ev.title); }
-  }
-  return h("article", { class: "card motif-card", "aria-labelledby": titleId },
-    h("div", { class: "card-head" },
-      h("div", { class: "motif-head-left" },
-        h("span", { class: `badge motif-badge motif-${card.type}` }, card.type_ko || typeName(card.type)),
-        h("span", { class: "muted small mono" }, card.id)),
-      star),
-    h("h3", { id: titleId }, card.title),
-    card.idea ? h("p", { class: "md-text" }, card.idea) : null,
-    card.how && card.how.length
-      ? h("ol", { class: "motif-how", "aria-label": "찍는 법" }, ...card.how.map((s) => h("li", {}, s))) : null,
-    card.basis ? h("p", { class: "small" }, h("span", { class: "muted" }, "바탕 "), card.basis) : null,
-    evidenceLinks(ids, titles, "근거 영상"),
-    card.made ? h("p", { class: "muted small" }, `만든 날 ${card.made}`) : null,
-    h("div", { class: "btn-row" }, make));
+  const opener = h("button", {
+    type: "button", class: "motif-open", "data-open-id": card.id,
+    "aria-expanded": String(open), "aria-controls": DETAIL_ID,
+  }, card.title);
+  opener.addEventListener("click", () => openDetail(card.id));
+  const ev = evidenceItems(card, S.refs);
+  const one = oneLine(card.idea);
+  return h("article", { class: `motif-tile${open ? " is-selected" : ""}`, "aria-labelledby": titleId },
+    h("div", { class: "motif-tile-head" }, tag(kindLabel(card), tagKind(card.type)), star),
+    h("h3", { id: titleId, class: "motif-tile-title" }, opener),
+    one ? h("p", { class: "motif-one" }, one) : null,
+    ev.length ? h("div", { class: "motif-ev" },
+      ...ev.slice(0, THUMBS).map((it) => thumbBox(it, "motif-thumb")),
+      h("span", { class: "motif-ev-n" }, `근거 영상 ${ev.length}`)) : null);
 }
 
-function filterButtons(types) {
-  const defs = [["all", "전체"]];
-  if (S.cards.some((c) => c.starred || S.pinned.has(c.id))) defs.push(["star", "★"]);
-  for (const t of FILTER_ORDER) if (types.has(t)) defs.push([t, typeName(t)]);
-  if (!defs.some(([k]) => k === S.filter)) S.filter = "all";
-  const row = h("div", { class: "filter-row", role: "group", "aria-label": "카드 종류 거르기" });
-  for (const [key, label] of defs) {
-    const b = h("button", { type: "button", class: "btn filter-btn", "aria-pressed": String(S.filter === key) }, label);
-    if (key === "star") b.setAttribute("aria-label", "즐겨찾기만");
-    b.addEventListener("click", () => { S.filter = key; renderList(); });
+function filterChips() {
+  const counts = kindCounts(S.cards);
+  if (!FILTERS.some(([k]) => k === S.filter)) S.filter = "all";
+  const row = h("div", { class: "motif-filters", role: "group", "aria-label": "카드 종류 거르기" });
+  for (const [key, label] of FILTERS) {
+    const b = chip(label, {
+      pressed: S.filter === key, count: counts[key],
+      onClick: () => { S.filter = key; renderList(null, key); },
+    });
+    b.setAttribute("data-filter", key);
+    if (key === "star") b.setAttribute("aria-label", `즐겨찾기만 ${counts.star}`);
     row.append(b);
   }
   return row;
 }
 
-// Rebuilds the saved-card list. `focusId` keeps keyboard focus on that card's star button.
-function renderList(focusId) {
+// Rebuilds the saved-card list. `focusId` keeps keyboard focus on that card's star button; `focusFilter` on a chip.
+function renderList(focusId, focusFilter) {
   const box = S.nodes.list;
   if (!box) return;
-  const types = new Set(S.cards.map((c) => c.type));
-  const kids = [h("h2", { id: "motif-list-title" }, `저장한 카드 (${S.cards.length}장)`)];
+  // A redraw the user did not ask for (extras arriving, star settling) keeps focus on the same card control.
+  const at = document.activeElement;
+  const keepOpen = !focusId && !focusFilter && at && box.contains(at) && at.getAttribute("data-open-id");
+  const keepStar = !focusId && !focusFilter && at && box.contains(at) && at.getAttribute("data-star-id");
+  const keepChip = !focusId && !focusFilter && at && box.contains(at) && at.getAttribute("data-filter");
+  if (keepStar) focusId = keepStar;
+  if (keepChip) focusFilter = keepChip;
+  const kids = [h("h2", { id: "motif-list-title", class: "sr-only" }, `저장한 카드 (${S.cards.length}장)`)];
   S.nodes.listAlert = h("div", { class: "list-alert" });
   kids.push(S.nodes.listAlert);
   if (!S.cards.length) {
-    kids.push(h("p", { class: "muted" }, "아직 저장한 카드가 없습니다. 새 카드를 뽑아 보세요"));
+    kids.push(h("p", { class: "muted motif-empty" }, S.data.ref
+      ? "아직 저장한 카드가 없습니다. 위에서 새 카드를 뽑아 보세요"
+      : "레퍼런스를 넣은 뒤 카드를 뽑을 수 있어요"));
   } else {
-    kids.push(filterButtons(types));
-    const shown = S.cards.filter((c) => S.filter === "all" || S.pinned.has(c.id)
-      || (S.filter === "star" ? c.starred : c.type === S.filter));
-    kids.push(h("div", { class: "motif-grid" }, ...shown.map(savedCard)));
+    kids.push(filterChips());
+    const shown = filterCards(S.cards, S.filter, S.pinned);
+    const grid = shown.length
+      ? h("div", { class: "motif-cards" }, ...shown.map(savedCard))
+      : h("p", { class: "muted motif-empty" }, "이 종류의 카드가 아직 없어요");
+    kids.push(h("div", { class: "motif-layout" }, grid, detailSlot()));
   }
   fill(box, ...kids);
   const notes = [];
@@ -686,6 +756,18 @@ function renderList(focusId) {
   }
   if (S.listError) notes.push(h("p", { class: "error", role: "alert" }, S.listError));
   if (notes.length) fill(S.nodes.listAlert, ...notes);
+  if (keepOpen) {
+    const b = box.querySelector(`[data-open-id="${CSS.escape(keepOpen)}"]`);
+    if (b) b.focus({ preventScroll: true });
+  }
+  // The detail node is re-attached, not rebuilt here: focus inside it comes back to the same element.
+  if (at && S.nodes.detail && S.nodes.detail.contains(at) && document.activeElement !== at && at.isConnected) {
+    at.focus({ preventScroll: true });
+  }
+  if (focusFilter) {
+    const b = box.querySelector(`[data-filter="${CSS.escape(focusFilter)}"]`);
+    if (b) b.focus({ preventScroll: true });
+  }
   if (focusId) {
     const btn = box.querySelector(`[data-star-id="${CSS.escape(focusId)}"]`);
     if (btn) {
@@ -698,22 +780,172 @@ function renderList(focusId) {
   }
 }
 
+// ---- detail: right panel (desktop) / bottom sheet (phone) ---------------------------------
+
+// The detail node lives across list re-renders (star / filter clicks), so an open sheet keeps its focus.
+function detailSlot() {
+  if (!S.nodes.detail) {
+    S.nodes.detail = h("aside", { id: DETAIL_ID, class: "motif-detail", tabindex: "-1" });
+    S.nodes.detail.addEventListener("keydown", onDetailKey);
+    S.nodes.scrim = h("div", { class: "motif-scrim", hidden: true });
+    S.nodes.scrim.addEventListener("click", () => closeDetail());
+  }
+  return h("div", { class: "motif-detail-wrap" }, S.nodes.scrim, S.nodes.detail);
+}
+
+const isPhone = () => !!(S && S.mq && S.mq.matches);
+const sheetOpen = () => isPhone() && !!S.selected && !!cardById(S.selected);
+
+function openDetail(id) {
+  S.selected = id;
+  S.returnFocus = id;
+  renderList();
+  renderDetail();
+  const title = S.nodes.detail && S.nodes.detail.querySelector("#motif-detail-title");
+  if (title) title.focus({ preventScroll: !isPhone() });
+  if (!isPhone() && S.nodes.detail) S.nodes.detail.scrollIntoView({ block: "nearest" });
+}
+
+function closeDetail() {
+  const back = S.returnFocus;
+  S.selected = null;
+  S.returnFocus = null;
+  renderList();
+  renderDetail();
+  const btn = back && S.nodes.list.querySelector(`[data-open-id="${CSS.escape(back)}"]`);
+  if (btn) btn.focus();
+  else {
+    const heading = S.nodes.list.querySelector("#motif-list-title");
+    if (heading) { heading.setAttribute("tabindex", "-1"); heading.focus(); }
+  }
+}
+
+function focusables(root) {
+  return [...root.querySelectorAll("a[href], button:not([disabled]), input:not([disabled]), [tabindex='0']")]
+    .filter((el) => el.offsetParent !== null || el === document.activeElement);
+}
+
+// Esc closes (both widths); on phones Tab stays inside the sheet (modal).
+function onDetailKey(e) {
+  if (!S || !S.selected) return;
+  if (e.key === "Escape") { e.preventDefault(); closeDetail(); return; }
+  if (e.key !== "Tab" || !sheetOpen()) return;
+  const list = focusables(S.nodes.detail);
+  if (!list.length) { e.preventDefault(); return; }
+  const first = list[0];
+  const last = list[list.length - 1];
+  const at = document.activeElement;
+  if (e.shiftKey && (at === first || !list.includes(at))) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && at === last) { e.preventDefault(); first.focus(); }
+}
+
+// Sheet attributes follow the width: a modal dialog on phones, a labelled side panel on desktop.
+function applyDetailMode() {
+  const panel = S.nodes.detail;
+  if (!panel) return;
+  const card = S.selected ? cardById(S.selected) : null;
+  const modal = isPhone() && !!card;
+  panel.classList.toggle("is-open", !!card);
+  if (modal) {
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-modal", "true");
+  } else {
+    panel.removeAttribute("aria-modal");
+    panel.setAttribute("role", "region");
+  }
+  if (card) panel.setAttribute("aria-labelledby", "motif-detail-title");
+  else { panel.removeAttribute("aria-labelledby"); panel.setAttribute("aria-label", "선택한 카드"); }
+  if (card) panel.removeAttribute("aria-label");
+  S.nodes.scrim.hidden = !modal;
+  document.body.classList.toggle("motif-sheet-open", modal);
+}
+
+function renderDetail() {
+  const panel = S && S.nodes.detail;
+  if (!panel) return;
+  const card = S.selected ? cardById(S.selected) : null;
+  if (!card) {
+    fill(panel, h("p", { class: "muted motif-detail-empty" }, "카드를 누르면 여기에 자세히 보여요"));
+    applyDetailMode();
+    return;
+  }
+  const close = h("button", { type: "button", class: "btn btn-ghost btn-s motif-detail-close" }, "닫기");
+  close.addEventListener("click", () => closeDetail());
+  const ev = evidenceItems(card, S.refs);
+  const made = S.drafts ? madeFrom(S.drafts, card.id) : [];
+  const kids = [
+    h("div", { class: "motif-detail-head" },
+      tag(kindLabel(card), tagKind(card.type)),
+      h("span", { class: "motif-detail-id" }, `${card.id}${card.starred ? " · ★" : ""}`),
+      h("span", { class: "motif-gap" }), close),
+    h("h2", { id: "motif-detail-title", class: "motif-detail-title", tabindex: "-1" }, card.title),
+    card.idea ? h("p", { class: "motif-detail-idea" }, card.idea) : null,
+  ];
+  if (card.how && card.how.length) {
+    kids.push(h("div", { class: "motif-detail-sec" },
+      h("h3", {}, "이렇게 찍어 보세요"),
+      h("ol", { class: "motif-how" }, ...card.how.map((s) => h("li", {}, s)))));
+  }
+  if (card.basis) kids.push(h("p", { class: "motif-detail-basis" }, h("span", { class: "muted" }, "바탕 · "), card.basis));
+  if (ev.length) {
+    kids.push(h("div", { class: "motif-detail-sec" },
+      h("h3", {}, "근거 영상"),
+      h("ul", { class: "motif-ev-list" }, ...ev.map((it) => h("li", {},
+        h("a", { href: refHref(it.id) }, thumbBox(it, "motif-ev-thumb"), h("span", {}, it.title || "제목 없는 영상")))))));
+  }
+  if (made.length) {
+    kids.push(h("p", { class: "motif-made" }, "이 카드로 만든 영상 · ",
+      ...made.flatMap((m, i) => [i ? ", " : null, h("a", { href: videoHref(videoId(m.path)) }, m.title)]).filter(Boolean)));
+  }
+  if (card.made) kids.push(h("p", { class: "muted hint" }, `만든 날 ${card.made}`));
+  // The existing draft flow (#/draft/new/<card>): pick length → Claude → preview → save, which lands on the video.
+  kids.push(h("a", { class: "btn btn-rec motif-start", href: `#/draft/new/${encodeURIComponent(card.id)}` }, "이 카드로 새 영상 시작"));
+  fill(panel, ...kids);
+  applyDetailMode();
+}
+
+function onMedia() {
+  if (!S) return;
+  applyDetailMode();
+}
+
 // ---- page contract ------------------------------------------------------------
 
 export async function mount(el, params, ctx) {
   stopPolling();
+  dropMedia();
   S = freshState(el, ctx, ctx.category);
+  watchMedia();
   await load();
+}
+
+function watchMedia() {
+  if (typeof matchMedia !== "function") return;
+  S.mq = matchMedia(PHONE);
+  S.mq.addEventListener("change", onMedia);
+}
+
+function dropMedia() {
+  if (S && S.mq) S.mq.removeEventListener("change", onMedia);
+  document.body.classList.remove("motif-sheet-open");
 }
 
 export function onCategory(category) {
   if (!S || S.category === category) return;
   stopPolling();
+  dropMedia();
   S = freshState(S.el, S.ctx, category);
+  watchMedia();
   load();
+}
+
+// Unsaved preview edits (titles, ideas, which cards to keep) ask before leaving the page.
+export function unsavedNote() {
+  return S && S.preview && hasEdits() ? "저장하지 않은 카드 미리보기" : null;
 }
 
 export function unmount() {
   stopPolling();
+  dropMedia();
   S = null;
 }
