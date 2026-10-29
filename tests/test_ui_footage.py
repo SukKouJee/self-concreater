@@ -581,7 +581,8 @@ def test_byte_range_unsatisfiable(header, size):
 def test_suggested_sec_snaps_and_clamps():
     assert api_footage.suggested_sec(4.0, 7.2) == 3.0
     assert api_footage.suggested_sec(0.0, 0.1) == 0.5
-    assert api_footage.suggested_sec(0.0, 500.0) == 120.0
+    assert api_footage.suggested_sec(0.0, 500.0) == 500.0
+    assert api_footage.suggested_sec(0.0, 700.0) == 600.0
 
 
 # --- Fix round 1 ---------------------------------------------------------------------------

@@ -5,7 +5,7 @@ from urllib.parse import quote
 
 import pytest
 
-from scripts import claude_cli, llm, conti
+from scripts import claude_cli, conti, conti_history, llm
 from scripts.common import ScriptError
 from scripts.ui import api_conti
 from tests.test_conti import CONTI, DRAFT, conti_file, draft_md, home, pin_frame  # noqa: F401 - fixtures
@@ -19,10 +19,12 @@ class Fakes:
         self.asks = []
         self.alt_result = {"alternatives": [{"line": "짧다", "intent": "짧게"}]}
         self.alt_error = None
+        self.answer = CONTI
 
     def ask_validated(self, rules, payload, task, validate, **kw):
         self.asks.append((rules, payload, task, kw))
-        return CONTI, validate(CONTI)
+        answer = self.answer(payload) if callable(self.answer) else self.answer
+        return answer, validate(answer)
 
     def ask(self, rules, payload, task, **kw):
         self.asks.append((rules, payload, task, kw))
@@ -793,3 +795,101 @@ def test_big_conti_edit_and_get_are_fast(client, home, draft_md):
     print(f"\n450 cuts: GET {get_sec:.2f}s, POST /api/conti/cuts {edit_sec:.2f}s")
     assert status == 200 and resp["cuts"][200]["caption"] == "고친 자막"
     assert get_sec < 4 and edit_sec < 4
+
+
+# ---- 장면으로 합치기 --------------------------------------------------------------------
+
+def _merge_answer(payload):
+    """body 섹션 장면을 뒤집어 놓고 대사를 둘로 나눈다."""
+    [section] = payload["sections"]
+    return {"sections": [{"idx": section["idx"], "order": [s["id"] for s in reversed(section["scenes"])],
+                          "lines": ["하나 둘", "셋 넷"]}]}
+
+
+def _repeat_conti(home, draft_md):  # noqa: F811
+    from tests.test_scene_merge import REPEAT
+    return home / conti.save(draft_md, conti_file(home, REPEAT))["path"]
+
+
+def _merge_preview(client, home, src, fakes):
+    fakes.answer = _merge_answer
+    status, body = client.json("POST", "/api/conti/merge/preview", {"path": rel(home, src)})
+    assert status == 200 and body["job"]["kind"] == "conti_merge", body
+    job = wait_for(client, body["job"]["id"], lambda j: j["status"] == "done")
+    item = job["items"][0]
+    assert item["state"] == "awaiting" and item["step"] == "preview" and item["id"] == rel(home, src)
+    return item["preview"]
+
+
+def test_merge_preview_then_apply(client, home, draft_md, fakes):
+    src = _repeat_conti(home, draft_md)
+    preview = _merge_preview(client, home, src, fakes)
+    assert preview["before"] == 6 and preview["after"] == 4 and preview["hash"] == conti.content_hash(src)
+    assert [c["line"] for c in preview["cuts"]] == ["4단계 다 먹을 수 있을까?", "하나 둘", "셋 넷", ""]
+    assert [s["idx"] for s in preview["sections"]] == [0, 1, 2]
+    rules, payload, _, _ = fakes.asks[0]
+    assert rules == [claude_cli.SKILLS_DIR / "yt-conti" / "merge.md"]
+    assert [s["idx"] for s in payload["sections"]] == [1] and payload["sections"][0]["text"] == "하나 둘 셋 넷"
+
+    body = {"path": rel(home, src), "cuts": preview["cuts"], "hash": preview["hash"]}
+    status, resp = client.json("POST", "/api/conti/merge/apply", body)
+    assert status == 200, resp
+    assert len(resp["cuts"]) == 4 and resp["hash"] == conti.content_hash(src) and "sketch" in resp["cuts"][0]
+    assert resp["merged"] == {"before": 6, "after": 4}
+    assert [v["kind"] for v in conti_history.list_versions(src)][:2] == ["auto", "before_merge"]
+
+
+def test_merge_apply_conflict_on_changed_hash(client, home, draft_md, fakes):
+    src = _repeat_conti(home, draft_md)
+    preview = _merge_preview(client, home, src, fakes)
+    conti.update_cut(src, 1, {"guide": "미리보기 중에 고침"})
+    before = src.read_bytes()
+    body = {"path": rel(home, src), "cuts": preview["cuts"], "hash": preview["hash"]}
+    status, resp = client.json("POST", "/api/conti/merge/apply", body)
+    assert status == 400 and resp["error"] == "conti_changed" and src.read_bytes() == before
+
+
+def test_merge_preview_nothing_to_merge_makes_no_job(client, home, draft_md, fakes):
+    src = saved_conti(home, draft_md)
+    status, resp = client.json("POST", "/api/conti/merge/preview", {"path": rel(home, src)})
+    assert status == 400 and resp["error"] == "nothing_to_merge" and resp["message"] == "합칠 장면이 없어요"
+    assert not fakes.asks and client.app.jobs.current("conti_merge") is None
+
+
+@pytest.mark.parametrize("extra", [{"cuts": "x"}, {"hash": ""}, {"cuts": None}])
+def test_merge_apply_rejects_bad_body(client, home, draft_md, extra):
+    src = _repeat_conti(home, draft_md)
+    body = {"path": rel(home, src), "cuts": [], "hash": conti.content_hash(src), **extra}
+    status, resp = client.json("POST", "/api/conti/merge/apply", body)
+    assert status == 400 and resp["error"] == "bad_request"
+
+
+def test_merge_job_blocks_trash_while_claude_runs(client, home, draft_md, fakes):
+    import threading
+    gate = threading.Event()
+
+    def slow(payload):
+        gate.wait(5)
+        return _merge_answer(payload)
+
+    fakes.answer = slow
+    src = _repeat_conti(home, draft_md)
+    status, body = client.json("POST", "/api/conti/merge/preview", {"path": rel(home, src)})
+    assert status == 200
+    try:
+        status, resp = client.json("POST", "/api/conti/trash", {"path": rel(home, src)})
+        assert status == 400 and resp["error"] == "conti_busy" and src.exists()
+    finally:
+        gate.set()
+    wait_for(client, body["job"]["id"], lambda j: j["status"] == "done")
+
+
+def test_merge_apply_refuses_while_footage_job_uses_the_conti(client, home, draft_md, monkeypatch):
+    src = _repeat_conti(home, draft_md)
+    seen = []
+    monkeypatch.setattr(api_conti, "job_running_on", lambda app, kinds, item: seen.append((kinds, item)) or True)
+    before = src.read_bytes()
+    body = {"path": rel(home, src), "cuts": [{}], "hash": conti.content_hash(src)}
+    status, resp = client.json("POST", "/api/conti/merge/apply", body)
+    assert status == 400 and resp["error"] == "conti_busy" and src.read_bytes() == before
+    assert seen == [(("footage", "footage_clips"), rel(home, src))]

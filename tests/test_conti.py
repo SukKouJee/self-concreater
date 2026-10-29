@@ -938,7 +938,7 @@ def test_duplicate_gets_new_id_right_after(saved):
 
 
 @pytest.mark.parametrize("fields", [
-    {"sec": 0.4}, {"sec": 120.5}, {"sec": 1.3}, {"sec": "abc"}, {"sec": True},
+    {"sec": 0.4}, {"sec": 600.5}, {"sec": 1.3}, {"sec": "abc"}, {"sec": True},
     {"size": "없는크기"}, {"action": " "}, {"guide": ""},
 ])
 def test_update_rejects_bad_sec_size_action(saved, fields):
@@ -946,6 +946,11 @@ def test_update_rejects_bad_sec_size_action(saved, fields):
     with pytest.raises(ScriptError) as exc:
         _edit(saved, {"op": "update", "n": 1, "fields": fields})
     assert exc.value.code == "invalid_edit" and saved.read_bytes() == before
+
+
+def test_update_allows_long_scene_up_to_ten_minutes(saved):
+    _edit(saved, {"op": "update", "n": 1, "fields": {"sec": 600}})
+    assert _cuts(saved)[0]["sec"] == 600
 
 
 def test_update_sec_size_action_shifts_later_sections(saved):

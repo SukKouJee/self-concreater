@@ -6,6 +6,10 @@
 - 저장은 작업과 별개인 `POST /api/conti/save`다. 화면이 preview.conti를 고친 JSON을 그대로 보낸다.
   그래서 브라우저를 다시 열어도 `GET /api/jobs/current?kind=conti`로 미리보기를 되살릴 수 있다.
 - "collect"와 달리 exclusive가 아니라 수집 작업과 동시에 돌 수 있다.
+
+장면으로 합치기 작업(kind "conti_merge")도 같은 생애다. 항목은 콘티 하나(id = 콘티 상대 경로). 반복이 없으면 작업을
+만들지 않고 바로 `nothing_to_merge`. Claude가 대사 나눌 자리를 정하면 preview `{before, after, cuts, sections, hash}`로
+`awaiting`. 저장은 `POST /api/conti/merge/apply {path, cuts, hash}`(미리보기 뒤 콘티가 바뀌면 `conti_changed`).
 """
 from __future__ import annotations
 
@@ -14,15 +18,17 @@ from urllib.parse import quote
 from pathlib import Path
 from typing import Any
 
-from scripts import captions, claude_cli, conti, conti_history, llm, refstore
+from scripts import captions, claude_cli, conti, conti_history, llm, refstore, scene_merge
 from scripts.common import ScriptError, work_root, workspace_dir
 from scripts.ui.jobs import Job, JobCancelled, new_item
 from scripts.ui.server import Request, route
 
 KIND = "conti"
+MERGE_KIND = "conti_merge"
 CONTI_SUFFIX = conti.CONTI_SUFFIX
 MAX_ALTERNATIVES = 10
 CREATE_TASK = "yt-conti 규칙대로 입력 draft의 콘티 JSON을 만드세요."
+MERGE_TASK = "merge 규칙대로 섹션마다 장면 순서와 대사 나눌 자리를 정한 JSON을 만드세요. 대사 글자는 바꾸지 마세요."
 ALT_SCHEMA: dict = {
     "type": "object",
     "properties": {
@@ -146,7 +152,7 @@ def _save(req: Request) -> dict:
 # ---- 삭제(휴지통) ------------------------------------------------------------------------
 
 # 콘티 파일을 읽어 산출물을 쓰는 작업(촬영 영상 처리·컷 파일은 summary의 path로 콘티를 가리킨다)
-FILE_JOB_KINDS = ("srtfit", "caption_video", "footage", "footage_clips")
+FILE_JOB_KINDS = ("srtfit", "caption_video", "footage", "footage_clips", MERGE_KIND)
 
 
 def job_running_on(app: Any, kinds: tuple[str, ...], item_id: str) -> bool:
@@ -161,7 +167,7 @@ def _trash(req: Request) -> dict:
     path = _safe_path(req.json.get("path"), conti_file=True)
     rel = _rel(path)
     if job_running_on(req.app, FILE_JOB_KINDS, rel):
-        raise ScriptError("conti_busy", "이 콘티로 작업하는 중입니다(자막·촬영 영상·컷 파일). 끝나거나 멈춘 뒤에 삭제하세요")
+        raise ScriptError("conti_busy", "이 콘티로 작업하는 중입니다(자막·촬영 영상·컷 파일·합치기). 끝나거나 멈춘 뒤에 삭제하세요")
     return conti.trash(rel)
 
 
@@ -283,6 +289,51 @@ def _cuts(req: Request) -> dict:
         raise ScriptError("invalid_edit", f"{op['op']}에서 쓸 수 없는 항목입니다: {', '.join(unknown)}")
     result, fm = conti.edit_cuts_fm(path, op, expected)
     return {**view_of(path, fm, result["hash"]), "cut_id": result["cut_id"]}
+
+
+# ---- 장면으로 합치기(작업) · 저장 -----------------------------------------------------------
+
+def _merge_rules() -> list[Path]:
+    return [claude_cli.SKILLS_DIR / "yt-conti" / "merge.md"]
+
+
+def merge_target(plan: dict) -> Any:
+    def target(job: Job) -> None:
+        job.update(0, state="running", step="claude")
+        job.check_cancelled()
+        _, cuts = llm.ask_validated(_merge_rules(), scene_merge.split_request(plan), MERGE_TASK,
+                                    lambda d: scene_merge.validate_split(plan, d))
+        preview = {"before": plan["before"], "after": plan["after"], "cuts": cuts, "sections": plan["sections"],
+                   "hash": plan["hash"]}
+        job.update(0, state="awaiting", step="preview", ask="save", preview=preview)
+        job.finish("done", {"before": plan["before"], "after": plan["after"]})
+
+    return target
+
+
+@route("POST", "/api/conti/merge/preview")
+def _merge_preview(req: Request) -> dict:
+    path = _safe_path(req.json.get("path"), conti_file=True)
+    plan = scene_merge.plan(path)          # 반복이 없으면 작업을 만들지 않고 바로 nothing_to_merge
+    llm.check()
+    items = [new_item(_rel(path), title=path.name, step="claude")]
+    job = req.app.jobs.start(MERGE_KIND, merge_target(plan), items=items)
+    return {"job": job.snapshot()}
+
+
+@route("POST", "/api/conti/merge/apply")
+def _merge_apply(req: Request) -> dict:
+    body = req.json
+    path = _safe_path(body.get("path"), conti_file=True)
+    expected = _hash(body)
+    cuts = body.get("cuts")
+    if not isinstance(cuts, list):
+        raise ScriptError("bad_request", "cuts는 컷 목록이어야 합니다")
+    rel = _rel(path)
+    if job_running_on(req.app, ("footage", "footage_clips"), rel):
+        raise ScriptError("conti_busy", "촬영 영상을 맞추는 중입니다. 끝나거나 멈춘 뒤에 합치세요")
+    result, fm = scene_merge.apply_fm(path, cuts, expected)
+    return {**view_of(path, fm, result["hash"]), "merged": {"before": result["before"], "after": result["after"]}}
 
 
 # ---- 이력 ------------------------------------------------------------------------------

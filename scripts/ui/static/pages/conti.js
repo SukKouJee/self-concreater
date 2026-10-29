@@ -27,7 +27,7 @@ const INSERT_LABEL = "여기에 컷 넣기";
 const LAST_CUT_TEXT = "섹션에 컷이 하나는 있어야 해요";
 const STALE_TEXT = "콘티가 바뀌었어요 — 다시 받아 주세요";
 const EMPTY_TEXT = { guide: "가이드는 비울 수 없습니다.", action: "장면 설명은 비울 수 없습니다." };
-const SEC_TEXT = "길이는 0.5~120초 사이로 적어 주세요 (0.5초 단위)";
+const SEC_TEXT = "길이는 0.5~600초 사이로 적어 주세요 (0.5초 단위)";
 // kind: text (default) | area | select | number. required fields cannot be saved empty.
 const FIELDS = [
   { key: "line", label: "대사", kind: "area", rows: "2" },
@@ -1578,7 +1578,7 @@ function fieldControl(f, cut, value) {
   const input = h("input", { id, type: f.kind === "number" ? "number" : "text", "data-fk": fk });
   if (f.kind === "number") {
     input.min = "0.5";
-    input.max = "120";
+    input.max = "600";
     input.step = "0.5";
     input.setAttribute("inputmode", "decimal");
   }
@@ -1615,7 +1615,7 @@ function editForm(cut) {
       field.append(count);
     }
     if (f.required) input.setAttribute("aria-describedby", "edit-err");
-    if (f.kind === "number") field.append(h("p", { class: "muted small" }, "0.5초 단위, 0.5~120초"));
+    if (f.kind === "number") field.append(h("p", { class: "muted small" }, "0.5초 단위, 0.5~600초"));
     const onChange = () => {
       const d = S.forms.get(cut.n) || {};
       d[f.key] = input.value;
@@ -1652,7 +1652,7 @@ function editForm(cut) {
     if ("sec" in fields) {
       const raw = fields.sec.trim();
       const n = Number(raw);
-      if (raw === "" || !Number.isFinite(n) || n < 0.5 || n > 120) { fail("sec", SEC_TEXT); return; }
+      if (raw === "" || !Number.isFinite(n) || n < 0.5 || n > 600) { fail("sec", SEC_TEXT); return; }
       fields.sec = snapSec(n);
       if (fields.sec === Number(cut.sec)) delete fields.sec;
     }

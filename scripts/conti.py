@@ -13,6 +13,8 @@
   python -m scripts.conti history-name <conti.md> --label S [--expect-hash H]   지금 상태에 이름 붙이기
   python -m scripts.conti history-restore <conti.md> --n N [--expect-hash H]    그 버전으로 되돌리기
   python -m scripts.conti history-diff <conti.md> --a N [--b M]        버전 비교(--b 생략 = 지금)
+  python -m scripts.conti merge <conti.md>                             반복 컷을 장면으로 합칠 계획(미리보기 JSON)
+  python -m scripts.conti merge <conti.md> --cuts <json> --hash H      합친 컷(또는 Claude 나누기 출력)을 저장
 
 conti JSON (yt-conti 규칙)
   {"script": [{"text"}],                                      draft 섹션마다 하나, 같은 순서 (전체 대사)
@@ -650,7 +652,7 @@ def _find_cut(cuts: list[dict], n: int) -> dict:
     return cut
 
 
-MIN_CUT_SEC, MAX_CUT_SEC, SEC_STEP = 0.5, 120.0, 0.5
+MIN_CUT_SEC, MAX_CUT_SEC, SEC_STEP = 0.5, 600.0, 0.5   # 합친 장면은 몇 분이 될 수 있다
 CUT_DEFAULTS = {"size": "미디엄", "sec": 4, "action": "새 컷", "guide": "촬영 지시를 적어 주세요"}
 UPDATABLE_FIELDS = (*EDITABLE_FIELDS, "sec", "size", "action")
 LAST_CUT_MESSAGE = "섹션에 컷이 하나는 있어야 해요"
@@ -1200,6 +1202,10 @@ def main(argv: list[str]) -> Any:
     hr.add_argument("conti")
     hr.add_argument("--n", type=int, required=True)
     hr.add_argument("--expect-hash", dest="expect_hash", default=None)
+    mg = sub.add_parser("merge")
+    mg.add_argument("conti")
+    mg.add_argument("--cuts", default=None)
+    mg.add_argument("--hash", default=None)
     hd = sub.add_parser("history-diff")
     hd.add_argument("conti")
     hd.add_argument("--a", type=int, required=True)
@@ -1207,6 +1213,10 @@ def main(argv: list[str]) -> Any:
     args = parser.parse_args(argv)
     if args.cmd == "trash":
         return trash(args.conti)
+    if args.cmd == "merge":
+        from scripts import scene_merge     # scene_merge가 이 모듈을 쓰므로 함수 안에서 불러온다
+
+        return scene_merge.run_cli(args.conti, args.cuts, args.hash)
     if args.cmd.startswith("history"):
         from scripts import conti_history
 

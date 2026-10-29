@@ -20,7 +20,7 @@ from typing import Any
 from scripts import conti
 from scripts.common import ScriptError, workspace_dir
 
-KINDS = ("created", "auto", "named", "before_recreate", "external", "restored")
+KINDS = ("created", "auto", "named", "before_recreate", "before_merge", "external", "restored")
 GROUP_SEC = 300                      # 마지막 손길에서 5분 안의 편집은 같은 auto 버전에 묶는다
 NAME_MAX = 30
 CUT_FIELDS = ("section", "size", "angle", "sec", "action", "line", "caption", "sfx", "guide", "ref_frame")
