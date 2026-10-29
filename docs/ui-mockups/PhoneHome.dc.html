@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>폰 홈</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#2F5FD0}a:hover{color:#1E449E}
+</style>
+</helmet>
+<div style="width: 390px; height: 844px; box-sizing: border-box; display: flex; flex-direction: column; background: #F5F6F8; font-family: 'Noto Sans KR', system-ui, sans-serif; color: #15171C">
+
+<header style="display: flex; align-items: center; gap: 10px; padding: 16px 16px 12px; background: #FFFFFF; border-bottom: 1px solid #E3E6EB">
+<svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="4" fill="#C8322B"></rect><path d="M10 9l5 3-5 3z" fill="#FFFFFF"></path></svg>
+<span style="font-weight: 800; font-size: 17px">yt-coach</span>
+<span style="flex: 1"></span>
+<button type="button" style="font: inherit; font-size: 13px; padding: 8px 12px; border: 1px solid #E3E6EB; border-radius: 999px; background: #FFFFFF; color: #15171C; min-height: 40px">여행 ▾</button>
+</header>
+
+<div style="flex: 1; overflow: hidden; padding: 16px; display: flex; flex-direction: column; gap: 14px">
+<section style="background: #15171C; color: #FFFFFF; border-radius: 16px; padding: 18px; display: flex; flex-direction: column; gap: 12px">
+<div style="font-size: 13px; color: #C9CDD6">다음 할 일</div>
+<div style="font-size: 20px; font-weight: 800; line-height: 1.45">부루마블 1탄, 촬영할 차례예요</div>
+<div style="display: flex; align-items: center; gap: 8px; font-size: 13px; color: #C9CDD6"><span style="flex: 1; height: 6px; border-radius: 3px; background: #3A3F4B; overflow: hidden"><span style="display: block; width: 0%; height: 6px; background: #FFFFFF"></span></span>0 / 6컷</div>
+<a href="PhoneShoot.dc.html" style="display: flex; justify-content: center; align-items: center; gap: 8px; padding: 14px; border-radius: 12px; background: #C8322B; color: #FFFFFF; text-decoration: none; font-weight: 700; font-size: 16px">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><circle cx="12" cy="12" r="3" fill="currentColor"></circle></svg>
+촬영 모드 시작</a>
+</section>
+
+<section style="background: #FFFFFF; border: 1px solid #E3E6EB; border-radius: 16px; padding: 16px; display: flex; flex-direction: column; gap: 10px">
+<div style="display: flex; align-items: center; justify-content: space-between">
+<h2 style="margin: 0; font-size: 15px; font-weight: 700">오늘 미션</h2>
+<span style="font-size: 12px; color: #5B616E">15분</span>
+</div>
+<p style="margin: 0; font-size: 14px; line-height: 1.55; color: #3D424D">아직 받지 않았어요. 받으면 지금 영상의 촬영 단계에 맞춘 미션이 나와요.</p>
+<button type="button" style="font: inherit; font-size: 15px; font-weight: 700; padding: 12px; border: 1px solid #15171C; border-radius: 10px; background: #FFFFFF; color: #15171C; min-height: 44px">오늘 미션 받기</button>
+</section>
+
+<section style="display: flex; flex-direction: column; gap: 8px">
+<div style="display: flex; justify-content: space-between; align-items: baseline">
+<h2 style="margin: 0; font-size: 15px; font-weight: 700">만들고 있는 영상</h2>
+<a href="#" style="font-size: 13px">전체 5편</a>
+</div>
+<sc-for list="{{videos}}" as="v" hint-placeholder-count="3">
+<a href="#" style="display: flex; gap: 12px; align-items: center; padding: 12px; background: #FFFFFF; border: 1px solid #E3E6EB; border-radius: 12px; text-decoration: none; color: #15171C">
+<span style="flex: none; width: 56px; height: 56px; border-radius: 10px; background: {{v.thumb}}"></span>
+<span style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px">
+<span style="font-size: 14px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{v.title}}</span>
+<span style="display: flex; gap: 4px">
+<sc-for list="{{v.dots}}" as="d" hint-placeholder-count="6"><span style="width: 22px; height: 5px; border-radius: 3px; background: {{d.c}}"></span></sc-for>
+</span>
+<span style="font-size: 12px; color: {{v.stageColor}}; font-weight: 500">{{v.stage}}</span>
+</span>
+</a>
+</sc-for>
+</section>
+</div>
+
+<nav aria-label="하단 메뉴" style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); background: #FFFFFF; border-top: 1px solid #E3E6EB; padding: 6px 4px 20px">
+<sc-for list="{{tabs}}" as="t" hint-placeholder-count="4">
+<a href="#" style="display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 0; min-height: 44px; box-sizing: border-box; text-decoration: none; font-size: 12px; color: {{t.color}}; font-weight: {{t.weight}}">
+<span style="width: 22px; height: 22px; border-radius: 6px; border: 2px solid {{t.color}}; box-sizing: border-box"></span>
+{{t.label}}</a>
+</sc-for>
+</nav>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const dots = (done, now) => Array.from({ length: 6 }, (_, i) => ({ c: i < done ? '#1F7A4D' : i === now ? '#C8322B' : '#E3E6EB' }));
+    return {
+      videos: [
+        { title: '부루마블 1탄', thumb: '#5A6172', dots: dots(3, 3), stage: '촬영 차례', stageColor: '#C8322B' },
+        { title: '서울 산동네 3곳 걸어 보기', thumb: '#7A6A55', dots: dots(3, 3), stage: '촬영 차례', stageColor: '#C8322B' },
+        { title: '1호선 끝 연천 장날', thumb: '#4D6B5E', dots: dots(3, 3), stage: '촬영 차례', stageColor: '#C8322B' }
+      ],
+      tabs: [
+        { label: '홈', color: '#15171C', weight: 700 },
+        { label: '영감', color: '#5B616E', weight: 400 },
+        { label: '내 영상', color: '#5B616E', weight: 400 },
+        { label: '미션', color: '#5B616E', weight: 400 }
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

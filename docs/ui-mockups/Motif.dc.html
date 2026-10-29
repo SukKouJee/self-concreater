@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>모티브 고르기</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;800&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#F5F6F8}
+a{color:#2F5FD0}a:hover{color:#1E449E}
+</style>
+</helmet>
+<div style="font-family: 'Noto Sans KR', system-ui, sans-serif; color: #15171C; background: #F5F6F8; min-height: 1000px">
+
+<header style="display: flex; flex-wrap: wrap; align-items: center; gap: 16px; padding: 12px 24px; background: #FFFFFF; border-bottom: 1px solid #E3E6EB">
+<a href="Main.dc.html" style="display: flex; align-items: center; gap: 8px; text-decoration: none; color: #15171C; font-weight: 800; font-size: 17px">
+<svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="4" fill="#C8322B"></rect><path d="M10 9l5 3-5 3z" fill="#FFFFFF"></path></svg>
+yt-coach</a>
+<label style="display: flex; align-items: center; gap: 6px; font-size: 13px; color: #5B616E">카테고리
+<select style="font: inherit; font-size: 14px; color: #15171C; padding: 6px 10px; border: 1px solid #E3E6EB; border-radius: 8px; background: #FFFFFF"><option>여행 (travel)</option></select>
+</label>
+<div style="flex: 1 1 auto"></div>
+<button type="button" style="font: inherit; font-size: 14px; padding: 8px 14px; border: 1px solid #E3E6EB; border-radius: 8px; background: #FFFFFF; color: #15171C; min-height: 40px">도움말</button>
+</header>
+
+<div style="display: flex; flex-wrap: wrap; align-items: flex-start">
+<nav aria-label="주 메뉴" style="flex: 1 1 220px; max-width: 260px; padding: 20px 16px; display: flex; flex-direction: column; gap: 20px; box-sizing: border-box">
+<div style="display: flex; flex-direction: column; gap: 2px">
+<div style="font-size: 12px; font-weight: 700; color: #5B616E; padding: 0 10px 6px">영감</div>
+<a href="#" style="display: flex; justify-content: space-between; padding: 9px 10px; border-radius: 8px; color: #15171C; text-decoration: none; font-size: 14px">레퍼런스 <span style="color: #5B616E">20</span></a>
+<a href="#" style="display: flex; justify-content: space-between; padding: 9px 10px; border-radius: 8px; color: #15171C; text-decoration: none; font-size: 14px">유형 <span style="color: #5B616E">2</span></a>
+<a href="#" aria-current="page" style="display: flex; justify-content: space-between; padding: 9px 10px; border-radius: 8px; color: #15171C; text-decoration: none; font-size: 14px; font-weight: 700; background: #E8EBF0">모티브 <span style="color: #5B616E">22</span></a>
+</div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<div style="font-size: 12px; font-weight: 700; color: #5B616E; padding: 0 10px 6px">내 영상</div>
+<a href="Main.dc.html" style="padding: 9px 10px; border-radius: 8px; color: #15171C; text-decoration: none; font-size: 14px">진행 중 5편</a>
+</div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<div style="font-size: 12px; font-weight: 700; color: #5B616E; padding: 0 10px 6px">성장</div>
+<a href="#" style="padding: 9px 10px; border-radius: 8px; color: #15171C; text-decoration: none; font-size: 14px">오늘 미션</a>
+<a href="#" style="padding: 9px 10px; border-radius: 8px; color: #15171C; text-decoration: none; font-size: 14px">주간 리포트</a>
+</div>
+</nav>
+
+<main style="flex: 999 1 560px; min-width: 0; padding: 24px 32px 48px; box-sizing: border-box; display: flex; flex-direction: column; gap: 20px">
+<div style="display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 16px">
+<div style="display: flex; flex-direction: column; gap: 4px">
+<h1 style="margin: 0; font-size: 32px; font-weight: 900; letter-spacing: -0.02em; padding-left: 14px; border-left: 6px solid #C8322B">모티브</h1>
+<div style="font-size: 15px; color: #3D424D; font-weight: 500">레퍼런스 20개에서 뽑은 아이디어 22장 · 마음에 들면 ★, 바로 영상으로 시작</div>
+</div>
+<form style="display: flex; gap: 8px; flex-wrap: wrap">
+<label style="display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #5B616E">새 카드 주제 (선택)
+<input type="text" placeholder="예: 비 오는 날 실내 여행" style="font: inherit; font-size: 14px; padding: 9px 12px; border: 1px solid #D5D9E0; border-radius: 8px; width: 240px; min-height: 40px; box-sizing: border-box">
+</label>
+<button type="button" style="align-self: flex-end; font: inherit; font-size: 14px; font-weight: 700; padding: 10px 16px; border: 0; border-radius: 8px; background: #15171C; color: #FFFFFF; min-height: 40px">새 카드 뽑기 · 약 30초</button>
+</form>
+</div>
+
+<div role="group" aria-label="카드 종류" style="display: flex; flex-wrap: wrap; gap: 8px">
+<sc-for list="{{filters}}" as="f" hint-placeholder-count="6">
+<button type="button" aria-pressed="{{f.pressed}}" style="font: inherit; font-size: 14px; padding: 7px 14px; border-radius: 999px; border: 1px solid {{f.border}}; background: {{f.bg}}; color: {{f.fg}}; min-height: 36px">{{f.label}} <span style="opacity: 0.75">{{f.count}}</span></button>
+</sc-for>
+</div>
+
+<div style="display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start">
+<div style="flex: 999 1 480px; min-width: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px">
+<sc-for list="{{cards}}" as="m" hint-placeholder-count="9">
+<article style="display: flex; flex-direction: column; gap: 10px; padding: 14px; background: #FFFFFF; border-radius: 12px; border: {{m.border}}">
+<div style="display: flex; align-items: center; gap: 8px">
+<span style="padding: 2px 8px; border-radius: 6px; font-size: 12px; font-weight: 700; background: {{m.tagBg}}; color: {{m.tagFg}}">{{m.kind}}</span>
+<span style="flex: 1"></span>
+<button type="button" aria-label="{{m.starLabel}}" style="width: 36px; height: 36px; border: 0; border-radius: 8px; background: transparent; color: {{m.starColor}}; font-size: 20px; line-height: 1">{{m.star}}</button>
+</div>
+<h2 style="margin: 0; font-size: 16px; line-height: 1.4; font-weight: 700">{{m.title}}</h2>
+<p style="margin: 0; font-size: 13px; line-height: 1.55; color: #3D424D">{{m.one}}</p>
+<div style="display: flex; align-items: center; gap: 6px">
+<span style="width: 44px; height: 26px; border-radius: 4px; background: #5A6172"></span>
+<span style="width: 44px; height: 26px; border-radius: 4px; background: #7A6A55"></span>
+<span style="width: 44px; height: 26px; border-radius: 4px; background: #4D6B5E"></span>
+<span style="font-size: 12px; color: #5B616E">근거 영상 {{m.refs}}</span>
+</div>
+</article>
+</sc-for>
+</div>
+
+<aside aria-label="선택한 카드" style="flex: 1 1 320px; max-width: 380px; background: #FFFFFF; border: 1px solid #E3E6EB; border-radius: 14px; padding: 20px; display: flex; flex-direction: column; gap: 14px; box-sizing: border-box">
+<div style="display: flex; align-items: center; gap: 8px">
+<span style="padding: 2px 8px; border-radius: 6px; font-size: 12px; font-weight: 700; background: #FBF0DC; color: #7A4800">각도</span>
+<span style="font-size: 12px; color: #5B616E">M-travel-005 · ★</span>
+</div>
+<h2 style="margin: 0; font-size: 22px; line-height: 1.4; font-weight: 900; letter-spacing: -0.01em">대중교통만으로 당일치기 — 제한 하나 걸고 떠나기</h2>
+<p style="margin: 0; font-size: 14px; line-height: 1.65; color: #2A2E37">레퍼런스 5개가 모두 여러 날짜리 여행이고, 제한이 하나 걸린 영상(하루 5만 원, 히치하이킹)에서 이야기가 생겼어요. 당일치기는 아무도 하지 않았습니다.</p>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<div style="font-size: 13px; font-weight: 700">이렇게 찍어 보세요</div>
+<ol style="margin: 0; padding-left: 20px; font-size: 14px; line-height: 1.6; color: #3D424D; display: flex; flex-direction: column; gap: 4px">
+<li>집 앞에서 규칙 한 줄 선언</li>
+<li>갈아탈 때마다 시간표·정류장 짧게</li>
+<li>막차 직전 귀가하며 하루 정리</li>
+</ol>
+</div>
+<div style="display: flex; flex-direction: column; gap: 8px">
+<div style="font-size: 13px; font-weight: 700">근거 영상</div>
+<a href="#" style="display: flex; gap: 10px; align-items: center; text-decoration: none; color: #15171C; font-size: 13px; line-height: 1.4"><span style="flex: none; width: 72px; height: 42px; border-radius: 6px; background: #5A6172"></span>하루 5만원으로 일본 여행 가능할까?</a>
+<a href="#" style="display: flex; gap: 10px; align-items: center; text-decoration: none; color: #15171C; font-size: 13px; line-height: 1.4"><span style="flex: none; width: 72px; height: 42px; border-radius: 6px; background: #4D6B5E"></span>아프가니스탄 옆마을에 사는 가족들과 이틀밤</a>
+</div>
+<div style="font-size: 13px; color: #5B616E">이 카드로 만든 영상 · 부루마블 1탄</div>
+<a href="Main.dc.html" style="display: flex; justify-content: center; padding: 13px 16px; border-radius: 10px; background: #C8322B; color: #FFFFFF; text-decoration: none; font-weight: 700; font-size: 15px">이 카드로 새 영상 시작</a>
+</aside>
+</div>
+</main>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":1000}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const kinds = {
+      '흐름': ['#E8EEFB', '#1E449E'], '기법': ['#E3F3EA', '#155C39'],
+      '각도': ['#FBF0DC', '#7A4800'], '조합': ['#EFE8FB', '#4E2C93']
+    };
+    const card = (kind, title, one, refs, starred, selected) => ({
+      kind, title, one, refs,
+      tagBg: kinds[kind][0], tagFg: kinds[kind][1],
+      star: starred ? '★' : '☆', starColor: starred ? '#B7791F' : '#8A909C',
+      starLabel: starred ? '별표 해제' : '별표',
+      border: selected ? '2px solid #15171C' : '1px solid #E3E6EB'
+    });
+    const chip = (label, count, on) => ({
+      label, count, pressed: on ? 'true' : 'false',
+      bg: on ? '#15171C' : '#FFFFFF', fg: on ? '#FFFFFF' : '#15171C', border: on ? '#15171C' : '#D5D9E0'
+    });
+    return {
+      filters: [chip('전체', 22, true), chip('★', 2, false), chip('흐름', 1, false), chip('기법', 13, false), chip('각도', 4, false), chip('조합', 4, false)],
+      cards: [
+        card('각도', '대중교통만으로 당일치기 — 제한 하나 걸고 떠나기', '아무도 안 한 당일치기에 규칙 하나를 걸어 이야기를 만든다.', 2, true, true),
+        card('흐름', '5일장 장날에 맞춰 떠나는 소도시 1박 2일', '장날 하루를 축으로 여정 기록 골격을 그대로 따라간다.', 3, true, false),
+        card('기법', '하이라이트 티저 선공개 — 자막 없이 현장음으로', '가장 극적인 5~10초를 맨 앞에, 과한 자막 대신 실제 소리로.', 3, false, false),
+        card('기법', '수치 체크포인트 — 하루를 숫자로 끊어 가기', '쓴 돈·걸음 수를 같은 구도로 하루 2~3번 말로 확인한다.', 2, false, false),
+        card('기법', '와이드·줌 교차 풍경', '같은 풍경을 광각 뒤 줌으로 두 번, 자막 없이 크기를 전한다.', 1, false, false),
+        card('각도', '국내 ‘○○의 하와이’라길래 가봤더니', '별명 검증 형식을 국내 여행지에 적용해 빈자리를 채운다.', 2, false, false),
+        card('조합', '새로 열린 길, 개방 첫 주에 걸어 보기', '‘지금 가야 할 이유’ 훅 + 길 안내 내레이션 + 코스 정리 엔딩.', 2, false, false),
+        card('조합', '“요즘 아무도 안 간다”는 관광지, 진짜 그런지 가 보기', '통념 반박 훅으로 시작해 가격·사람 수를 숫자로 확인한다.', 3, false, false),
+        card('기법', '숙소 도착 30초 룸투어 — 가격은 말로만', '문 → 창밖 → 침대 → 욕실 30초로 다음 구간을 연다.', 4, false, false)
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

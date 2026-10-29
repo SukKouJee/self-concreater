@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>영상 작업 공간</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;800&amp;family=JetBrains+Mono:wght@500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#F5F6F8}
+a{color:#2F5FD0}a:hover{color:#1E449E}
+</style>
+</helmet>
+<div style="font-family: 'Noto Sans KR', system-ui, sans-serif; color: #15171C; background: #F5F6F8; min-height: 1000px">
+
+<header style="display: flex; flex-wrap: wrap; align-items: center; gap: 16px; padding: 12px 24px; background: #FFFFFF; border-bottom: 1px solid #E3E6EB">
+<a href="#" style="display: flex; align-items: center; gap: 8px; text-decoration: none; color: #15171C; font-weight: 800; font-size: 17px">
+<svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="4" fill="#C8322B"></rect><path d="M10 9l5 3-5 3z" fill="#FFFFFF"></path></svg>
+yt-coach</a>
+<label style="display: flex; align-items: center; gap: 6px; font-size: 13px; color: #5B616E">카테고리
+<select style="font: inherit; font-size: 14px; color: #15171C; padding: 6px 10px; border: 1px solid #E3E6EB; border-radius: 8px; background: #FFFFFF"><option>여행 (travel)</option></select>
+</label>
+<div style="flex: 1 1 auto"></div>
+<div role="status" style="display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px; background: #EEF2FC; font-size: 13px; color: #1E449E">
+<span style="width: 8px; height: 8px; border-radius: 50%; background: #2F5FD0"></span>
+Claude가 모티브 카드를 만드는 중 · 18초
+</div>
+<button type="button" style="font: inherit; font-size: 13px; padding: 6px 12px; border: 1px solid #E3E6EB; border-radius: 8px; background: #FFFFFF; color: #15171C; min-height: 32px">도움말</button>
+</header>
+
+<div style="display: flex; flex-wrap: wrap; align-items: flex-start">
+<nav aria-label="주 메뉴" style="flex: 1 1 220px; max-width: 260px; padding: 20px 16px; display: flex; flex-direction: column; gap: 20px; box-sizing: border-box">
+<div style="display: flex; flex-direction: column; gap: 2px">
+<div style="font-size: 12px; font-weight: 700; color: #5B616E; padding: 0 10px 6px">영감</div>
+<a href="#" style="display: flex; justify-content: space-between; padding: 9px 10px; border-radius: 8px; color: #15171C; text-decoration: none; font-size: 14px">레퍼런스 <span style="color: #5B616E">20</span></a>
+<a href="#" style="display: flex; justify-content: space-between; padding: 9px 10px; border-radius: 8px; color: #15171C; text-decoration: none; font-size: 14px">유형 <span style="color: #5B616E">2</span></a>
+<a href="Motif.dc.html" style="display: flex; justify-content: space-between; padding: 9px 10px; border-radius: 8px; color: #15171C; text-decoration: none; font-size: 14px">모티브 <span style="color: #5B616E">22</span></a>
+</div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<div style="font-size: 12px; font-weight: 700; color: #5B616E; padding: 0 10px 6px">내 영상</div>
+<sc-for list="{{videos}}" as="v" hint-placeholder-count="5">
+<a href="#" style="display: flex; flex-direction: column; gap: 6px; padding: 9px 10px; border-radius: 8px; color: #15171C; text-decoration: none; font-size: 14px; background: {{v.bg}}">
+<span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: {{v.weight}}">{{v.title}}</span>
+<span style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #5B616E"><span style="flex: 1; height: 4px; border-radius: 2px; background: #E3E6EB; overflow: hidden"><span style="display: block; height: 4px; width: {{v.pct}}; background: #1F7A4D"></span></span>{{v.stage}}</span>
+</a>
+</sc-for>
+<a href="#" style="padding: 9px 10px; font-size: 14px; text-decoration: none">+ 새 영상 시작</a>
+</div>
+<div style="display: flex; flex-direction: column; gap: 2px">
+<div style="font-size: 12px; font-weight: 700; color: #5B616E; padding: 0 10px 6px">성장</div>
+<a href="#" style="padding: 9px 10px; border-radius: 8px; color: #15171C; text-decoration: none; font-size: 14px">오늘 미션</a>
+<a href="#" style="padding: 9px 10px; border-radius: 8px; color: #15171C; text-decoration: none; font-size: 14px">주간 리포트</a>
+</div>
+</nav>
+
+<main style="flex: 999 1 560px; min-width: 0; padding: 24px 32px 48px; box-sizing: border-box; display: flex; flex-direction: column; gap: 16px">
+<div style="font-size: 13px; color: #5B616E">내 영상 › 부루마블 1탄</div>
+<div style="display: flex; flex-direction: column; gap: 12px; padding: 4px 0px">
+<h1 style="margin: 0; font-size: 30px; line-height: 1.3; font-weight: 900; letter-spacing: -0.02em; padding-left: 14px; border-left: 6px solid #C8322B">주사위가 정하면 무조건 출발! 20만 원 들고 떠난 국내 여행 부루마블 1탄</h1>
+<div style="display: flex; flex-wrap: wrap; gap: 10px; font-size: 14px; color: #3D424D; align-items: center; font-weight: 500">
+<span>10월 25일 시작 · 목표 15분</span>
+<span style="padding: 6px 12px; border-radius: 999px; background: #FBF0DC; color: #7A4800; font-weight: 700; font-size: 13px; border: 1px solid #E8CFA0">각도 · 대중교통 당일치기</span>
+<span style="padding: 6px 12px; border-radius: 999px; background: #E8EEFB; color: #1E449E; font-weight: 700; font-size: 13px; border: 1px solid #BFCFF0">유형 A1 · 길 위의 여정 기록</span>
+</div>
+</div>
+
+<section style="display: flex; flex-wrap: wrap; align-items: center; gap: 16px 24px; padding: 14px 18px; background: #FFFFFF; border: 1px solid #E3E6EB; border-radius: 12px">
+<ol aria-label="진행 단계" style="list-style: none; margin: 0; padding: 0; flex: 1 1 420px; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px">
+<sc-for list="{{steps}}" as="s" hint-placeholder-count="6">
+<li style="display: flex; flex-direction: column; gap: 6px">
+<span style="height: 5px; border-radius: 3px; background: {{s.bar}}"></span>
+<span style="font-size: 12px; font-weight: {{s.weight}}; color: {{s.color}}">{{s.label}}</span>
+</li>
+</sc-for>
+</ol>
+<div style="display: flex; align-items: center; gap: 8px">
+<span style="font-size: 13px; color: #3D424D">촬영 0 / 6컷</span>
+<a href="PhoneShoot.dc.html" style="display: inline-flex; align-items: center; padding: 6px 12px; border-radius: 8px; background: #C8322B; color: #FFFFFF; text-decoration: none; font-weight: 700; font-size: 13px">폰 촬영 모드</a>
+<button type="button" style="font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 8px; border: 1px solid #D5D9E0; background: #FFFFFF; color: #15171C; min-height: 32px">다 찍음</button>
+</div>
+</section>
+
+<div style="display: flex; flex-wrap: wrap; align-items: center; gap: 12px; border-bottom: 1px solid #E3E6EB">
+<div role="tablist" aria-label="작업 탭" style="display: flex; gap: 2px">
+<button type="button" role="tab" aria-selected="false" style="font: inherit; font-size: 14px; padding: 8px 12px; border: 0; background: transparent; color: #5B616E; min-height: 36px">기획안</button>
+<button type="button" role="tab" aria-selected="true" style="font: inherit; font-size: 14px; font-weight: 700; padding: 8px 12px; border: 0; border-bottom: 2px solid #C8322B; background: transparent; color: #15171C; min-height: 36px">콘티</button>
+<button type="button" role="tab" aria-selected="false" style="font: inherit; font-size: 14px; padding: 8px 12px; border: 0; background: transparent; color: #5B616E; min-height: 36px">촬영 체크</button>
+<button type="button" role="tab" aria-selected="false" style="font: inherit; font-size: 14px; padding: 8px 12px; border: 0; background: transparent; color: #5B616E; min-height: 36px">진단</button>
+</div>
+<div style="flex: 1 1 auto"></div>
+<span style="font-size: 13px; color: #5B616E">6컷 · 15:00 · 평균 컷 3.0초</span>
+<button type="button" style="font: inherit; font-size: 13px; padding: 4px 8px; border: 0; background: transparent; color: #2F5FD0; min-height: 32px">인쇄</button>
+<button type="button" style="font: inherit; font-size: 13px; padding: 4px 8px; border: 0; background: transparent; color: #2F5FD0; min-height: 32px">다시 만들기</button>
+</div><div style="display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px"><input type="search" placeholder="컷 검색" aria-label="컷 검색" style="font: inherit; font-size: 13px; padding: 6px 10px; border: 1px solid #D5D9E0; border-radius: 8px; width: 180px; max-width: 100%; min-height: 32px; box-sizing: border-box; background: #FFFFFF"><div role="group" aria-label="구간 필터" style="display: flex; flex-wrap: wrap; gap: 6px"><button type="button" aria-pressed="true" style="font: inherit; font-size: 12px; padding: 4px 12px; border-radius: 999px; border: 1px solid #D5D9E0; background: #15171C; color: #FFFFFF; min-height: 28px; border-color: #15171C; font-weight: 700">전체 6</button><button type="button" aria-pressed="false" style="font: inherit; font-size: 12px; padding: 4px 12px; border-radius: 999px; border: 1px solid #D5D9E0; background: #FFFFFF; color: #3D424D; min-height: 28px">도입</button><button type="button" aria-pressed="false" style="font: inherit; font-size: 12px; padding: 4px 12px; border-radius: 999px; border: 1px solid #D5D9E0; background: #FFFFFF; color: #3D424D; min-height: 28px">본론</button><button type="button" aria-pressed="false" style="font: inherit; font-size: 12px; padding: 4px 12px; border-radius: 999px; border: 1px solid #D5D9E0; background: #FFFFFF; color: #3D424D; min-height: 28px">마무리</button></div><div role="group" aria-label="보기 방식" style="display: flex; gap: 2px; padding: 2px; background: #E8EBF0; border-radius: 8px; margin-left: auto"><button type="button" aria-pressed="true" style="font: inherit; font-size: 12px; font-weight: 700; padding: 4px 10px; border: 0; border-radius: 6px; background: #FFFFFF; color: #15171C; min-height: 28px; box-shadow: 0 1px 3px rgba(21,23,28,0.18)">▦ 카드</button><button type="button" aria-pressed="false" style="font: inherit; font-size: 12px; padding: 4px 10px; border: 0; border-radius: 6px; background: transparent; color: #5B616E; min-height: 28px">☰ 리스트</button></div></div>
+
+<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px">
+<sc-for list="{{scenes}}" as="c" hint-placeholder-count="6">
+<article style="display: flex; flex-direction: column; background: #FFFFFF; border: 1px solid #E3E6EB; border-radius: 10px; overflow: hidden">
+<div style="position: relative; height: 112px; background: {{c.frameBg}}; display: flex; align-items: center; justify-content: center; color: #FFFFFF; font-size: 13px; font-weight: 500">
+<span style="position: absolute; top: 8px; left: 8px; padding: 2px 7px; border-radius: 5px; background: rgba(0,0,0,0.55); font-family: 'JetBrains Mono', monospace; font-size: 11px">{{c.no}} · {{c.time}}</span>
+{{c.shot}}
+</div>
+<div style="padding: 10px 12px; display: flex; flex-direction: column; gap: 6px">
+<span style="align-self: flex-start; padding: 1px 7px; border-radius: 5px; font-size: 11px; font-weight: 700; background: {{c.tagBg}}; color: {{c.tagFg}}">{{c.section}}</span>
+<div style="font-size: 14px; font-weight: 700; line-height: 1.45">{{c.action}}</div>
+<div style="font-size: 13px; line-height: 1.5; color: #3D424D">“{{c.line}}”</div>
+<div style="font-size: 12px; color: #5B616E">참고 · {{c.ref}}</div>
+</div>
+</article>
+</sc-for>
+</div>
+</main>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":1000}}'>
+class Component extends DCLogic {
+  renderVals() {
+    const tag = {
+      hook: ['#FBE6E4', '#8E231E'], intro: ['#E8EEFB', '#1E449E'],
+      body: ['#E3F3EA', '#155C39'], check: ['#FBF0DC', '#7A4800'], outro: ['#EFE8FB', '#4E2C93']
+    };
+    const scene = (no, time, section, key, shot, frameBg, action, line, ref) => ({
+      no, time, section, shot, frameBg, action, line, ref, tagBg: tag[key][0], tagFg: tag[key][1]
+    });
+    const done = { bar: '#1F7A4D', color: '#15171C', weight: 500 };
+    return {
+      videos: [
+        { title: '부루마블 1탄', pct: '60%', stage: '촬영', bg: '#E8EBF0', weight: 700 },
+        { title: '서울 산동네 3곳', pct: '45%', stage: '촬영', bg: 'transparent', weight: 400 },
+        { title: '1호선 끝 연천 장날', pct: '45%', stage: '촬영', bg: 'transparent', weight: 400 },
+        { title: '시내버스로 서울→강릉', pct: '30%', stage: '콘티', bg: 'transparent', weight: 400 },
+        { title: '의정부 경전철 끝까지', pct: '30%', stage: '콘티', bg: 'transparent', weight: 400 }
+      ],
+      steps: [
+        { label: '기획안 ✓', ...done },
+        { label: '다듬기 –', bar: '#E3E6EB', color: '#5B616E', weight: 400 },
+        { label: '콘티 ✓', ...done },
+        { label: '촬영 ●', bar: '#C8322B', color: '#C8322B', weight: 700 },
+        { label: '편집', bar: '#E3E6EB', color: '#5B616E', weight: 400 },
+        { label: '진단', bar: '#E3E6EB', color: '#5B616E', weight: 400 }
+      ],
+      scenes: [
+        scene('01', '0:00–0:10', '훅', 'hook', '손 + 주사위 클로즈업', '#3A3F4B', '주사위가 멈추는 순간을 맨 앞에', '어… 여기라고?', '하이라이트 티저 (M-travel-001)'),
+        scene('02', '0:10–0:45', '인트로', 'intro', '미디엄 · 셀카 아이레벨', '#4B5263', '집 앞에서 규칙 한 줄 선언', '20만 원, 주사위가 정한 곳으로 무조건 간다', '제한 걸고 떠나기 (M-travel-005)'),
+        scene('03', '0:45–4:00', '본문 · 이동', 'body', '와이드 · 기차 창밖', '#2E5A4A', '갈아탈 때마다 시간표 2초씩', '다음 열차까지 12분 남았어요', '길 안내 내레이션 (M-travel-007)'),
+        scene('04', '4:00–4:10', '체크포인트', 'check', '지갑 든 손 · 고정 구도', '#6B5530', '남은 돈을 같은 구도로 말하기', '지금까지 3만 2천 원 썼습니다', '수치 체크포인트 (M-travel-002)'),
+        scene('05', '4:10–13:30', '본문 · 탐방', 'body', '와이드 → 줌 교차', '#2E4F6B', '도착지 풍경을 두 번 보여 주기', '(현장음만)', '와이드·줌 교차 (M-travel-003)'),
+        scene('06', '13:30–15:00', '아웃로', 'outro', '미디엄 · 걸으며', '#55406E', '하루 정산과 다음 칸 예고', '남은 돈 4만 원, 2탄은 주사위가 정합니다', '하루 합계 마무리 (M-travel-002)')
+      ]
+    };
+  }
+}
+</script>
+</body>
+</html>

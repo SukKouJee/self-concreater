@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>촬영 모드</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;800&amp;family=JetBrains+Mono:wght@500&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#9DB8F5}a:hover{color:#C4D5FA}
+</style>
+</helmet>
+<div style="width: 390px; height: 844px; box-sizing: border-box; display: flex; flex-direction: column; background: #0E1013; font-family: 'Noto Sans KR', system-ui, sans-serif; color: #FFFFFF">
+
+<header style="display: flex; align-items: center; gap: 10px; padding: 16px 16px 10px">
+<a href="PhoneHome.dc.html" aria-label="촬영 모드 닫기" style="display: flex; align-items: center; justify-content: center; width: 44px; height: 44px; border-radius: 12px; background: #1C1F25; color: #FFFFFF">
+<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg>
+</a>
+<div style="flex: 1; min-width: 0; display: flex; flex-direction: column">
+<span style="font-size: 12px; color: #A7ADB9">촬영 모드</span>
+<span style="font-size: 15px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">부루마블 1탄</span>
+</div>
+<span style="font-family: 'JetBrains Mono', monospace; font-size: 14px; color: #FFFFFF; padding: 6px 10px; border-radius: 8px; background: #1C1F25">{{counter}}</span>
+</header>
+
+<div aria-label="컷 진행" style="display: flex; gap: 4px; padding: 0 16px 14px">
+<sc-for list="{{bar}}" as="b" hint-placeholder-count="6"><span style="flex: 1; height: 5px; border-radius: 3px; background: {{b.c}}"></span></sc-for>
+</div>
+
+<div style="flex: 1; overflow: hidden; padding: 0 16px; display: flex; flex-direction: column; gap: 14px">
+<div style="position: relative; height: 216px; border-radius: 16px; background: {{s.frameBg}}; display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 500; color: #FFFFFF">
+<span style="position: absolute; top: 10px; left: 10px; padding: 3px 9px; border-radius: 6px; background: rgba(0,0,0,0.55); font-size: 12px; font-weight: 700">{{s.section}}</span>
+<span style="position: absolute; top: 10px; right: 10px; padding: 3px 9px; border-radius: 6px; background: rgba(0,0,0,0.55); font-family: 'JetBrains Mono', monospace; font-size: 12px">{{s.time}}</span>
+<sc-if value="{{s.done}}" hint-placeholder-val="{{false}}">
+<span style="position: absolute; bottom: 10px; right: 10px; padding: 4px 10px; border-radius: 999px; background: #1F7A4D; font-size: 12px; font-weight: 700">찍음 ✓</span>
+</sc-if>
+{{s.shot}}
+</div>
+
+<div style="font-size: 24px; font-weight: 900; line-height: 1.4; letter-spacing: -0.01em">{{s.action}}</div>
+<div style="font-size: 18px; line-height: 1.55; color: #E4E7EC; padding: 12px 14px; border-radius: 12px; background: #1C1F25; border-left: 4px solid #C8322B; font-weight: 500">“{{s.line}}”</div>
+<ul style="margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; font-size: 15px; color: #C9CDD6">
+<sc-for list="{{s.tips}}" as="t" hint-placeholder-count="2">
+<li style="display: flex; gap: 8px; align-items: flex-start"><span style="flex: none; width: 6px; height: 6px; margin-top: 9px; border-radius: 50%; background: #C8322B"></span>{{t}}</li>
+</sc-for>
+</ul>
+</div>
+
+<div style="display: flex; gap: 10px; padding: 14px 16px 28px">
+<button type="button" onClick="{{prev}}" aria-label="이전 컷" style="font: inherit; width: 64px; min-height: 60px; border-radius: 14px; border: 1px solid #3A3F4B; background: #1C1F25; color: #FFFFFF; font-size: 20px">‹</button>
+<button type="button" onClick="{{shot}}" style="flex: 1; font: inherit; min-height: 60px; border-radius: 14px; border: 0; background: {{mainBg}}; color: #FFFFFF; font-size: 18px; font-weight: 800">{{mainLabel}}</button>
+<button type="button" onClick="{{next}}" aria-label="다음 컷" style="font: inherit; width: 64px; min-height: 60px; border-radius: 14px; border: 1px solid #3A3F4B; background: #1C1F25; color: #FFFFFF; font-size: 20px">›</button>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { i: 0, done: [false, false, false, false, false, false] };
+  }
+  renderVals() {
+    const scenes = [
+      { section: '훅', time: '0:00–0:10', shot: '손 + 주사위 클로즈업', frameBg: '#3A3F4B', action: '주사위가 멈추는 순간을 길게', line: '어… 여기라고?', tips: ['굴리기 전부터 녹화, 멈추고 3초 더', '자막 없이 실제 반응 소리 살리기'] },
+      { section: '인트로', time: '0:10–0:45', shot: '미디엄 · 셀카 아이레벨', frameBg: '#4B5263', action: '집 앞에서 규칙 한 줄 선언', line: '20만 원, 주사위가 정한 곳으로 무조건 간다', tips: ['지갑을 손에 들고 금액 보여 주기', '배경에 집 앞 표지 하나 넣기'] },
+      { section: '본문 · 이동', time: '0:45–4:00', shot: '와이드 · 기차 창밖', frameBg: '#2E5A4A', action: '갈아탈 때마다 시간표 2초씩', line: '다음 열차까지 12분 남았어요', tips: ['창밖은 3초 이상 고정', '정류장 이름판이 화면에 보이게'] },
+      { section: '체크포인트', time: '4:00–4:10', shot: '지갑 든 손 · 고정 구도', frameBg: '#6B5530', action: '남은 돈을 같은 구도로 말하기', line: '지금까지 3만 2천 원 썼습니다', tips: ['아침·점심·숙소에서 같은 구도', '숫자는 말로, 화면엔 하나만'] },
+      { section: '본문 · 탐방', time: '4:10–13:30', shot: '와이드 → 줌 교차', frameBg: '#2E4F6B', action: '도착지 풍경을 두 번 보여 주기', line: '(현장음만)', tips: ['광각 5초 고정 → 같은 자리에서 줌 5초', '말 없이 현장음만 녹음'] },
+      { section: '아웃로', time: '13:30–15:00', shot: '미디엄 · 걸으며', frameBg: '#55406E', action: '하루 정산과 다음 칸 예고', line: '남은 돈 4만 원, 2탄은 주사위가 정합니다', tips: ['해 지기 전 밝을 때 찍기', '마지막에 주사위 한 번 더 보여 주기'] }
+    ];
+    const { i, done } = this.state;
+    const n = scenes.length;
+    const count = done.filter(Boolean).length;
+    return {
+      counter: (i + 1) + ' / ' + n,
+      bar: scenes.map((_, k) => ({ c: done[k] ? '#1F7A4D' : k === i ? '#FFFFFF' : '#2A2E36' })),
+      s: { ...scenes[i], done: done[i] },
+      mainLabel: done[i] ? (count === n ? '전부 찍었어요!' : '다음 컷으로') : '찍었어요 ✓',
+      mainBg: done[i] ? '#1F7A4D' : '#C8322B',
+      prev: () => this.setState({ i: Math.max(0, i - 1) }),
+      next: () => this.setState({ i: Math.min(n - 1, i + 1) }),
+      shot: () => {
+        if (!done[i]) {
+          const d = done.slice(); d[i] = true;
+          this.setState({ done: d });
+        } else if (i < n - 1) {
+          this.setState({ i: i + 1 });
+        }
+      }
+    };
+  }
+}
+</script>
+</body>
+</html>
