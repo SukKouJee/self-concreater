@@ -81,7 +81,7 @@ const SUBNAV = {
 
 export function subnavItems(hash) {
   const items = SUBNAV[phoneTab(hash)] || [];
-  const onRefs = ["refs", "library"].includes(head(hash));
+  const onRefs = ["refs", "library", "add"].includes(head(hash));   // #/add: 레퍼런스 with the add area open
   return items.map(({ refsTab, ...it }) => ({
     ...it, phoneOnly: it.phoneOnly || (!!refsTab && !onRefs), current: isActive(it.href, hash),
   }));

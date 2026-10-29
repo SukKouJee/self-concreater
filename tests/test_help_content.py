@@ -7,7 +7,7 @@ SCREEN_PAGES = ["home", "refs", "library", "typify", "report", "motif",
                 "draft", "conti", "diagnose", "mission", "guide"]
 SECTIONS = ["무엇을 하나요", "사용 예", "이렇게 나와요", "알아 둘 것", "다음 단계"]
 LINK_RE = re.compile(r"\(#/([a-z]+)")
-ROUTE_ALIASES = {"add"}  # #/add opens the 레퍼런스 screen (help page: refs)
+ROUTE_ALIASES = {"add", "videos"}  # #/add opens the 레퍼런스 screen (help page: refs); #/videos is 내 영상 (help: draft)
 
 
 def _read(name):

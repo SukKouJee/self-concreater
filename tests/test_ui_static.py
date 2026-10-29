@@ -4,7 +4,8 @@ from scripts.ui.server import STATIC_DIR
 from tests.test_ui_server import client, no_browser  # noqa: F401  (fixture 재사용)
 
 # Every screen (name + route): app.js SCREENS, the same list the help chatbot gets (api_help.MENU).
-MENU_NAMES = ["홈", "레퍼런스", "공용 라이브러리", "유형화", "리포트", "모티브", "기획안", "콘티", "진단", "미션", "가이드"]
+MENU_NAMES = ["홈", "레퍼런스", "공용 라이브러리", "유형", "모티브", "내 영상", "기획안", "콘티", "진단", "미션", "리포트",
+              "가이드"]
 
 
 def test_index_loads_modules(client):
@@ -927,7 +928,7 @@ def test_selected_states_use_pick_colors_with_contrast():
         assert _contrast(tokens["--ink2"], tokens["--chip"]) >= 4.5             # 꼬리표 글자
         assert _contrast(tokens["--muted"], tokens["--chip"]) >= 4.5
         assert _contrast(tokens["--muted"], tokens["--page"]) >= 4.5           # 숫자 칸(--page 바탕)의 이름
-    for selector in ('.ref-filters .btn[aria-pressed="true"]', '.filter-btn[aria-pressed="true"]',
+    for selector in ('.filter-btn[aria-pressed="true"]',
                      '.diag-toggle[aria-pressed="true"]', ".seg-opt input:checked + span",
                      '.lib-tab[aria-selected="true"]', '.ui-chip[aria-pressed="true"]'):
         rule = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", css).group(1)
@@ -1552,3 +1553,53 @@ def test_check_tab_filter_filmed_note_and_no_duplicate_card_actions():
         assert token in check, token
     actions = video[video.index("function progressActions("):video.index("// Draft-level")]
     assert 'mine.tab === "check"' in actions and "return []" in actions   # the tab head carries count and buttons
+
+
+# ---- Phase 7: remaining screens on the tokens ------------------------------------------------------
+
+def test_refs_filters_are_chips_and_frame_captions_are_korean():
+    js = _js("pages/refs.js")
+    tools = js[js.index("function toolbar("):js.index("function renderCards(")]
+    assert 'class: "ui-chip"' in tools and 'class: "btn", "aria-pressed"' not in tools
+    frames = js[js.index("function framesBlock("):js.index("// ---- page contract")]
+    assert "sectionName(" in frames and "${f.section}" not in frames
+
+
+def test_library_hides_commands_and_repository_address():
+    js = _js("pages/library.js")
+    assert "gh auth" not in js and "git(SSH" not in js
+    assert "st.remote ||" not in js and "repoName(st.remote)" in js     # the name of the repository, never a path
+    assert 'class: "ui-chip lib-tab"' in js
+
+
+def test_typify_uses_menu_name_and_korean_section_names():
+    js = _js("pages/typify.js")
+    assert 'from "/static/labels.js"' in js
+    assert '"유형화")' not in js and 'h("h1", { id: "typify-title" }, "유형")' in js
+    assert "ref ${" not in js and "내 영상(mine)" not in js and '"ref 부족"' not in js
+    for fn, end in (("function skeletonChips(", "function ratioBand("), ("function ratioBand(", "function refLink(")):
+        part = js[js.index(fn):js.index(end)]
+        assert "skelName(" in part, fn                      # "body/story" -> "본문(이야기)" on screen and in names
+
+
+def test_report_picker_is_chips_and_tabs_match_the_kit():
+    js = _js("pages/report.js")
+    picker = js[js.index("function reportList("):js.index("function reportViewer(")]
+    assert "btn-primary" not in picker and "ui-chip" in picker
+    assert "## 내 메모" not in js and "프런트매터" not in js
+    css = _js("app.css")
+    for sel in (".rp-tab", ".guide-tab"):
+        on = re.search(re.escape(sel) + r'\[aria-(?:selected|current)="(?:true|page)"\] \{([^}]*)\}', css).group(1)
+        assert "var(--rec)" in on and "font-weight: 700" in on, sel
+
+
+def test_upload_diagnosis_goes_back_to_my_videos():
+    js = _js("pages/diagnose.js")
+    assert '"#/diagnose"' not in js                      # the old list redirects; link where it lands
+    assert '"← 내 영상"' in js and 'href: "#/videos"' in js
+
+
+def test_diagnose_skeletons_use_korean_section_names():
+    js = _js("pages/diagnose.js")
+    assert "skeletonText(near.skeleton)" in js and "skeletonText(c.target_sequence)" in js
+    assert "near.skeleton ||" not in js and "c.target_sequence ||" not in js

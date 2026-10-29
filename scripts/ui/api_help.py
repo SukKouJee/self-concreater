@@ -30,13 +30,14 @@ MENU: list[dict[str, str]] = [
     {"name": "홈", "route": "#/home"},
     {"name": "레퍼런스", "route": "#/refs"},
     {"name": "공용 라이브러리", "route": "#/library"},
-    {"name": "유형화", "route": "#/typify"},
-    {"name": "리포트", "route": "#/report"},
+    {"name": "유형", "route": "#/typify"},
     {"name": "모티브", "route": "#/motif"},
+    {"name": "내 영상", "route": "#/videos"},
     {"name": "기획안", "route": "#/draft"},
     {"name": "콘티", "route": "#/conti"},
     {"name": "진단", "route": "#/diagnose"},
     {"name": "미션", "route": "#/mission"},
+    {"name": "리포트", "route": "#/report"},
     {"name": "가이드", "route": "#/guide"},
 ]
 

@@ -30,23 +30,25 @@ const SIDEBAR_VIDEOS = 5;   // unfinished videos listed in the sidebar; the rest
 
 // Every screen with its name (browser tab title). The help chatbot gets the same list (api_help.MENU).
 // The sidebar and the phone tabs are defined in menu-utils.js.
+// Order follows the sidebar groups (영감 / 내 영상 / 성장). 기획안·콘티·진단 are the tabs of one video
+// (#/video/<id>/<tab>); their old routes redirect (#/draft, #/conti, #/diagnose -> 내 영상 or that video's tab).
 const SCREENS = [
   { name: "홈", route: "#/home" },
   { name: "레퍼런스", route: "#/refs" },
   { name: "공용 라이브러리", route: "#/library" },
-  { name: "유형화", route: "#/typify" },
-  { name: "리포트", route: "#/report" },
+  { name: "유형", route: "#/typify" },
   { name: "모티브", route: "#/motif" },
+  { name: "내 영상", route: "#/videos" },
   { name: "기획안", route: "#/draft" },
   { name: "콘티", route: "#/conti" },
   { name: "진단", route: "#/diagnose" },
   { name: "미션", route: "#/mission" },
+  { name: "리포트", route: "#/report" },
   { name: "가이드", route: "#/guide" },
 ];
-// Video workspace screens (not in the help chatbot's menu: their tabs host 기획안/콘티/진단). The video page names
-// the browser tab after the video once it is loaded.
+// One video's workspace (not in the help chatbot's menu). The video page names the browser tab after the video
+// once it is loaded.
 const VIDEO_SCREENS = [
-  { route: "#/videos", name: "내 영상" },
   { route: "#/video", name: "영상" },
 ];
 

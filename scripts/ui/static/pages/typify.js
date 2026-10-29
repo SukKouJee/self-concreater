@@ -1,7 +1,8 @@
-// 유형화 화면
+// 유형 화면 (메뉴 이름 "유형", 하는 일은 유형화)
 //   상태(ref 수·단계·저장된 결과) → "유형화 실행"(작업: 계산 → Claude 해석) → 미리보기(편집) → 저장.
 //   미리보기 단계에서는 파일이 바뀌지 않는다. 저장은 사용자가 누른 뒤에만, 미리보기의 run_at과 함께 보낸다.
 import { h, fill } from "/static/dom.js";
+import { sectionName } from "/static/labels.js";
 
 const POLL_MS = 1000;
 const POLL_MAX_MS = 15000;
@@ -22,6 +23,11 @@ const CHANGED_TEXT = "미리보기를 만든 뒤 유형화가 다시 실행되�
 const isActive = (job) => !!job && ACTIVE.has(job.status);
 // Labels may carry a qualifier ("body/story"); colors use the base label.
 const baseLabel = (label) => String(label).split("/")[0].trim();
+// Screen name of a skeleton/ratio label: "body/story" -> "본문(이야기)", "hook" -> "훅".
+function skelName(label) {
+  const [base, sub] = String(label).split("/").map((s) => s.trim());
+  return sectionName(base, sub);
+}
 const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
 const refHref = (id) => `#/refs/${encodeURIComponent(id)}`;
 
@@ -86,10 +92,10 @@ async function load() {
   const mine = S;
   const cat = mine.category;
   if (!cat) {
-    fill(mine.el, h("h1", {}, "유형화"), h("p", { class: "muted" }, "카테고리가 없습니다. 홈에서 먼저 카테고리를 만드세요."));
+    fill(mine.el, h("h1", {}, "유형"), h("p", { class: "muted" }, "카테고리가 없습니다. 홈에서 먼저 카테고리를 만드세요."));
     return;
   }
-  fill(mine.el, h("h1", {}, "유형화"), h("p", { class: "muted", role: "status" }, "불러오는 중…"));
+  fill(mine.el, h("h1", {}, "유형"), h("p", { class: "muted", role: "status" }, "불러오는 중…"));
   try {
     const [data, cur] = await Promise.all([
       mine.ctx.api("GET", `/api/typify?category=${encodeURIComponent(cat)}`),
@@ -119,7 +125,7 @@ async function load() {
 function loadError(e) {
   const retry = h("button", { type: "button", class: "btn" }, "다시 시도");
   retry.addEventListener("click", () => { if (S && S.ctx.isCurrent()) load(); });
-  fill(S.el, h("h1", {}, "유형화"),
+  fill(S.el, h("h1", {}, "유형"),
     h("p", { class: "error", role: "alert" }, e.message || "불러오지 못했습니다"),
     h("div", { class: "btn-row" }, retry));
 }
@@ -388,15 +394,15 @@ function render() {
   S.nodes = {};
   const stageText = d.stage === "formal" ? "정식 판정" : d.stage === "preliminary" ? "예비 관찰" : "판정 전";
   const last = d.typified_at ? `마지막 유형화 ${d.typified_at}` : "마지막 유형화 아직 없음";
-  S.nodes.status = h("h1", { id: "typify-title" }, "유형화");
+  S.nodes.status = h("h1", { id: "typify-title" }, "유형");
   const kids = [
     S.nodes.status,
-    h("p", { class: "lead" }, `ref ${d.ref}개 · ${stageText} · ${last}`),
-    h("p", { class: "muted hint" }, "내 영상(mine)은 기준에 섞지 않습니다 — 내 영상과 비교하면 진단이 자기 자신과 비교하게 되기 때문입니다"),
+    h("p", { class: "lead" }, `레퍼런스 ${d.ref}개 · ${stageText} · ${last}`),
+    h("p", { class: "muted hint" }, "내 영상은 기준에 섞지 않습니다 — 섞으면 진단이 내 영상을 자기 자신과 비교하게 되기 때문입니다"),
   ];
   if (d.stage === "too_few") {
-    kids.push(h("section", { class: "card empty", "aria-label": "ref 부족" },
-      h("p", {}, `ref가 ${d.ref}개라 아직 유형을 볼 수 없습니다. ${d.need}개 더 넣으면 예비 관찰을 할 수 있어요`),
+    kids.push(h("section", { class: "card empty", "aria-label": "레퍼런스 부족" },
+      h("p", {}, `레퍼런스가 ${d.ref}개라 아직 유형을 볼 수 없습니다. ${d.need}개 더 넣으면 예비 관찰을 할 수 있어요`),
       h("a", { class: "btn btn-primary", href: "#/add" }, "레퍼런스 넣기")));
     fill(S.el, ...kids);
     return;
@@ -507,10 +513,10 @@ function axisRows(axes, editable) {
 function skeletonChips(skeleton) {
   const labels = String(skeleton || "").split("→").map((s) => s.trim()).filter(Boolean);
   if (!labels.length) return null;
-  const list = h("ol", { class: "skeleton", "aria-label": `골격: ${labels.join(" → ")}` });
+  const list = h("ol", { class: "skeleton", "aria-label": `골격: ${labels.map(skelName).join(" → ")}` });
   labels.forEach((label, i) => {
     list.append(h("li", { class: "skel-chip" },
-      h("span", { class: `lb-dot lb-${baseLabel(label)}`, "aria-hidden": "true" }), label,
+      h("span", { class: `lb-dot lb-${baseLabel(label)}`, "aria-hidden": "true" }), skelName(label),
       i < labels.length - 1 ? h("span", { class: "skel-arrow", "aria-hidden": "true" }, "→") : null));
   });
   return list;
@@ -520,10 +526,10 @@ function ratioBand(ratio) {
   const entries = Object.entries(ratio || {}).filter(([, v]) => num(v) !== null && v > 0);
   if (!entries.length) return null;
   const total = entries.reduce((s, [, v]) => s + v, 0);
-  const text = entries.map(([k, v]) => `${k} ${Math.round((v / total) * 100)}%`).join(" · ");
+  const text = entries.map(([k, v]) => `${skelName(k)} ${Math.round((v / total) * 100)}%`).join(" · ");
   const band = h("div", { class: "sec-band", role: "img", "aria-label": `평균 비율: ${text}` });
   for (const [label, v] of entries) {
-    const seg = h("span", { class: `lb-${baseLabel(label)}`, title: `${label} ${Math.round((v / total) * 100)}%` });
+    const seg = h("span", { class: `lb-${baseLabel(label)}`, title: `${skelName(label)} ${Math.round((v / total) * 100)}%` });
     seg.style.width = `${(v / total) * 100}%`;
     band.append(seg);
   }

@@ -250,7 +250,7 @@ function toolbar() {
   const group = h("div", { class: "ref-filters", role: "group", "aria-label": "역할 필터" });
   for (const f of FILTERS) {
     const btn = h("button", {
-      type: "button", class: "btn", "aria-pressed": String(VIEW.role === f.key), "data-role": f.key,
+      type: "button", class: "ui-chip", "aria-pressed": String(VIEW.role === f.key), "data-role": f.key,
     }, f.label);
     btn.addEventListener("click", () => {
       VIEW.role = f.key;
@@ -659,7 +659,9 @@ function framesBlock(frames) {
   }
   const strip = h("ul", { class: "frame-strip", role: "list", tabindex: "0", "aria-label": "장면 프레임 (가로 스크롤)" });
   for (const f of frames) {
-    const cap = f.section ? `${fmtTime(f.start)} · ${f.section}` : fmtTime(f.start);
+    // f.section is a label code, with the body subtype after a slash ("body/story" -> "본문(이야기)")
+    const [label, sub] = String(f.section || "").split("/");
+    const cap = label ? `${fmtTime(f.start)} · ${sectionName(label, sub)}` : fmtTime(f.start);
     strip.append(h("li", {}, h("figure", {},
       h("img", { src: filesUrl(f.frame), alt: "", loading: "lazy" }),
       h("figcaption", {}, cap))));

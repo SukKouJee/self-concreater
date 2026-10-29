@@ -31,6 +31,14 @@ const ignorable = (e) => !e || e.error === "aborted";
 const noRef = () => "#/library";
 const md = (text, opts = {}) => h("div", { class: "md" }, renderMarkdown(String(text || ""), { refHref: noRef, ...opts }));
 const draftHref = (id) => `#/draft/new/${encodeURIComponent(`library:${id}`)}`;
+// The repository's name only ("git@github.com:me/friends-lib.git" -> "friends-lib"): the address may be a local
+// folder, and the screen never shows paths.
+function repoName(remote) {
+  const parts = String(remote || "").split(/[\\/:]/).filter(Boolean);
+  return (parts.length ? parts[parts.length - 1] : "").replace(/\.git$/i, "") || "연결됨";
+}
+const infoText = (st) =>
+  `저장소 ${repoName(st.remote)} · 표시 이름 ${st.author || ""} · 마지막 받은 시각 ${st.last_pull ? fmtTime(st.last_pull) : "아직 받지 않음"}`;
 
 function readHandled() {
   try {
@@ -183,7 +191,7 @@ function renderConnect() {
   const form = h("form", { class: "lib-connect add-form", novalidate: "" },
     h("div", { class: "field" }, h("label", { for: "lib-remote" }, "저장소 주소"), remote,
       h("p", { class: "muted hint", id: "lib-remote-hint" },
-        "지인들과 함께 쓰는 비공개 GitHub 저장소 주소입니다. 주소에 비밀번호·토큰을 넣지 마세요. 로그인은 git(SSH, gh auth login)이 처리합니다.")),
+        "지인들과 함께 쓰는 비공개 GitHub 저장소 주소입니다. 주소에 비밀번호·토큰을 넣지 마세요. 로그인은 이 PC에 이미 되어 있는 GitHub 로그인을 그대로 씁니다.")),
     h("div", { class: "field" }, h("label", { for: "lib-author" }, "표시 이름"), author,
       h("p", { class: "muted hint" }, "내가 올린 항목에 작성자로 보이는 이름입니다.")),
     h("div", { class: "btn-row" }, btn), S.nodes.connectMsg);
@@ -244,8 +252,7 @@ function render() {
   S.nodes.pullNote = h("div", { class: "lib-pull-note" });
   S.nodes.tabs = h("div", { class: "lib-tabs", role: "tablist", "aria-label": "라이브러리 보기" });
   S.nodes.panel = h("div", { class: "lib-panel", role: "tabpanel", id: "lib-panel" });
-  const info = h("p", { class: "muted small" },
-    `저장소 ${st.remote || ""} · 표시 이름 ${st.author || ""} · 마지막 받은 시각 ${st.last_pull ? fmtTime(st.last_pull) : "아직 받지 않음"}`);
+  const info = h("p", { class: "muted small" }, infoText(st));
   S.nodes.info = info;
   const kids = [
     S.nodes.title,
@@ -263,8 +270,7 @@ function render() {
 function renderInfo() {
   const st = S.status;
   if (S.nodes.info && st) {
-    S.nodes.info.textContent =
-      `저장소 ${st.remote || ""} · 표시 이름 ${st.author || ""} · 마지막 받은 시각 ${st.last_pull ? fmtTime(st.last_pull) : "아직 받지 않음"}`;
+    S.nodes.info.textContent = infoText(st);
   }
 }
 
@@ -320,7 +326,7 @@ function renderTabs() {
     const n = KIND_OF_TAB[key] ? ` (${countOf(KIND_OF_TAB[key])})` : "";
     const selected = S.tab === key;
     const b = h("button", {
-      type: "button", class: "btn lib-tab", role: "tab", id: `lib-tab-${key}`, "aria-selected": String(selected),
+      type: "button", class: "ui-chip lib-tab", role: "tab", id: `lib-tab-${key}`, "aria-selected": String(selected),
       "aria-controls": "lib-panel", tabindex: selected ? "0" : "-1", "data-tab": key,
     }, `${label}${n}`);
     b.addEventListener("click", () => selectTab(key));
@@ -436,8 +442,8 @@ function renderList(tab, focusId) {
   if (S.nodes.count) S.nodes.count.textContent = total && shown.length ? `${shown.length}개` : "";
   if (!total) {
     kids.push(h("p", { class: "muted" }, kind === "technique"
-      ? "받은 기법이 없습니다. 위의 받기를 눌러 보세요. 아직 아무도 올리지 않았다면 공유하기 탭에서 내 기법을 올릴 수 있습니다."
-      : "받은 기획안 틀이 없습니다. 위의 받기를 눌러 보세요. 공유하기 탭에서 내 기획안을 틀로 올릴 수 있습니다."));
+      ? "받은 기법이 없습니다. 위의 받기를 눌러 보세요. 아직 아무도 올리지 않았다면 “공유하기”에서 내 기법을 올릴 수 있습니다."
+      : "받은 기획안 틀이 없습니다. 위의 받기를 눌러 보세요. “공유하기”에서 내 기획안을 틀로 올릴 수 있습니다."));
   } else if (!shown.length) {
     kids.push(h("p", { class: "muted" }, "조건에 맞는 항목이 없습니다"));
   } else {

@@ -399,9 +399,11 @@ a.chip-job:hover, button.chip-job:hover { background: color-mix(in srgb, var(--k
 .seg > legend { float: left; margin-right: var(--sp-3); }
 .seg-opt { position: relative; display: inline-flex; }
 .seg-opt input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
-.seg-opt span { border: 1px solid var(--grid); border-radius: var(--radius-sm); padding: 6px var(--sp-4); min-height: 36px;
-  display: inline-flex; align-items: center; background: var(--surface); font-size: 14px; font-weight: 500; box-shadow: var(--elev-1); }
-.seg-opt input:checked + span { background: var(--pick-bg); border-color: var(--pick-bg); color: var(--pick-fg); }
+/* radio choices look like the kit's chips (.ui-chip), a little taller for touch */
+.seg-opt span { border: 1px solid var(--border-strong); border-radius: 999px; padding: 0 var(--sp-3); min-height: 32px;
+  display: inline-flex; align-items: center; background: var(--surface); color: var(--ink-2); font-size: 13px; }
+.seg-opt input:hover + span { border-color: var(--ink-2); }
+.seg-opt input:checked + span { background: var(--pick-bg); border-color: var(--pick-bg); color: var(--pick-fg); font-weight: 700; }
 .seg-opt input:focus-visible + span { box-shadow: var(--focus-ring); }
 .checks { gap: var(--sp-2); }
 .check { font-weight: 400 !important; color: var(--ink); display: flex; gap: var(--sp-2); align-items: flex-start; font-size: 14px; min-height: 28px; cursor: pointer; }
@@ -781,9 +783,8 @@ a.chip-job:hover, button.chip-job:hover { background: color-mix(in srgb, var(--k
 
 /* reference list / detail */
 .ref-tools { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--sp-3); margin: var(--sp-4) 0 var(--sp-3); }
-.ref-filters { display: flex; gap: var(--sp-1); }
-.ref-filters .btn, .filter-btn { border-radius: var(--radius-sm); padding-left: 14px; padding-right: 14px; }
-.ref-filters .btn[aria-pressed="true"] { background: var(--pick-bg); border-color: var(--pick-bg); color: var(--pick-fg); font-weight: 600; }
+.ref-filters { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); min-height: 36px; }   /* .ui-chip */
+.filter-btn { border-radius: var(--radius-sm); padding-left: 14px; padding-right: 14px; }
 .ref-search { flex: 1 1 200px; max-width: 320px; }
 .ref-sort { flex: 0 0 auto; }
 .ref-search input, .ref-sort select { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--grid);
@@ -1027,10 +1028,10 @@ a.chip-job:hover, button.chip-job:hover { background: color-mix(in srgb, var(--k
 @media (max-width: 640px) { .mi-summary { grid-template-columns: 1fr; } }
 
 /* ---- report screen ---- */
-.rp-tabs { display: flex; gap: var(--sp-1); border-bottom: 1px solid var(--grid); margin: var(--sp-3) 0 var(--sp-4); }
-.rp-tab { font: inherit; font-size: 14px; color: var(--ink2); background: transparent; border: 0; border-bottom: 2px solid transparent; padding: var(--sp-2) var(--sp-3); cursor: pointer; margin-bottom: -1px; }
+.rp-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin: var(--sp-3) 0 var(--sp-4); }
+.rp-tab { font: inherit; font-size: 14px; color: var(--muted); background: transparent; border: 0; border-bottom: 2px solid transparent; padding: var(--sp-2) var(--sp-3); cursor: pointer; margin-bottom: -1px; }
 .rp-tab:hover { color: var(--ink); }
-.rp-tab[aria-selected="true"] { color: var(--ink); font-weight: 600; border-bottom-color: var(--accent); }
+.rp-tab[aria-selected="true"] { color: var(--ink); font-weight: 700; border-bottom-color: var(--rec); }   /* = .ui-tab */
 .rp-panel[hidden] { display: none; }
 .rp-note { border: 1px solid var(--s4); border-radius: var(--radius-sm); padding: var(--sp-3); margin-bottom: var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-2); align-items: flex-start; }
 .rp-note p { margin: 0; }
@@ -1056,8 +1057,8 @@ a.chip-job:hover, button.chip-job:hover { background: color-mix(in srgb, var(--k
 /* 공용 라이브러리 */
 .lib-top { margin-bottom: var(--sp-2); }
 .lib-pull-note { display: flex; flex-direction: column; gap: var(--sp-1); }
-.lib-tabs { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin: var(--sp-4) 0 var(--sp-3); border-bottom: 1px solid var(--grid); padding-bottom: var(--sp-3); }
-.lib-tab[aria-selected="true"] { background: var(--pick-bg); border-color: var(--pick-bg); color: var(--pick-fg); font-weight: 600; }
+.lib-tabs { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin: var(--sp-4) 0 var(--sp-3); }   /* chips: the underline tabs above are 레퍼런스 / 공용 라이브러리 */
+.lib-tab[aria-selected="true"] { background: var(--pick-bg); border-color: var(--pick-bg); color: var(--pick-fg); font-weight: 700; }
 .lib-panel:focus { outline: none; }
 .lib-connect { max-width: 560px; }
 .lib-connect input, .lib-filter input, .lib-filter select, .lib-template input[type="text"], .lib-sec input[type="text"], #lib-note {
@@ -1148,11 +1149,11 @@ a.chip-job:hover, button.chip-job:hover { background: color-mix(in srgb, var(--k
 }
 
 /* guide screen */
-.guide-tabs { display: flex; gap: var(--sp-1); border-bottom: 1px solid var(--grid); margin: 0 0 var(--sp-4); }
-.guide-tab { color: var(--ink2); text-decoration: none; padding: var(--sp-2) var(--sp-4); min-height: 40px; display: inline-flex; align-items: center;
+.guide-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin: 0 0 var(--sp-4); }
+.guide-tab { color: var(--muted); font-size: 14px; text-decoration: none; padding: var(--sp-2) var(--sp-3); min-height: 36px; display: inline-flex; align-items: center;
   border-bottom: 2px solid transparent; margin-bottom: -1px; }
 .guide-tab:hover { color: var(--ink); }
-.guide-tab[aria-current="page"] { color: var(--ink); font-weight: 600; border-bottom-color: var(--accent); }
+.guide-tab[aria-current="page"] { color: var(--ink); font-weight: 700; border-bottom-color: var(--rec); }   /* = .ui-tab */
 .guide-md li { margin-bottom: var(--sp-2); }
 .guide-badge { margin-left: var(--sp-2); font-size: 11px; font-weight: 600; color: var(--muted); border: 1px solid var(--axis);
   border-radius: 6px; padding: 0 8px; line-height: 20px; white-space: nowrap; }

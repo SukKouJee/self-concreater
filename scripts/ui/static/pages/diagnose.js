@@ -3,7 +3,7 @@
 //   / "설명 받기"(작업: 비교 → Claude 1회) → 미리보기(편집) → 저장.
 //   미리보기 단계에서는 mine/ 이 바뀌지 않는다. 저장은 사용자가 누른 뒤에만. 의도한 차이 표시는 사용자 행동이라 바로 저장한다.
 import { h, fill } from "/static/dom.js";
-import { sectionLabelName } from "/static/labels.js";
+import { sectionLabelName, sectionName } from "/static/labels.js";
 import { renderMarkdown } from "/static/md.js";
 import { recordMismatch as gapsMismatch, previewStale as gapsStale } from "/static/diagnose-gaps.js";
 
@@ -20,6 +20,12 @@ const AXIS_ORDER = ["structure", "hook", "narrative", "title", "pacing", "shots"
 // ---- helpers ------------------------------------------------------------------
 
 const isActive = (job) => !!job && ACTIVE.has(job.status);
+// "hook → body/story" -> "훅 → 본문(이야기)"; nothing -> "-".
+function skeletonText(seq) {
+  const parts = String(seq || "").split("→").map((s) => s.trim()).filter(Boolean);
+  if (!parts.length) return "-";
+  return parts.map((p) => { const [label, sub] = p.split("/"); return sectionName(label, sub); }).join(" → ");
+}
 const detailHref = (path) => `#/diagnose/${encodeURIComponent(path)}`;
 const pct = (v) => `${Math.round(v * 100)}%`;
 
@@ -288,7 +294,7 @@ function renderDetail() {
   const e = S.entry;
   if (!e) {
     fill(S.el,
-      embedded() ? null : h("p", { class: "crumb" }, h("a", { href: "#/diagnose" }, "← 진단 목록")),
+      embedded() ? null : h("p", { class: "crumb" }, h("a", { href: "#/videos" }, "← 내 영상")),
       pageHeading("진단"),
       h("p", { class: "error", role: "alert" }, "이 카테고리에서 진단할 수 있는 대상을 찾을 수 없습니다(내 영상 또는 기획안만 가능)"));
     return;
@@ -299,7 +305,7 @@ function renderDetail() {
   S.nodes.record = h("section", { class: "diag-record", "aria-label": "저장된 진단" });
   S.nodes.preview = h("section", { class: "diag-preview", "aria-label": "설명 미리보기" });
   fill(S.el,
-    embedded() ? null : h("p", { class: "crumb" }, h("a", { href: "#/diagnose" }, "← 진단 목록")),
+    embedded() ? null : h("p", { class: "crumb" }, h("a", { href: "#/videos" }, "← 내 영상")),
     S.nodes.status,
     embedded() ? null : h("p", { class: "muted small" }, e.date),
     S.nodes.run, S.nodes.record, S.nodes.compare, S.nodes.preview, missionHint());
@@ -538,8 +544,8 @@ function renderCompare() {
     kids.push(
       h("h3", {}, "가장 가까운 아키타입"),
       h("p", {}, h("strong", {}, `${near.id}${near.name ? ` ${near.name}` : ""}`)),
-      h("p", { class: "small" }, h("span", { class: "muted" }, "아키타입 골격 "), near.skeleton || "-"),
-      h("p", { class: "small" }, h("span", { class: "muted" }, "내 골격 "), c.target_sequence || "-"),
+      h("p", { class: "small" }, h("span", { class: "muted" }, "아키타입 골격 "), skeletonText(near.skeleton)),
+      h("p", { class: "small" }, h("span", { class: "muted" }, "내 골격 "), skeletonText(c.target_sequence)),
       h("h3", {}, "축별 근접도"),
       proximityTable(c));
     if ((c.others || []).length) {
@@ -892,7 +898,7 @@ export function onCategory(category) {
   if (!S || S.category === category) return;
   stopPolling();
   if (S.path) {
-    location.hash = "#/diagnose";               // the router remounts the list with the new category
+    location.hash = "#/videos";                 // 내 영상 (the old #/diagnose list redirects there) for the new category
     return;
   }
   S = freshState(S.el, S.ctx, category, null);

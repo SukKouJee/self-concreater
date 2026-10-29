@@ -234,7 +234,8 @@ function renderReport(focusSel) {
 function reportList(R) {
   const items = R.list.map((r) => {
     const on = r.path === R.selected;
-    const b = h("button", { type: "button", class: `btn${on ? " btn-primary" : ""}`, "aria-pressed": String(on), "aria-label": `${r.date} 리포트 보기` }, on ? `${r.date} · 보는 중` : `${r.date} · 보기`);
+    // one choice chip per report; the pressed one is open below (aria-pressed tells which)
+    const b = h("button", { type: "button", class: "ui-chip", "aria-pressed": String(on), "aria-label": `${r.date} 리포트 보기` }, r.date);
     b.addEventListener("click", () => { R.selected = r.path; renderReport(); });
     return h("li", {}, b);
   });
@@ -712,7 +713,7 @@ function editor() {
   hint.textContent = d.summary.trim() ? "" : "요약을 써야 저장할 수 있습니다";
   const kids = [
     h("h3", { id: "rv-edit-title" }, "회고 확인"),
-    h("p", { class: "muted small" }, "저장하기 전에는 파일이 바뀌지 않습니다. 직접 쓸 내용은 저장된 회고의 '## 내 메모' 아래에 적으세요"),
+    h("p", { class: "muted small" }, "저장하기 전에는 아무것도 바뀌지 않습니다. 직접 쓸 메모는 저장된 회고의 '내 메모' 칸에 적으면 그대로 남아요"),
     h("div", { class: "field" }, h("label", { for: "rv-summary" }, "요약"), summary, hint),
     listEditor("반복된 약점", "weak", d),
     listEditor("다음 주 방향", "next", d),
@@ -800,7 +801,7 @@ function profileArea(saved, data) {
     h("p", { class: "muted small" }, "체크한 항목만 프로필에 반영합니다. 눌러야 바뀝니다"),
     h("ul", { class: "rv-apply-list" }, ...rows),
     h("div", { class: "btn-row" }, go),
-    h("p", { class: "muted small", role: "status", "data-rv-apply-status": "", tabindex: "-1" }, V.recorded ? "" : "프로필은 바꿨지만 회고 파일 프런트매터를 읽지 못해 반영 기록을 남기지 못했습니다"),
+    h("p", { class: "muted small", role: "status", "data-rv-apply-status": "", tabindex: "-1" }, V.recorded ? "" : "프로필은 바꿨지만 회고 기록을 읽지 못해 반영했다는 표시를 남기지 못했습니다"),
     errorNode(V.applyError, { "data-rv-apply-error": "" }));
 }
 

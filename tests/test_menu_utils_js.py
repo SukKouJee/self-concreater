@@ -139,9 +139,11 @@ def test_subnav_items():
     ]
     assert [i["current"] for i in run_js('m.subnavItems("#/refs?tab=library")')] == [False, True, False, False]
     # the library is a tab inside 레퍼런스: on desktop the two links show only on refs/library screens
-    for h in ("#/refs?tab=library", "#/library", "#/refs"):
+    # (#/add is the 레퍼런스 screen with its add area open: same tabs, 레퍼런스 current)
+    for h in ("#/refs?tab=library", "#/library", "#/refs", "#/add"):
         assert [i["phoneOnly"] for i in run_js(f'm.subnavItems("{h}")')] == [False, False, True, True], h
-    for h in ("#/motif", "#/typify", "#/add"):
+    assert [i["current"] for i in run_js('m.subnavItems("#/add")')] == [True, False, False, False]
+    for h in ("#/motif", "#/typify"):
         items = run_js(f'm.subnavItems("{h}")')
         assert [i["label"] for i in items] == ["레퍼런스", "공용 라이브러리", "유형", "모티브"], h   # phones keep all four
         assert all(i["phoneOnly"] for i in items), h
