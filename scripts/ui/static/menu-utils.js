@@ -1,4 +1,6 @@
-// Pure helpers and definitions for the shell menus (no DOM, no imports) so node tests can load them.
+// Pure helpers and definitions for the shell menus (no DOM) so node tests can load them. It only imports the
+// pure video-utils.js (relative path: node loads it from disk, the browser from /static).
+import { parseVideoHash, videoHref, videoId } from "./video-utils.js";
 
 // Desktop sidebar (spec 2절): 영감 / 내 영상 / 성장. `count` names the number shown beside an item (app.js fills
 // it from existing APIs); the 내 영상 group lists the category's unfinished videos above its items.
@@ -25,12 +27,12 @@ export const SIDEBAR = [
 export const PHONE_TABS = [
   { key: "home", label: "홈", href: "#/home", icon: "home" },
   { key: "inspire", label: "영감", href: "#/refs", icon: "spark" },
-  { key: "videos", label: "내 영상", href: "#/draft", icon: "film" },
+  { key: "videos", label: "내 영상", href: "#/videos", icon: "film" },
   { key: "mission", label: "미션", href: "#/mission", icon: "target" },
 ];
 
 // Menus whose detail screens live under "<route>/..." (e.g. #/refs/<id>) stay current on those screens.
-const PREFIX_ROUTES = ["#/refs", "#/conti", "#/draft", "#/draft/new", "#/diagnose", "#/report", "#/guide"];
+const PREFIX_ROUTES = ["#/refs", "#/conti", "#/draft", "#/draft/new", "#/diagnose", "#/report", "#/guide", "#/video"];
 
 // Routes that open another menu item's screen (#/add is the add area of the 레퍼런스 screen).
 const ALIASES = { "#/refs": ["#/add"] };
@@ -41,15 +43,15 @@ export function isActive(href, hash) {
     || (PREFIX_ROUTES.includes(href) && current.startsWith(href + "/"));
 }
 
-// First hash segment ("#/conti/x" -> "conti"); "" for no hash.
+// First hash segment ("#/conti/x" -> "conti", "#/refs?tab=library" -> "refs"); "" for no hash.
 function head(hash) {
-  return (hash || "").replace(/^#\/?/, "").split("/")[0];
+  return (hash || "").split("?")[0].replace(/^#\/?/, "").split("/")[0];
 }
 
 const TAB_OF = {
   "": "home", home: "home",
   refs: "inspire", add: "inspire", library: "inspire", typify: "inspire", motif: "inspire",
-  draft: "videos", conti: "videos", diagnose: "videos",
+  draft: "videos", conti: "videos", diagnose: "videos", videos: "videos", video: "videos",
   mission: "mission", report: "mission",
   guide: null,
 };
@@ -65,7 +67,7 @@ export function phoneTab(hash) {
 const SUBNAV = {
   inspire: [
     { label: "레퍼런스", href: "#/refs", phoneOnly: false },
-    { label: "공용 라이브러리", href: "#/library", phoneOnly: false },
+    { label: "공용 라이브러리", href: "#/refs?tab=library", phoneOnly: false },
     { label: "유형", href: "#/typify", phoneOnly: true },
     { label: "모티브", href: "#/motif", phoneOnly: true },
   ],
@@ -80,17 +82,15 @@ export function subnavItems(hash) {
   return items.map((it) => ({ ...it, current: isActive(it.href, hash) }));
 }
 
-// Screens that belong to one video (draft path "drafts/x.md"): its draft view, conti (by draft or conti path)
-// and diagnose. `view` is where the sidebar link goes until the video workspace exists.
+// Where a sidebar video row goes: the video workspace of that draft (draft path "drafts/x.md").
 export function videoLinks(path) {
-  const draft = encodeURIComponent(path);
-  const conti = encodeURIComponent(path.replace(/\.md$/i, "-conti.md"));
-  const view = `#/draft/view/${draft}`;
-  return { view, screens: [view, `#/conti/${draft}`, `#/conti/${conti}`, `#/diagnose/${draft}`] };
+  return { view: videoHref(videoId(path)) };
 }
 
+// The row is current on every screen of its workspace (any tab, the shoot mode).
 export function isVideoActive(path, hash) {
-  return videoLinks(path).screens.includes(hash);
+  const v = parseVideoHash(hash);
+  return !!v && v.mode !== "list" && v.id === videoId(path);
 }
 
 // Short stage names for the sidebar (status.py VIDEO_STEPS keys; 촬영함 -> 촬영, 자막 영상 -> 편집).

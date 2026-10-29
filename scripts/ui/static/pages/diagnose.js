@@ -71,7 +71,7 @@ let S = null;
 // Each category/target change builds a fresh state, so late async work of the old one sees S !== mine and stops.
 function freshState(el, ctx, category, path) {
   return {
-    el, ctx, category, path, targets: null, entry: null, record: null, intentional: [], gapInfo: new Map(),
+    el, ctx, category, path, embedded: false, targets: null, entry: null, record: null, intentional: [], gapInfo: new Map(),
     compare: null, compareBusy: 0, cmpSeq: 0, compareSoft: false, compareError: null, mismatchText: "", staleText: "", otherTimer: null, recordError: null, toggleBusy: new Set(),
     job: null, jobId: null, otherJob: null, preview: null, edits: null, confirmRerun: false, confirmDiscard: false,
     running: false, runError: null, saving: false, saveError: null,
@@ -82,6 +82,10 @@ function freshState(el, ctx, category, path) {
 function alive(mine) {
   return S === mine && mine.ctx.isCurrent();
 }
+
+// Inside the video workspace (params.embedded) the workspace shows the crumb, the title and the date.
+const embedded = () => !!(S && S.embedded);
+const pageHeading = (text, id) => (embedded() ? h("h2", { class: "sr-only", id }, "진단") : h("h1", { id }, text));
 
 function stopPolling() {
   if (S && S.timer) { clearTimeout(S.timer); S.timer = null; }
@@ -104,10 +108,10 @@ const qs = (mine) => `category=${encodeURIComponent(mine.category)}`;
 async function load() {
   const mine = S;
   if (!mine.category) {
-    fill(mine.el, h("h1", {}, "진단"), h("p", { class: "muted" }, "카테고리가 없습니다. 홈에서 먼저 카테고리를 만드세요."));
+    fill(mine.el, pageHeading("진단"), h("p", { class: "muted" }, "카테고리가 없습니다. 홈에서 먼저 카테고리를 만드세요."));
     return;
   }
-  fill(mine.el, h("h1", {}, "진단"), h("p", { class: "muted", role: "status" }, "불러오는 중…"));
+  fill(mine.el, pageHeading("진단"), h("p", { class: "muted", role: "status" }, "불러오는 중…"));
   try {
     const calls = [mine.ctx.api("GET", `/api/diagnose/targets?${qs(mine)}`)];
     if (mine.path) calls.push(mine.ctx.api("GET", "/api/jobs/current?kind=diagnose"));
@@ -284,20 +288,20 @@ function renderDetail() {
   const e = S.entry;
   if (!e) {
     fill(S.el,
-      h("p", { class: "crumb" }, h("a", { href: "#/diagnose" }, "← 진단 목록")),
-      h("h1", {}, "진단"),
+      embedded() ? null : h("p", { class: "crumb" }, h("a", { href: "#/diagnose" }, "← 진단 목록")),
+      pageHeading("진단"),
       h("p", { class: "error", role: "alert" }, "이 카테고리에서 진단할 수 있는 대상을 찾을 수 없습니다(내 영상 또는 기획안만 가능)"));
     return;
   }
-  S.nodes.status = h("h1", { id: "diag-title" }, `진단: ${e.title}`);
+  S.nodes.status = pageHeading(`진단: ${e.title}`, "diag-title");
   S.nodes.run = h("section", { class: "job-box diag-run", "aria-label": "비교와 설명" });
   S.nodes.compare = h("section", { class: "card diag-compare", "aria-label": "비교 결과" });
   S.nodes.record = h("section", { class: "diag-record", "aria-label": "저장된 진단" });
   S.nodes.preview = h("section", { class: "diag-preview", "aria-label": "설명 미리보기" });
   fill(S.el,
-    h("p", { class: "crumb" }, h("a", { href: "#/diagnose" }, "← 진단 목록")),
+    embedded() ? null : h("p", { class: "crumb" }, h("a", { href: "#/diagnose" }, "← 진단 목록")),
     S.nodes.status,
-    h("p", { class: "muted small" }, e.date),
+    embedded() ? null : h("p", { class: "muted small" }, e.date),
     S.nodes.run, S.nodes.record, S.nodes.compare, S.nodes.preview, missionHint());
   renderRunBox();
   renderCompare();
@@ -879,6 +883,7 @@ function discard() {
 export async function mount(el, params, ctx) {
   stopPolling();
   S = freshState(el, ctx, ctx.category, params && params.path ? params.path : null);
+  S.embedded = !!(params && params.embedded);
   await load();
 }
 

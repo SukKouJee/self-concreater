@@ -23,8 +23,9 @@ def run_js(expr: str):
     return json.loads(out.stdout)
 
 
-def test_no_imports():
-    assert "import " not in UTILS.read_text(encoding="utf-8").replace("import(", "")
+def test_imports_only_video_utils():
+    text = UTILS.read_text(encoding="utf-8").replace("import(", "")
+    assert text.count("import ") == 1 and 'from "./video-utils.js";' in text
 
 
 def test_constants():
@@ -39,12 +40,12 @@ def test_constants():
 def test_next_button_conti_encodes_path():
     path = "drafts/2026-10-25 부루마블 #1.md"
     r = run_js(f"m.nextButton('conti', {json.dumps(path)})")
-    assert r == {"text": "콘티 만들기", "href": "#/conti/drafts%2F2026-10-25%20%EB%B6%80%EB%A3%A8%EB%A7%88%EB%B8%94%20%231.md"}
+    assert r == {"text": "콘티 만들기", "href": "#/video/2026-10-25%20%EB%B6%80%EB%A3%A8%EB%A7%88%EB%B8%94%20%231/conti"}
 
 
 def test_next_button_diagnose_and_filmed_and_null():
     r = run_js("m.nextButton('diagnose', 'drafts/a b#.md')")
-    assert r == {"text": "진단하기", "href": "#/diagnose/drafts%2Fa%20b%23.md"}
+    assert r == {"text": "진단하기", "href": "#/video/a%20b%23/diagnose"}
     assert run_js("m.nextButton('filmed', 'drafts/a.md')") == {"text": "촬영함 체크", "action": "film"}
     assert run_js("m.nextButton(null, 'drafts/a.md')") is None
 

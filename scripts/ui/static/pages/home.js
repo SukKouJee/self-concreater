@@ -2,6 +2,7 @@ import { h, filesUrl, fill } from "/static/dom.js";
 import {
   NEXT_REASON, STEP_NAMES, VISIBLE_VIDEOS, isFolded, nextButton, nextHeadline, recentName, stageLine, stepSr, stepState, videoMeta,
 } from "/static/home-utils.js";
+import { videoHref, videoId } from "/static/video-utils.js";
 
 const MENU_ROUTES = { add: "#/add", conti: "#/conti", typify: "#/typify", draft: "#/draft", diagnose: "#/diagnose" };
 const MENU_NAMES = { add: "레퍼런스", conti: "콘티", typify: "유형화", draft: "기획안", diagnose: "진단" };
@@ -116,7 +117,7 @@ function stepItem(step, video, warn, view) {
 function videoRow(video, view) {
   const warn = h("div", { class: "vid-warn", hidden: true });
   const head = h("div", { class: "vid-head" },
-    h("a", { class: "vid-title", href: `#/draft/view/${encodeURIComponent(video.path)}`, title: video.title }, video.title),
+    h("a", { class: "vid-title", href: videoHref(videoId(video.path)), title: video.title }, video.title),
     videoMeta(video) ? h("p", { class: "vid-meta" }, videoMeta(video)) : null);
   const steps = h("ol", { class: "vid-steps", "aria-label": `${video.title} 단계` },
     ...video.steps.map((s) => stepItem(s, video, warn, view)));
@@ -225,7 +226,7 @@ function recentCard(items, categories) {
     const name = recentName(it, titles);
     const label = KIND_LABELS[it.kind] || it.kind;
     const link = it.kind === "draft"
-      ? h("a", { href: `#/draft/view/${encodeURIComponent(it.path)}` }, name)
+      ? h("a", { href: videoHref(videoId(it.path), "plan") }, name)
       : it.kind === "report" ? h("a", { href: "#/report" }, name)
       : h("a", { href: filesUrl(it.path), target: "_blank", rel: "noopener" }, name);
     const when = new Date(it.mtime * 1000).toLocaleString("ko-KR", { dateStyle: "short", timeStyle: "short" });

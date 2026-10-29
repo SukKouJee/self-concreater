@@ -3,12 +3,19 @@
 //   export function unmount()                // optional, called before the next route
 //   export function onCategory(category)     // optional; called when the category changes while this page is
 //                                            // open. Non-home pages are NOT remounted (keeps in-progress state).
+//   export function update(params)           // optional; a new route of the same page: return true when the page
+//                                            // took it in place (no unmount/remount, ctx stays current)
+//   export function unsavedNote()            // optional; text naming unsaved input ("저장하지 않은 입력(컷 2)") or
+//                                            // null. The router asks before leaving (hash put back meanwhile).
+//   export function onStay()                 // optional; the user stayed after the leave question (repaint state)
 // ctx: { category, setCategory(name), refreshCategories(), toast(msg, kind), api(method, path, body),
-//        signal (AbortSignal, aborted when the user navigates away), isCurrent() (false once navigated away) }
+//        signal (AbortSignal, aborted when the user navigates away), isCurrent() (false once navigated away),
+//        confirmLeave(note, go) (the leave question; go() runs when the user chooses to leave) }
 // Rule: after EVERY await in mount/handlers, `if (!ctx.isCurrent()) return;` before touching the DOM.
 import { api, showBanner } from "/static/api.js";
 import { h } from "/static/dom.js";
 import { createHelpPanel, helpPage } from "/static/help-panel.js";
+import { legacyRoute, parseVideoHash } from "/static/video-utils.js";
 import {
   PHONE_TABS, SIDEBAR, isActive, isVideoActive, phoneTab, sidebarVideos, subnavItems, videoLinks, videoProgress,
 } from "/static/menu-utils.js";
@@ -31,6 +38,12 @@ const SCREENS = [
   { name: "미션", route: "#/mission" },
   { name: "가이드", route: "#/guide" },
 ];
+// Video workspace screens (not in the help chatbot's menu: their tabs host 기획안/콘티/진단). The video page names
+// the browser tab after the video once it is loaded.
+const VIDEO_SCREENS = [
+  { route: "#/videos", name: "내 영상" },
+  { route: "#/video", name: "영상" },
+];
 
 const $ = (id) => document.getElementById(id);
 let helpPanel = null;
@@ -38,6 +51,8 @@ const state = {
   categories: [], current: null, currentPage: null, navToken: 0, abort: null,
   // sidebar data for the current category: { category, videos, ref, archetypes, motifs } (missing = unknown)
   side: null, sideSeq: 0,
+  hash: null,         // the hash the current page was routed for (put back while the leave question is open)
+  leaveOk: false,     // the user chose to leave despite unsaved input: the next route skips the question
 };
 
 // ---- ctx ---------------------------------------------------------------
@@ -85,6 +100,7 @@ function pageCtx(token, signal) {
     api: (method, path, body) => api(method, path, body, signal),
     signal,
     isCurrent: () => token === state.navToken,
+    confirmLeave,
   };
 }
 
@@ -189,7 +205,7 @@ function videoRows() {
   const { shown, total } = sidebarVideos(side.videos, SIDEBAR_VIDEOS);
   const rows = shown.map(videoRow);
   if (shown.length === 0) rows.push(h("li", { class: "menu-note" }, total ? "만드는 중인 영상이 없어요" : "아직 영상이 없어요"));
-  if (total > shown.length) rows.push(h("li", {}, h("a", { class: "menu-link menu-all", href: "#/draft", "data-href": "#/draft", "data-exact": "1" }, `전체 ${total}편`)));
+  if (total > shown.length) rows.push(h("li", {}, h("a", { class: "menu-link menu-all", href: "#/videos", "data-href": "#/videos", "data-exact": "1" }, `전체 ${total}편`)));
   return rows;
 }
 
@@ -249,7 +265,10 @@ function markActive() {
 }
 
 function screenName(hash) {
-  const s = SCREENS.find((it) => isActive(it.route, hash)) || SCREENS[0];
+  // "#/refs?tab=library" is the 공용 라이브러리 screen; other queries do not change the screen
+  const key = helpPage(hash) === "library" ? "#/library" : hash.split("?")[0];
+  const s = VIDEO_SCREENS.find((it) => isActive(it.route, key)) || SCREENS.find((it) => isActive(it.route, key))
+    || SCREENS[0];
   return s.name;
 }
 
@@ -384,10 +403,13 @@ async function doShutdown() {
 // ---- router ----------------------------------------------------------------
 
 function parseHash() {
-  const raw = (location.hash || "#/home").replace(/^#\/?/, "");
+  const hash = location.hash || "#/home";
+  const [raw, query] = hash.replace(/^#\/?/, "").split("?");
   const [head, ...rest] = raw.split("/");
   const tail = rest.join("/");
   switch (head) {
+    case "videos":
+    case "video": return { page: "video", params: parseVideoHash(hash) || { mode: "list" } };
     case "add": return { page: "refs", params: { add: true } };
     case "library": return { page: "library", params: {} };
     case "guide": return { page: "guide", params: { tab: tail === "long" ? "long" : "shorts" } };
@@ -422,6 +444,8 @@ function parseHash() {
       return { page: "diagnose", params: { path } };
     }
     case "refs": {
+      // #/refs?tab=library: the 공용 라이브러리 tab of 레퍼런스
+      if (new URLSearchParams(query || "").get("tab") === "library") return { page: "library", params: {} };
       if (!tail) return { page: "refs", params: {} };
       try { return { page: "refs", params: { id: decodeURIComponent(tail) } }; } catch { return null; }
     }
@@ -429,24 +453,41 @@ function parseHash() {
   }
 }
 
+// Shell parts that follow the route: menus, tab title, sidebar numbers, help page. Also ends a leave question.
+function routeChrome(hash) {
+  state.hash = hash;
+  state.leaveOk = false;
+  closeLeave();
+  setHelpMenu(false);
+  markActive();
+  document.title = `${screenName(hash)} · yt-coach`;
+  refreshSidebar();             // progress and counts change as the user works; cheap local reads
+  if (helpPanel) helpPanel.setPage(helpPage(hash));
+}
+
 async function route() {
+  // Old routes (#/draft…, #/conti…, #/diagnose…, #/library) live on as redirects. replace(): no extra history
+  // entry; its hashchange routes the new hash.
+  const legacy = legacyRoute(location.hash);
+  if (legacy) { location.replace(legacy); return; }
+  const hash = location.hash || "#/home";
+  // A malformed #/refs/<id> (undecodable) parses to null: show the list instead.
+  const { page, params } = parseHash() || { page: "refs", params: {} };
+  const cur = state.current;
+  const inPlace = !!cur && state.currentPage === page && typeof cur.update === "function";
+  routeChrome(hash);
+  // Same page, same subject (another tab of the open video): the page switches in place and keeps its ctx.
+  if (inPlace && cur.update(params) === true) return;
   const token = ++state.navToken;
   if (state.abort) state.abort.abort();
   state.abort = new AbortController();
   const signal = state.abort.signal;
   const main = $("main");
-  if (state.current && typeof state.current.unmount === "function") {
-    try { state.current.unmount(); } catch { /* ignore page cleanup errors */ }
+  if (cur && typeof cur.unmount === "function") {
+    try { cur.unmount(); } catch { /* ignore page cleanup errors */ }
   }
   state.current = null;
   state.currentPage = null;
-  setHelpMenu(false);
-  markActive();
-  document.title = `${screenName(location.hash || "#/home")} · yt-coach`;
-  refreshSidebar();             // progress and counts change as the user works; cheap local reads
-  if (helpPanel) helpPanel.setPage(helpPage(location.hash));
-  // A malformed #/refs/<id> (undecodable) parses to null: show the list instead.
-  const { page, params } = parseHash() || { page: "refs", params: {} };
   main.replaceChildren(h("p", { class: "muted", role: "status" }, "불러오는 중…"));
   try {
     const mod = await import(`/static/pages/${page}.js`);
@@ -461,6 +502,61 @@ async function route() {
   }
 }
 
+// ---- leaving with unsaved input ------------------------------------------------
+// A page with unsaved input (unsavedNote) is asked about before any route change. The hash is put back right away
+// (replaceState: no hashchange) so the address matches the screen while the question is open. No browser dialog.
+
+function pageNote() {
+  const cur = state.current;
+  if (!cur || typeof cur.unsavedNote !== "function") return null;
+  try { return cur.unsavedNote() || null; } catch { return null; }
+}
+
+function closeLeave() {
+  const box = $("leave-ask");
+  if (box) { box.hidden = true; box.replaceChildren(); }
+}
+
+// The leave question (also ctx.confirmLeave for in-page moves such as the video page's 다시 만들기).
+function confirmLeave(note, go) {
+  let box = $("leave-ask");
+  if (!box) {
+    box = h("section", { id: "leave-ask", class: "leave-ask", "aria-labelledby": "leave-ask-t", hidden: true });
+    $("main").before(box);
+  }
+  const back = document.activeElement;
+  const leave = h("button", { type: "button", class: "btn btn-danger btn-s" }, "버리고 이동");
+  const stay = h("button", { type: "button", class: "btn btn-s" }, "계속 편집");
+  leave.addEventListener("click", () => { closeLeave(); go(); });
+  stay.addEventListener("click", () => {
+    closeLeave();
+    if (back && back.isConnected && back !== document.body) back.focus();
+    else $("main").focus();
+  });
+  box.onkeydown = (e) => { if (e.key === "Escape") { e.stopPropagation(); stay.click(); } };
+  box.replaceChildren(
+    h("p", { class: "leave-ask-text", id: "leave-ask-t", role: "alert" }, `${note}은 사라집니다. 이동할까요?`),
+    h("div", { class: "btn-row" }, leave, stay));
+  box.hidden = false;
+  stay.focus();
+}
+
+function onHashChange() {
+  // Ignore non-route hashes (e.g. the skip link's "#main"); only "#/..." drives the router.
+  if (!(location.hash === "" || location.hash.startsWith("#/"))) return;
+  const target = location.hash || "#/home";
+  if (!state.leaveOk && state.hash && target !== state.hash) {
+    const note = pageNote();
+    if (note) {
+      history.replaceState(null, "", state.hash);
+      if (state.current && typeof state.current.onStay === "function") state.current.onStay();
+      confirmLeave(note, () => { state.leaveOk = true; location.hash = target; });
+      return;
+    }
+  }
+  route();
+}
+
 // ---- start ----------------------------------------------------------------
 
 async function start() {
@@ -468,10 +564,7 @@ async function start() {
   renderTabbar();
   renderSidebar();
   helpPanel = createHelpPanel($("help-panel"), () => ctx.category);
-  window.addEventListener("hashchange", () => {
-    // Ignore non-route hashes (e.g. the skip link's "#main"); only "#/..." drives the router.
-    if (location.hash === "" || location.hash.startsWith("#/")) route();
-  });
+  window.addEventListener("hashchange", onHashChange);
   document.querySelector(".skip").addEventListener("click", (e) => {
     e.preventDefault();
     $("main").focus();

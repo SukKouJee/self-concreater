@@ -53,6 +53,11 @@ function alive(mine) {
   return S === mine && mine.ctx.isCurrent();
 }
 
+// Inside the video workspace (params.embedded) the workspace shows the title, crumb and 인쇄: the page keeps a
+// hidden heading only.
+const embedded = () => !!(S && S.params && S.params.embedded);
+const pageHeading = (text) => (embedded() ? h("h2", { class: "sr-only" }, "콘티") : h("h1", {}, text));
+
 function readHandled() {
   try {
     const v = JSON.parse(localStorage.getItem(HANDLED_KEY) || "[]");
@@ -139,14 +144,14 @@ function liveRegion() {
 }
 
 function loading(title) {
-  S.el.replaceChildren(h("h1", {}, title), h("p", { class: "muted", role: "status" }, "불러오는 중…"));
+  S.el.replaceChildren(pageHeading(title), h("p", { class: "muted", role: "status" }, "불러오는 중…"));
 }
 
 function loadError(e, retryFn) {
   const retry = h("button", { type: "button", class: "btn" }, "다시 시도");
   retry.addEventListener("click", () => { if (S && S.ctx.isCurrent()) retryFn(); });
   S.el.replaceChildren(
-    h("h1", {}, "콘티"),
+    pageHeading("콘티"),
     h("p", { class: "error", role: "alert" }, e.message || "불러오지 못했습니다"),
     h("div", { class: "btn-row" }, retry, h("a", { class: "btn", href: "#/conti" }, "콘티 목록")),
   );
@@ -173,7 +178,8 @@ async function loadList() {
     if (!alive(mine)) return;
     mine.drafts = d.drafts || [];
     const only = mine.params.path;
-    if (only) {
+    if (only && mine.params.recreate) mine.recreateOpen = only;   // workspace "다시 만들기": the card's confirm
+    else if (only) {
       const draft = mine.drafts.find((x) => x.path === only);
       if (draft && draft.conti) {
         location.replace(contiHref(draft.conti));
@@ -203,8 +209,8 @@ function renderList() {
   const only = S.params.path;
   S.el.replaceChildren();
   S.el.append(liveRegion());
-  if (only) S.el.append(h("p", { class: "crumb" }, h("a", { href: "#/conti" }, "← 콘티 목록")));
-  S.el.append(h("h1", {}, "콘티"));
+  if (only && !embedded()) S.el.append(h("p", { class: "crumb" }, h("a", { href: "#/conti" }, "← 콘티 목록")));
+  S.el.append(pageHeading("콘티"));
   if (!only) {
     S.el.append(h("p", { class: "lead" },
       "기획안으로 컷별 대사·가이드가 들어간 콘티를 만듭니다. 콘티를 열고 컷을 누르면 레퍼런스 실제 장면과 대사 대안을 볼 수 있습니다."));
@@ -548,7 +554,7 @@ async function loadEditor(keep = false) {
     if (!alive(mine) || e.error === "aborted") return;
     if (keep && mine.nodes.board) { mine.ctx.toast(e.message, "error"); return; }
     if (e.error === "conti_not_found") {
-      S.el.replaceChildren(h("h1", {}, "콘티"),
+      S.el.replaceChildren(pageHeading("콘티"),
         h("p", { class: "error", role: "alert" }, e.message),
         h("a", { class: "btn", href: "#/conti" }, "콘티 목록"));
       return;
@@ -564,7 +570,8 @@ function currentCut() {
 function renderEditor() {
   S.el.replaceChildren();
   S.nodes = {};
-  S.el.append(liveRegion(), h("p", { class: "crumb" }, h("a", { href: "#/conti" }, "← 콘티 목록")));
+  S.el.append(liveRegion());
+  if (!embedded()) S.el.append(h("p", { class: "crumb" }, h("a", { href: "#/conti" }, "← 콘티 목록")));
   S.nodes.header = h("div", { class: "conti-head" });
   S.nodes.conflict = h("div", { class: "conflict-slot" });
   const vertical = S.data.fm.format === "shorts";
@@ -675,8 +682,8 @@ function renderHeader() {
   if (fm.category) meta.append(h("span", { class: "tag" }, fm.category));
   const actions = h("div", { class: "btn-row" });
   actions.append(historyButton());
-  if (d.html) actions.append(h("a", { class: "btn", href: filesUrl(d.html), target: "_blank", rel: "noopener" }, "스토리보드 HTML"));
-  head.replaceChildren(h("div", { class: "conti-title" }, h("h1", {}, fm.title || d.path), actions), meta, srtRow());
+  if (d.html && !embedded()) actions.append(h("a", { class: "btn", href: filesUrl(d.html), target: "_blank", rel: "noopener" }, "스토리보드 HTML"));
+  head.replaceChildren(h("div", { class: "conti-title" }, pageHeading(fm.title || d.path), actions), meta, srtRow());
   const warns = d.warnings || [];
   if (warns.length) {
     head.append(h("details", { class: "warn-box" },
@@ -2391,6 +2398,13 @@ export async function mount(el, params, ctx) {
   const path = params.path;
   if (path && isContiPath(path)) await loadEditor(false);
   else await loadList();
+}
+
+// Cut edits typed but not saved (kept per cut in S.forms until save/reset): named so leaving can ask first.
+export function unsavedNote() {
+  if (!S) return null;
+  const cuts = [...S.forms].filter(([, d]) => Object.keys(d).length).map(([k]) => k).sort((a, b) => a - b);
+  return cuts.length ? `저장하지 않은 입력(컷 ${cuts.join(", ")})` : null;
 }
 
 export function unmount() {

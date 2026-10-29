@@ -105,6 +105,7 @@ let S = null;
 function freshState(el, ctx, category, params) {
   return {
     el, ctx, category, mode: params.mode || "list", path: params.path || null, wantSource: params.source || null,
+    embedded: !!params.embedded,
     sources: null, source: params.source || "", topic: "", target: "", targetBad: false, sourceNote: null,
     job: null, jobId: null, preview: null, edit: null, dirty: false,
     timer: null, pollErrors: 0, running: false, saving: false, trashing: false,
@@ -128,14 +129,17 @@ function focusStatus() {
   if (t) { t.setAttribute("tabindex", "-1"); t.focus({ preventScroll: true }); }
 }
 
-const crumb = () => h("p", { class: "crumb" }, h("a", { href: "#/draft" }, "← 기획안 목록"));
+// Inside the video workspace (params.embedded) the workspace shows the crumb and the title.
+const embedded = () => !!(S && S.embedded);
+const crumb = () => (embedded() ? null : h("p", { class: "crumb" }, h("a", { href: "#/draft" }, "← 기획안 목록")));
+const viewHeading = (text) => (embedded() ? h("h2", { class: "sr-only" }, "기획안") : h("h1", {}, text));
 
 // ---- load ---------------------------------------------------------------------
 
 function loadError(e, mine) {
   const retry = h("button", { type: "button", class: "btn" }, "다시 시도");
   retry.addEventListener("click", () => { if (alive(mine)) load(); });
-  fill(mine.el, mine.mode === "list" ? null : crumb(), h("h1", {}, "기획안"),
+  fill(mine.el, mine.mode === "list" ? null : crumb(), viewHeading("기획안"),
     h("p", { class: "error", role: "alert" }, (e && e.message) || "불러오지 못했습니다"),
     h("div", { class: "btn-row" }, retry));
 }
@@ -164,8 +168,8 @@ async function loadList(mine, cat) {
 }
 
 async function loadView(mine) {
-  if (!mine.path) { fill(mine.el, crumb(), h("h1", {}, "기획안"), h("p", { class: "error", role: "alert" }, "기획안 경로가 없습니다")); return; }
-  fill(mine.el, crumb(), h("h1", {}, "기획안"), h("p", { class: "muted", role: "status" }, "불러오는 중…"));
+  if (!mine.path) { fill(mine.el, crumb(), viewHeading("기획안"), h("p", { class: "error", role: "alert" }, "기획안 경로가 없습니다")); return; }
+  fill(mine.el, crumb(), viewHeading("기획안"), h("p", { class: "muted", role: "status" }, "불러오는 중…"));
   try {
     const data = await mine.ctx.api("GET", `/api/draft?path=${encodeURIComponent(mine.path)}`);
     if (!alive(mine)) return;
@@ -316,7 +320,7 @@ function renderView(mine, d) {
   ].filter(Boolean).join(" · ");
   mine.detail = d;
   mine.nodes = {};
-  mine.nodes.status = h("h1", {}, String(d.title));
+  mine.nodes.status = viewHeading(String(d.title));
   mine.nodes.plBar = h("div", { class: "pol-bar" });
   mine.nodes.plBody = h("div", { class: "pol-body" });
   const kids = [crumb(), mine.nodes.status, h("p", { class: "muted small" }, meta),

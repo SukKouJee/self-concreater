@@ -455,7 +455,8 @@ def test_draft_menu_is_live_route():
     assert 'soon: "draft"' not in app
     assert 'case "draft"' in app
     assert '"#/draft"' in home
-    assert "#/draft/view/" in home
+    assert "videoHref(videoId(" in home               # in-progress videos open the video workspace
+    assert "#/draft/view/" not in home
 
 
 def test_draft_page_contract_and_safety():
@@ -1177,3 +1178,65 @@ def test_footage_retry_ignores_clicks_while_reloading():
     body = js[start: js.index("\n}\n", start)]
     assert "mine.busy.has(key)" in body and "await load()" in body and "markBusy(key, false)" in body
     assert js.count("() => retryLoad(") == 2 and "() => load())" not in js
+
+
+# ---- video workspace (Phase 2) -------------------------------------------------------------------
+
+def _js(name):
+    return (STATIC_DIR / name).read_text(encoding="utf-8")
+
+
+def test_video_page_has_four_tabs_and_progress_card():
+    js = _js("pages/video.js")
+    for token in ["export async function mount", "export function unmount", "export function update",
+                  "export function unsavedNote", "export function onStay", "export function onCategory",
+                  'from "/static/video-utils.js"', 'from "/static/ui.js"', "TABS", "tabs(", "stages(",
+                  "nextAction(", "stageText(", "contiSummary(", "shootLine(", "videoMeta(", "shortTitle(",
+                  '"진행 단계"', '"내 영상"', '"폰 촬영 모드"', '"다 찍음"', '"인쇄"', '"다시 만들기"',
+                  '"+ 새 영상 시작"', "/api/drafts/filmed", "/api/status", "/api/draft?path=", "/api/conti?path=",
+                  'role: "tabpanel"', "isCurrent()", "shoot-dark"]:
+        assert token in js, token
+    # the hosted pages: plan = draft view, conti, diagnose - mounted with their own mount/unmount and a flag
+    for token in ['"/static/pages/draft.js"', '"/static/pages/conti.js"', '"/static/pages/diagnose.js"',
+                  "embedded: true", ".unmount()"]:
+        assert token in js, token
+    for bad in ["innerHTML", "insertAdjacentHTML", "outerHTML", "confirm(", "alert(", "prompt("]:
+        assert bad not in js, bad
+    utils = _js("video-utils.js")
+    for label in ('"기획안"', '"콘티"', '"촬영 체크"', '"진단"', '"다듬기"', '"편집"'):
+        assert label in utils, label
+
+
+def test_router_has_video_routes_legacy_redirects_and_leave_guard():
+    app = _js("app.js")
+    assert re.search(r'import \{[^}]*legacyRoute[^}]*\} from "/static/video-utils\.js"', app)
+    assert "parseVideoHash" in app and 'page: "video"' in app
+    route = app[app.index("async function route("):app.index("// ---- start")]
+    assert "legacyRoute(" in route and "location.replace(" in route        # old bookmarks keep working, no extra entry
+    assert ".update(" in route                                              # tab switch in place, no remount
+    # unsaved edits: asked before the route changes (no confirm()), hash put back with replaceState
+    assert "unsavedNote" in app and "history.replaceState" in app and "confirmLeave" in app
+    assert '"버리고 이동"' in app and '"계속 편집"' in app
+    assert "confirm(" not in app.replace("confirmLeave(", "").replace("pop-confirm", "").replace("help-confirm", "")
+
+
+def test_hosted_pages_hide_their_own_head_in_the_workspace():
+    for name in ("draft.js", "conti.js", "diagnose.js"):
+        js = _js(f"pages/{name}")
+        assert "embedded" in js, name
+    conti = _js("pages/conti.js")
+    assert "export function unsavedNote" in conti              # the workspace and the router ask before leaving
+    assert "S.forms" in conti.split("export function unsavedNote", 1)[1]
+
+
+def test_sidebar_and_phone_tab_open_the_video_list():
+    app = _js("app.js")
+    assert 'href: "#/videos"' in app                           # 전체 N편
+    assert '"#/videos"' in _js("menu-utils.js")
+
+
+def test_video_css_title_rule_and_progress():
+    css = _js("app.css")
+    assert re.search(r"\.video-title \{[^}]*font-size: 30px[^}]*border-left: 6px solid var\(--rec\)", css)
+    assert re.search(r"\.vp-steps \{[^}]*grid-template-columns: repeat\(6, minmax\(0, 1fr\)\)", css)
+    assert ".leave-ask" in css

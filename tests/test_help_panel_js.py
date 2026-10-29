@@ -33,6 +33,13 @@ def test_help_page_ignores_query_and_odd_hash():
         "report", "home", "refs", "home"]
 
 
+def test_help_page_for_video_workspace_and_library_tab():
+    hashes = ["#/videos", "#/video/x", "#/video/x/plan", "#/video/x/conti", "#/video/x/check", "#/video/x/shoot",
+              "#/video/x/diagnose", "#/refs?tab=library", "#/refs?tab=other"]
+    assert run_js(f"{json.dumps(hashes)}.map(m.helpPage)") == [
+        "draft", "draft", "draft", "conti", "conti", "conti", "diagnose", "library", "refs"]
+
+
 def test_trim_history_keeps_last_six():
     r = run_js('m.trimHistory(Array.from({length: 8}, (_, i) => ({role: "user", text: String(i)}))).map(x => x.text)')
     assert r == ["2", "3", "4", "5", "6", "7"]

@@ -1,4 +1,6 @@
-// Pure helpers for the home screen (no DOM, no imports) so node tests can load them directly.
+// Pure helpers for the home screen (no DOM) so node tests can load them directly. It only imports the pure
+// video-utils.js (relative path).
+import { videoHref, videoId } from "./video-utils.js";
 
 // Per-video steps (GET /api/status videos[].steps keys, in order).
 export const STEP_NAMES = {
@@ -24,9 +26,9 @@ export function isFolded(videos, path) {
 
 // Action for a video's next step: a link, the in-place filmed toggle, or nothing (video complete).
 export function nextButton(step, path) {
-  if (step === "conti") return { text: "콘티 만들기", href: `#/conti/${encodeURIComponent(path)}` };
+  if (step === "conti") return { text: "콘티 만들기", href: videoHref(videoId(path), "conti") };
   if (step === "filmed") return { text: "촬영함 체크", action: "film" };
-  if (step === "diagnose") return { text: "진단하기", href: `#/diagnose/${encodeURIComponent(path)}` };
+  if (step === "diagnose") return { text: "진단하기", href: videoHref(videoId(path), "diagnose") };
   return null;
 }
 
