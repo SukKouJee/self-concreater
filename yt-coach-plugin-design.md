@@ -276,7 +276,7 @@ schema_version: 3       # 2: 컷의 선택 필드 ref_frame 추가. 3: 컷마다
 
 **컷 편집 규칙**
 - 컷 `id`는 한 번 붙으면 바뀌지 않는다(순서·번호·섹션이 바뀌어도, 지우고 되돌려도 같은 id). 번호 `n`과 시간은 순서에서 다시 계산한다.
-- 컷 순서 바꾸기·섹션 경계 넘기기(섹션이 바뀜)·사이에 넣기·복제·삭제를 지원한다. 새 컷 기본값은 미디엄, 4초, "새 컷", "촬영 지시를 적어 주세요". 길이는 0.5~120초, 0.5 단위.
+- 컷 순서 바꾸기·섹션 경계 넘기기(섹션이 바뀜)·사이에 넣기·복제·삭제를 지원한다. 새 컷 기본값은 미디엄, 4초, "새 컷", "촬영 지시를 적어 주세요". 길이는 0.5~600초(합친 장면은 몇 분이 될 수 있다), 0.5 단위.
 - 섹션의 마지막 컷은 지우거나 다른 섹션으로 옮길 수 없다("섹션에 컷이 하나는 있어야 해요").
 - 섹션 시간 = 그 섹션 컷 길이의 합. `target_sec`와 형식(쇼츠/롱폼)은 그대로이고, 화면 머리에 "목표 15:00 → 지금 15:08 (+0:08)"처럼 차이를 보인다.
 - 콘티가 SRT·자막 영상보다 나중에 바뀌었으면 그 영역에 "콘티가 바뀌었어요 — 다시 받아 주세요"를 띄운다.
@@ -326,6 +326,15 @@ AI 출력은 제안. 파일 저장 전 사용자 확인.
 - 출력(`scripts/footage_out.py`): `drafts/<기획안>-remaining.html`(폰용 남은 컷, 안 찍음 컷 포함, 한 파일), `drafts/<기획안>-footage.csv`(위치, UTF-8 BOM), `drafts/<기획안>-cuts/NN_<원본 이름>.mp4`(고른 구간을 기본은 재압축 없이 잘라 낸 클립(키프레임 때문에 시작이 몇 초 앞당겨질 수 있음). 잘라 붙이기(remux)가 실패하거나 시작이 너무 어긋나면 H.264+AAC로 다시 압축해 시작을 정확히 맞추고(`reencoded: true`, 느림), 멈추기는 컷 사이에서만 듣는다. 만들기 전 그 폴더의 이전 클립만 지움). 콘티 삭제 시 이 출력과 상태 파일도 휴지통으로 함께 옮기며, 되돌릴 때 상태 파일은 `workspace/footage_match/`로 돌려놓는다. 화면 표시: 파일이 사라진 컷은 "원본 없음", 열 수 없는 파일은 폴더 줄의 "읽을 수 없음 N개".
 - UI(`scripts/ui/api_footage.py`): `GET /api/footage`, `POST /api/footage/{folders, folders/remove, process, choose, not-filmed, reset, suggestions/hide, suggestions/insert, remaining, csv, clips}`, 미디어 `GET /api/footage/media/<fid>`·`/api/footage/frame/<fid>/<rel>`. 처리·맞추기(`footage`)·클립 만들기(`footage_clips`)는 서로, 그리고 레퍼런스 수집(`collect`)의 무거운 작업과 동시에 돌지 않으며(`JobManager.start`; 사용자 확인만 기다리는 수집 대기는 예외), 콘티·기획안 삭제도 막는다.
 - 원칙: 원본 영상은 읽기만 한다. 쓰기는 작업 폴더(`workspace/footage`, `workspace/footage_match`, `drafts/`)에만. 의미 판정은 Claude(제안), 수집·계산·출력은 스크립트. 알려진 한계: HEVC는 Chrome·Edge에서 재생 안 될 수 있어 사진 띠로 대체(변환 안 함, 소리만 나오고 화면이 검은 경우는 감지 못 함), 받아쓰기 30분 경계에 걸친 말은 둘로 나뉠 수 있음.
+
+### 7.3 장면 단위 콘티와 내용 맞춤 사진 (v2.7)
+스펙: `docs/superpowers/specs/2026-10-29-scene-conti-design.md`.
+- **장면 단위**: 샷(draft)·컷(콘티) 하나는 편집 컷이 아니라 **찍을 장면 하나**다. 같은 섹션 안에서 `action`이 같은 샷·컷은 한 장면이고(연속이 아니어도, 쇼츠도 예외 없음), 길이는 찍어 쓸 분량(롱폼 대개 10~60초, 쇼츠 1~5초)이다. 아키타입 평균 컷 길이는 `guide`의 편집 메모 근거로만 쓴다. `yt-conti`는 예전 기획안의 반복 샷도 같은 규칙으로 묶어 만든다(기획안 md는 고치지 않는다). 컷 길이 상한 `MAX_CUT_SEC`는 600초.
+- **기존 콘티 합치기** (`scripts/scene_merge.py`, 규칙 `skills/yt-conti/merge.md`): `conti merge <conti.md>`(또는 `POST /api/conti/merge/preview`)가 반복 컷을 묶는 계획을 미리보기 JSON으로 낸다. 장면 위치는 첫 등장 자리, 길이는 합, 대표 size/angle은 첫 컷, 컷 id는 첫 컷의 것. 대사는 원래 컷 순서로 이은 글을 Claude가 글자를 바꾸지 않고 장면에 다시 나눈다(검증: 장면 `line`을 이으면 그 글). 저장은 `conti merge <conti.md> --cuts <json> --hash <sha>`(`POST /api/conti/merge/apply`)이고, 저장 전 이력에 `before_merge`("합치기 전")를 남긴다. 촬영 판정은 사용자 판정만 합쳐진 장면(첫 사용자 판정)으로 옮기고 AI 판정은 버린다. 사라진 id의 사용자 판정은 상태에 남겨 두어 "합치기 전"으로 되돌리면 다시 보인다. 해시가 미리보기 뒤 달라졌으면 `conti_changed`.
+- **프레임 한 줄 설명 `desc`**: 레퍼런스 대표 프레임마다 한 줄 설명(1~60자)을 **프레임당 한 번** 만든다. 저장 위치는 `workspace/shots/<video_id>.json`의 프레임 라벨 `desc`(영상 md는 건드리지 않는다). CLI: `shots describe-context`·`apply-desc`·`desc-status`. 화면은 `POST /api/refs/describe`(job `refs_describe`)와 `GET /api/refs/describe-status`. 샷 분류(`shots apply`)가 라벨을 다시 쓸 때도 기존 `desc`는 남긴다.
+- **컷의 `ref_auto`**: 컷의 선택 필드 `{frame, match: "content"}`. Claude가 장면(id·action·guide·size)과 `desc`가 있는 후보 목록을 글로만 맞춰 고른 사진이다(이미지 없음, `skills/yt-conti/pick-refs.md`, `scripts/conti_refs.py`, 장면 40개 묶음). 콘티를 만들 때와 `POST /api/conti/refs/pick`(job `conti_refs`, 화면 "사진 다시 고르기", CLI 없음)에서만 부르고, 렌더는 저장된 값만 쓴다. 표시 순서는 `ref_frame`(사용자 고정, "참고(고정)") → `ref_auto`("참고") → 샷 크기·섹션 맞춤("구도만 참고"). 파일이 사라졌으면 다음 단계로 내려간다. 합칠 때는 합쳐지는 컷 중 첫 컷의 `ref_auto`를 이어받는다. `ref_auto`는 표시용 필드지만 저장하면 이력에 auto 버전으로 남는다.
+- **이미지 상한의 구분**: 사진 설명 job은 **Claude 호출 하나에 이미지 8장**(`shots.DESC_BATCH`)이고 약 840장이면 약 105번, 한 번만 한다. 레퍼런스 분석의 "장면당 1장, 영상당 최대 40장"(8절)과 촬영본 맞추기의 "호출당 8장·실행당 120장"(7.2)은 그대로이고 서로 별개다. 사진 고르기·합치기 호출은 이미지를 보내지 않는다.
+- 스키마: `ref_auto`는 선택 필드라 `schema_version`은 3 그대로다(예전 파일도 그대로 읽는다).
 
 ## 8. 비용·운영
 - 영상은 하나씩 처리, md가 있으면 재분석 안 함
