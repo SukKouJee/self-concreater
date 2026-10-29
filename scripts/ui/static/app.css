@@ -582,7 +582,7 @@ code { background: var(--chip); padding: 1px 6px; border-radius: 4px; }
 .cut-line { font-size: 14px; color: var(--ink); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .cut-line.muted { color: var(--muted); }
 .badge.match-pinned { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
-.badge.match-approx { color: var(--ink2); border-style: dashed; }
+.badge.match-approx, .badge.match-composition { color: var(--ink2); border-style: dashed; }
 .badge.match-exact { color: var(--ok); border-color: var(--ok); }
 
 .cut-panel { background: var(--surface); border: 1px solid var(--grid); border-radius: var(--radius); padding: var(--sp-4); min-width: 0; }

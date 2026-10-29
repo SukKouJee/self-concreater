@@ -14,9 +14,9 @@ from typing import Any
 
 from scripts.common import workspace_dir
 
-STEPS = ("fetch", "stt", "cuts", "analyze", "shots")
+STEPS = ("fetch", "stt", "cuts", "analyze", "shots", "describe")
 KEEP = 20
-ENGINE_STEPS = ("analyze", "shots")
+ENGINE_STEPS = ("analyze", "shots", "describe")
 MIN_EXPECTED = 1.0  # 예상 시간의 하한: 진행률 계산에서 0·음수로 나누지 않게
 # 단계의 처리 방식 버전. 방식이 바뀌어 예전 기록이 새 속도와 맞지 않으면 올린다.
 # 기록에 "method"로 남기고, 예상 시간은 지금 버전 기록만 쓴다(없는 기록은 1).
@@ -33,6 +33,7 @@ DEFAULTS: dict[str, dict[str, float]] = {
     "cuts": {"per_video_sec": 0.10, "fixed_sec": 7.0},
     "analyze": {"per_video_sec": 0.0, "fixed_sec": 90.0},
     "shots": {"per_video_sec": 0.0, "fixed_sec": 60.0},
+    "describe": {"per_video_sec": 0.0, "fixed_sec": 45.0},   # 사진 설명 한 묶음(8장). 가정값, 실측이 쌓이면 바뀐다
 }
 
 

@@ -10,7 +10,7 @@ draft JSON (yt-draft 규칙)
    "sections": [{"label", "sub"?, "start", "end", "script", "shots": [{"size", "angle"?, "sec", "action"}]}],
    "prep"?: [..]}
 - 프런트매터는 영상 md와 같은 축(sections, hook_type, narrative_type, pacing)을 쓴다 → /yt-diagnose가 그대로 비교
-- 계획 컷 길이 = 섹션 길이 / 샷 수. 아키타입과 섹션 비율 차이를 표로 붙인다
+- 샷 리스트는 장면 단위라 pacing.avg_cut_sec는 두지 않는다(basis: scenes). 아키타입과 섹션 비율 차이를 표로 붙인다
 """
 from __future__ import annotations
 
@@ -235,16 +235,18 @@ def validate(data: dict) -> dict:
 
 
 def planned_pacing(sections: list[dict]) -> dict:
+    """기획의 pacing 프런트매터. 샷 리스트는 장면 단위(한 장면 10~60초)라 레퍼런스 평균 컷(약 3초)과 견줄 수 없어
+    평균 컷을 두지 않는다(`basis: scenes`, 진단 pacing 축은 '컷 정보 없음'). 예전에 저장된 기획의 값은 그대로 읽는다."""
     if any(not s.get("shots") for s in sections):
         return {"avg_cut_sec": None, "by_section": {}}   # 대본만 있는 기획: 컷 정보 없음
-    by: dict[str, list[float]] = {}
-    for s in sections:
-        dur, n = by.get(s["label"], [0.0, 0])
-        by[s["label"]] = [dur + s["end"] - s["start"], n + len(s["shots"])]
+    return {"avg_cut_sec": None, "by_section": {}, "basis": "scenes"}
+
+
+def _scene_summary(sections: list[dict]) -> str:
+    """개요 길이 줄의 장면 요약: "장면 N개 · 평균 X초"."""
+    count = sum(len(s["shots"]) for s in sections)
     total = sum(s["end"] - s["start"] for s in sections)
-    shots = sum(len(s["shots"]) for s in sections)
-    return {"avg_cut_sec": round(total / shots, 2),
-            "by_section": {k: round(d / n, 2) for k, (d, n) in by.items()}}
+    return f"장면 {count}개 · 평균 {round(total / count, 2)}초"
 
 
 def compare(sections: list[dict], archetype: dict | None) -> dict | None:
@@ -282,8 +284,7 @@ def render(data: dict, pacing: dict, comp: dict | None, template_line: str | Non
            f"- 출처: {data.get('source') or '-'}" + (f" · 아키타입 {comp['archetype']} {comp['name']}" if comp else ""),
            *origin,
            f"- 길이: {fmt_time(data['sections'][-1]['end'])} · " + (
-               f"계획 컷 {sum(len(s['shots']) for s in data['sections'])}개 (평균 {pacing['avg_cut_sec']}초)"
-               if pacing["avg_cut_sec"] else "대본만 (샷 리스트 없음)"),
+               _scene_summary(data["sections"]) if pacing.get("basis") == "scenes" else "대본만 (샷 리스트 없음)"),
            f"- 훅: {data['hook_type']} · 서사: {data['narrative_type']}", "", "## 대본"]
     n = 0
     for s in data["sections"]:
@@ -298,8 +299,8 @@ def render(data: dict, pacing: dict, comp: dict | None, template_line: str | Non
             out.append(f"| {n} | {shot['size']} | {shot.get('angle') or '-'} | {shot.get('sec', '-')}초 | {action} |")
     if comp:
         out += ["", "## 아키타입 비교", f"{comp['archetype']} {comp['name']} 평균과 섹션 비율 비교 "
-                f"(아키타입 평균 컷 {comp['archetype_avg_cut']}초 · 이 기획 "
-                f"{str(pacing['avg_cut_sec']) + '초' if pacing['avg_cut_sec'] else '컷 정보 없음'})", "",
+                f"(아키타입 평균 컷 {comp['archetype_avg_cut']}초 · "
+                f"{'이 기획은 장면 단위라 컷 길이 비교 없음' if pacing.get('basis') == 'scenes' else '이 기획 컷 정보 없음'})", "",
                 "| 섹션 | 기획 | 아키타입 | 차이 |", "|---|---|---|---|"]
         out += [f"| {r['label']} | {_pct(r['draft'])} | {_pct(r['archetype'])} | {r['gap']:+.0%} |" for r in comp["ratio"]]
     if data.get("prep"):

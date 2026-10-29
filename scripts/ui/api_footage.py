@@ -478,7 +478,7 @@ def _hide(req: Request) -> dict:
 
 
 def suggested_sec(start: float, end: float) -> float:
-    """구간 길이를 컷 길이 규칙(0.5초 단위, 0.5~120초)에 맞춘다."""
+    """구간 길이를 컷 길이 규칙(0.5초 단위, 0.5~600초)에 맞춘다."""
     sec = round((end - start) / conti.SEC_STEP) * conti.SEC_STEP
     return min(conti.MAX_CUT_SEC, max(conti.MIN_CUT_SEC, sec))
 

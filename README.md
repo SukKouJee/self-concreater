@@ -20,7 +20,7 @@
 | `/yt-inspire <category> [주제]` | 모티브 카드(흐름·기법·각도·조합) 생성·누적, `star <id>`로 ★ 표시, 기법 카탈로그 중복 병합, 지인 기법을 재료로 고르기(`--library`) | ✅ |
 | `/yt-draft <category> <motif-id\|archetype> "<주제>"` | 섹션별 대본 + 샷 리스트 → `drafts/`, 아키타입 비율 비교, 지인 기획안 틀(`library:<id>`)로 시작 | ✅ |
 | `/yt-polish <draft\|latest>` | 저장된 기획안의 훅 5개·제목 10개·썸네일 지시서를 만들고, 한국어 기준 점수·지적과 내 레퍼런스 근거를 붙여 보여 준다. 고른 것만 기획안에 반영(제목·훅 대본·훅 유형 교체, `## 패키징`에 썸네일 지시서와 이전 값 이력) | ✅ |
-| `/yt-conti <draft\|latest\|-conti.md>` | 기획안 → 전체 대사 + 컷별 대사·자막·효과음·가이드 콘티(`-conti.md`), 샷 도식 + 레퍼런스 참고 프레임 HTML 스토리보드. `-conti.md`를 고치면 다시 그리기 | ✅ |
+| `/yt-conti <draft\|latest\|-conti.md>` | 기획안 → 전체 대사 + 컷별 대사·자막·효과음·가이드 콘티(`-conti.md`), 샷 도식 + 레퍼런스 참고 프레임 HTML 스토리보드. `-conti.md`를 고치면 다시 그리기, 반복 컷은 장면으로 합치기(`ytc conti merge`) | ✅ |
 | `/yt-diagnose <category> <link\|draft\|대본>` | 내 콘텐츠를 아키타입과 축별 비교(근접도·갭·다음 행동) → `mine/`, `intentional`로 의도한 차이 제외 | ✅ |
 | `/yt-mission [today\|submit <file>\|skip\|swap]` | 하루 15~30분 미션, 제출 피드백·난이도 기록, 난이도에 따라 크기 조정 | ✅ |
 | `/yt-review [YYYY-Www]` | 주간 회고 → `reviews/`, 카테고리 HTML 리포트 링크, 승인 시 profile 갱신 | ✅ |
@@ -54,7 +54,7 @@ bin\ytc.cmd ui           # Git Bash 없는 Windows
 | 모으기 | 공용 라이브러리 (`#/library`. 연결 전에는 저장소 주소·표시 이름으로 연결, 연결 뒤에는 "받기"(마지막 받은 시각)와 탭 "기법"/"기획안 틀"(카테고리·작성자·잘 먹힘 거르기, 작성자·메모·"내가 올림" 표시)을 봄. 기법 카드를 체크해 "모티브 재료로 쓰기"(모티브 화면의 "지인 기법" 칸으로 전달), 틀 카드의 "이 틀로 기획안 만들기"(기획안 화면 "지인 틀"). "공유하기" 탭: 내 기법/기획안 고르기 → 미리보기(기획안은 "섹션 요약 받기"로 Claude 1회, 고치기) → 메모·잘 먹힘 → "올리기"와 인라인 확인 뒤에만 올림. 이미 올린 항목은 "그래도 새로 올리기"로 따로 확인. 지인이 쓴 글은 마크다운 표시일 뿐 실행되지 않음) | 2차 ✅ |
 | 분석 | 유형화 (ref 수·단계, 축별 판정, 아키타입 카드, 이상치. 실행 → 미리보기에서 근거·이름 고치기 → 저장) | 2차 ✅ |
 | 분석 | 리포트 (탭 2개. "카테고리 리포트": "리포트 만들기"(Claude 없음)로 `reports/<카테고리>-<날짜>.html`을 만들고 목록에서 골라 화면 안(스크립트 실행 차단 프레임)이나 새 탭에서 보기. "주간 회고": 주를 고르면 미션 완료율·종류·난이도·건너뛴 사유·새 모티브 카드·진단 갭이 바로 보이고(Claude 없음), "회고 쓰기"로 요약·반복된 약점·다음 주 방향·프로필 변경 제안을 받아 고쳐 "저장" → `reviews/<주>.md`(`## 내 메모` 유지). 저장한 회고에서 제안마다 체크해 "프로필에 반영"(지금/바꿀 값 나란히, 체크한 섹션만)) | 2차 ✅ |
-| 만들기 | 콘티 (컷별 레퍼런스 장면·대사 대안을 클릭으로 고르기, CapCut용 자막 SRT 받기, 컷 추가·복제·삭제·순서 바꾸기와 버전 이력·되돌리기, 편집본 영상의 컷에 자막 시간 맞추기: `POST /api/conti/srt-fit`, 움직이는 자막 영상(초록 배경 MP4) 만들기: `POST /api/conti/caption-video`, 촬영 영상 연결·컷 맞추기: 날짜별 촬영 폴더를 이어 컷마다 찍었는지 판정하고 남은 컷(폰용 HTML)·위치 CSV·컷 클립 만들기: `/api/footage/*`) | 1차 ✅ |
+| 만들기 | 콘티 (컷별 레퍼런스 장면·대사 대안을 클릭으로 고르기, CapCut용 자막 SRT 받기, 컷 추가·복제·삭제·순서 바꾸기와 버전 이력·되돌리기, 반복 컷을 장면으로 합치기(미리보기 → 저장, "합치기 전" 이력으로 되돌리기: `/api/conti/merge/*`), 장면에 맞는 레퍼런스 사진 고르기(`POST /api/conti/refs/pick`)와 레퍼런스 프레임 한 줄 설명 만들기(`POST /api/refs/describe`), 편집본 영상의 컷에 자막 시간 맞추기: `POST /api/conti/srt-fit`, 움직이는 자막 영상(초록 배경 MP4) 만들기: `POST /api/conti/caption-video`, 촬영 영상 연결·컷 맞추기: 날짜별 촬영 폴더를 이어 컷마다 찍었는지 판정하고 남은 컷(폰용 HTML)·위치 CSV·컷 클립 만들기: `/api/footage/*`) | 1차 ✅ |
 | 만들기 | 모티브 (새 카드 뽑기 → 미리보기에서 고쳐 고른 카드만 저장, 저장한 카드 거르기·★·"기획안 만들기"로 그 카드를 출처로 기획안 화면 열기. 기법 카탈로그 병합은 터미널 `/yt-coach:yt-inspire`) | 2차 ✅ |
 | 만들기 | 기획안 (저장한 기획안 목록·상세 읽기 전용, 출처 고르기 → 만들기 → 미리보기에서 제목·대본·샷 표·준비물 고쳐 저장, 콘티 화면으로 연결, 상세에서 "훅·제목·썸네일 다듬기": 훅 5·제목 10·썸네일 후보를 점수·지적·근거와 보고 고쳐 저장) | 2차 ✅ |
 | 성장 | 진단 (내 영상·기획안 목록 → "비교하기"로 가장 가까운 아키타입·축별 근접도·갭을 바로 보기(Claude 없음) → "설명 받기"로 요약·갭 설명·다음 행동을 받아 고쳐 저장 → `mine/<이름>.md`(`## 내 메모` 유지). 저장한 진단에서 갭마다 "일부러 다르게 한 거예요" 표시. 대본 붙여넣기·링크 바로 진단은 터미널 `/yt-coach:yt-diagnose`) | 2차 ✅ |
@@ -183,15 +183,15 @@ Claude가 라이브러리를 직접 부를 수 있는 도구 8개를 제공합�
 | `features` | (라이브러리) md 프런트매터 → 축별 피처 |
 | `cluster` | `run <cat>` (ref만 축별 군집·판정·아키타입·이상치 → `workspace/typify/<cat>.json`), `apply <cat> --notes <json>` (index.md 기록) |
 | `motif` | `context <cat> [--topic]`, `add <cat> --cards <json>`, `star <cat> <id> [--off]`, `merge-techniques <cat> --plan <json>` |
-| `draft` | `context <cat> <motif-id\|A1>`, `save <cat> --draft <json>` (검증·계획 컷·아키타입 비교 → `drafts/`) |
+| `draft` | `context <cat> <motif-id\|A1>`, `save <cat> --draft <json>` (검증·장면 수·아키타입 비교 → `drafts/`) |
 | `polish` | `context <draft.md>`, `evaluate <draft.md> --data <json>`, `apply <draft.md> --choice <json> --hash <sha>` (훅·제목·썸네일 한국어 점수·지적·레퍼런스 근거 → 고른 것을 기획안에 반영, 이전 값은 `## 패키징` 이력. 해시가 다르면 `draft_changed`) |
-| `conti` | `context <draft.md>`, `save <draft.md> --conti <json> [--force]`, `render <conti.md>`, `srt <conti.md> [--track caption\|line] [--video <편집본>]`(CapCut용 `.srt`. `--video`면 자막 없는 편집본의 실제 컷에 시간을 맞춤), `update`, `scenes`, `cut-context`, `history`, `history-name`, `history-restore`, `history-diff` (검증·대사 길이 경고·참고 프레임 매칭 → `drafts/*-conti.md`·`.html`. update·scenes·cut-context는 화면의 컷 단위 편집·장면 후보·대사 대안 입력) |
+| `conti` | `context <draft.md>`, `save <draft.md> --conti <json> [--force]`, `render <conti.md>`, `srt <conti.md> [--track caption\|line] [--video <편집본>]`(CapCut용 `.srt`. `--video`면 자막 없는 편집본의 실제 컷에 시간을 맞춤), `update`, `scenes`, `cut-context`, `history`, `history-name`, `history-restore`, `history-diff`, `merge <conti.md> [--cuts <json> --hash <sha>]`(반복 컷을 장면으로 합침: 인자 없이 부르면 계획 미리보기 JSON, `--cuts`·`--hash`를 주면 저장하고 이력에 "합치기 전"을 남김. 장면별 레퍼런스 사진 `ref_auto`는 화면의 "사진 다시 고르기"로만 고르며 CLI 명령은 없음) (검증·대사 길이 경고·참고 프레임 매칭 → `drafts/*-conti.md`·`.html`. update·scenes·cut-context는 화면의 컷 단위 편집·장면 후보·대사 대안 입력) |
 | `captions` | `setup`(처음 한 번, `remotion/`에서 `npm ci`), `check`, `render <conti.md> [--video <편집본>] [--track caption\|line]` — 콘티 자막을 초록 배경 움직이는 자막 MP4(`drafts/<기획안>-captions.mp4`)로 렌더(선택 설치, Remotion). 취소·시간 초과 시 그 하위 프로세스만 종료 |
 | `footage` | `scan <folder>`, `process <file> [--no-stt]` — 촬영 영상 한 파일을 장면 나누기·사진 모음·받아쓰기(`workspace/footage/<지문>/`). 컷 맞추기는 화면에서(`scripts/footage_match.py`, Claude 호출) |
 | `footage_out` | `remaining <conti.md>`, `csv <conti.md>`, `clips <conti.md>` — 남은 컷 HTML(`drafts/<기획안>-remaining.html`), 위치 CSV(`-footage.csv`), 컷 클립(`-cuts/NN_<원본 이름>.mp4`) |
 | `similarity` | `compare <cat> <target>`, `save <cat> <target> --notes <json>` (→ `mine/`), `intentional <cat> <name> <key> [--off]` |
 | `mission` | `context`, `save --mission <json> [--replace]`, `submit <file> --difficulty --feedback`, `skip --reason`, `week [YYYY-Www]`, `review-save`, `profile-update` (모두 `--date`로 날짜 지정 가능) |
-| `shots` | `pending <cat>`, `context <id> --category`, `apply <id> --category --labels <json>` (장면 길이 가중 분포 → md `shots`) |
+| `shots` | `pending <cat>`, `context <id> --category`, `apply <id> --category --labels <json>` (장면 길이 가중 분포 → md `shots`), `describe-context <id> --category`, `apply-desc <id> --category --labels <json>`, `desc-status <cat>` (저장 프레임마다 한 줄 설명 `desc` → `workspace/shots/<id>.json`, md는 건드리지 않음) |
 | `report` | `<cat> [--date]` → `reports/<cat>-<date>.html` (축별 판정·아키타입 비교·컷 길이 분포·진단 추이, 외부 자원 없는 한 파일) |
 | `stt` | `<video_id> [--force]` — 자막 없는 영상 음성 인식 (선택: `pip install faster-whisper`, 모델 `YT_STT_MODEL`, 기본 small). CPU에서 1분 쇼츠 약 30초(첫 실행은 모델 다운로드 ~460MB). 말이 없으면 `speech: false`, 빈 자막으로 기록돼 `sparse` 처리 |
 | `status` | `[category]` — 카테고리별 진행 단계(레퍼런스 수·유형화·기획안·콘티·진단), 다음 할 일, 최근 결과물, 오늘 미션. 화면 홈과 같은 JSON |

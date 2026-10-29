@@ -14,7 +14,7 @@ description: yt-coach에서 similarity compare 결과(축별 근접도·갭)를 
   - structure·pacing: 아키타입 중심과의 거리를 다른 유형 영상들까지의 거리에 견준 값. 1이면 아키타입 그대로, 0이면 다른 유형만큼 다르다. 0.7 이상이면 '이 유형답다'.
   - hook·narrative: 아키타입 영상 중 나와 같은 유형의 비율. 0.2면 소수파.
   - title: 제목 패턴이 겹치는 정도.
-  - null: 그 축을 잴 정보가 없다(대본만 있는 기획은 pacing이 없다). 언급만 하고 넘어간다.
+  - null: 그 축을 잴 정보가 없다(대본만 있는 기획과 장면 단위로 적은 기획(`pacing.basis: scenes`)은 pacing이 없다). 언급만 하고 넘어간다.
 - `gaps`: 아키타입과 눈에 띄게 다른 지점. key별 의미:
   - `structure:<label>`: 그 섹션의 시간 비중(target)과 아키타입 평균(archetype) 차이가 10%p 이상
   - `hook` / `narrative`: 아키타입에서 절반 넘게 쓰는 유형과 다름

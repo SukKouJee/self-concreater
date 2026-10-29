@@ -302,7 +302,7 @@ def test_remaining_html_embeds_each_reference_image_once(scene_setup, home, monk
     frame = home / "workspace" / "frames" / "same.jpg"
     frame.parent.mkdir(parents=True, exist_ok=True)
     frame.write_bytes(b"\xff\xd8same-image-bytes")
-    ref = {"frame": "workspace/frames/same.jpg", "title": "같은 장면", "match": "exact"}
+    ref = {"frame": "workspace/frames/same.jpg", "title": "같은 장면", "match": "content"}
     monkeypatch.setattr(conti, "cut_refs", lambda fm: {c["n"]: ref for c in fm["cuts"]})
     text = (home / footage_out.remaining_html(path)).read_text("utf-8")
     assert text.count("data:image/jpeg;base64,") == 1            # 컷 3개가 같은 사진: 한 번만 싣는다

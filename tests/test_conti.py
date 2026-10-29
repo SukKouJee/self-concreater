@@ -395,7 +395,7 @@ def test_scenes_order_and_limit(saved, home):
     assert f[2] not in frames and len(frames) == len(set(frames))
     assert [s["match"] for s in got[1:-1]] == ["approx"] * (len(got) - 2) and set(frames[1:-1]) <= set(g)
     assert [s["frame"] for s in conti.scenes(saved, 2, limit=2)] == frames[:2]
-    assert set(got[0]) == {"frame", "size", "section", "video", "title", "match"}
+    assert set(got[0]) == {"frame", "size", "section", "video", "title", "match", "desc"}
 
 
 def test_cut_context_values(saved):
@@ -938,7 +938,7 @@ def test_duplicate_gets_new_id_right_after(saved):
 
 
 @pytest.mark.parametrize("fields", [
-    {"sec": 0.4}, {"sec": 120.5}, {"sec": 1.3}, {"sec": "abc"}, {"sec": True},
+    {"sec": 0.4}, {"sec": 600.5}, {"sec": 1.3}, {"sec": "abc"}, {"sec": True},
     {"size": "없는크기"}, {"action": " "}, {"guide": ""},
 ])
 def test_update_rejects_bad_sec_size_action(saved, fields):
@@ -946,6 +946,11 @@ def test_update_rejects_bad_sec_size_action(saved, fields):
     with pytest.raises(ScriptError) as exc:
         _edit(saved, {"op": "update", "n": 1, "fields": fields})
     assert exc.value.code == "invalid_edit" and saved.read_bytes() == before
+
+
+def test_update_allows_long_scene_up_to_ten_minutes(saved):
+    _edit(saved, {"op": "update", "n": 1, "fields": {"sec": 600}})
+    assert _cuts(saved)[0]["sec"] == 600
 
 
 def test_update_sec_size_action_shifts_later_sections(saved):
@@ -1145,3 +1150,170 @@ def test_trash_moves_footage_outputs_and_state_with_conti(saved, draft_md, home)
     assert (trash / "drafts" / html_r.name).is_file() and (trash / "drafts" / csv_f.name).is_file()
     assert (trash / "drafts" / cuts_dir.name / "01_a.mp4").is_file()
     assert (trash / "workspace" / "footage_match" / state.name).is_file()
+
+
+# --- Task 4: 내용 맞춤 사진(ref_auto) -----------------------------------------------------
+
+def auto(frame):
+    return {"frame": frame, "match": "content"}
+
+
+def describe_frames(home, vid, size="클로즈업", descs=("시장 골목", "국물 한 숟갈", None, None)):
+    frames = make_frames(home, vid)
+    labels = [{"frame": f, "size": size, "angle": "눈높이", "section": "body", **({"desc": d} if d else {})}
+              for f, d in zip(frames, descs)]
+    path = home / "workspace" / "shots" / f"{vid}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"labels": labels}, ensure_ascii=False), encoding="utf-8")
+    return frames
+
+
+REL = "workspace/frames/a00/scene001.jpg"
+
+
+def test_validate_keeps_ref_auto():
+    _, cuts = conti.validate(with_cuts(c0={"ref_auto": {**auto(REL), "extra": 1}}), SECTIONS)
+    assert cuts[0]["ref_auto"] == auto(REL) and "ref_auto" not in cuts[1]
+
+
+@pytest.mark.parametrize("value", [
+    {"frame": REL, "match": "composition"}, {"frame": "refs/x.jpg", "match": "content"},
+    {"frame": "workspace/frames/../../secret.jpg", "match": "content"}, {"frame": "/abs/x.jpg", "match": "content"},
+    {"frame": r"workspace\frames\x.jpg", "match": "content"}, {"frame": "workspace/frames/./x.jpg", "match": "content"},
+    {"frame": "workspace/frames/C:/x.jpg", "match": "content"}, {"frame": 3, "match": "content"}, REL, None, [REL]])
+def test_validate_drops_malformed_ref_auto(value):
+    _, cuts = conti.validate(with_cuts(c0={"ref_auto": value}), SECTIONS)
+    assert "ref_auto" not in cuts[0]
+
+
+SECTIONS = [{"idx": 0, "label": "hook", "start": 0, "end": 2}, {"idx": 1, "label": "body", "start": 2, "end": 6},
+            {"idx": 2, "label": "outro", "start": 6, "end": 8}]
+
+
+def test_cut_refs_order_pinned_auto_composition(saved, home):
+    a = describe_frames(home, "a00", size="탑뷰")
+    pin = pin_frame(home)
+    fm = conti._load_conti(saved)
+    fm["cuts"][0]["ref_auto"] = auto(a[1])                      # 탑뷰 컷 1: 내용 맞춤
+    fm["cuts"][1]["ref_auto"] = auto(a[0])
+    fm["cuts"][1]["ref_frame"] = pin                            # 고정이 먼저
+    fm["cuts"][3]["size"] = "탑뷰"                               # 내용 맞춤 없음 → 구도 맞춤
+    refs = conti.cut_refs(fm)
+    assert refs[1]["match"] == "content" and refs[1]["frame"] == a[1] and refs[1]["desc"] == "국물 한 숟갈"
+    assert refs[2]["match"] == "pinned" and refs[2]["frame"] == pin and refs[2].get("desc") is None
+    assert refs[4]["match"] == "composition" and refs[4]["frame"] in a
+    assert 3 not in refs
+    assert refs[4]["desc"] == {a[0]: "시장 골목", a[1]: "국물 한 숟갈"}.get(refs[4]["frame"])
+
+
+def test_cut_refs_missing_auto_file_falls_back(saved, home):
+    a = describe_frames(home, "a00", size="탑뷰")
+    gone = "workspace/frames/gone/scene001.jpg"
+    fm = conti._load_conti(saved)
+    fm["cuts"][0]["ref_auto"] = auto(gone)
+    refs = conti.cut_refs(fm)
+    assert refs[1]["match"] == "composition" and refs[1]["frame"] in a
+
+
+def test_html_captions_content_and_composition(draft_md, home):
+    a = describe_frames(home, "a00", size="탑뷰")
+    data = with_cuts(c0={"ref_auto": auto(a[1])}, c3={"size": "탑뷰"})
+    page = (home / conti.save(draft_md, conti_file(home, data))["html"]).read_text("utf-8")
+    assert "참고 · 국물 한 숟갈" in page and "구도만 참고 · " in page and "참고(근사)" not in page
+
+
+def test_save_keeps_only_ref_auto_from_described_candidates(draft_md, home):
+    a = describe_frames(home, "a00", descs=("시장 골목", None, None, None))     # a[1]: 파일은 있지만 설명 없음
+    data = with_cuts(c0={"ref_auto": auto(a[0])}, c1={"ref_auto": auto(a[1])},
+                     c2={"ref_auto": auto("workspace/frames/zz9/scene001.jpg")})   # 없는 프레임
+    stored, _ = refstore.read_md(home / conti.save(draft_md, conti_file(home, data))["path"])
+    assert stored["cuts"][0]["ref_auto"] == auto(a[0])
+    assert all("ref_auto" not in c for c in stored["cuts"][1:])
+
+
+def test_main_save_drops_claude_written_ref_auto(draft_md, home):
+    make_frames(home, "a00")                                                      # 설명이 없으면 후보가 없다
+    data = with_cuts(c0={"ref_auto": auto("workspace/frames/a00/scene001.jpg")})
+    rel = draft_md.relative_to(home).as_posix()
+    saved = conti.main(["save", rel, "--conti", conti_file(home, data).relative_to(home).as_posix()])
+    stored, _ = refstore.read_md(home / saved["path"])
+    assert all("ref_auto" not in c for c in stored["cuts"])
+
+
+def test_scenes_includes_desc(saved, home):
+    a = describe_frames(home, "a00")
+    got = conti.scenes(saved, 2, limit=10)
+    by_frame = {s["frame"]: s for s in got}
+    assert by_frame[a[0]]["desc"] == "시장 골목" and by_frame[a[2]]["desc"] is None
+
+
+def test_ref_auto_survives_edits_and_restore(saved, home):
+    from scripts import conti_history
+
+    a = describe_frames(home, "a00")
+    fm, _ = refstore.read_md(saved)
+    fm["cuts"][1]["ref_auto"] = auto(a[0])
+    refstore.update_frontmatter(saved, {"cuts": fm["cuts"]})
+    conti.update_cut(saved, 2, {"sfx": "쿵"})
+    conti.edit_cuts(saved, {"op": "move", "n": 2, "to": 2}, None)
+    stored, _ = refstore.read_md(saved)
+    moved = next(c for c in stored["cuts"] if c["sfx"] == "쿵")
+    assert moved["ref_auto"] == auto(a[0])
+    n = conti_history.list_versions(saved)[0]["n"]
+    conti.update_cut(saved, 1, {"sfx": "띵띵"})
+    fm, _ = refstore.read_md(saved)
+    for c in fm["cuts"]:
+        c.pop("ref_auto", None)
+    refstore.update_frontmatter(saved, {"cuts": fm["cuts"]})
+    conti_history.restore(saved, n, None)
+    stored, _ = refstore.read_md(saved)
+    assert next(c for c in stored["cuts"] if c["sfx"] == "쿵")["ref_auto"] == auto(a[0])
+
+
+@pytest.mark.parametrize("fields,kept", [
+    ({"action": "다른 동작"}, False), ({"guide": "다른 가이드"}, False), ({"size": "탑뷰"}, False),
+    ({"sfx": "쿵"}, True), ({"line": "새 대사"}, True), ({"caption": "자막"}, True)])
+def test_update_drops_ref_auto_when_picked_fields_change(saved, home, fields, kept):
+    a = describe_frames(home, "a00")
+    fm, _ = refstore.read_md(saved)
+    fm["cuts"][1]["ref_auto"] = auto(a[0])
+    refstore.update_frontmatter(saved, {"cuts": fm["cuts"]})
+    conti.update_cut(saved, 2, fields)
+    stored, _ = refstore.read_md(saved)
+    assert ("ref_auto" in stored["cuts"][1]) is kept
+
+
+def test_update_keeps_ref_auto_when_picked_field_value_unchanged(saved, home):
+    a = describe_frames(home, "a00")
+    fm, _ = refstore.read_md(saved)
+    fm["cuts"][1]["ref_auto"] = auto(a[0])
+    refstore.update_frontmatter(saved, {"cuts": fm["cuts"]})
+    same = {k: fm["cuts"][1][k] for k in ("action", "guide", "size")}
+    conti.update_cut(saved, 2, {**same, "sfx": "쿵"})
+    stored, _ = refstore.read_md(saved)
+    assert stored["cuts"][1]["ref_auto"] == auto(a[0])
+
+
+def test_composition_spreads_past_content_frames(saved, home):
+    a = describe_frames(home, "a00", size="탑뷰")
+    fm = conti._load_conti(saved)
+    fm["cuts"][0]["ref_auto"] = auto(a[0])
+    fm["cuts"][3]["size"] = "탑뷰"
+    refs = conti.cut_refs(fm)
+    assert refs[1]["frame"] == a[0] and refs[4]["match"] == "composition" and refs[4]["frame"] != a[0]
+
+
+def test_html_note_without_descs_suggests_describing(draft_md, home):
+    make_frames(home, "a00")
+    shots = home / "workspace" / "shots" / "a00.json"
+    shots.parent.mkdir(parents=True, exist_ok=True)
+    frames = [f"workspace/frames/a00/scene{i:03d}.jpg" for i in (1, 2)]
+    shots.write_text(json.dumps({"labels": [{"frame": f, "size": "탑뷰", "section": "hook"} for f in frames]}), encoding="utf-8")
+    page = (home / conti.save(draft_md, conti_file(home))["html"]).read_text("utf-8")
+    assert "사진 설명을 만들고" in page and "맞는 사진이 없어" not in page
+
+
+def test_html_note_with_descs_says_nothing_fit(draft_md, home):
+    describe_frames(home, "a00", size="탑뷰")
+    page = (home / conti.save(draft_md, conti_file(home))["html"]).read_text("utf-8")
+    assert "맞는 사진이 없어 샷 크기만 맞췄습니다" in page and "사진 설명을 만들고" not in page

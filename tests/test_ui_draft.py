@@ -144,7 +144,7 @@ def test_detail_body_and_bad_paths(client, home):
     assert status == 200
     assert body["path"] == saved and body["category"] == CAT and body["source"] == CARD_ID
     assert body["hook_type"] == "result_first" and body["narrative_type"] == "journey"
-    assert body["target_sec"] == 60.0 and body["pacing"]["avg_cut_sec"] == 2.61
+    assert body["target_sec"] == 60.0 and body["pacing"]["basis"] == "scenes"
     assert [p["heading"] for p in body["body"]] == ["", "개요", "대본", "아키타입 비교", "준비물", "내 메모"]
     assert body["conti"] is None and body["html"] is None
     assert body["hash"] == conti.content_hash(saved)
@@ -193,7 +193,7 @@ def test_run_reaches_preview(client, home, fakes):
     preview = item["preview"]
     assert preview["draft"]["title"] == DRAFT["title"]
     assert preview["draft"]["sections"][1]["start"] == 3.0
-    assert preview["pacing"]["avg_cut_sec"] == 2.61
+    assert preview["pacing"]["basis"] == "scenes"
     assert preview["compare"]["archetype"] == "A1" and preview["compare"]["max_gap"] < 0.1
     assert preview["source"]["id"] == CARD_ID and preview["source"]["kind"] == "motif"
     [(rules, payload, task, kw)] = fakes.asks
@@ -268,7 +268,7 @@ def test_save_writes_and_marks_job(client, home):
     job = _run(client)
     status, body = _save(client, job["items"][0]["preview"]["draft"], job_id=job["id"])
     assert status == 200, body
-    assert body["path"].startswith("drafts/") and body["pacing"]["avg_cut_sec"] == 2.61
+    assert body["path"].startswith("drafts/") and body["pacing"]["basis"] == "scenes"
     assert body["compare"]["archetype"] == "A1"
     item = client.json("GET", f"/api/jobs/{job['id']}")[1]["job"]["items"][0]
     assert item["state"] == "saved" and item["ask"] is None

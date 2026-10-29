@@ -42,7 +42,7 @@ def test_can_remove():
 
 
 def test_snap_sec():
-    assert run_js("[0.3, 121, 4.26, 4.2, 0, 1.75, 120].map(m.snapSec)") == [0.5, 120, 4.5, 4, 0.5, 2, 120]
+    assert run_js("[0.3, 601, 4.26, 4.2, 0, 1.75, 600].map(m.snapSec)") == [0.5, 600, 4.5, 4, 0.5, 2, 600]
 
 
 def test_drop_target_down_one_row_is_old_index_plus_one():
@@ -88,7 +88,8 @@ def test_shot_sizes_match_server():
 
 def test_kind_text_and_version_label():
     assert run_js("m.KIND_TEXT") == {"created": "처음 만듦", "auto": "자동", "named": None,
-                                     "before_recreate": "다시 만들기 전", "external": "md 직접 수정", "restored": "되돌림"}
+                                     "before_recreate": "다시 만들기 전",
+                                     "before_merge": "합치기 전", "external": "md 직접 수정", "restored": "되돌림"}
     assert run_js("m.versionLabel({kind:'named',name:'촬영 전'})") == "촬영 전"
     assert run_js("m.versionLabel({kind:'auto',name:null})") == "자동"
     assert run_js("m.versionLabel({kind:'restored',name:'되돌림: 촬영 전'})") == "되돌림: 촬영 전"

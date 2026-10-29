@@ -21,13 +21,13 @@ const TRASH_WARNING = "콘티와 스토리보드, 이 콘티로 만든 자막(SR
 const RECREATE_WARNING = "다시 만들면 화면에서 바꾼 대사·가이드·고정한 참고 프레임이 사라지고 내 메모만 남습니다";
 const SAVED_TOAST = "저장했습니다 · 스토리보드도 다시 그렸습니다";
 const CHANGED_TEXT = "파일이 밖에서 바뀌었습니다 — 다시 불러오기";
-const MATCH_TEXT = { exact: "일치", approx: "근사", pinned: "고정" };
+const MATCH_TEXT = { pinned: "참고(고정)", content: "참고", composition: "구도만 참고" };
 const UNDO_MS = 8000;
 const INSERT_LABEL = "여기에 컷 넣기";
 const LAST_CUT_TEXT = "섹션에 컷이 하나는 있어야 해요";
 const STALE_TEXT = "콘티가 바뀌었어요 — 다시 받아 주세요";
 const EMPTY_TEXT = { guide: "가이드는 비울 수 없습니다.", action: "장면 설명은 비울 수 없습니다." };
-const SEC_TEXT = "길이는 0.5~120초 사이로 적어 주세요 (0.5초 단위)";
+const SEC_TEXT = "길이는 0.5~600초 사이로 적어 주세요 (0.5초 단위)";
 // kind: text (default) | area | select | number. required fields cannot be saved empty.
 const FIELDS = [
   { key: "line", label: "대사", kind: "area", rows: "2" },
@@ -1114,7 +1114,7 @@ function refThumb(ref, cls) {
 }
 
 function matchBadge(match) {
-  if (!match || match === "exact") return null;
+  if (!match || match === "content") return null;
   return h("span", { class: `badge match-${match}` }, MATCH_TEXT[match]);
 }
 
@@ -1368,7 +1368,7 @@ function renderPanel() {
       h("div", { class: "fig-box" }, cut.ref
         ? h("img", { src: filesUrl(cut.ref.frame), alt: `참고 프레임: ${cut.ref.title || ""}` })
         : h("span", { class: "muted" }, "참고 프레임 없음")),
-      h("figcaption", {}, cut.ref ? `참고 프레임 · ${MATCH_TEXT[cut.ref.match] || ""}` : "참고 프레임")));
+      h("figcaption", {}, cut.ref ? `${MATCH_TEXT[cut.ref.match] || "참고"} · ${cut.ref.desc || cut.ref.title || ""}` : "참고 프레임")));
   const info = h("div", { class: "cut-info" },
     h("p", { class: "panel-line" + (cut.line ? "" : " muted") }, cut.line ? `“${cut.line}”` : "(대사 없음)"),
     cut.action ? h("p", { class: "muted small" }, `장면 · ${cut.action}`) : null,
@@ -1588,7 +1588,7 @@ function fieldControl(f, cut, value) {
   const input = h("input", { id, type: f.kind === "number" ? "number" : "text", "data-fk": fk });
   if (f.kind === "number") {
     input.min = "0.5";
-    input.max = "120";
+    input.max = "600";
     input.step = "0.5";
     input.setAttribute("inputmode", "decimal");
   }
@@ -1625,7 +1625,7 @@ function editForm(cut) {
       field.append(count);
     }
     if (f.required) input.setAttribute("aria-describedby", "edit-err");
-    if (f.kind === "number") field.append(h("p", { class: "muted small" }, "0.5초 단위, 0.5~120초"));
+    if (f.kind === "number") field.append(h("p", { class: "muted small" }, "0.5초 단위, 0.5~600초"));
     const onChange = () => {
       const d = S.forms.get(cut.n) || {};
       d[f.key] = input.value;
@@ -1662,7 +1662,7 @@ function editForm(cut) {
     if ("sec" in fields) {
       const raw = fields.sec.trim();
       const n = Number(raw);
-      if (raw === "" || !Number.isFinite(n) || n < 0.5 || n > 120) { fail("sec", SEC_TEXT); return; }
+      if (raw === "" || !Number.isFinite(n) || n < 0.5 || n > 600) { fail("sec", SEC_TEXT); return; }
       fields.sec = snapSec(n);
       if (fields.sec === Number(cut.sec)) delete fields.sec;
     }

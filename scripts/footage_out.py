@@ -182,10 +182,10 @@ class _Images:
         if cls is None:
             cls = self.classes[ref["frame"]] = f"img{len(self.classes)}"
             self.rules.append(f".{cls}{{background-image:url({uri})}}")
-        tag = {"exact": "참고", "pinned": "참고(고정)"}.get(ref["match"], "참고(근사)")
         title = conti._esc(ref["title"])
+        caption = conti._esc(ref.get("desc") or ref["title"])
         return (f'<figure><div class="ref {cls}" role="img" aria-label="참고 프레임: {title}"></div>'
-                f'<figcaption title="{title}">{tag} · {title}</figcaption></figure>')
+                f'<figcaption title="{title}">{conti.ref_tag(ref["match"])} · {caption}</figcaption></figure>')
 
 
 def render_remaining(fm: dict, cuts: list[dict], present: dict[str, Path], now: float | None = None) -> str:

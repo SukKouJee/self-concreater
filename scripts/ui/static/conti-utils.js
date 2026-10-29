@@ -2,7 +2,7 @@
 // Cuts here are the objects from GET /api/conti: { id, section (number), ... } in play order.
 
 export const MIN_SEC = 0.5;
-export const MAX_SEC = 120;
+export const MAX_SEC = 600;
 
 function clock(sec) {
   const total = Math.max(0, Math.round(Number(sec) || 0));
@@ -29,7 +29,7 @@ export function canRemove(cuts, id) {
   return !!cut && cuts.filter((c) => c.section === cut.section).length >= 2;
 }
 
-// Length in seconds: 0.5 steps, 0.5..120.
+// Length in seconds: 0.5 steps, 0.5..600 (a merged scene can run minutes).
 export function snapSec(x) {
   const n = Number(x);
   if (!Number.isFinite(n)) return MIN_SEC;
@@ -77,7 +77,8 @@ export const SHOT_SIZES = ["익스트림 클로즈업", "클로즈업", "바스�
 
 // Version kinds as shown in the list. `named` has no fixed text: the name the user gave is the label.
 export const KIND_TEXT = {
-  created: "처음 만듦", auto: "자동", named: null, before_recreate: "다시 만들기 전", external: "md 직접 수정", restored: "되돌림",
+  created: "처음 만듦", auto: "자동", named: null, before_recreate: "다시 만들기 전", before_merge: "합치기 전",
+  external: "md 직접 수정", restored: "되돌림",
 };
 
 export function versionLabel(v) {
@@ -94,7 +95,7 @@ export function fmtWhen(iso) {
 
 const FIELD_TEXT = {
   line: "대사", caption: "자막", action: "장면 설명", guide: "가이드", sfx: "효과음", size: "샷 크기", angle: "앵글",
-  sec: "길이", ref_frame: "참고 프레임", section: "섹션",
+  sec: "길이", ref_frame: "참고 프레임", ref_auto: "자동 참고 사진", section: "섹션",
 };
 export const CUT_FIELD_KEYS = ["section", "size", "angle", "sec", "action", "line", "caption", "sfx", "guide", "ref_frame"];
 export const fieldText = (f) => FIELD_TEXT[f] || f;
