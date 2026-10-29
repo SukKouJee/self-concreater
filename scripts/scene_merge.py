@@ -57,7 +57,7 @@ def merge_fields(members: list[dict[str, Any]]) -> dict[str, Any]:
     merged: dict[str, Any] = {
         "id": first["id"], "section": first["section"], "size": first.get("size"),
         "angle": first.get("angle"), "action": first.get("action"),
-        "sec": sum(float(m.get("sec") or 0) for m in members),
+        "sec": round(sum(float(m.get("sec") or 0) for m in members), 2),
         "guide": _join_unique(members, "guide"), "caption": _join_unique(members, "caption"),
         "sfx": _join_unique(members, "sfx"), "line": "",
         "merged_ids": [m["id"] for m in members],

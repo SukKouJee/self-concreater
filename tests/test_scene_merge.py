@@ -33,13 +33,18 @@ def test_merge_fields_sums_and_dedups():
     members = [cut(1, 1, "A", guide="a", caption="x", sfx="s"), cut(2, 1, "A", guide="a", caption="", sfx="t"),
                cut(3, 1, "A", guide="b", caption="x", sfx="")]
     merged = scene_merge.merge_fields(members)
-    assert merged["sec"] == sum(m["sec"] for m in members)
-    assert round(merged["sec"], 1) == 7.2
+    assert merged["sec"] == 7.2
     assert merged["guide"] == "a / b"
     assert merged["caption"] == "x"
     assert merged["sfx"] == "s / t"
     assert merged["id"] == "id1" and merged["line"] == ""
     assert merged["merged_ids"] == ["id1", "id2", "id3"]
+
+
+@pytest.mark.parametrize("sec,total", [(2.4, 7.2), (0.1, 0.3), (3.6, 10.8)])
+def test_merge_fields_rounds_sec_sum(sec, total):
+    members = [cut(n, 1, "A", sec=sec) for n in (1, 2, 3)]
+    assert scene_merge.merge_fields(members)["sec"] == total
 
 
 def test_merge_keeps_first_pinned_frame():
