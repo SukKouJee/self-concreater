@@ -160,6 +160,12 @@ def test_next_action(draft, extras, expected):
     assert run_js(f"m.nextAction(m.stages({json.dumps(draft)}, {json.dumps(extras)}))") == expected
 
 
+def test_next_action_unknown_when_required_stages_are_unknown():
+    # status missing or failed: filmed/diagnose unknown -> never claim everything is done
+    assert run_js("m.nextAction(m.stages({conti: 'c'}, {}))") == {"label": "", "kind": "unknown"}
+    assert run_js("m.nextAction(m.stages({conti: 'c', filmed_at: '2026-10-28'}, {}))")["kind"] == "unknown"
+
+
 def test_default_tab():
     assert run_js("m.defaultTab(m.stages({conti: null}, {polish: false, captions: false, diagnose: false}))") == "conti"
     assert run_js("m.defaultTab(m.stages({conti: 'c', filmed_at: '2026-10-28'}, "

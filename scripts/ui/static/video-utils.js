@@ -123,10 +123,17 @@ const ACTIONS = {
   diagnose: { label: "진단하기", kind: "diagnose" },
 };
 
-// The progress card's right-side action for the current stage.
+const REQUIRED = new Set(STAGES.filter((s) => !s.optional).map((s) => s.key));
+
+// The progress card's right-side action for the current stage. "done" only when every required stage is known to be
+// done; with an unknown required stage (status missing or failed) the action is unknown (the card shows none).
 export function nextAction(list) {
-  const now = (list || []).find((s) => s.state === "now");
-  return (now && ACTIONS[now.key]) || { label: "모든 단계를 마쳤어요", kind: "done" };
+  const all = list || [];
+  const now = all.find((s) => s.state === "now");
+  if (now && ACTIONS[now.key]) return ACTIONS[now.key];
+  const required = all.filter((s) => REQUIRED.has(s.key));
+  if (required.length && required.every((s) => s.state === "done")) return { label: "모든 단계를 마쳤어요", kind: "done" };
+  return { label: "", kind: "unknown" };
 }
 
 // Tab opened by "#/video/<id>" without a tab: 진단 once the video is filmed, else 콘티.

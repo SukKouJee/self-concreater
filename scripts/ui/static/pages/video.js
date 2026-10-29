@@ -26,7 +26,7 @@ let V = null;
 function fresh(el, params, ctx) {
   return {
     el, params, ctx, category: ctx.category, tab: null, data: null, stages: [],
-    loadSeq: 0, host: null, hostSeq: 0, filming: false, nodes: {},
+    loadSeq: 0, loading: false, host: null, hostSeq: 0, filming: false, nodes: {},
   };
 }
 
@@ -59,6 +59,28 @@ async function fetchData(mine) {
     cards: ok(mo) ? ok(mo).cards || [] : [],
     archetypes: applied ? applied.archetypes || [] : [],
   };
+}
+
+// Tab switches and the 다 찍음 toggle re-read only /api/status (steps, filmed date, draft hash), plus the conti when
+// asked (its cut list and summary). A changed draft (hash) or a new/removed conti falls back to the full read.
+async function fetchLight(mine, withConti) {
+  const data = mine.data;
+  let st;
+  try {
+    st = await mine.ctx.api("GET", `/api/status?category=${enc(data.category || "")}`);
+  } catch (e) {
+    if (ignorable(e)) throw e;
+    return fetchData(mine);
+  }
+  const cat = (st.categories || []).find((c) => c.category === data.category);
+  const video = cat ? (cat.videos || []).find((v) => v.path === data.draft.path) || null : null;
+  const contiDone = !!video && (video.steps || []).some((s) => s.key === "conti" && s.done);
+  if (!video || video.hash !== data.draft.hash || contiDone !== !!data.draft.conti) return fetchData(mine);
+  let conti = data.conti;
+  if (withConti && data.draft.conti) {
+    try { conti = await mine.ctx.api("GET", `/api/conti?path=${enc(data.draft.conti)}`); } catch (e) { if (ignorable(e)) throw e; }
+  }
+  return { ...data, video, conti };
 }
 
 function stagesOf(data) {
@@ -143,16 +165,19 @@ function renderList(mine, videos, uploads) {
 
 async function loadVideo(mine) {
   const seq = ++mine.loadSeq;
+  mine.loading = true;
   fill(mine.el, h("p", { class: "muted", role: "status" }, "불러오는 중…"));
   let data;
   try {
     data = await fetchData(mine);
   } catch (e) {
-    if (!alive(mine) || seq !== mine.loadSeq || ignorable(e)) return;
-    renderLoadError(mine, e);
+    if (!alive(mine) || seq !== mine.loadSeq) return;
+    mine.loading = false;
+    if (!ignorable(e)) renderLoadError(mine, e);
     return;
   }
   if (!alive(mine) || seq !== mine.loadSeq) return;
+  mine.loading = false;
   adoptCategory(mine, data.category);
   mine.data = data;
   mine.stages = stagesOf(data);
@@ -230,7 +255,7 @@ function progressActions(mine) {
       filmedButton(mine, "card"),
     ];
   }
-  return [h("span", { class: "vp-done" }, act.label)];
+  return act.kind === "done" ? [h("span", { class: "vp-done" }, act.label)] : [];   // unknown: no action
 }
 
 // Draft-level "다 찍음" toggle (/api/drafts/filmed). aria-pressed shows the saved state.
@@ -256,14 +281,14 @@ async function setFilmed(mine, filmed) {
     mine.ctx.toast(e.message, "error");     // draft_changed: the refresh below takes the new hash
   }
   mine.filming = false;
-  await refreshHead(mine);
+  await refreshHead(mine, false);
 }
 
-// Re-read the data and repaint the header parts (not the tab panel). Keeps focus on the same control.
-async function refreshHead(mine) {
+// Re-read (light) and repaint the header parts (not the tab panel). Keeps focus on the same control.
+async function refreshHead(mine, withConti) {
   const seq = ++mine.loadSeq;
   try {
-    const data = await fetchData(mine);
+    const data = await fetchLight(mine, withConti);
     if (!alive(mine) || seq !== mine.loadSeq) return;
     mine.data = data;
     mine.stages = stagesOf(data);
@@ -351,8 +376,9 @@ async function mountTab(mine, tab, extra = {}) {
   mine.host = host;
   const live = () => alive(mine) && mine.hostSeq === seq;
   // The hosted page gets its own liveness and abort signal: switching tabs stops its late work like leaving would.
+  // The tab's category is the video's (a category switch with unsaved input waits for the leave question).
   const hostCtx = {
-    get category() { return mine.ctx.category; },
+    get category() { return mine.category || mine.ctx.category; },
     setCategory: mine.ctx.setCategory,
     refreshCategories: mine.ctx.refreshCategories,
     toast: mine.ctx.toast,
@@ -360,6 +386,7 @@ async function mountTab(mine, tab, extra = {}) {
     signal: abort.signal,
     isCurrent: live,
     confirmLeave: mine.ctx.confirmLeave,
+    navigate: mine.ctx.navigate,
   };
   fill(panel, h("p", { class: "muted", role: "status" }, "불러오는 중…"));
   try {
@@ -442,9 +469,11 @@ export async function mount(el, params, ctx) {
 export function update(params) {
   const mine = V;
   if (!mine || !params || params.mode !== "video" || mine.params.mode !== "video" || params.id !== mine.params.id) return false;
+  // first load still running: it opens params.tab; a failed load: remount (a fresh try)
+  if (!mine.data) { if (mine.loading) mine.params = params; return mine.loading; }
   mine.params = params;
-  if (!mine.data) return true;              // first load still running: it opens params.tab
   const hadFocus = mine.nodes.tabs.contains(document.activeElement);
+  const before = mine.tab;
   mine.tab = params.tab || defaultTab(mine.stages);
   document.title = `${shortTitle(mine.data.draft.title)} · yt-coach`;
   paintTabs(mine, hadFocus);
@@ -452,7 +481,8 @@ export function update(params) {
   unmountHost(mine);
   fill(mine.nodes.panel, h("p", { class: "muted", role: "status" }, "불러오는 중…"));
   const seq = mine.hostSeq;
-  refreshHead(mine).then(() => {
+  // the conti is re-read for the shoot list and after conti edits (summary); the rest comes from /api/status
+  refreshHead(mine, mine.tab === "check" || before === "conti").then(() => {
     if (alive(mine) && mine.hostSeq === seq) mountTab(mine, mine.tab);
   });
   return true;
@@ -469,12 +499,16 @@ export function onStay() {
   paintTabs(V, V.nodes.tabs.contains(document.activeElement));
 }
 
-// A video belongs to one category: another category leaves for its video list.
+// A video belongs to one category: another category leaves for its video list. With unsaved input the user is asked
+// first; staying puts the video's category back in the select and the sidebar.
 export function onCategory(category) {
   const mine = V;
   if (!mine || category === mine.category) return;
   if (mine.params.mode === "list") { mine.category = category; loadList(mine); return; }
-  location.hash = "#/videos";
+  const note = unsavedNote();
+  if (!note) { mine.ctx.navigate("#/videos"); return; }
+  mine.ctx.confirmLeave(note, () => mine.ctx.navigate("#/videos", { force: true }),
+    () => { if (alive(mine)) mine.ctx.setCategory(mine.category); });
 }
 
 export function unmount() {

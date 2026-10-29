@@ -1595,6 +1595,12 @@ export function onCategory(category) {
   location.hash = "#/draft";      // hashchange remounts the list page
 }
 
+// Hook/title/thumbnail edits in an open polish preview are not saved until 저장: named so leaving can ask first.
+export function unsavedNote() {
+  const pl = S && S.pl;
+  return pl && pl.edit && pl.dirty ? "저장하지 않은 다듬기 입력" : null;
+}
+
 export function unmount() {
   stopPolling();
   S = null;

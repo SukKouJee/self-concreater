@@ -10,7 +10,8 @@
 //   export function onStay()                 // optional; the user stayed after the leave question (repaint state)
 // ctx: { category, setCategory(name), refreshCategories(), toast(msg, kind), api(method, path, body),
 //        signal (AbortSignal, aborted when the user navigates away), isCurrent() (false once navigated away),
-//        confirmLeave(note, go) (the leave question; go() runs when the user chooses to leave) }
+//        confirmLeave(note, go, stayed) (the leave question: go() when the user leaves, stayed() when they stay),
+//        navigate(hash, { replace, force }) (replace: no new history entry; force: no leave question) }
 // Rule: after EVERY await in mount/handlers, `if (!ctx.isCurrent()) return;` before touching the DOM.
 import { api, showBanner } from "/static/api.js";
 import { h } from "/static/dom.js";
@@ -52,6 +53,8 @@ const state = {
   // sidebar data for the current category: { category, videos, ref, archetypes, motifs } (missing = unknown)
   side: null, sideSeq: 0,
   hash: null,         // the hash the current page was routed for (put back while the leave question is open)
+  at: 0,              // history stamp (history.state.ytcAt) of that entry: tells back from forward from a new entry
+  restoring: false,   // the router itself is moving back to state.hash (its hashchange is not a route)
   leaveOk: false,     // the user chose to leave despite unsaved input: the next route skips the question
 };
 
@@ -101,6 +104,7 @@ function pageCtx(token, signal) {
     signal,
     isCurrent: () => token === state.navToken,
     confirmLeave,
+    navigate,
   };
 }
 
@@ -182,7 +186,7 @@ function menuLink(it) {
   const side = state.side || {};
   const n = it.count ? side[it.count] : undefined;
   const label = typeof n === "number" ? `${it.label} ${n}개` : it.label;
-  return h("a", { class: "menu-link" + (it.href === "#/draft/new" ? " menu-new" : ""), href: it.href,
+  return h("a", { class: "menu-link" + (it.action ? " menu-new" : ""), href: it.href, "data-action": it.action ? "1" : null,
     "data-href": it.href, "aria-label": typeof n === "number" ? label : null },
   h("span", {}, it.label), typeof n === "number" ? h("span", { class: "menu-count", "aria-hidden": "true" }, String(n)) : null);
 }
@@ -251,7 +255,8 @@ function renderSubnav(hash) {
 function markActive() {
   const hash = location.hash || "#/home";
   for (const a of $("menu").querySelectorAll("a.menu-link")) {
-    const on = a.dataset.video ? isVideoActive(a.dataset.video, hash)
+    // action links ("+ 새 영상 시작" -> #/motif) are never current: the 모티브 item is, so one link per screen
+    const on = a.dataset.action ? false : a.dataset.video ? isVideoActive(a.dataset.video, hash)
       : a.dataset.exact ? a.dataset.href === hash : isActive(a.dataset.href, hash);
     if (on) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
@@ -457,6 +462,8 @@ function parseHash() {
 function routeChrome(hash) {
   state.hash = hash;
   state.leaveOk = false;
+  state.restoring = false;
+  stampEntry();
   closeLeave();
   setHelpMenu(false);
   markActive();
@@ -503,8 +510,35 @@ async function route() {
 }
 
 // ---- leaving with unsaved input ------------------------------------------------
-// A page with unsaved input (unsavedNote) is asked about before any route change. The hash is put back right away
-// (replaceState: no hashchange) so the address matches the screen while the question is open. No browser dialog.
+// A page with unsaved input (unsavedNote) is asked about before any route change. While the question is open the
+// browser goes back to the page's own history entry (no duplicate entries): a new entry (link, code) is dropped with
+// back(); a back/forward move is undone with forward()/back(), told apart by the entries' stamps. No browser dialog.
+
+let stampSeq = 0;
+// Every routed entry gets a creation stamp; entries keep their order, so stamps compare like positions.
+function stampEntry() {
+  const s = history.state;
+  if (s && typeof s.ytcAt === "number") { state.at = s.ytcAt; return; }
+  state.at = Date.now() * 1000 + (stampSeq++ % 1000);
+  try { history.replaceState({ ...(s && typeof s === "object" ? s : {}), ytcAt: state.at }, ""); } catch { /* ignore */ }
+}
+
+// Go back to the open page's entry without routing (its hashchange is skipped).
+function restoreEntry() {
+  const s = history.state;
+  state.restoring = true;
+  if (s && typeof s.ytcAt === "number") {
+    if (s.ytcAt < state.at) history.forward(); else history.back();     // the user moved back / forward
+  } else {
+    history.back();                                                      // a new entry: drop it
+  }
+}
+
+// In-app navigation for pages: replace = no new history entry; force = the user already chose to leave.
+function navigate(hash, { replace = false, force = false } = {}) {
+  if (force) state.leaveOk = true;
+  if (replace) location.replace(hash); else location.hash = hash;
+}
 
 function pageNote() {
   const cur = state.current;
@@ -518,7 +552,7 @@ function closeLeave() {
 }
 
 // The leave question (also ctx.confirmLeave for in-page moves such as the video page's 다시 만들기).
-function confirmLeave(note, go) {
+function confirmLeave(note, go, stayed) {
   let box = $("leave-ask");
   if (!box) {
     box = h("section", { id: "leave-ask", class: "leave-ask", "aria-labelledby": "leave-ask-t", hidden: true });
@@ -530,6 +564,7 @@ function confirmLeave(note, go) {
   leave.addEventListener("click", () => { closeLeave(); go(); });
   stay.addEventListener("click", () => {
     closeLeave();
+    if (typeof stayed === "function") stayed();
     if (back && back.isConnected && back !== document.body) back.focus();
     else $("main").focus();
   });
@@ -545,12 +580,13 @@ function onHashChange() {
   // Ignore non-route hashes (e.g. the skip link's "#main"); only "#/..." drives the router.
   if (!(location.hash === "" || location.hash.startsWith("#/"))) return;
   const target = location.hash || "#/home";
+  if (state.restoring && target === state.hash) { state.restoring = false; return; }
   if (!state.leaveOk && state.hash && target !== state.hash) {
     const note = pageNote();
     if (note) {
-      history.replaceState(null, "", state.hash);
+      restoreEntry();
       if (state.current && typeof state.current.onStay === "function") state.current.onStay();
-      confirmLeave(note, () => { state.leaveOk = true; location.hash = target; });
+      confirmLeave(note, () => navigate(target, { force: true }));
       return;
     }
   }

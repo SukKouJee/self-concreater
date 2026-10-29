@@ -167,7 +167,7 @@ code { background: var(--chip); padding: 1px 6px; border-radius: 4px; }
 .scrim { position: fixed; inset: var(--topbar-h) 0 0 0; background: rgba(0, 0, 0, .45); z-index: 30; }
 .scrim[hidden] { display: none; }
 /* sub links under the header: refs/library on every width; the other group links only on phones */
-.subnav { display: flex; gap: 2px; padding: 0 var(--sp-6); border-bottom: 1px solid var(--border); background: var(--surface); overflow-x: auto; }
+.subnav { display: flex; gap: 2px; padding: 0 var(--sp-6); border-bottom: 1px solid var(--border); background: var(--surface); overflow-x: auto; overflow-y: hidden; }
 .subnav[hidden] { display: none; }
 .subnav-link { color: var(--muted); text-decoration: none; font-size: 14px; padding: var(--sp-2) var(--sp-3); min-height: 40px;
   display: inline-flex; align-items: center; border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
@@ -1305,7 +1305,9 @@ code { background: var(--chip); padding: 1px 6px; border-radius: 4px; }
 .check-line { font-size: 13px; color: var(--ink-2); }
 .check-shot { font-size: 12px; color: var(--muted); }
 .check-empty p { margin: 0 0 4px; }
-.leave-ask { margin: var(--sp-3) var(--sp-6) 0; padding: var(--sp-3) var(--sp-4); max-width: 980px; background: var(--surface);
+/* sticky: a question raised from far down a long page (a sidebar click) stays in view under the header */
+.leave-ask { position: sticky; top: calc(var(--topbar-h) + var(--sp-2)); z-index: 30; box-shadow: var(--elev-2);
+  margin: var(--sp-3) var(--sp-6) 0; padding: var(--sp-3) var(--sp-4); max-width: 980px; background: var(--surface);
   border: 1px solid var(--danger); border-radius: var(--radius-card); }
 .leave-ask[hidden] { display: none; }
 .leave-ask-text { font-weight: 600; margin-bottom: var(--sp-2); }
@@ -1321,7 +1323,8 @@ code { background: var(--chip); padding: 1px 6px; border-radius: 4px; }
 .videos-empty { margin-top: var(--sp-3); }
 .videos-empty p { margin: 0 0 4px; }
 .videos-uploads { margin-top: var(--sp-5); }
-.shoot-stub { margin: calc(-1 * var(--sp-5)) calc(-1 * var(--sp-6)) 0; min-height: 70vh; padding: var(--sp-4); display: flex; flex-direction: column; gap: var(--sp-4); }
+/* fills the screen below the header (main padding cancelled on all sides) */
+.shoot-stub { margin: calc(-1 * var(--sp-5)) calc(-1 * var(--sp-6)) -48px; min-height: calc(100dvh - var(--topbar-h)); padding: var(--sp-4); display: flex; flex-direction: column; gap: var(--sp-4); }
 .shoot-top { display: flex; align-items: center; gap: var(--sp-3); }
 .shoot-close { min-height: 44px; min-width: 44px; }
 .shoot-name { flex: 1; min-width: 0; }
@@ -1339,6 +1342,7 @@ code { background: var(--chip); padding: 1px 6px; border-radius: 4px; }
   .vp-label { font-size: 11px; }
   .video-tools { margin-left: 0; }
   .leave-ask { margin: var(--sp-3) var(--sp-4) 0; }
-  .shoot-stub { margin: calc(-1 * var(--sp-4)) calc(-1 * var(--sp-4)) 0; }
+  .shoot-stub { margin: calc(-1 * var(--sp-4)) calc(-1 * var(--sp-4)) calc(-1 * var(--sp-6));
+    min-height: calc(100dvh - var(--topbar-h) - var(--tabbar-h) - env(safe-area-inset-bottom)); }
   .vp-actions .btn-rec { min-height: 44px; }
 }

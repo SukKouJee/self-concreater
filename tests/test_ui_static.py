@@ -1226,7 +1226,7 @@ def test_hosted_pages_hide_their_own_head_in_the_workspace():
         assert "embedded" in js, name
     conti = _js("pages/conti.js")
     assert "export function unsavedNote" in conti              # the workspace and the router ask before leaving
-    assert "S.forms" in conti.split("export function unsavedNote", 1)[1]
+    assert "unsavedCuts()" in conti.split("export function unsavedNote", 1)[1]
 
 
 def test_sidebar_and_phone_tab_open_the_video_list():
@@ -1240,3 +1240,42 @@ def test_video_css_title_rule_and_progress():
     assert re.search(r"\.video-title \{[^}]*font-size: 30px[^}]*border-left: 6px solid var\(--rec\)", css)
     assert re.search(r"\.vp-steps \{[^}]*grid-template-columns: repeat\(6, minmax\(0, 1fr\)\)", css)
     assert ".leave-ask" in css
+
+
+def test_leave_guard_keeps_history_clean_and_category_waits():
+    app = _js("app.js")
+    guard = app[app.index("// ---- leaving with unsaved input"):app.index("// ---- start")]
+    # stay: back to the page's own entry (new entry dropped, back/forward undone), no duplicate replaceState entry
+    assert "history.back()" in guard and "history.forward()" in guard and "ytcAt" in guard
+    assert 'replaceState(null, "", state.hash)' not in app
+    assert "function navigate(" in guard and "force" in guard and "location.replace(" in guard
+    assert "stayed()" in guard
+    video = _js("pages/video.js")
+    assert "navigate: mine.ctx.navigate" in video
+    on_cat = video[video.index("export function onCategory"):]
+    assert "confirmLeave(" in on_cat and "setCategory(mine.category)" in on_cat and "force: true" in on_cat
+    assert "get category() { return mine.category" in video
+
+
+def test_hosted_pages_fix_round_1():
+    conti = _js("pages/conti.js")
+    assert '"#/videos" }, "내 영상"' in conti                      # workspace error states lead to the video list
+    assert "navigate(contiHref(res.path), { replace: true })" in conti
+    assert conti.count("[...S.forms].filter(") == 1                # one unsavedCuts() helper
+    draft = _js("pages/draft.js")
+    assert "export function unsavedNote" in draft and "pl.dirty" in draft.split("export function unsavedNote", 1)[1]
+    video = _js("pages/video.js")
+    assert "return mine.loading" in video                          # a failed load remounts on the next route
+    assert "fetchLight(" in video
+
+
+def test_sidebar_new_video_is_an_action_link():
+    app = _js("app.js")
+    assert "a.dataset.action ? false" in app
+
+
+def test_css_fix_round_1():
+    css = _js("app.css")
+    assert re.search(r"\.leave-ask \{[^}]*position: sticky", css)
+    assert re.search(r"\.shoot-stub \{[^}]*min-height: calc\(100dvh - var\(--topbar-h\)\)", css)
+    assert re.search(r"\.subnav \{[^}]*overflow-y: hidden", css)

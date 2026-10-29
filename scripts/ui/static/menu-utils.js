@@ -13,7 +13,9 @@ export const SIDEBAR = [
       { label: "모티브", href: "#/motif", count: "motifs" },
     ],
   },
-  { group: "내 영상", videos: true, items: [{ label: "+ 새 영상 시작", href: "#/draft/new" }] },
+  // "+ 새 영상 시작" starts from a motif card (spec 4.3). `action`: a start link, never marked current (the 모티브 item
+  // above is the current one on #/motif).
+  { group: "내 영상", videos: true, items: [{ label: "+ 새 영상 시작", href: "#/motif", action: true }] },
   {
     group: "성장",
     items: [

@@ -57,6 +57,9 @@ function alive(mine) {
 // hidden heading only.
 const embedded = () => !!(S && S.params && S.params.embedded);
 const pageHeading = (text) => (embedded() ? h("h2", { class: "sr-only" }, "콘티") : h("h1", {}, text));
+// Way out of an error state: the conti list, or (in the workspace, where that list is gone) the video list.
+const listLink = () => (embedded() ? h("a", { class: "btn", href: "#/videos" }, "내 영상")
+  : h("a", { class: "btn", href: "#/conti" }, "콘티 목록"));
 
 function readHandled() {
   try {
@@ -153,7 +156,7 @@ function loadError(e, retryFn) {
   S.el.replaceChildren(
     pageHeading("콘티"),
     h("p", { class: "error", role: "alert" }, e.message || "불러오지 못했습니다"),
-    h("div", { class: "btn-row" }, retry, h("a", { class: "btn", href: "#/conti" }, "콘티 목록")),
+    h("div", { class: "btn-row" }, retry, listLink()),
   );
 }
 
@@ -234,7 +237,7 @@ function renderDraftList() {
     if (only) {
       card.append(h("h2", {}, "기획안을 찾을 수 없습니다"),
         h("p", { class: "muted" }, "기획안이 지워졌거나 내용을 읽을 수 없습니다."),
-        h("a", { class: "btn", href: "#/conti" }, "콘티 목록"));
+        listLink());
     } else {
       card.append(h("h2", {}, "기획안이 아직 없습니다"),
         h("p", { class: "muted" }, "콘티는 기획안에서 만듭니다. 먼저 기획안을 만드세요."),
@@ -523,7 +526,9 @@ async function savePreview(job, item, d, force) {
     markHandled(job.id);
     mine.job = null;
     mine.ctx.toast(`콘티를 저장했습니다 · 컷 ${res.cuts}개`, "info");
-    location.hash = contiHref(res.path);
+    // in the workspace: the same video's conti tab again, without a new history entry
+    if (embedded() && mine.ctx.navigate) mine.ctx.navigate(contiHref(res.path), { replace: true });
+    else location.hash = contiHref(res.path);
   } catch (e) {
     if (!alive(mine) || e.error === "aborted") return;
     if (e.error === "conti_exists") mine.forceSave = true;
@@ -556,7 +561,7 @@ async function loadEditor(keep = false) {
     if (e.error === "conti_not_found") {
       S.el.replaceChildren(pageHeading("콘티"),
         h("p", { class: "error", role: "alert" }, e.message),
-        h("a", { class: "btn", href: "#/conti" }, "콘티 목록"));
+        listLink());
       return;
     }
     loadError(e, () => loadEditor(false));
@@ -2231,7 +2236,7 @@ function restoreConfirm(n) {
     const b = S.nodes.hist.querySelector("[data-restore]");
     if (b) b.focus();
   });
-  const unsaved = [...S.forms].filter(([, d]) => Object.keys(d).length).map(([k]) => k).sort((a, b) => a - b);
+  const unsaved = unsavedCuts();
   return h("div", { class: "hist-confirm" },
     h("p", { class: "hist-confirm-text" }, RESTORE_NOTE),
     unsaved.length ? h("p", { class: "hist-confirm-text", "data-unsaved": "1" }, `저장하지 않은 입력(컷 ${unsaved.join(", ")})은 사라집니다`) : null,
@@ -2400,10 +2405,14 @@ export async function mount(el, params, ctx) {
   else await loadList();
 }
 
-// Cut edits typed but not saved (kept per cut in S.forms until save/reset): named so leaving can ask first.
+// Cut numbers with edits typed but not saved (kept per cut in S.forms until save/reset).
+function unsavedCuts() {
+  return S ? [...S.forms].filter(([, d]) => Object.keys(d).length).map(([k]) => k).sort((a, b) => a - b) : [];
+}
+
+// Named so leaving (another tab, another screen) can ask first.
 export function unsavedNote() {
-  if (!S) return null;
-  const cuts = [...S.forms].filter(([, d]) => Object.keys(d).length).map(([k]) => k).sort((a, b) => a - b);
+  const cuts = unsavedCuts();
   return cuts.length ? `저장하지 않은 입력(컷 ${cuts.join(", ")})` : null;
 }
 

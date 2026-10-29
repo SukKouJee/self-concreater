@@ -35,9 +35,10 @@ def test_sidebar_has_three_groups_in_spec_order():
     got = run_js("m.SIDEBAR.map((g) => [g.group, g.items.map((it) => [it.label, it.href])])")
     assert got == [
         ["영감", [["레퍼런스", "#/refs"], ["유형", "#/typify"], ["모티브", "#/motif"]]],
-        ["내 영상", [["+ 새 영상 시작", "#/draft/new"]]],
+        ["내 영상", [["+ 새 영상 시작", "#/motif"]]],
         ["성장", [["오늘 미션", "#/mission"], ["주간 리포트", "#/report"]]],
     ]
+    assert run_js("m.SIDEBAR[1].items[0].action") is True      # an action link: never marked current
     assert run_js("m.SIDEBAR.map((g) => !!g.videos)") == [False, True, False]   # 영상 목록은 내 영상 그룹에만
     assert run_js("m.SIDEBAR[0].items.map((it) => it.count)") == ["ref", "archetypes", "motifs"]
 
