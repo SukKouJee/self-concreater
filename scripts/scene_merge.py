@@ -131,7 +131,7 @@ def _sections(fm: dict[str, Any]) -> list[dict[str, Any]]:
             section["scenes"].append(merge_fields(members))
         else:
             alone = {k: members[0][k] for k in CUT_FIELDS if k in members[0]}
-            section["scenes"].append({**alone, "line": members[0].get("line") or "", "merged_ids": [alone["id"]]})
+            section["scenes"].append({**alone, "line": (members[0].get("line") or "").strip(), "merged_ids": [alone["id"]]})
     return out
 
 
