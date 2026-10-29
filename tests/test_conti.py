@@ -1222,6 +1222,24 @@ def test_html_captions_content_and_composition(draft_md, home):
     assert "참고 · 국물 한 숟갈" in page and "구도만 참고 · " in page and "참고(근사)" not in page
 
 
+def test_save_keeps_only_ref_auto_from_described_candidates(draft_md, home):
+    a = describe_frames(home, "a00", descs=("시장 골목", None, None, None))     # a[1]: 파일은 있지만 설명 없음
+    data = with_cuts(c0={"ref_auto": auto(a[0])}, c1={"ref_auto": auto(a[1])},
+                     c2={"ref_auto": auto("workspace/frames/zz9/scene001.jpg")})   # 없는 프레임
+    stored, _ = refstore.read_md(home / conti.save(draft_md, conti_file(home, data))["path"])
+    assert stored["cuts"][0]["ref_auto"] == auto(a[0])
+    assert all("ref_auto" not in c for c in stored["cuts"][1:])
+
+
+def test_main_save_drops_claude_written_ref_auto(draft_md, home):
+    make_frames(home, "a00")                                                      # 설명이 없으면 후보가 없다
+    data = with_cuts(c0={"ref_auto": auto("workspace/frames/a00/scene001.jpg")})
+    rel = draft_md.relative_to(home).as_posix()
+    saved = conti.main(["save", rel, "--conti", conti_file(home, data).relative_to(home).as_posix()])
+    stored, _ = refstore.read_md(home / saved["path"])
+    assert all("ref_auto" not in c for c in stored["cuts"])
+
+
 def test_scenes_includes_desc(saved, home):
     a = describe_frames(home, "a00")
     got = conti.scenes(saved, 2, limit=10)

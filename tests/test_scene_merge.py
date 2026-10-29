@@ -392,11 +392,12 @@ def test_merge_fields_carries_first_ref_auto():
 
 
 def test_apply_keeps_ref_auto_of_merged_and_single_scenes(home, draft_md):  # noqa: F811
-    data = json.loads(json.dumps(REPEAT))
     a, b = {"frame": "workspace/frames/a.jpg", "match": "content"}, {"frame": "workspace/frames/b.jpg", "match": "content"}
-    data["cuts"][0]["ref_auto"] = a                       # 혼자인 장면
-    data["cuts"][3]["ref_auto"] = b                       # 묶인 장면의 뒤 컷
-    path = home / conti.save(draft_md, conti_file(home, data))["path"]
+    path = home / conti.save(draft_md, conti_file(home, REPEAT))["path"]
+    stored, _ = refstore.read_md(path)                    # 저장은 후보에 없는 ref_auto를 버리므로 파일에 직접 둔다
+    stored["cuts"][0]["ref_auto"] = a                     # 혼자인 장면
+    stored["cuts"][3]["ref_auto"] = b                     # 묶인 장면의 뒤 컷
+    refstore.update_frontmatter(path, {"cuts": stored["cuts"]})
     _applied(path)
     fm, _ = refstore.read_md(path)
     assert [c.get("ref_auto") for c in fm["cuts"]] == [a, None, b, None]

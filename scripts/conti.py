@@ -609,6 +609,18 @@ def save(draft: str | Path, conti_json: Path, force: bool = False, now: float | 
         return _save_locked(draft, conti_json, force, now)
 
 
+def _trusted_ref_auto(cuts: list[dict], category: str | None) -> list[dict]:
+    """저장할 콘티 JSON의 ref_auto 중 같은 카테고리의 설명 있는 후보 프레임만 남긴다(CLI에서 Claude가 적어 낸 값은
+    검증 없이 믿지 않는다. 화면의 만들기 작업이 고른 값은 후보에서 나왔으므로 그대로 남는다)."""
+    from scripts import conti_refs          # conti_refs가 이 모듈을 쓰므로 함수 안에서 불러온다
+
+    if not any(c.get("ref_auto") for c in cuts):
+        return cuts
+    known = {c["frame"] for c in conti_refs.candidates(category)}
+    return [{k: v for k, v in c.items() if k != "ref_auto"} if c.get("ref_auto") and c["ref_auto"]["frame"] not in known
+            else c for c in cuts]
+
+
 def _save_locked(draft: str | Path, conti_json: Path, force: bool, now: float | None) -> dict:
     from scripts import conti_history       # conti_history가 이 모듈을 쓰므로 함수 안에서 불러온다
 
@@ -622,6 +634,7 @@ def _save_locked(draft: str | Path, conti_json: Path, force: bool, now: float | 
     except (OSError, json.JSONDecodeError) as e:
         raise ScriptError("invalid_conti", f"콘티 JSON을 읽을 수 없습니다: {e}") from e
     script, cuts = validate(data, d["sections"])
+    cuts = _trusted_ref_auto(cuts, d["fm"].get("category"))
     rate = speech_rate(d["fm"].get("category"))
     total = d["sections"][-1]["end"]
     fm = {"date": date.today().isoformat(), "draft": _rel(draft_path), "html": _rel(target.with_suffix(".html")),
