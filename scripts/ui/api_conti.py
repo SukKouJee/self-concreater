@@ -13,10 +13,12 @@
 
 장면에 사진 고르기
 - 만들기 작업: 콘티 검증 뒤 설명(desc)이 있는 레퍼런스 사진이 있으면 Claude가 장면마다 사진을 골라 preview 컷(`cuts`와
-  `conti.cuts`)에 `ref_auto`를 넣는다. 실패하면 사진 없이 계속하고 경고 `refs_pick_failed`.
-- 사진 다시 고르기(kind "conti_refs"): `POST /api/conti/refs/pick {path, hash}`. 미리보기 없이 컷의 `ref_auto`만 저장하고
-  (콘티 내용이 아니라 표시용) 이력 auto를 남긴다. 고르는 사이 콘티가 바뀌면 `conti_changed`로 실패.
-  끝나면 summary `{path, hash, picked, scenes}`.
+  `conti.cuts`)에 `ref_auto`를 넣는다. 실패하면 사진 없이 계속하고 경고 `refs_pick_failed`(뒤 묶음만 실패하면 앞 묶음은
+  남기고 `refs_pick_partial`). 반복 컷이 남아 있으면 고르지 않고 경고 `refs_merge_first`.
+- 사진 다시 고르기(kind "conti_refs"): `POST /api/conti/refs/pick {path, hash}`. 반복 컷이 남아 있으면 작업 없이
+  `merge_first`. 미리보기 없이 컷의 `ref_auto`만 저장하고(콘티 내용이 아니라 표시용) 이력 auto를 남긴다. 고르는 사이
+  콘티가 바뀌어도 저장하되, 지워졌거나 action·guide·size가 바뀐 장면은 건너뛴다(`skipped`, 경고 `refs_pick_skipped`).
+  끝나면 summary `{path, hash, picked, scenes, skipped, warnings}`.
 """
 from __future__ import annotations
 
@@ -125,18 +127,35 @@ def create_target(ctx: dict) -> Any:
         if conti_refs.candidates(ctx.get("category")):
             job.update(0, step="refs")
             try:
-                picks = conti_refs.pick(cuts, ctx["category"], lambda done, total: job.check_cancelled())
+                conti_refs.check_merged(cuts)
+                picked = conti_refs.pick(cuts, ctx["category"], lambda done, total: job.check_cancelled())
             except ScriptError as e:                 # 사진은 표시용: 고르지 못해도 콘티 미리보기는 낸다
-                warnings.append({"kind": "refs_pick_failed",
-                                 "message": f"장면에 맞는 사진을 고르지 못했어요({e.message}). 저장한 뒤 사진 다시 고르기를 눌러 주세요"})
+                warnings.append(_create_pick_warning(e))
             else:
-                cuts = conti_refs.apply_picks(cuts, picks)
+                if picked.error is not None:
+                    warnings.append(_partial_warning(picked, len(cuts)))
+                cuts = conti_refs.apply_picks(cuts, picked.picks)
                 data = {**data, "cuts": _with_picked(data["cuts"], cuts)}
         preview = {"conti": data, "script": script, "cuts": cuts, "warnings": warnings}
         job.update(0, state="awaiting", step="preview", ask="save", preview=preview)
         job.finish("done", {"cuts": len(cuts), "warnings": len(preview["warnings"])})
 
     return target
+
+
+def _create_pick_warning(e: ScriptError) -> dict:
+    if e.code == "merge_first":
+        return {"kind": "refs_merge_first",
+                "message": "반복 컷이 있어 사진을 고르지 않았어요. 저장한 뒤 장면으로 합치고 사진 다시 고르기를 눌러 주세요"}
+    return {"kind": "refs_pick_failed",
+            "message": f"장면에 맞는 사진을 고르지 못했어요({e.message}). 저장한 뒤 사진 다시 고르기를 눌러 주세요"}
+
+
+def _partial_warning(picked: conti_refs.PickResult, total: int) -> dict:
+    message = picked.error.message if picked.error is not None else ""
+    return {"kind": "refs_pick_partial",
+            "message": f"장면 {total}개 중 {len(picked.basis)}개만 사진을 골랐어요({message}). "
+                       "나머지는 사진 다시 고르기를 눌러 주세요"}
 
 
 def _with_picked(raw_cuts: list[dict], cuts: list[dict]) -> list[dict]:
@@ -339,9 +358,12 @@ def merge_target(plan: dict) -> Any:
 @route("POST", "/api/conti/merge/preview")
 def _merge_preview(req: Request) -> dict:
     path = _safe_path(req.json.get("path"), conti_file=True)
+    rel = _rel(path)
+    if job_running_on(req.app, (MERGE_KIND,), rel):
+        raise ScriptError("conti_busy", "이 콘티를 장면으로 합치는 중입니다. 끝난 뒤에 다시 눌러 주세요")
     plan = scene_merge.plan(path)          # 반복이 없으면 작업을 만들지 않고 바로 nothing_to_merge
     llm.check()
-    items = [new_item(_rel(path), title=path.name, step="claude")]
+    items = [new_item(rel, title=path.name, step="claude")]
     job = req.app.jobs.start(MERGE_KIND, merge_target(plan), items=items)
     return {"job": job.snapshot()}
 
@@ -363,7 +385,7 @@ def _merge_apply(req: Request) -> dict:
 
 # ---- 장면에 사진 다시 고르기(작업) ------------------------------------------------------------
 
-def refs_pick_target(path: Path, category: str | None, cuts: list[dict], expected: str) -> Any:
+def refs_pick_target(path: Path, category: str | None, cuts: list[dict]) -> Any:
     rel = _rel(path)
 
     def target(job: Job) -> None:
@@ -374,12 +396,19 @@ def refs_pick_target(path: Path, category: str | None, cuts: list[dict], expecte
             if total > 1:
                 job.update(0, message=f"{done}/{total} 묶음")
 
-        picks = conti_refs.pick(cuts, category, on_batch)
+        picked = conti_refs.pick(cuts, category, on_batch)
         job.check_cancelled()
         job.update(0, step="save", message=None)
-        result = conti_refs.save_picks(path, picks, expected)
+        result = conti_refs.save_picks(path, picked.picks, picked.basis)
+        warnings = []
+        if picked.error is not None:
+            warnings.append(_partial_warning(picked, len(cuts)))
+        if result["skipped"]:
+            warnings.append({"kind": "refs_pick_skipped",
+                             "message": f"고르는 사이 바뀌거나 지워진 장면 {result['skipped']}개는 사진을 바꾸지 않았어요"})
         job.update(0, state="done", step="save", ask=None)
-        job.finish("done", {"path": rel, "hash": result["hash"], "picked": result["picked"], "scenes": result["scenes"]})
+        job.finish("done", {"path": rel, "hash": result["hash"], "picked": result["picked"], "scenes": result["scenes"],
+                            "skipped": result["skipped"], "warnings": warnings})
 
     return target
 
@@ -396,12 +425,13 @@ def _refs_pick(req: Request) -> dict:
         cf = conti.read_conti(path)
         if conti.bytes_hash(cf.raw) != expected:
             raise ScriptError("conti_changed", "파일이 밖에서 바뀌었습니다. 다시 불러오세요")
-        current, fm, _ = conti.ensure_ids_file(cf)        # 옛 파일은 id를 먼저 붙여야 고른 사진을 같은 컷에 저장한다
+        _, fm, _ = conti.ensure_ids_file(cf)              # 옛 파일은 id를 먼저 붙여야 고른 사진을 같은 컷에 저장한다
     if not conti_refs.candidates(fm.get("category")):
         raise ScriptError("no_ref_descs", "설명이 있는 레퍼런스 사진이 없어요. 레퍼런스 사진 설명을 먼저 만들어 주세요")
+    conti_refs.check_merged(fm["cuts"])
     llm.check()
     items = [new_item(rel, title=path.name, step="claude")]
-    target = refs_pick_target(path, fm.get("category"), fm["cuts"], conti.bytes_hash(current.raw))
+    target = refs_pick_target(path, fm.get("category"), fm["cuts"])
     job = req.app.jobs.start(REFS_KIND, target, items=items, summary={"path": rel})
     return {"job": job.snapshot()}
 
