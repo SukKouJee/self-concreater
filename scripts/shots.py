@@ -21,6 +21,8 @@ labels JSON: [{"frame", "size", "angle", "face", "hands_only", "broll", "text_ov
 from __future__ import annotations
 
 import json
+import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -67,14 +69,24 @@ def context(video_id: str, category: str) -> dict:
             "vocab": {"size": SHOT_SIZES, "angle": SHOT_ANGLES, "flags": SHOT_FLAGS}}
 
 
+def _has_sample_labels(video_id: str, category: str) -> bool:
+    """분류 표본의 프레임 중 size가 붙은 라벨이 하나라도 있다. 표본을 못 정하면 라벨 파일이 있는 것으로 본다."""
+    labelled = {l["frame"] for l in _read_labels(video_id) if l.get("size")}
+    try:
+        sample = context(video_id, category)["frames"]
+    except ScriptError:
+        return _labels_file(video_id).exists()
+    return any(f["frame"] in labelled for f in sample)
+
+
 def pending(category: str) -> dict:
     videos = refstore.existing_category_dir(category) / "videos"
     todo, relabel = [], []
     for p in sorted(videos.glob("*.md")):
         if not refstore.read_md(p)[0].get("shots"):
             todo.append(p.stem)
-        elif not workspace_dir("shots", f"{p.stem}.json").exists():
-            relabel.append(p.stem)          # 비율만 있고 프레임별 라벨이 없음(Phase 12 이전 분류) → 콘티 참고 프레임용
+        elif not _has_sample_labels(p.stem, category):
+            relabel.append(p.stem)          # 비율만 있고 표본의 프레임별 라벨이 없음(Phase 12 이전 분류; 설명만 있는 파일 포함)
     return {"category": category, "pending": todo + relabel, "relabel": relabel}
 
 
@@ -94,7 +106,8 @@ def _check_shot(lab: dict) -> None:
 
 def _check_desc(lab: dict) -> str:
     desc = lab.get("desc")
-    text = desc.strip() if isinstance(desc, str) else ""
+    # 한 줄로: 보이지 않는 제어 문자는 버리고 줄바꿈·탭을 포함한 모든 공백은 한 칸으로 합친다
+    text = " ".join("".join(c for c in desc if c.isprintable() or c.isspace()).split()) if isinstance(desc, str) else ""
     if not 1 <= len(text) <= DESC_MAX:
         raise _invalid(f"desc는 1~{DESC_MAX}자 문장이어야 합니다 ({lab.get('frame')})")
     return text
@@ -116,7 +129,12 @@ def _read_labels(video_id: str) -> list[dict]:
 def _write_labels(video_id: str, labels: list[dict]) -> None:
     out = _labels_file(video_id)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps({"id": video_id, "labels": labels}, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp = out.with_name(f"{out.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        tmp.write_text(json.dumps({"id": video_id, "labels": labels}, ensure_ascii=False, indent=1), encoding="utf-8")
+        os.replace(tmp, out)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def apply(video_id: str, category: str, labels_path: Path) -> dict:
@@ -160,8 +178,9 @@ def apply(video_id: str, category: str, labels_path: Path) -> dict:
         if desc:
             entry["desc"] = desc
         fresh[lab["frame"]] = entry
-    # 표본 밖 프레임의 라벨(apply-desc가 더한 것)은 그대로 둔다
-    _write_labels(video_id, [*fresh.values(), *(l for f, l in old.items() if f not in fresh)])
+    # 표본 밖 프레임의 라벨(apply-desc가 더한 것)은 그 프레임이 아직 영상의 장면에 있을 때만 남긴다
+    stored = {s["frame"] for s in (load_cuts(video_id) or {}).get("scenes", []) if s.get("frame")}
+    _write_labels(video_id, [*fresh.values(), *(l for f, l in old.items() if f not in fresh and f in stored)])
     Path(labels_path).unlink(missing_ok=True)
     return {"status": "applied", "id": video_id, "frames": len(labels), "shots": result}
 
@@ -230,7 +249,7 @@ def apply_desc(video_id: str, category: str, labels_path: Path) -> dict:
                                 "section": _section_at(fm, (scene["start"] + scene["end"]) / 2), "desc": desc}
     _write_labels(video_id, list(merged.values()))
     Path(labels_path).unlink(missing_ok=True)
-    return {"status": "applied", "id": video_id, "described": len(labels), "remaining": len(_undescribed(video_id))}
+    return {"status": "applied", "id": video_id, "described": len({l["frame"] for l in labels}), "remaining": len(_undescribed(video_id))}
 
 
 def desc_status(category: str) -> dict:

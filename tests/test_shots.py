@@ -324,3 +324,64 @@ def test_main_describe_routes(home, capsys):
     out = shots.main(["apply-desc", VID, "--category", CAT, "--labels", str(path)])
     assert out["described"] == 1
     assert shots.main(["desc-status", CAT])["described"] == 1
+
+
+def test_desc_is_normalized_to_one_printable_line(home):
+    make_frames(home)
+    shots.apply_desc(VID, CAT, labels_file(home, [full(frame_path(1), "시장\n골목 \t사람\r\n  많음\x00\x07"),
+                                                   full(frame_path(2), "a\nb")]))
+    assert [l["desc"] for l in saved_labels(home)] == ["시장 골목 사람 많음", "a b"]
+
+
+def test_desc_only_control_chars_is_rejected(home):
+    make_frames(home)
+    with pytest.raises(ScriptError) as exc:
+        shots.apply_desc(VID, CAT, labels_file(home, [full(frame_path(1), "\x00\n\t")]))
+    assert exc.value.code == "invalid_shots"
+
+
+def test_desc_length_counted_after_normalizing(home):
+    make_frames(home)
+    shots.apply_desc(VID, CAT, labels_file(home, [full(frame_path(1), "가" * 30 + "\n\n\n" + "나" * 29)]))
+    assert len(saved_labels(home)[0]["desc"]) == 60
+
+
+def test_pending_treats_desc_only_labels_as_relabel(home):
+    make_frames(home)
+    sample = [f["frame"] for f in shots.context(VID, CAT)["frames"]]
+    shots.apply(VID, CAT, labels_file(home, [label(f) for f in sample]))
+    (home / "workspace" / "shots" / f"{VID}.json").unlink()            # Phase 12 이전 분류
+    shots.apply_desc(VID, CAT, labels_file(home, [full(frame_path(1))]))  # 표본 밖 프레임만 설명됨
+    out = shots.pending(CAT)
+    assert VID in out["pending"] and out["relabel"] == [VID]
+
+
+def test_apply_drops_old_labels_of_frames_no_longer_in_scenes(home):
+    make_frames(home)
+    sample = [f["frame"] for f in shots.context(VID, CAT)["frames"]]
+    shots.apply_desc(VID, CAT, labels_file(home, [full(frame_path(1), "남는 장면")]))
+    path = home / "workspace" / "shots" / f"{VID}.json"
+    data = json.loads(path.read_text("utf-8"))
+    data["labels"].append({**label("workspace/frames/gone/x.jpg"), "desc": "사라진 장면", "section": None})
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    shots.apply(VID, CAT, labels_file(home, [label(f) for f in sample]))
+
+    frames = [l["frame"] for l in saved_labels(home)]
+    assert frame_path(1) in frames and "workspace/frames/gone/x.jpg" not in frames
+
+
+def test_apply_desc_counts_unique_frames(home):
+    make_frames(home)
+    out = shots.apply_desc(VID, CAT, labels_file(home, [full(frame_path(1), "처음"), full(frame_path(1), "나중")]))
+    assert out["described"] == 1 and saved_labels(home)[0]["desc"] == "나중"
+
+
+def test_labels_are_written_atomically(home, monkeypatch):
+    make_frames(home)
+    seen = []
+    real = shots.os.replace
+    monkeypatch.setattr(shots.os, "replace", lambda a, b: (seen.append((str(a), str(b))), real(a, b))[1])
+    shots.apply_desc(VID, CAT, labels_file(home, [full(frame_path(1))]))
+    assert len(seen) == 1 and seen[0][0] != seen[0][1] and seen[0][1].endswith(f"{VID}.json")
+    assert [p.name for p in (home / "workspace" / "shots").iterdir()] == [f"{VID}.json"]
