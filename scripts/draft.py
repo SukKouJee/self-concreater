@@ -10,7 +10,7 @@ draft JSON (yt-draft 규칙)
    "sections": [{"label", "sub"?, "start", "end", "script", "shots": [{"size", "angle"?, "sec", "action"}]}],
    "prep"?: [..]}
 - 프런트매터는 영상 md와 같은 축(sections, hook_type, narrative_type, pacing)을 쓴다 → /yt-diagnose가 그대로 비교
-- 계획 컷 길이 = 섹션 길이 / 샷 수. 아키타입과 섹션 비율 차이를 표로 붙인다
+- 샷 리스트는 장면 단위라 pacing.avg_cut_sec는 두지 않는다(basis: scenes). 아키타입과 섹션 비율 차이를 표로 붙인다
 """
 from __future__ import annotations
 
