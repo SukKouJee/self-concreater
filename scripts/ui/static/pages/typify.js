@@ -2,7 +2,7 @@
 //   상태(ref 수·단계·저장된 결과) → "유형화 실행"(작업: 계산 → Claude 해석) → 미리보기(편집) → 저장.
 //   미리보기 단계에서는 파일이 바뀌지 않는다. 저장은 사용자가 누른 뒤에만, 미리보기의 run_at과 함께 보낸다.
 import { h, fill } from "/static/dom.js";
-import { sectionName } from "/static/labels.js";
+import { humanizeLabels, sectionName } from "/static/labels.js";
 
 const POLL_MS = 1000;
 const POLL_MAX_MS = 15000;
@@ -15,6 +15,7 @@ const AXIS_NAMES = {
 const VERDICT_TEXT = {
   typable: "유형 있음", weak: "약한 경향", untypable: "유형 없음", insufficient: "데이터 부족",
 };
+const MEMBERS_SHOWN = 5;   // archetype member links shown before "N개 더 보기"
 const STEP_TEXT = { cluster: "계산 중", claude: "Claude 해석 중" };
 const CHANGED_TEXT = "미리보기를 만든 뒤 유형화가 다시 실행되었습니다. 다시 실행해 주세요. 고친 근거·이름은 같은 축·아키타입이 있으면 다시 실행한 미리보기에도 유지됩니다.";
 
@@ -497,7 +498,7 @@ function axisRows(axes, editable) {
       area.addEventListener("input", () => { S.notes.axes[axis] = area.value; });
       reason = area;
     } else {
-      reason = h("span", { class: "md-text" }, res.note || "");
+      reason = h("span", { class: "md-text" }, humanizeLabels(res.note || ""));
     }
     const groups = res.verdict === "insufficient" ? `${res.n}개` : `${res.n}개 · ${res.k}묶음`;
     tbody.append(h("tr", {},
@@ -565,7 +566,7 @@ function archetypeCard(a, titles, editable) {
     });
     card.append(h("div", { class: "field" }, h("label", { for: inputId }, `${a.id} 아키타입 이름`), input));
   } else {
-    card.append(h("p", { class: "arch-name" }, nameValue));
+    card.append(h("p", { class: "arch-name" }, humanizeLabels(nameValue)));
   }
   const chips = skeletonChips(a.skeleton);
   const band = ratioBand(a.mean_ratio);
@@ -577,8 +578,14 @@ function archetypeCard(a, titles, editable) {
   }
   const members = a.members || [];
   if (members.length) {
-    card.append(h("ul", { class: "member-list", "aria-label": `${a.id} 구성 영상` },
-      ...members.map((id) => h("li", {}, refLink(id, titles)))));
+    const item = (id) => h("li", {}, refLink(id, titles));
+    card.append(h("ul", { class: "member-list", "aria-label": `${a.id} 구성 영상` }, ...members.slice(0, MEMBERS_SHOWN).map(item)));
+    const rest = members.slice(MEMBERS_SHOWN);
+    if (rest.length) {
+      // a disclosure keeps long archetypes short; its list continues the one above
+      card.append(h("details", { class: "member-more" }, h("summary", {}, `${rest.length}개 더 보기`),
+        h("ul", { class: "member-list", "aria-label": `${a.id} 구성 영상 나머지` }, ...rest.map(item))));
+    }
   }
   return card;
 }
@@ -594,7 +601,7 @@ function titleMap(result, known) {
 }
 
 function outlierAxes(o) {
-  const names = (o.axes || []).map((axis) => AXIS_NAMES[axis] || axis);
+  const names = (o.axes || []).map((axis) => AXIS_NAMES[axis] || humanizeLabels(String(axis)));
   return names.length ? names.join("·") : "일부 축";
 }
 

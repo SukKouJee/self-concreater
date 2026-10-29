@@ -777,7 +777,7 @@ function submitPanel(today) {
     diff,
     e.difficulty ? h("p", { class: "field-error error", role: "alert" }, e.difficulty) : null,
     h("div", { class: "field" },
-      h("label", { for: "mi-file" }, "사진·스크린샷·텍스트 파일 경로(선택)"), file,
+      h("label", { for: "mi-file" }, "첨부할 사진·스크린샷·글 파일 위치(선택)"), file,
       h("p", { class: "muted small", id: "mi-file-hint" },
         "원본은 건드리지 않고 잠깐 복사해 읽은 뒤 지웁니다. 이미지(png·jpg·webp·gif)와 텍스트(txt·md)만, 10MB까지 낼 수 있어요. 영상은 한 일에 설명으로 적어 주세요"),
       e.file ? h("p", { class: "field-error error", id: "mi-file-err", role: "alert" }, e.file) : null),

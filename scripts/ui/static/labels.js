@@ -28,6 +28,15 @@ export function sectionName(label, sub) {
   return subName ? `${name}(${subName})` : name;
 }
 
+// Display only: section codes written inside server/Claude text ("hook → body/story") become names
+// ("훅 → 본문(이야기)"). Whole words only, so "hooky" or "outro2" stay; the stored text is never changed.
+const SECTION_CODE_RE = new RegExp(
+  `(^|[^A-Za-z0-9_])(${Object.keys(SECTION_KO).join("|")})(?:/(${Object.keys(BODY_SUB_KO).join("|")}))?(?![A-Za-z0-9_])`, "g");
+export function humanizeLabels(text) {
+  if (typeof text !== "string" || !text) return "";
+  return text.replace(SECTION_CODE_RE, (_, before, label, sub) => before + sectionName(label, sub));
+}
+
 const finite = (v) => typeof v === "number" && Number.isFinite(v);
 
 // Largest camera share as { key, label, pct } (ties keep static > pan > zoom), or null when there is none

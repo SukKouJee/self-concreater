@@ -46,3 +46,20 @@ def test_help_links_are_known_routes():
     for page in SCREEN_PAGES:
         for x in LINK_RE.findall(_read(page)):
             assert x in SCREEN_PAGES or x in ROUTE_ALIASES, (page, x)
+
+
+# Help pages are shown on screen (help panel, guide). They name places the way the screens do: no file names,
+# folder paths or terminal commands. `_chatbot.md` is the chatbot's own rule file (never shown, not served by
+# /api/help) but it is held to the same words so answers do not echo them.
+HIDDEN_IN_HELP = (".md", "workspace/", "drafts/", "reviews/", "ytc ", "pip ", "gh ", "/yt-coach:")
+HELP_ALLOWED: set[tuple[str, str]] = set()   # (file, token) pairs that must stay; empty: nothing needs to
+
+
+def test_help_pages_hide_file_names_paths_and_commands():
+    bad = []
+    for path in sorted(HELP_DIR.glob("*.md")):
+        text = path.read_text(encoding="utf-8")
+        for token in HIDDEN_IN_HELP:
+            if token in text and (path.name, token) not in HELP_ALLOWED:
+                bad.append((path.name, token))
+    assert bad == []

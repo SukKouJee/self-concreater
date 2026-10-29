@@ -4,8 +4,8 @@ from scripts.ui.server import STATIC_DIR
 from tests.test_ui_server import client, no_browser  # noqa: F401  (fixture 재사용)
 
 # Every screen (name + route): app.js SCREENS, the same list the help chatbot gets (api_help.MENU).
-MENU_NAMES = ["홈", "레퍼런스", "공용 라이브러리", "유형", "모티브", "내 영상", "기획안", "콘티", "진단", "미션", "리포트",
-              "가이드"]
+MENU_NAMES = ["홈", "레퍼런스", "공용 라이브러리", "유형", "모티브", "내 영상", "기획안", "콘티", "진단", "오늘 미션",
+              "주간 리포트", "가이드"]   # the sidebar's names
 
 
 def test_index_loads_modules(client):
@@ -1603,3 +1603,32 @@ def test_diagnose_skeletons_use_korean_section_names():
     js = _js("pages/diagnose.js")
     assert "skeletonText(near.skeleton)" in js and "skeletonText(c.target_sequence)" in js
     assert "near.skeleton ||" not in js and "c.target_sequence ||" not in js
+
+
+def test_fix1_typify_humanizes_text_and_folds_long_member_lists():
+    js = _js("pages/typify.js")
+    assert "humanizeLabels" in js and 'from "/static/labels.js"' in js
+    assert 'h("span", { class: "md-text" }, humanizeLabels(res.note' in js
+    card = js[js.index("function archetypeCard("):js.index("function titleMap(")]
+    assert "MEMBERS_SHOWN" in card and '"details"' in card and "더 보기" in card
+    assert re.search(r"const MEMBERS_SHOWN = 5;", js)
+
+
+def test_fix1_library_uses_the_tested_repo_name():
+    js = _js("pages/library.js")
+    assert 'import { repoName } from "/static/library-utils.js";' in js and "function repoName(" not in js
+
+
+def test_fix1_one_chip_size():
+    css = _js("app.css")
+    chip = re.search(r"^\.ui-chip \{([^}]*)\}", css, re.M).group(1)
+    seg = re.search(r"^\.seg-opt span \{([^}]*)\}", css, re.M).group(1)
+    for rule in (chip, seg):
+        assert "min-height: 32px" in rule and "font-size: 13px" in rule and "border-radius: 999px" in rule
+    assert not re.search(r"^\.lib-tab \{[^}]*(min-height|font-size|padding)", css, re.M)   # lib tabs are plain chips
+
+
+def test_fix1_mission_file_field_has_no_path_word():
+    js = _js("pages/mission.js")
+    label = re.search(r'h\("label", \{ for: "mi-file" \}, "([^"]+)"\)', js).group(1)
+    assert "경로" not in label

@@ -36,8 +36,8 @@ MENU: list[dict[str, str]] = [
     {"name": "기획안", "route": "#/draft"},
     {"name": "콘티", "route": "#/conti"},
     {"name": "진단", "route": "#/diagnose"},
-    {"name": "미션", "route": "#/mission"},
-    {"name": "리포트", "route": "#/report"},
+    {"name": "오늘 미션", "route": "#/mission"},
+    {"name": "주간 리포트", "route": "#/report"},
     {"name": "가이드", "route": "#/guide"},
 ]
 

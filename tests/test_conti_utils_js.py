@@ -89,7 +89,7 @@ def test_shot_sizes_match_server():
 def test_kind_text_and_version_label():
     assert run_js("m.KIND_TEXT") == {"created": "처음 만듦", "auto": "자동", "named": None,
                                      "before_recreate": "다시 만들기 전",
-                                     "before_merge": "합치기 전", "external": "md 직접 수정", "restored": "되돌림"}
+                                     "before_merge": "합치기 전", "external": "파일 직접 수정", "restored": "되돌림"}
     assert run_js("m.versionLabel({kind:'named',name:'촬영 전'})") == "촬영 전"
     assert run_js("m.versionLabel({kind:'auto',name:null})") == "자동"
     assert run_js("m.versionLabel({kind:'restored',name:'되돌림: 촬영 전'})") == "되돌림: 촬영 전"

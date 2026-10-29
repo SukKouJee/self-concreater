@@ -145,8 +145,9 @@ a.chip-job:hover, button.chip-job:hover { background: color-mix(in srgb, var(--k
 .btn-icon { padding: 0 var(--sp-3); font-size: 18px; }
 
 /* small kit (ui.js): toggle chips, kind/section tags, plain card, underline tabs */
-.ui-chip { font: inherit; font-size: 12px; color: var(--ink-2); background: var(--surface); border: 1px solid var(--border-strong);
-  border-radius: 999px; padding: 0 var(--sp-3); min-height: 28px; display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+/* one chip size everywhere (filters, choices, radio choices .seg-opt span, library switch .lib-tab) */
+.ui-chip { font: inherit; font-size: 13px; color: var(--ink-2); background: var(--surface); border: 1px solid var(--border-strong);
+  border-radius: 999px; padding: 0 var(--sp-3); min-height: 32px; display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
 .ui-chip:hover { border-color: var(--ink-2); }
 .ui-chip[aria-pressed="true"] { background: var(--pick-bg); border-color: var(--pick-bg); color: var(--pick-fg); font-weight: 700; }
 .ui-chip-count { font-weight: 500; opacity: .85; }
@@ -399,7 +400,7 @@ a.chip-job:hover, button.chip-job:hover { background: color-mix(in srgb, var(--k
 .seg > legend { float: left; margin-right: var(--sp-3); }
 .seg-opt { position: relative; display: inline-flex; }
 .seg-opt input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
-/* radio choices look like the kit's chips (.ui-chip), a little taller for touch */
+/* radio choices look like the kit's chips (.ui-chip, same size) */
 .seg-opt span { border: 1px solid var(--border-strong); border-radius: 999px; padding: 0 var(--sp-3); min-height: 32px;
   display: inline-flex; align-items: center; background: var(--surface); color: var(--ink-2); font-size: 13px; }
 .seg-opt input:hover + span { border-color: var(--ink-2); }
@@ -897,6 +898,7 @@ a.chip-job:hover, button.chip-job:hover { background: color-mix(in srgb, var(--k
 .skel-chip { display: inline-flex; align-items: center; gap: var(--sp-1); }
 .skel-arrow { color: var(--muted); margin-left: var(--sp-1); }
 .member-list, .outlier-list { margin: 0; padding-left: var(--sp-5); font-size: 14px; overflow-wrap: anywhere; }
+.member-more > summary { cursor: pointer; color: var(--link); font-size: 13px; margin: var(--sp-1) 0; }   /* typify: more members */
 .preview-actions { margin-top: var(--sp-5); display: flex; flex-direction: column; gap: var(--sp-2); }
 .typify-body { margin-top: var(--sp-4); }
 .typify-run { margin-top: var(--sp-4); display: flex; flex-direction: column; gap: var(--sp-2); }

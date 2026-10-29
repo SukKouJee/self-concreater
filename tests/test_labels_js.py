@@ -76,3 +76,11 @@ def test_section_name_with_and_without_subtype():
     assert run_js("[m.sectionName('body', 'explain'), m.sectionName('hook'), m.sectionName('body', ''), "
                   "m.sectionName('cta', null), m.sectionName('my_part', 'my_sub'), m.sectionName('', 'story')]") == [
         "본문(설명)", "훅", "본문", "행동 유도(CTA)", "my_part(my_sub)", "(이야기)"]
+
+
+def test_humanize_labels_replaces_whole_word_section_codes_only():
+    got = run_js('[m.humanizeLabels("20개 중 18개가 \'hook → intro → body/story → outro\' 골격이고, cta는 드물다"),'
+                 ' m.humanizeLabels("hooky outro2 body/list_item"), m.humanizeLabels(""), m.humanizeLabels(null)]')
+    assert got[0] == "20개 중 18개가 '훅 → 인트로 → 본문(이야기) → 아웃트로' 골격이고, 행동 유도(CTA)는 드물다"
+    assert got[1] == "hooky outro2 본문(목록 항목)"       # parts of other words stay
+    assert got[2] == "" and got[3] == ""

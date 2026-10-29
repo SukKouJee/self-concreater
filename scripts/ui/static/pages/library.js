@@ -4,6 +4,7 @@
 //   올리기는 "올리기" → 인라인 확인 → "올리기 확인"을 눌러야만 서버로 간다. 자동으로 올리지 않는다.
 import { h, fill } from "/static/dom.js";
 import { hookName, narrativeName, sectionName } from "/static/labels.js";
+import { repoName } from "/static/library-utils.js";
 import { renderMarkdown } from "/static/md.js";
 
 const POLL_MS = 1000;
@@ -31,12 +32,7 @@ const ignorable = (e) => !e || e.error === "aborted";
 const noRef = () => "#/library";
 const md = (text, opts = {}) => h("div", { class: "md" }, renderMarkdown(String(text || ""), { refHref: noRef, ...opts }));
 const draftHref = (id) => `#/draft/new/${encodeURIComponent(`library:${id}`)}`;
-// The repository's name only ("git@github.com:me/friends-lib.git" -> "friends-lib"): the address may be a local
-// folder, and the screen never shows paths.
-function repoName(remote) {
-  const parts = String(remote || "").split(/[\\/:]/).filter(Boolean);
-  return (parts.length ? parts[parts.length - 1] : "").replace(/\.git$/i, "") || "연결됨";
-}
+// The info line names the repository only (library-utils.js repoName), never its address.
 const infoText = (st) =>
   `저장소 ${repoName(st.remote)} · 표시 이름 ${st.author || ""} · 마지막 받은 시각 ${st.last_pull ? fmtTime(st.last_pull) : "아직 받지 않음"}`;
 
