@@ -1447,7 +1447,7 @@ def test_conti_fix_round_1_contracts():
 def test_shoot_page_contract():
     js = _js("pages/shoot.js")
     for token in ["export async function mount", "export function unmount", 'from "/static/shoot-utils.js"',
-                  "shootStore(", "mainLabel(", "tipsFrom(", "nextTodo(", "firstTodo(", "barStates(", "sceneTime(",
+                  "shootStore(", "mainLabel(", "tipsFrom(", "nextTodo(", "firstTodo(", "barSegments(", "sceneTime(",
                   "/api/draft?path=", "/api/conti?path=", "/api/drafts/filmed", "filmed: true",
                   '"촬영 모드"', '"촬영 모드 닫기"', '"이전 장면"', '"다음 장면"', '"찍음 ✓"', '"콘티 탭으로 가기"',
                   '"영상으로 돌아가기"', "filesUrl(", "isCurrent()", "shoot-dark"]:
@@ -1486,5 +1486,51 @@ def test_check_tab_uses_the_shoot_store():
     for token in ['from "/static/shoot-utils.js"', "shootStore(", "shootLine(", 'type: "checkbox"', '"폰 촬영 모드"',
                   '"다 찍음"', "남은 장면"]:
         assert token in video, token
-    check = video[video.index("function renderCheck("):]
+    check = video[video.index("function renderCheck("):video.index("// ---- page contract")]
     assert "btn-rec" in check                                # the red shoot-mode button of the tab
+
+
+# ---- Phase 5 fix round 1 -----------------------------------------------------------------------
+
+REPEATS_NOTE = "같은 장면이 여러 컷으로 나뉘어 있어요. 콘티 탭에서 장면으로 합치면 찍기 편해요."
+
+
+def test_shoot_bar_never_overflows_and_marks_a_filmed_current_scene():
+    css = _js("app.css")
+    assert re.search(r"\.shoot-bar \{[^}]*overflow: hidden", css)
+    assert re.search(r"\.shoot-seg \{[^}]*min-width: 0", css)
+    assert re.search(r"\.shoot-seg\.is-done-now \{[^}]*background: var\(--done\)[^}]*outline: 2px solid var\(--ink\)", css)
+    assert "barStates" not in _js("shoot-utils.js") and "barSegments(" in _js("pages/shoot.js")
+
+
+def test_shoot_dark_focus_ring_and_undo_target():
+    css = _js("app.css")
+    dark = css[css.index(".shoot-dark {"):]
+    dark = dark[:dark.index("}")]
+    assert "--focus-ring:" in dark                           # var() in :root resolved there: re-declare for the dark ring
+    assert re.search(r"\.shoot-undo \{[^}]*min-height: 44px", css)
+
+
+def test_shoot_marks_update_in_place_and_wake_lock_is_single_flight():
+    js = _js("pages/shoot.js")
+    assert "function renderScene(" in js and "function paintMarks(" in js
+    on_main = js[js.index("function onMain("):js.index("async function finish(")]
+    assert "paintMarks(mine)" in on_main and "renderScene(" not in on_main   # checking keeps the frame (photo)
+    lock = js[js.index("async function lockScreen("):js.index("function unlock(")]
+    assert "mine.locking" in lock
+
+
+def test_repeats_note_in_shoot_mode_and_check_tab():
+    for name in ("pages/shoot.js", "pages/video.js"):
+        js = _js(name)
+        assert "hasRepeats(" in js and REPEATS_NOTE in js, name
+
+
+def test_check_tab_filter_filmed_note_and_no_duplicate_card_actions():
+    video = _js("pages/video.js")
+    check = video[video.index("// 촬영 체크: the scenes"):video.index("// ---- page contract")]   # notes, row, tab
+    for token in ['"전체"', '"남은 장면"', "chip(",
+                  "이 영상은 촬영 완료로 표시돼 있어요. 다시 찍을 장면만 체크하세요."]:
+        assert token in check, token
+    actions = video[video.index("function progressActions("):video.index("// Draft-level")]
+    assert 'mine.tab === "check"' in actions and "return []" in actions   # the tab head carries count and buttons

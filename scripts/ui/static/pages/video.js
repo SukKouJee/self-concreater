@@ -10,7 +10,8 @@ import { h, fill, filesUrl } from "/static/dom.js";
 import { videoMeta as listMeta } from "/static/home-utils.js";
 import { sectionLabelName } from "/static/labels.js";
 import { videoProgress } from "/static/menu-utils.js";
-import { tabs, tag } from "/static/ui.js";
+import { chip, tabs, tag } from "/static/ui.js";
+import { hasRepeats } from "/static/conti-utils.js";
 import { doneCount, shootStore } from "/static/shoot-utils.js";
 import {
   TABS, contiSummary, defaultTab, draftPath, nextAction, shootLine, shortTitle, stageText, stages, videoHref, videoId,
@@ -27,7 +28,7 @@ let V = null;
 function fresh(el, params, ctx) {
   return {
     el, params, ctx, category: ctx.category, tab: null, data: null, stages: [],
-    loadSeq: 0, loading: false, host: null, hostSeq: 0, filming: false, nodes: {},
+    loadSeq: 0, loading: false, host: null, hostSeq: 0, filming: false, nodes: {}, checkFilter: "all",
   };
 }
 
@@ -254,11 +255,11 @@ function progressActions(mine) {
     return [h("a", { class: "btn btn-rec btn-s", href: videoHref(id, act.kind), "data-focus": act.kind }, act.label)];
   }
   if (act.kind === "shoot") {
-    // the 촬영 체크 tab has its own red 폰 촬영 모드 button: one red action per screen
-    const cls = mine.tab === "check" ? "btn btn-s" : "btn btn-rec btn-s";
+    // the 촬영 체크 tab head carries the count, 폰 촬영 모드 (red) and 다 찍음: no copies on the card there
+    if (mine.tab === "check") return [];
     return [
       h("span", { class: "vp-count" }, shootText(mine)),
-      h("a", { class: cls, href: videoHref(id) + "/shoot", "data-focus": "shoot" }, act.label),
+      h("a", { class: "btn btn-rec btn-s", href: videoHref(id) + "/shoot", "data-focus": "shoot" }, act.label),
       filmedButton(mine, "card"),
     ];
   }
@@ -413,21 +414,52 @@ async function mountTab(mine, tab, extra = {}) {
 }
 
 // 촬영 체크: the scenes in order with the same per-scene checks as the shoot mode (browser storage), the count, the red
-// 폰 촬영 모드 button and the draft-level 다 찍음.
+// 폰 촬영 모드 button, the draft-level 다 찍음 and a 전체 / 남은 장면 filter. A row checked while 남은 장면 is on stays
+// (dimmed) until the filter is pressed again, so the checkbox keeps focus.
+const REPEATS_NOTE = "같은 장면이 여러 컷으로 나뉘어 있어요. 콘티 탭에서 장면으로 합치면 찍기 편해요.";
+const FILMED_NOTE = "이 영상은 촬영 완료로 표시돼 있어요. 다시 찍을 장면만 체크하세요.";
+
+function checkRow(c, i, o) {
+  const label = c.label || (o.sections[c.section] || {}).label || "";
+  const box = h("input", { type: "checkbox", class: "check-box", id: `check-${i}`, "data-focus": `check-${c.id}` });
+  box.checked = o.checked.has(c.id);
+  const mark = () => (box.checked ? h("span", { class: "check-done" }, "찍음") : null);
+  const top = h("span", { class: "check-top" },
+    h("span", { class: "check-no" }, String(c.n).padStart(2, "0")),
+    label ? tag(sectionLabelName(label), SECTION_TAG[label] || "check") : null, mark());
+  const row = h("li", { class: "check-row" + (box.checked ? " is-done" : "") }, box,
+    h("label", { class: "check-body", for: `check-${i}` }, top,
+      h("span", { class: "check-action" }, c.action || ""),
+      c.line ? h("span", { class: "check-line" }, `“${c.line}”`) : null,
+      h("span", { class: "check-shot" }, [c.size, c.sec ? `${c.sec}초` : null].filter(Boolean).join(" · "))));
+  box.addEventListener("change", () => {
+    o.store.set(c.id, box.checked);
+    row.classList.toggle("is-done", box.checked);
+    const old = top.querySelector(".check-done");
+    if (old) old.remove();
+    const now = mark();
+    if (now) top.append(now);
+    o.onChange();
+  });
+  return row;
+}
+
 function renderCheck(mine) {
   const panel = mine.nodes.panel;
   const id = mine.params.id;
   const cuts = contiCuts(mine.data);
   const store = shootStore(id);
-  // red while filming is the next step (the progress card's own button is plain on this tab); after filming the
-  // card's next step (진단하기) keeps the one red button
+  const filmed = isFilmed(mine.data);
+  // red while filming is the next step; after filming the progress card's next step (진단하기) keeps the one red button
   const red = nextAction(mine.stages).kind === "shoot";
   const count = h("span", { class: "vp-count", role: "status" });
   const left = h("p", { class: "check-left" });
+  const filmedNote = h("p", { class: "check-note", hidden: true }, FILMED_NOTE);
   const paintCount = () => {
     const done = doneCount(store.get(), cuts);
-    count.textContent = shootLine(cuts.length, isFilmed(mine.data), done);
+    count.textContent = shootLine(cuts.length, filmed, done);
     left.textContent = done >= cuts.length ? "모든 장면에 체크했어요." : `남은 장면 ${cuts.length - done}개`;
+    filmedNote.hidden = !(filmed && done === 0);       // 다 찍음 saved, but no scene checks in this browser
   };
   const head = h("div", { class: "check-head" },
     h("h2", { class: "sr-only" }, "촬영 체크"),
@@ -444,35 +476,37 @@ function renderCheck(mine) {
   }
   const checked = store.get();
   const sections = (mine.data.conti.fm && mine.data.conti.fm.script) || [];
-  const rows = cuts.map((c, i) => {
-    const label = c.label || (sections[c.section] || {}).label || "";
-    const box = h("input", { type: "checkbox", class: "check-box", id: `check-${i}`, "data-focus": `check-${c.id}` });
-    box.checked = checked.has(c.id);
-    const row = h("li", { class: "check-row" + (box.checked ? " is-done" : "") }, box,
-      h("label", { class: "check-body", for: `check-${i}` },
-        h("span", { class: "check-top" },
-          h("span", { class: "check-no" }, String(c.n).padStart(2, "0")),
-          label ? tag(sectionLabelName(label), SECTION_TAG[label] || "check") : null,
-          box.checked ? h("span", { class: "check-done" }, "찍음") : null),
-        h("span", { class: "check-action" }, c.action || ""),
-        c.line ? h("span", { class: "check-line" }, `“${c.line}”`) : null,
-        h("span", { class: "check-shot" }, [c.size, c.sec ? `${c.sec}초` : null].filter(Boolean).join(" · "))));
-    box.addEventListener("change", () => {
-      store.set(c.id, box.checked);
-      row.classList.toggle("is-done", box.checked);
-      const top = row.querySelector(".check-top");
-      const mark = top.querySelector(".check-done");
-      if (box.checked && !mark) top.append(h("span", { class: "check-done" }, "찍음"));
-      if (!box.checked && mark) mark.remove();
-      paintCount();
-      renderProgress(mine);
-    });
-    return row;
-  });
+  const onlyLeft = mine.checkFilter === "left";
+  const leftCount = cuts.length - doneCount(checked, cuts);
+  const pick = (key, label, n) => {
+    const c = chip(label, { pressed: mine.checkFilter === key, count: n, onClick: () => {
+      if (mine.checkFilter === key && key === "all") return;
+      mine.checkFilter = key;            // pressing 남은 장면 again drops rows checked meanwhile
+      renderCheck(mine);
+      const again = mine.nodes.panel.querySelector(`[data-focus="check-filter-${key}"]`);
+      if (again) again.focus();
+    } });
+    c.setAttribute("data-focus", `check-filter-${key}`);
+    return c;
+  };
+  const filters = h("div", { class: "check-filters", role: "group", "aria-label": "장면 보기" },
+    pick("all", "전체", cuts.length), pick("left", "남은 장면", leftCount));
+  const o = { sections, checked, store, onChange: () => {
+    paintCount();
+    renderProgress(mine);
+    const n = filters.querySelector('[data-focus="check-filter-left"] .ui-chip-count');
+    if (n) n.textContent = String(cuts.length - doneCount(store.get(), cuts));
+  } };
+  const rows = [];
+  cuts.forEach((c, i) => { if (!onlyLeft || !checked.has(c.id)) rows.push(checkRow(c, i, o)); });
   paintCount();
   const note = store.persistent() ? null
     : h("p", { class: "muted check-note" }, "이 브라우저는 체크를 저장할 수 없어요. 창을 닫으면 체크가 사라져요.");
-  fill(panel, head, left, note, h("ol", { class: "check-list", "aria-label": "장면 체크" }, ...rows));
+  const repeats = hasRepeats(cuts) ? h("p", { class: "check-note" }, REPEATS_NOTE) : null;
+  const list = rows.length
+    ? h("ol", { class: "check-list", "aria-label": "장면 체크" }, ...rows)
+    : h("p", { class: "muted check-empty-left" }, "남은 장면이 없어요.");
+  fill(panel, head, filmedNote, repeats, note, h("div", { class: "check-bar" }, left, filters), list);
 }
 
 // ---- page contract ------------------------------------------------------------------------------

@@ -34,6 +34,7 @@
 .shoot-dark {
   --bg: #0E1013; --surface: #1C1F25; --ink: #FFFFFF; --ink-2: #C9CDD6; --muted: #A7ADB9;
   --border: #2A2E36; --border-strong: #3A3F4B; --link: #9DB8F5; --ring: #9DB8F5;
+  --focus-ring: 0 0 0 2px var(--surface), 0 0 0 4px var(--ring);   /* var() resolves where declared: re-declare */
   color-scheme: dark; background: var(--bg); color: var(--ink);
 }
 :root, .shoot-dark {
@@ -1389,6 +1390,11 @@ code { background: var(--chip); padding: 1px 6px; border-radius: 4px; }
 .check-empty p { margin: 0 0 4px; }
 .check-left { font-size: 13px; color: var(--ink-2); margin: 0 0 var(--sp-2); }
 .check-note { font-size: 13px; margin: 0 0 var(--sp-2); }
+.check-note[hidden] { display: none; }
+.check-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--sp-2); margin-bottom: var(--sp-2); }
+.check-bar .check-left { margin: 0; }
+.check-filters { display: flex; gap: var(--sp-2); }
+.check-empty-left { margin: var(--sp-3) 0; }
 .check-row { align-items: flex-start; }
 .check-row.is-done { background: var(--bg); }
 .check-row.is-done .check-action { color: var(--muted); }
@@ -1416,10 +1422,12 @@ body.shoot-mode .toasts { bottom: var(--sp-4); }
 .shoot-name h1 { font-size: 15px; font-weight: 700; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: 0; }
 .shoot-k { font-size: 12px; color: var(--muted); }
 .shoot-count { flex: none; font-family: var(--mono); font-size: 14px; padding: 6px 10px; border-radius: var(--radius-ctl); background: var(--surface); }
-.shoot-bar { display: flex; gap: 4px; padding: 0 var(--sp-4) 14px; }
-.shoot-seg { flex: 1; height: 5px; border-radius: 3px; background: var(--border); }
+/* at most 40 segments (shoot-utils barSegments); top padding leaves room for the current segment's outline */
+.shoot-bar { display: flex; gap: 4px; padding: 3px var(--sp-4) 14px; overflow: hidden; }
+.shoot-seg { flex: 1 1 0; min-width: 0; height: 5px; border-radius: 3px; background: var(--border); }
 .shoot-seg.is-now { background: var(--ink); }
 .shoot-seg.is-done { background: var(--done); }
+.shoot-seg.is-done-now { background: var(--done); outline: 2px solid var(--ink); outline-offset: 1px; }
 .shoot-scene { flex: 1; padding: 0 var(--sp-4); display: flex; flex-direction: column; gap: 14px; }
 .shoot-frame { position: relative; height: 216px; flex: none; border-radius: 16px; overflow: hidden; background: var(--border-strong);
   display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 500; color: var(--ink); }
@@ -1432,7 +1440,9 @@ body.shoot-mode .toasts { bottom: var(--sp-4); }
 .shoot-frame.has-photo .shoot-shot { bottom: 10px; left: 10px; max-width: calc(100% - 110px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .shoot-badge { position: absolute; bottom: 10px; right: 10px; padding: 4px 10px; border-radius: 999px; background: var(--done);
   color: var(--on-rec); font-size: 12px; font-weight: 700; }
-.shoot-undo { align-self: flex-start; margin: -6px 0 -6px -8px; color: var(--ink-2); }
+.shoot-undo-slot:empty { display: none; }
+.shoot-undo { min-height: 44px; margin: -12px 0 -12px -8px; padding: 0 var(--sp-2); color: var(--ink-2); font-size: 13px; }
+.shoot-hint { margin: 0 var(--sp-4) 14px; font-size: 13px; color: var(--ink-2); }
 .shoot-action { font-size: 22px; font-weight: 700; line-height: 1.4; letter-spacing: -.01em; margin: 0; overflow-wrap: anywhere; }
 .shoot-line { font-size: 18px; font-weight: 500; line-height: 1.55; margin: 0; padding: 12px 14px; border-radius: 12px; border-left: 4px solid var(--rec);
   background: var(--surface); color: var(--ink); overflow-wrap: anywhere; }

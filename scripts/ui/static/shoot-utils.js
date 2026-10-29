@@ -106,9 +106,22 @@ export function firstTodo(done, n) {
   return 0;
 }
 
-// Progress bar segments: filmed "done" (green, wins over current as in the mockup), current "now", rest "todo".
-export function barStates(done, i, n) {
-  return Array.from({ length: n }, (_, k) => (done.has(k) ? "done" : k === i ? "now" : "todo"));
+// Progress bar segments, at most `max` (an unmerged conti has hundreds of cuts: one segment each would overflow a
+// phone). Segment k covers scenes [floor(k*n/m), floor((k+1)*n/m)): "done" when all of them are filmed (green), "now"
+// when it holds the current scene (white), "done-now" when that segment is all filmed too (green, outlined), else "todo".
+export const BAR_MAX = 40;
+export function barSegments(done, i, n, max = BAR_MAX) {
+  const m = Math.min(n, max);
+  const out = [];
+  for (let k = 0; k < m; k += 1) {
+    const lo = Math.floor((k * n) / m);
+    const hi = Math.floor(((k + 1) * n) / m);
+    let all = hi > lo;
+    for (let s = lo; s < hi && all; s += 1) if (!done.has(s)) all = false;
+    const here = i >= lo && i < hi;
+    out.push(here ? (all ? "done-now" : "now") : all ? "done" : "todo");
+  }
+  return out;
 }
 
 // Up to two shooting tips from the scene guide, one sentence each (a sentence ends at . ! ? before a space, or a

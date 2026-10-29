@@ -4,10 +4,10 @@
 // Per-scene checks are browser storage (shoot-utils shootStore, spec 7); the last 전부 찍었어요! saves the draft-level
 // 다 찍음 (/api/drafts/filmed). The screen stays on (Wake Lock) while open; ←/→ move between scenes.
 import { h, fill, filesUrl } from "/static/dom.js";
-import { refCaption } from "/static/conti-utils.js";
+import { hasRepeats, refCaption } from "/static/conti-utils.js";
 import { sectionLabelName } from "/static/labels.js";
 import {
-  barStates, doneIndexes, firstTodo, mainLabel, nextTodo, sceneTime, shootCount, shootStore, tipsFrom,
+  barSegments, doneIndexes, firstTodo, mainLabel, nextTodo, sceneTime, shootCount, shootStore, tipsFrom,
 } from "/static/shoot-utils.js";
 import { draftPath, shortTitle, videoHref } from "/static/video-utils.js";
 
@@ -97,6 +97,7 @@ function renderEmpty(mine) {
 // ---- the shoot screen -----------------------------------------------------------------------------
 
 const doneSet = (mine) => new Set(doneIndexes(mine.store.get(), mine.cuts));
+const REPEATS_NOTE = "같은 장면이 여러 컷으로 나뉘어 있어요. 콘티 탭에서 장면으로 합치면 찍기 편해요.";
 
 function renderShoot(mine) {
   const n = mine.nodes;
@@ -113,16 +114,17 @@ function renderShoot(mine) {
   n.live = h("p", { class: "sr-only", role: "status", "aria-live": "polite" });
   const note = mine.store.persistent() ? null
     : h("p", { class: "shoot-note" }, "이 브라우저는 체크를 저장할 수 없어요. 창을 닫으면 체크가 사라져요.");
-  fill(mine.el, shell(mine, top, n.bar, n.scene,
+  // an unmerged conti (one cut per line): filming goes better scene by scene
+  const repeats = hasRepeats(mine.cuts) ? h("p", { class: "shoot-hint" }, REPEATS_NOTE) : null;
+  fill(mine.el, shell(mine, top, n.bar, repeats, n.scene,
     h("div", { class: "shoot-nav" }, n.error, h("div", { class: "shoot-nav-row" }, n.prev, n.main, n.next), note),
     n.live));
-  paint(mine);
+  renderScene(mine);
 }
 
-function sceneFrame(c, filmed) {
+function sceneFrame(c) {
   const frame = h("div", { class: "shoot-frame" });
   const shot = [c.size, c.angle].filter(Boolean).join(" · ");
-  const shotEl = h("span", { class: "shoot-shot" }, shot);
   if (c.ref && c.ref.frame) {
     frame.classList.add("has-photo");
     const img = h("img", { src: filesUrl(c.ref.frame), alt: refCaption(c.ref) || "참고 사진" });
@@ -134,14 +136,31 @@ function sceneFrame(c, filmed) {
   const parts = [
     label ? h("span", { class: "shoot-pill shoot-sec" }, label) : null,
     time ? h("span", { class: "shoot-pill shoot-time" }, h("span", { class: "sr-only" }, "구간 "), time) : null,
-    shot ? shotEl : null,
-    filmed ? h("span", { class: "shoot-badge" }, "찍음 ✓") : null,
+    shot ? h("span", { class: "shoot-shot" }, shot) : null,
   ];
   frame.append(...parts.filter(Boolean));
   return frame;
 }
 
-function paint(mine) {
+// A new scene: frame (photo), action, line, tips. Checking and unchecking only repaint the marks (paintMarks), so the
+// photo is not reloaded.
+function renderScene(mine) {
+  const n = mine.nodes;
+  const c = mine.cuts[mine.i];
+  n.frame = sceneFrame(c);
+  n.undoSlot = h("div", { class: "shoot-undo-slot" });
+  const kids = [n.frame, n.undoSlot, h("h2", { class: "shoot-action" }, c.action || "")];
+  kids.push(c.line
+    ? h("p", { class: "shoot-line" }, h("span", { class: "sr-only" }, "대사 "), `“${c.line}”`)
+    : h("p", { class: "shoot-line is-empty" }, "(대사 없음)"));
+  const tips = tipsFrom(c.guide);
+  if (tips.length) kids.push(h("ul", { class: "shoot-tips", "aria-label": "촬영 팁" }, ...tips.map((t) => h("li", {}, t))));
+  fill(n.scene, ...kids);
+  paintMarks(mine);
+}
+
+// Counter, bar, 찍음 ✓ badge, 찍음 지우기, main button and the side buttons for the current scene.
+function paintMarks(mine) {
   const n = mine.nodes;
   const total = mine.cuts.length;
   const done = doneSet(mine);
@@ -149,38 +168,34 @@ function paint(mine) {
   const filmed = done.has(mine.i);
   fill(n.count, h("span", { class: "sr-only" }, "장면 "), `${mine.i + 1} / ${total}`);
   n.bar.setAttribute("aria-label", shootCount(done.size, total));
-  fill(n.bar, ...barStates(done, mine.i, total).map((s) => h("span", { class: `shoot-seg is-${s}` })));
-  const hadFocus = n.scene.contains(document.activeElement);
-  const kids = [sceneFrame(c, filmed)];
-  if (filmed) {
+  fill(n.bar, ...barSegments(done, mine.i, total).map((s) => h("span", { class: `shoot-seg is-${s}` })));
+  const badge = n.frame.querySelector(".shoot-badge");
+  if (filmed && !badge) n.frame.append(h("span", { class: "shoot-badge" }, "찍음 ✓"));
+  if (!filmed && badge) badge.remove();
+  const undoHadFocus = n.undoSlot.contains(document.activeElement);
+  if (filmed && !n.undoSlot.firstChild) {
     const undo = h("button", { type: "button", class: "btn btn-link btn-s shoot-undo" }, "찍음 지우기");
     undo.addEventListener("click", () => {
       mine.store.set(c.id, false);
+      paintMarks(mine);
       n.live.textContent = `${mine.i + 1}번 장면 찍음을 지웠어요`;
-      paint(mine);
     });
-    kids.push(undo);
+    n.undoSlot.append(undo);
   }
-  kids.push(h("h2", { class: "shoot-action" }, c.action || ""));
-  kids.push(c.line
-    ? h("p", { class: "shoot-line" }, h("span", { class: "sr-only" }, "대사 "), `“${c.line}”`)
-    : h("p", { class: "shoot-line is-empty" }, "(대사 없음)"));
-  const tips = tipsFrom(c.guide);
-  if (tips.length) kids.push(h("ul", { class: "shoot-tips", "aria-label": "촬영 팁" }, ...tips.map((t) => h("li", {}, t))));
-  fill(n.scene, ...kids);
+  if (!filmed) n.undoSlot.replaceChildren();
   n.main.textContent = mainLabel(done, mine.i, total);
   n.main.classList.toggle("is-done", filmed);
   n.main.setAttribute("aria-disabled", String(mine.busy));   // not disabled: it keeps focus while saving
   n.prev.setAttribute("aria-disabled", String(mine.i === 0));
   n.next.setAttribute("aria-disabled", String(mine.i === total - 1));
-  if (hadFocus) n.main.focus();     // the undo button went away
+  if (undoHadFocus && !filmed) n.main.focus();      // the undo button went away
 }
 
 function go(mine, i) {
   if (mine.busy || i < 0 || i >= mine.cuts.length || i === mine.i) return;
   mine.i = i;
   mine.nodes.error.textContent = "";
-  paint(mine);
+  renderScene(mine);
   mine.nodes.live.textContent = `장면 ${i + 1} / ${mine.cuts.length}`;
 }
 
@@ -190,7 +205,7 @@ function onMain(mine) {
   const done = doneSet(mine);
   if (!done.has(mine.i)) {
     mine.store.set(mine.cuts[mine.i].id, true);
-    paint(mine);
+    paintMarks(mine);
     mine.nodes.live.textContent = `${mine.i + 1}번 장면 찍음`;
     return;
   }
@@ -204,7 +219,7 @@ function onMain(mine) {
 async function finish(mine) {
   mine.busy = true;
   mine.nodes.error.textContent = "";
-  paint(mine);
+  paintMarks(mine);
   const post = (d) => mine.ctx.api("POST", "/api/drafts/filmed",
     { category: d.category, path: d.path, filmed: true, hash: d.hash });
   try {
@@ -219,7 +234,7 @@ async function finish(mine) {
   } catch (e) {
     if (!alive(mine) || ignorable(e)) return;
     mine.busy = false;
-    paint(mine);
+    paintMarks(mine);
     mine.nodes.error.textContent = `${e.message || "저장하지 못했어요"} 다시 눌러 주세요.`;
     return;
   }
@@ -252,12 +267,15 @@ function onKey(e) {
 
 async function lockScreen(mine) {
   if (!navigator.wakeLock || document.visibilityState !== "visible" || mine.finished) return;
-  if (mine.lock && !mine.lock.released) return;
+  if (mine.locking || (mine.lock && !mine.lock.released)) return;     // one request at a time
+  mine.locking = true;
   try {
     const lock = await navigator.wakeLock.request("screen");
     if (!alive(mine) || mine.finished) { lock.release().catch(() => {}); return; }
     mine.lock = lock;
-  } catch { /* not allowed (battery saver, no user gesture): the screen may dim */ }
+  } catch { /* not allowed (battery saver, no user gesture): the screen may dim */ } finally {
+    mine.locking = false;
+  }
 }
 
 function unlock(mine) {
@@ -278,7 +296,7 @@ export async function mount(el, params, ctx) {
   if (S) unmount();
   const mine = S = {
     el, ctx, id: params.id, draft: null, cuts: [], i: 0, store: shootStore(params.id),
-    busy: false, finished: false, lock: null, nodes: {},
+    busy: false, finished: false, lock: null, locking: false, nodes: {},
   };
   document.addEventListener("keydown", onKey);
   document.addEventListener("visibilitychange", onVisible);

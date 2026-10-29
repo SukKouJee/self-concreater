@@ -64,10 +64,26 @@ def test_next_todo_wraps_to_the_first_scene_left():
     assert js("m.firstTodo(new Set(), 0)") == 0
 
 
-def test_bar_states_follow_the_mockup():
-    # filmed green wins over current (mockup), current white, the rest grey
-    assert js("m.barStates(new Set([0]), 1, 4)") == ["done", "now", "todo", "todo"]
-    assert js("m.barStates(new Set([1]), 1, 3)") == ["todo", "done", "todo"]
+def test_bar_segments_one_per_scene_when_few():
+    # filmed green, current white, rest grey; a filmed current scene is "done-now" (green, outlined)
+    assert js("m.barSegments(new Set([0]), 1, 4)") == ["done", "now", "todo", "todo"]
+    assert js("m.barSegments(new Set([1]), 1, 3)") == ["todo", "done-now", "todo"]
+    assert js("m.barSegments(new Set(), 0, 0)") == []
+
+
+def test_bar_segments_bucket_many_scenes_into_40():
+    # an unmerged conti (469 cuts) must not overflow a 390px bar: at most 40 segments
+    segs = js("m.barSegments(new Set(), 300, 469)")
+    assert len(segs) == 40
+    now = segs.index("now")
+    assert segs.count("now") == 1 and now == js("Math.floor(300 * 40 / 469)")
+    assert set(segs) == {"now", "todo"}
+    # a bucket is done only when every scene in it is filmed
+    all_but_last = js("m.barSegments(new Set(Array.from({length: 468}, (_, k) => k)), 0, 469)")
+    assert all_but_last[0] == "done-now" and all_but_last[-1] == "todo" and all_but_last[1:-1] == ["done"] * 38
+    assert js("m.barSegments(new Set(), 468, 469)")[-1] == "now"
+    assert js("m.barSegments(new Set(), 0, 40).length") == 40
+    assert js("m.barSegments(new Set(), 0, 41).length") == 40
 
 
 def test_tips_from_guide():
