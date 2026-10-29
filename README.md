@@ -191,7 +191,7 @@ Claude가 라이브러리를 직접 부를 수 있는 도구 8개를 제공합�
 | `footage_out` | `remaining <conti.md>`, `csv <conti.md>`, `clips <conti.md>` — 남은 컷 HTML(`drafts/<기획안>-remaining.html`), 위치 CSV(`-footage.csv`), 컷 클립(`-cuts/NN_<원본 이름>.mp4`) |
 | `similarity` | `compare <cat> <target>`, `save <cat> <target> --notes <json>` (→ `mine/`), `intentional <cat> <name> <key> [--off]` |
 | `mission` | `context`, `save --mission <json> [--replace]`, `submit <file> --difficulty --feedback`, `skip --reason`, `week [YYYY-Www]`, `review-save`, `profile-update` (모두 `--date`로 날짜 지정 가능) |
-| `shots` | `pending <cat>`, `context <id> --category`, `apply <id> --category --labels <json>` (장면 길이 가중 분포 → md `shots`) |
+| `shots` | `pending <cat>`, `context <id> --category`, `apply <id> --category --labels <json>` (장면 길이 가중 분포 → md `shots`), `describe-context <id> --category`, `apply-desc <id> --category --labels <json>`, `desc-status <cat>` (저장 프레임마다 한 줄 설명 `desc` → `workspace/shots/<id>.json`, md는 건드리지 않음) |
 | `report` | `<cat> [--date]` → `reports/<cat>-<date>.html` (축별 판정·아키타입 비교·컷 길이 분포·진단 추이, 외부 자원 없는 한 파일) |
 | `stt` | `<video_id> [--force]` — 자막 없는 영상 음성 인식 (선택: `pip install faster-whisper`, 모델 `YT_STT_MODEL`, 기본 small). CPU에서 1분 쇼츠 약 30초(첫 실행은 모델 다운로드 ~460MB). 말이 없으면 `speech: false`, 빈 자막으로 기록돼 `sparse` 처리 |
 | `status` | `[category]` — 카테고리별 진행 단계(레퍼런스 수·유형화·기획안·콘티·진단), 다음 할 일, 최근 결과물, 오늘 미션. 화면 홈과 같은 JSON |

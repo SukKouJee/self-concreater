@@ -20,8 +20,9 @@
   조용히 사라지지 않게). `close_if_idle()`은 줄이 비고 모든 항목이 끝났을 때만 done으로 닫고, `close_queue()`는 멈출 때
   남은 할 일을 돌려준다. `sync_status()`는 확인 대기 유무로 running/awaiting을 올리고 내린다.
   `release_reviews()`는 멈춘 작업의 확인 대기를 새 작업으로 옮길 때 쓴다.
-- 같은 kind 중 `SINGLE_KINDS`(collect, typify, motif, draft, polish, srtfit, caption_video, diagnose, mission, mission_feedback, review, library_summary, help_chat, footage, footage_clips)는 진행 중(running/awaiting)인 작업이 하나뿐이다.
-- `EXCLUSIVE`: CPU를 많이 쓰는 kind끼리는 동시에 돌지 않는다(collect ↔ footage·footage_clips, footage ↔ footage_clips).
+- 같은 kind 중 `SINGLE_KINDS`(collect, typify, motif, draft, polish, srtfit, caption_video, diagnose, mission, mission_feedback, review, library_summary, help_chat, footage, footage_clips, refs_describe)는 진행 중(running/awaiting)인 작업이 하나뿐이다.
+- `EXCLUSIVE`: 무거운 kind끼리는 동시에 돌지 않는다(collect ↔ footage·footage_clips·refs_describe, footage ↔ footage_clips·refs_describe,
+  footage_clips ↔ refs_describe).
   상대 kind의 작업이 일을 하는 중이면(`Job.has_work`: 줄에 할 일이 있거나 대기·진행 중 항목이 있음) `start()`가
   같은 잠금 안에서 `ScriptError("busy", 상대 kind의 문구)`로 거절한다. 사용자 확인만 기다리는 collect는 막지 않는다.
   도는 collect 줄에 일을 더 붙이기 전에는 `check_exclusive()`로 같은 확인을 한다.
@@ -58,15 +59,18 @@ SINGLE_KINDS = {
     "help_chat": "이미 답을 만드는 중입니다",
     "footage": "이미 촬영 영상을 처리하는 중입니다",
     "footage_clips": "이미 컷 파일을 만드는 중입니다",
+    "refs_describe": "이미 레퍼런스 사진 설명을 만드는 중입니다",
 }
 # 시작하려는 kind → {진행 중이면 막는 kind: 거절 문구}
 MSG_AFTER_COLLECT = "레퍼런스 분석이 끝난 뒤 시작해 주세요"
 MSG_AFTER_FOOTAGE = "촬영 영상 처리가 끝난 뒤 시작해 주세요"
 MSG_AFTER_CLIPS = "컷 파일 만들기가 끝난 뒤 시작해 주세요"
+MSG_AFTER_DESCRIBE = "레퍼런스 사진 설명이 끝난 뒤 시작해 주세요"
 EXCLUSIVE: dict[str, dict[str, str]] = {
-    "collect": {"footage": MSG_AFTER_FOOTAGE, "footage_clips": MSG_AFTER_FOOTAGE},
-    "footage": {"collect": MSG_AFTER_COLLECT, "footage_clips": MSG_AFTER_CLIPS},
-    "footage_clips": {"collect": MSG_AFTER_COLLECT, "footage": MSG_AFTER_FOOTAGE},
+    "collect": {"footage": MSG_AFTER_FOOTAGE, "footage_clips": MSG_AFTER_FOOTAGE, "refs_describe": MSG_AFTER_DESCRIBE},
+    "footage": {"collect": MSG_AFTER_COLLECT, "footage_clips": MSG_AFTER_CLIPS, "refs_describe": MSG_AFTER_DESCRIBE},
+    "footage_clips": {"collect": MSG_AFTER_COLLECT, "footage": MSG_AFTER_FOOTAGE, "refs_describe": MSG_AFTER_DESCRIBE},
+    "refs_describe": {"collect": MSG_AFTER_COLLECT, "footage": MSG_AFTER_FOOTAGE, "footage_clips": MSG_AFTER_CLIPS},
 }
 STOP_MESSAGE = "중단됨"
 
