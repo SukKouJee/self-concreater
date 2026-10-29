@@ -1,4 +1,5 @@
 """Task 6: 콘티 API. claude 호출은 가짜로 바꾼다."""
+import json
 import os
 import shutil
 from urllib.parse import quote
@@ -1006,3 +1007,54 @@ def test_get_conti_ref_has_match_and_desc(client, home, draft_md):
     ref = _view(client, home, src)["cuts"][0]["ref"]
     assert ref["match"] == "composition" and ref["frame"] in frames
     assert ref["desc"] == {frames[0]: "시장 골목", frames[1]: "국물 한 숟갈"}.get(ref["frame"])
+
+
+def _conti_with_stray_ref_auto(frame):
+    data = json.loads(json.dumps(CONTI))
+    data["cuts"][0]["ref_auto"] = {"frame": frame, "match": "content"}
+    return data
+
+
+def test_create_drops_ref_auto_from_claude_output(client, home, draft_md, fakes):
+    frames = _described(home)
+    stray = _conti_with_stray_ref_auto(frames[0])
+
+    def answer(payload):
+        if "candidates" in payload:
+            return {"picks": [{"id": s["id"], "frame": None} for s in payload["scenes"]]}
+        return stray
+
+    fakes.answer = answer
+    body = client.json("POST", "/api/conti/create", {"draft": rel(home, draft_md)})[1]
+    preview = wait_for(client, body["job"]["id"], lambda j: j["status"] == "done")["items"][0]["preview"]
+    assert all("ref_auto" not in c for c in preview["cuts"] + preview["conti"]["cuts"])
+
+
+def test_create_without_candidates_drops_ref_auto(client, home, draft_md, fakes):
+    fakes.answer = _conti_with_stray_ref_auto("workspace/frames/a00/scene001.jpg")
+    body = client.json("POST", "/api/conti/create", {"draft": rel(home, draft_md)})[1]
+    preview = wait_for(client, body["job"]["id"], lambda j: j["status"] == "done")["items"][0]["preview"]
+    assert len(fakes.asks) == 1
+    assert all("ref_auto" not in c for c in preview["cuts"] + preview["conti"]["cuts"])
+
+
+def test_refs_pick_cancel_writes_nothing(client, home, draft_md, fakes):
+    import threading
+    src = saved_conti(home, draft_md)
+    frames = _described(home)
+    started, gate = threading.Event(), threading.Event()
+    pick = _create_then_pick(frames)
+
+    def answer(payload):
+        started.set()
+        gate.wait(5)
+        return pick(payload)
+
+    fakes.answer = answer
+    before = src.read_bytes()
+    body = client.json("POST", "/api/conti/refs/pick", {"path": rel(home, src), "hash": conti.content_hash(src)})[1]
+    assert started.wait(5)
+    client.json("POST", f"/api/jobs/{body['job']['id']}/cancel")
+    gate.set()
+    final = wait_for(client, body["job"]["id"], lambda j: j["status"] != "running")
+    assert final["status"] == "stopped" and src.read_bytes() == before

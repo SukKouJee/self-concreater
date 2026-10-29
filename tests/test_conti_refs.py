@@ -142,3 +142,16 @@ def test_save_picks_conflict(saved, home):
     with pytest.raises(ScriptError) as exc:
         conti_refs.save_picks(saved, {}, "0" * 64)
     assert exc.value.code == "conti_changed"
+
+
+def test_pick_used_skips_pinned_scenes(home, fake):
+    a = describe(home, "a00", ["하나", "둘", None, None])
+    cuts = scene_cuts(41)
+    cuts[0]["ref_frame"] = "workspace/frames/pin.jpg"          # 고정한 장면의 고른 사진은 화면에 안 보인다
+
+    def answer(payload):
+        return {"picks": [{"id": s["id"], "frame": a[0]} for s in payload["scenes"] if s["id"] == "c0000000"]}
+
+    fake.answer = answer
+    assert conti_refs.pick(cuts, "mukbang") == {"c0000000": a[0]}
+    assert fake.calls[1][1]["used"] == []

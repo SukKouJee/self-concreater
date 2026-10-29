@@ -1063,3 +1063,13 @@ def test_footage_retry_ignores_clicks_while_reloading():
     body = js[start: js.index("\n}\n", start)]
     assert "mine.busy.has(key)" in body and "await load()" in body and "markBusy(key, false)" in body
     assert js.count("() => retryLoad(") == 2 and "() => load())" not in js
+
+
+def test_conti_page_uses_new_ref_match_values():
+    text = (STATIC_DIR / "pages" / "conti.js").read_text(encoding="utf-8")
+    assert 'const MATCH_TEXT = { pinned: "참고(고정)", content: "참고", composition: "구도만 참고" };' in text
+    badge = text[text.index("function matchBadge"):text.index("// Cut list")]
+    assert 'match === "content"' in badge and "exact" not in badge
+    assert '${MATCH_TEXT[cut.ref.match] || "참고"} · ${cut.ref.desc || cut.ref.title || ""}' in text
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    assert ".badge.match-composition" in css

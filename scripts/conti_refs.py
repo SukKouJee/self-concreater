@@ -67,12 +67,14 @@ def pick(cuts: list[dict[str, Any]], category: str | None,
     known = {c["frame"] for c in cands}
     batches = [cuts[i:i + PICK_BATCH] for i in range(0, len(cuts), PICK_BATCH)]
     picks: dict[str, str] = {}
+    pinned = {c.get("id") for c in cuts if c.get("ref_frame")}     # 고정한 장면의 사진은 화면에 안 보여 반복으로 치지 않는다
     for done, batch in enumerate(batches):
         if on_batch:
             on_batch(done, len(batches))
         scenes = [{k: c.get(k) for k in SCENE_FIELDS} for c in batch]
         ids = {s["id"] for s in scenes}
-        payload = {"scenes": scenes, "candidates": cands, "used": sorted(set(picks.values()))}
+        used = sorted({frame for cut_id, frame in picks.items() if cut_id not in pinned})
+        payload = {"scenes": scenes, "candidates": cands, "used": used}
         _, got = llm.ask_validated(rules(), payload, PICK_TASK, lambda d, ids=ids: _validated(d, ids, known))
         picks.update(got)
     return picks

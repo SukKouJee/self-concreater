@@ -118,6 +118,10 @@ def create_target(ctx: dict) -> Any:
             _rules(), ctx, CREATE_TASK, lambda d: conti.validate(d, ctx["sections"]),
         )
         warnings = conti.warnings(script, cuts, ctx["speech_cps"])
+        # Claude가 콘티에 적어 낸 ref_auto는 믿지 않는다: 같은 카테고리에서 검증해 고른 것만 남긴다
+        cuts = conti_refs.apply_picks(cuts, {})
+        data = {**data, "cuts": [{k: v for k, v in raw.items() if k != "ref_auto"} if isinstance(raw, dict) else raw
+                                 for raw in data["cuts"]]}
         if conti_refs.candidates(ctx.get("category")):
             job.update(0, step="refs")
             try:

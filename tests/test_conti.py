@@ -1179,7 +1179,8 @@ def test_validate_keeps_ref_auto():
 @pytest.mark.parametrize("value", [
     {"frame": REL, "match": "composition"}, {"frame": "refs/x.jpg", "match": "content"},
     {"frame": "workspace/frames/../../secret.jpg", "match": "content"}, {"frame": "/abs/x.jpg", "match": "content"},
-    {"frame": r"workspace\frames\x.jpg", "match": "content"}, {"frame": 3, "match": "content"}, REL, None, [REL]])
+    {"frame": r"workspace\frames\x.jpg", "match": "content"}, {"frame": "workspace/frames/./x.jpg", "match": "content"},
+    {"frame": "workspace/frames/C:/x.jpg", "match": "content"}, {"frame": 3, "match": "content"}, REL, None, [REL]])
 def test_validate_drops_malformed_ref_auto(value):
     _, cuts = conti.validate(with_cuts(c0={"ref_auto": value}), SECTIONS)
     assert "ref_auto" not in cuts[0]
@@ -1249,3 +1250,28 @@ def test_ref_auto_survives_edits_and_restore(saved, home):
     conti_history.restore(saved, n, None)
     stored, _ = refstore.read_md(saved)
     assert next(c for c in stored["cuts"] if c["sfx"] == "쿵")["ref_auto"] == auto(a[0])
+
+
+def test_composition_spreads_past_content_frames(saved, home):
+    a = describe_frames(home, "a00", size="탑뷰")
+    fm = conti._load_conti(saved)
+    fm["cuts"][0]["ref_auto"] = auto(a[0])
+    fm["cuts"][3]["size"] = "탑뷰"
+    refs = conti.cut_refs(fm)
+    assert refs[1]["frame"] == a[0] and refs[4]["match"] == "composition" and refs[4]["frame"] != a[0]
+
+
+def test_html_note_without_descs_suggests_describing(draft_md, home):
+    make_frames(home, "a00")
+    shots = home / "workspace" / "shots" / "a00.json"
+    shots.parent.mkdir(parents=True, exist_ok=True)
+    frames = [f"workspace/frames/a00/scene{i:03d}.jpg" for i in (1, 2)]
+    shots.write_text(json.dumps({"labels": [{"frame": f, "size": "탑뷰", "section": "hook"} for f in frames]}), encoding="utf-8")
+    page = (home / conti.save(draft_md, conti_file(home))["html"]).read_text("utf-8")
+    assert "사진 설명을 만들고" in page and "맞는 사진이 없어" not in page
+
+
+def test_html_note_with_descs_says_nothing_fit(draft_md, home):
+    describe_frames(home, "a00", size="탑뷰")
+    page = (home / conti.save(draft_md, conti_file(home))["html"]).read_text("utf-8")
+    assert "맞는 사진이 없어 샷 크기만 맞췄습니다" in page and "사진 설명을 만들고" not in page

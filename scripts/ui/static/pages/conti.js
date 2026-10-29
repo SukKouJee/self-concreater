@@ -21,7 +21,7 @@ const TRASH_WARNING = "콘티와 스토리보드 HTML, 이 콘티로 만든 자�
 const RECREATE_WARNING = "다시 만들면 화면에서 바꾼 대사·가이드·고정한 참고 프레임이 사라지고 내 메모만 남습니다";
 const SAVED_TOAST = "저장했습니다 · 스토리보드도 다시 그렸습니다";
 const CHANGED_TEXT = "파일이 밖에서 바뀌었습니다 — 다시 불러오기";
-const MATCH_TEXT = { exact: "일치", approx: "근사", pinned: "고정" };
+const MATCH_TEXT = { pinned: "참고(고정)", content: "참고", composition: "구도만 참고" };
 const UNDO_MS = 8000;
 const INSERT_LABEL = "여기에 컷 넣기";
 const LAST_CUT_TEXT = "섹션에 컷이 하나는 있어야 해요";
@@ -1104,7 +1104,7 @@ function refThumb(ref, cls) {
 }
 
 function matchBadge(match) {
-  if (!match || match === "exact") return null;
+  if (!match || match === "content") return null;
   return h("span", { class: `badge match-${match}` }, MATCH_TEXT[match]);
 }
 
@@ -1358,7 +1358,7 @@ function renderPanel() {
       h("div", { class: "fig-box" }, cut.ref
         ? h("img", { src: filesUrl(cut.ref.frame), alt: `참고 프레임: ${cut.ref.title || ""}` })
         : h("span", { class: "muted" }, "참고 프레임 없음")),
-      h("figcaption", {}, cut.ref ? `참고 프레임 · ${MATCH_TEXT[cut.ref.match] || ""}` : "참고 프레임")));
+      h("figcaption", {}, cut.ref ? `${MATCH_TEXT[cut.ref.match] || "참고"} · ${cut.ref.desc || cut.ref.title || ""}` : "참고 프레임")));
   const info = h("div", { class: "cut-info" },
     h("p", { class: "panel-line" + (cut.line ? "" : " muted") }, cut.line ? `“${cut.line}”` : "(대사 없음)"),
     cut.action ? h("p", { class: "muted small" }, `장면 · ${cut.action}`) : null,

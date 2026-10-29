@@ -333,9 +333,11 @@ def frame_pool(category: str | None) -> list[dict]:
     return [p for p in pool if (work_root() / p["frame"]).exists()]
 
 
-def match_frames(cuts: list[dict], sections: list[dict], pool: list[dict]) -> dict[int, dict]:
-    """컷마다 참고 프레임 하나. 같은 크기+섹션 → 같은 크기 순. 각 단계에서 exact가 approx보다 먼저, 그다음 덜 쓴 프레임."""
-    used: dict[str, int] = {}
+def match_frames(cuts: list[dict], sections: list[dict], pool: list[dict],
+                 used: dict[str, int] | None = None) -> dict[int, dict]:
+    """컷마다 참고 프레임 하나. 같은 크기+섹션 → 같은 크기 순. 각 단계에서 exact가 approx보다 먼저, 그다음 덜 쓴 프레임.
+    used: 이미 다른 컷이 쓴 프레임 → 횟수(고정·내용 맞춤 사진). 주면 그 수부터 센다(넘긴 dict는 바꾸지 않는다)."""
+    used = dict(used or {})
     out = {}
     for c in cuts:
         label = sections[c["section"]]["label"]
@@ -515,7 +517,10 @@ def cut_refs(fm: dict) -> dict[int, dict]:
         else:
             rest.append(c)
     sections = [{"label": s["label"]} for s in fm["script"]]
-    for n, m in match_frames(rest, sections, pool).items():
+    taken: dict[str, int] = {}
+    for r in refs.values():                              # 고정·내용 맞춤이 쓴 사진은 구도 맞춤에서 뒤로
+        taken[r["frame"]] = taken.get(r["frame"], 0) + 1
+    for n, m in match_frames(rest, sections, pool, taken).items():
         refs[n] = {"frame": m["frame"], "title": m.get("title"), "match": "composition", "desc": m.get("desc")}
     return refs
 
@@ -577,10 +582,15 @@ def render_html(fm: dict) -> str:
                        f'<td>{_esc(c["guide"])}</td></tr>' for c in cuts)
              + "</tbody></table></div></details>")
     loose = sum(1 for r in refs.values() if r["match"] == "composition")
+    if not loose:
+        why = ""
+    elif any(p.get("desc") for p in frame_pool(fm.get("category"))):
+        why = f" '구도만 참고' {loose}장은 장면 내용에 맞는 사진이 없어 샷 크기만 맞췄습니다."
+    else:
+        why = (f" '구도만 참고' {loose}장은 샷 크기만 맞춘 사진이라 장면 내용과 다를 수 있습니다. "
+               "레퍼런스 사진 설명을 만들고 사진을 다시 고르면 장면에 맞는 사진이 붙습니다.")
     note = ('<p class="sub" style="margin-top:24px;font-size:12px">'
-            "'참고'는 장면 내용에 맞춰 고른 레퍼런스 사진입니다. 도식은 샷 크기를 단순화한 그림입니다."
-            + (f" '구도만 참고' {loose}장은 샷 크기만 맞춘 사진이라 장면 내용과 다를 수 있습니다. "
-               "레퍼런스 사진 설명을 만들고 사진을 다시 고르면 장면에 맞는 사진이 붙습니다." if loose else "") + "</p>")
+            "'참고'는 장면 내용에 맞춰 고른 레퍼런스 사진입니다. 도식은 샷 크기를 단순화한 그림입니다." + why + "</p>")
     return ('<!doctype html><html lang="ko"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             f"<title>{_esc(fm['title'])} 콘티</title><style>{CSS % (_vars(0), _vars(1), _vars(1))}"
