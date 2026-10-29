@@ -4,7 +4,9 @@
 //   export function onCategory(category)     // optional; called when the category changes while this page is
 //                                            // open. Non-home pages are NOT remounted (keeps in-progress state).
 //   export function update(params)           // optional; a new route of the same page: return true when the page
-//                                            // took it in place (no unmount/remount, ctx stays current)
+//                                            // took it in place (no unmount/remount, ctx stays current). The router
+//                                            // does not re-read the sidebar then: the page shares its /api/status
+//                                            // answer through ctx.statusSeen
 //   export function unsavedNote()            // optional; text naming unsaved input ("저장하지 않은 입력(컷 2)") or
 //                                            // null. The router asks before leaving (hash put back meanwhile).
 //   export function onStay()                 // optional; the user stayed after the leave question (repaint state)
@@ -13,7 +15,8 @@
 //        confirmLeave(note, go, stayed) (the leave question: go() when the user leaves, stayed() when they stay),
 //        navigate(hash, { replace, force }) (replace: no new history entry; force: no leave question),
 //        jobStarted(kind) (a long job started: the header status chip asks for it now; api() answers that carry
-//        a job reach the chip by themselves, so this is only needed when a page learns of a job another way) }
+//        a job reach the chip by themselves, so this is only needed when a page learns of a job another way),
+//        statusSeen(category, answer) (a page read GET /api/status: the sidebar's videos and ref count follow it) }
 //   toast action: { href, label } adds a link ("결과 보기") to the toast.
 // Rule: after EVERY await in mount/handlers, `if (!ctx.isCurrent()) return;` before touching the DOM.
 import { api, showBanner } from "/static/api.js";
@@ -126,6 +129,7 @@ function pageCtx(token, signal) {
     confirmLeave,
     navigate,
     jobStarted: (kind) => { if (statusChip) statusChip.jobStarted(kind); },
+    statusSeen: adoptStatus,
   };
 }
 
@@ -200,6 +204,17 @@ async function refreshSidebar() {
     archetypes: applied === undefined ? undefined : applied ? (applied.archetypes || []).length : 0,
     motifs: mo.status === "fulfilled" && Array.isArray(mo.value.cards) ? mo.value.cards.length : undefined,
   };
+  renderSidebar();
+}
+
+// A page's own /api/status answer (the video page reads it for its header): the sidebar's videos and ref count take
+// it without a second read. Archetype and motif counts stay. An older answer than a sidebar read in flight is fine:
+// that read lands after it.
+function adoptStatus(category, answer) {
+  if (!answer || !state.side || state.side.category !== category || category !== ctx.category) return;
+  const cat = (answer.categories || []).find((c) => c.category === category);
+  if (!cat) return;
+  state.side = { ...state.side, videos: cat.videos || [], ref: cat.ref };
   renderSidebar();
 }
 
@@ -486,7 +501,8 @@ function parseHash() {
 }
 
 // Shell parts that follow the route: menus, tab title, sidebar numbers, help page. Also ends a leave question.
-function routeChrome(hash) {
+// sidebar false: a page taking the route in place (update) shares its own status read instead (ctx.statusSeen).
+function routeChrome(hash, sidebar = true) {
   state.hash = hash;
   state.leaveOk = false;
   state.restoring = false;
@@ -495,7 +511,7 @@ function routeChrome(hash) {
   setHelpMenu(false);
   markActive();
   document.title = `${screenName(hash)} · yt-coach`;
-  refreshSidebar();             // progress and counts change as the user works; cheap local reads
+  if (sidebar) refreshSidebar();     // progress and counts change as the user works; cheap local reads
   if (helpPanel) helpPanel.setPage(helpPage(hash));
   // Shoot mode: dark full screen without header, sidebar, sub links and bottom tabs; any other route restores them.
   const shoot = (parseVideoHash(hash) || {}).mode === "shoot";
@@ -513,9 +529,10 @@ async function route() {
   const { page, params } = parseHash() || { page: "refs", params: {} };
   const cur = state.current;
   const inPlace = !!cur && state.currentPage === page && typeof cur.update === "function";
-  routeChrome(hash);
+  routeChrome(hash, !inPlace);
   // Same page, same subject (another tab of the open video): the page switches in place and keeps its ctx.
   if (inPlace && cur.update(params) === true) return;
+  if (inPlace) refreshSidebar();     // the page declined: a remount, read the sidebar like any route
   const token = ++state.navToken;
   if (state.abort) state.abort.abort();
   state.abort = new AbortController();
@@ -534,10 +551,18 @@ async function route() {
     state.currentPage = page;
     main.replaceChildren();
     await mod.mount(main, params, pageCtx(token, signal));
+    if (token === state.navToken) keepFocus();
   } catch (e) {
     if (token !== state.navToken) return;
     main.replaceChildren(h("p", { class: "error", role: "alert" }, `화면을 열지 못했습니다: ${e && e.message ? e.message : e}`));
   }
+}
+
+// The old page's focused control is gone (replaced by the new page): focus lands on <main> (tabindex -1, no outline)
+// instead of <body>, so the next Tab starts in the content and screen readers read from the new page.
+function keepFocus() {
+  const a = document.activeElement;
+  if (!a || a === document.body) $("main").focus({ preventScroll: true });
 }
 
 // ---- leaving with unsaved input ------------------------------------------------
@@ -566,9 +591,11 @@ function restoreEntry() {
 }
 
 // In-app navigation for pages: replace = no new history entry; force = the user already chose to leave.
+// A replace while the page still has unsaved input (no force) becomes a new entry: the leave question puts the page
+// back with back(), and a replaced entry has no page entry of its own below it (the user would bounce out).
 function navigate(hash, { replace = false, force = false } = {}) {
   if (force) state.leaveOk = true;
-  if (replace) location.replace(hash); else location.hash = hash;
+  if (replace && (force || !pageNote())) location.replace(hash); else location.hash = hash;
 }
 
 function pageNote() {

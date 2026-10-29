@@ -333,7 +333,7 @@ function renderRunBox() {
   const busy = S.running || active || S.saving;
   const compareBtn = h("button", { type: "button", class: "btn", disabled: !canCompare() || S.compareBusy > 0 || busy }, S.compare ? "다시 비교" : "비교하기");
   const explainBtn = h("button", {
-    type: "button", class: "btn btn-primary", disabled: !canCompare() || busy || !!S.otherJob,
+    type: "button", class: "btn btn-primary", disabled: !canCompare() || busy || !!S.otherJob, "data-tab-primary": "",
   }, S.record ? "설명 다시 받기" : "설명 받기");
   compareBtn.addEventListener("click", () => compareNow(false));
   explainBtn.addEventListener("click", requestExplain);

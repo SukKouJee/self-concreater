@@ -1514,8 +1514,9 @@ body.shoot-mode .toasts { bottom: var(--sp-4); }
 .shoot-done h2 { font-size: 24px; font-weight: 800; }
 .shoot-done h2:focus { outline: none; }
 .shoot-done .btn { min-height: 44px; font-size: 15px; padding: 0 var(--sp-4); }
-/* sticky: a question raised from far down a long page (a sidebar click) stays in view under the header */
-.leave-ask { position: sticky; top: calc(var(--topbar-h) + var(--sp-2)); z-index: 30; box-shadow: var(--elev-2);
+/* sticky: a question raised from far down a long page (a sidebar click) stays in view under the header.
+   z 48: above the history drawer (40), phone tab bar (45) and help overlay (47); below popovers (50) and toasts (70) */
+.leave-ask { position: sticky; top: calc(var(--topbar-h) + var(--sp-2)); z-index: 48; box-shadow: var(--elev-2);
   margin: var(--sp-3) var(--sp-6) 0; padding: var(--sp-3) var(--sp-4); max-width: 980px; background: var(--surface);
   border: 1px solid var(--danger); border-radius: var(--radius-card); }
 .leave-ask[hidden] { display: none; }

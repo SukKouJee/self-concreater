@@ -37,7 +37,7 @@ def test_help_page_for_video_workspace_and_library_tab():
     hashes = ["#/videos", "#/video/x", "#/video/x/plan", "#/video/x/conti", "#/video/x/check", "#/video/x/shoot",
               "#/video/x/diagnose", "#/refs?tab=library", "#/refs?tab=other"]
     assert run_js(f"{json.dumps(hashes)}.map(m.helpPage)") == [
-        "draft", "draft", "draft", "conti", "conti", "conti", "diagnose", "library", "refs"]
+        "draft", "conti", "draft", "conti", "conti", "conti", "diagnose", "library", "refs"]   # final m-8: no tab = 콘티
 
 
 def test_trim_history_keeps_last_six():

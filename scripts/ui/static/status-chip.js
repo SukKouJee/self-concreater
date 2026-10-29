@@ -130,10 +130,14 @@ export function resultHref(job) {
 const SCREEN_ALIAS = { "#/add": "#/refs" };
 const screenOf = (hash) => SCREEN_ALIAS[hash] || hash;
 
-// The user already looks at `href` (the same video counts without a tab in the address).
+// The user already looks at `href` (the same video counts without a tab in the address). A sub route of a result
+// screen with two or more parts counts too (#/draft/new/<card>, #/report/review/<week>); a one-part screen does not
+// (#/refs/<id> shows one ref, not the collect result).
 function sameScreen(here, href) {
   if (!href) return false;
   if (screenOf(here) === screenOf(href)) return true;
+  const base = String(here || "").split("?")[0];
+  if (!href.includes("?") && href.split("/").length >= 3 && base.startsWith(`${href}/`)) return true;
   const a = parseVideoHash(here || "");
   const b = parseVideoHash(href);
   return !!a && !!b && a.mode === "video" && b.mode === "video" && a.id === b.id && (!a.tab || a.tab === b.tab);
@@ -164,6 +168,10 @@ export function finishText(job) {
 export function startedJobs(prev, next) {
   const before = new Set((prev || []).map((j) => j.id));
   return (next || []).filter((j) => j.status === "running" && !before.has(j.id));
+}
+// The live line speaks for a job only away from its result screen: a page showing its own job announces it.
+export function chipSays(job, here) {
+  return !sameScreen(here, resultHref(job));
 }
 export function startText(job) {
   return `${JOB_KINDS[job.kind].label}이에요`;
@@ -246,10 +254,11 @@ export function pollOutcome(fails, results) {
 export function createStatusChip({ el, api, toast, here = () => location.hash || "#/home" }) {
   const S = { jobs: [], recent: [], lastSweep: 0, timer: null, due: 0, ticker: null, busy: false, again: false,
     stopped: false, extra: new Set(), open: false, shape: "", fails: 0, ready: false };
-  // One polite live line beside the chip (outside the re-rendered element): says when a job starts, and when one
-  // ends on the screen the user is looking at (there is no toast then). Elapsed seconds are never spoken.
+  // One polite live line (outside the re-rendered element): says when a job starts away from its result screen. A
+  // finish away from it is a toast (the toast area is a live region); on it, the page announces its own job.
+  // Elapsed seconds are never spoken.
   const live = h("span", { class: "sr-only", "aria-live": "polite", "aria-atomic": "true" });
-  el.after(live);
+  document.body.append(live);      // not in the header: shoot mode hides the header
   let sayTimer = null;
   const say = (text) => {
     clearTimeout(sayTimer);
@@ -267,11 +276,12 @@ export function createStatusChip({ el, api, toast, here = () => location.hash ||
     const now = Date.now();
     S.jobs = trackJobs(prev, snaps, now, here());
     const finished = finishedJobs(prev, S.jobs);
-    const lines = S.ready ? startedJobs(prev, S.jobs).map(startText) : [];   // not the jobs found by the first poll
+    const at = here();
+    // not the jobs found by the first poll; not jobs whose own screen is open (the page announces those)
+    const lines = S.ready ? startedJobs(prev, S.jobs).filter((j) => chipSays(j, at)).map(startText) : [];
     for (const job of finished) {
-      const t = finishToast(job, here());
+      const t = finishToast(job, at);
       if (t) toast(t.text, t.kind, t.href ? { href: t.href, label: t.link } : null);
-      else lines.push(finishText(job));
     }
     if (lines.length) say(lines.join(". "));
     S.recent = keepRecent(S.recent, finished, now);

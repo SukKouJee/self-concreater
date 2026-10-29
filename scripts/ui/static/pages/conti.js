@@ -26,8 +26,8 @@ const SAVED_TOAST = "저장했습니다 · 스토리보드도 다시 그렸습�
 const CHANGED_TEXT = "파일이 밖에서 바뀌었습니다 — 다시 불러오기";
 const MATCH_TEXT = { pinned: "참고(고정)", content: "참고", composition: "구도만 참고" };
 const UNDO_MS = 8000;
-const INSERT_LABEL = "여기에 컷 넣기";
-const LAST_CUT_TEXT = "섹션에 컷이 하나는 있어야 해요";
+const INSERT_LABEL = "여기에 장면 넣기";
+const LAST_CUT_TEXT = "섹션에 장면이 하나는 있어야 해요";
 const STALE_TEXT = "콘티가 바뀌었어요 — 다시 받아 주세요";
 const EMPTY_TEXT = { guide: "가이드는 비울 수 없습니다.", action: "장면 설명은 비울 수 없습니다." };
 const SEC_TEXT = "길이는 0.5~600초 사이로 적어 주세요 (0.5초 단위)";
@@ -54,6 +54,12 @@ const fmtSec = (s) => `${Number(s || 0).toFixed(1).replace(/\.0$/, "")}초`;
 
 function alive(mine) {
   return S === mine && mine.ctx.isCurrent();
+}
+
+// Inside the video workspace: the conti changed here (scene count, total length), so the workspace repaints its tab bar
+// summary, shoot count and progress card. Outside it ctx has no contiChanged.
+function contiChanged(mine) {
+  if (alive(mine) && typeof mine.ctx.contiChanged === "function") mine.ctx.contiChanged();
 }
 
 // Inside the video workspace (params.embedded) the workspace shows the title, crumb and 인쇄: the page keeps a
@@ -220,7 +226,7 @@ function renderList() {
   S.el.append(pageHeading("콘티"));
   if (!only) {
     S.el.append(h("p", { class: "lead" },
-      "기획안으로 컷별 대사·가이드가 들어간 콘티를 만듭니다. 콘티를 열고 컷을 누르면 레퍼런스 실제 장면과 대사 대안을 볼 수 있습니다."));
+      "기획안으로 컷별 대사·가이드가 들어간 콘티를 만듭니다. 콘티를 열고 장면을 누르면 레퍼런스 실제 장면과 대사 대안을 볼 수 있습니다."));
   }
   S.nodes.job = h("div", { class: "job-box" });
   S.jobSig = null;
@@ -266,7 +272,7 @@ function draftCard(d) {
 
   const row = h("div", { class: "btn-row" });
   if (!d.conti) {
-    const make = h("button", { type: "button", class: "btn", disabled: busy }, "콘티 만들기");
+    const make = h("button", { type: "button", class: "btn", disabled: busy, "data-tab-primary": "" }, "콘티 만들기");
     make.addEventListener("click", () => startCreate(d, false));
     row.append(make);
   } else {
@@ -481,15 +487,15 @@ function previewCard(job, item, d) {
   const overwrite = !!d.conti || S.forceSave;
   const card = h("section", { class: "card preview-card", "aria-labelledby": "job-title" });
   card.append(h("h2", { id: "job-title" }, `미리보기 · ${d.title}`),
-    h("p", { class: "muted" }, `컷 ${cuts.length}개 · 저장하기 전에는 파일이 바뀌지 않습니다.`));
+    h("p", { class: "muted" }, `장면 ${cuts.length}개 · 저장하기 전에는 파일이 바뀌지 않습니다.`));
   if (overwrite) card.append(h("p", { class: "warn-text" }, RECREATE_WARNING));
   if (warnings.length) {
     card.append(h("ul", { class: "warn-list", "aria-label": `경고 ${warnings.length}개` },
       ...warnings.map((w) => h("li", {}, w.message))));
   }
   const table = h("table", { class: "preview-table" },
-    h("caption", { class: "sr-only" }, "콘티 미리보기: 컷별 섹션, 샷, 길이, 대사, 가이드"),
-    h("thead", {}, h("tr", {}, ...["컷", "섹션", "샷", "길이", "대사", "가이드"].map((t) => h("th", { scope: "col" }, t)))));
+    h("caption", { class: "sr-only" }, "콘티 미리보기: 장면별 섹션, 샷, 길이, 대사, 가이드"),
+    h("thead", {}, h("tr", {}, ...["장면", "섹션", "샷", "길이", "대사", "가이드"].map((t) => h("th", { scope: "col" }, t)))));
   const tbody = h("tbody");
   for (const c of cuts) {
     const label = (script[c.section] || {}).label || "";
@@ -529,7 +535,7 @@ async function savePreview(job, item, d, force) {
     if (!alive(mine)) return;
     markHandled(job.id);
     mine.job = null;
-    mine.ctx.toast(`콘티를 저장했습니다 · 컷 ${res.cuts}개`, "info");
+    mine.ctx.toast(`콘티를 저장했습니다 · 장면 ${res.cuts}개`, "info");
     // in the workspace: the same video's conti tab again, without a new history entry
     if (embedded() && mine.ctx.navigate) mine.ctx.navigate(contiHref(res.path), { replace: true });
     else location.hash = contiHref(res.path);
@@ -556,6 +562,7 @@ async function loadEditor(keep = false) {
     if (mine.sel !== null && !data.cuts.some((c) => c.n === mine.sel)) mine.sel = null;
     if (!keep || !mine.nodes.board) renderEditor();
     else { renderHeader(); renderBoardTools(); renderCutList(); renderPanel(); if (mine.footage) mine.footage.refresh(); }
+    if (keep) contiChanged(mine);         // a reload after a save, restore or outside change
     if (!mine.fitChecked) { mine.fitChecked = true; resumeFit(); }
     if (!mine.cvChecked) { mine.cvChecked = true; loadCaptionVideo(); }
     refreshHistory();
@@ -586,7 +593,7 @@ function renderEditor() {
   S.nodes.srt = h("div", { class: "srt-slot" });
   const vertical = S.data.fm.format === "shorts";
   S.nodes.tools = h("div", { class: "cut-tools" });
-  S.nodes.list = h("ol", { class: "cut-list", "aria-label": "컷 목록" });
+  S.nodes.list = h("ol", { class: "cut-list", "aria-label": "장면 목록" });
   S.nodes.grid = h("ul", { class: "cb-grid", "aria-label": "장면 카드" });
   S.nodes.gridCol = h("div", { class: "cb-col" }, S.nodes.grid);
   S.nodes.boardTools = h("div", { class: "cb-tools-slot" });
@@ -646,6 +653,7 @@ function sceneActions() {
       refreshHistory();
       if (mine.footage) mine.footage.refresh();
       announce(`장면 ${res.cuts.length}개로 합쳤습니다`);
+      contiChanged(mine);
     },
     // a pick finishing while a cut save/edit is in flight: reload once that is done (flushReload)
     onReload: () => { if (!alive(mine)) return; mine.reloadPending = true; flushReload(mine); },
@@ -764,6 +772,7 @@ async function reloadAfterFootageInsert(mine, cutId) {
     mine.conflict = false;
     const keep = selId && data.cuts.find((c) => c.id === selId);
     mine.sel = keep ? keep.n : null;
+    contiChanged(mine);
     const added = cutId && data.cuts.find((c) => c.id === cutId);
     if (added) { showEdited(added.id, true, false); return; }
     renderHeader();
@@ -777,7 +786,7 @@ async function reloadAfterFootageInsert(mine, cutId) {
   }
 }
 
-const DOT_TEXT = { filmed: "촬영: 찍음", review: "촬영: 확인 필요", remaining: "촬영: 남은 컷" };
+const DOT_TEXT = { filmed: "촬영: 찍음", review: "촬영: 확인 필요", remaining: "촬영: 남은 장면" };
 
 function verdictDot(c) {
   const v = S.verdicts.get(c.id);
@@ -1453,9 +1462,9 @@ function renderTools() {
     const step = stepMove(cuts, cut.id, dir);
     const stuck = !!step && step.crosses && !canRemove(cuts, cut.id);
     const btn = h("button", { type: "button", class: "btn btn-sm", "data-tool": dir < 0 ? "up" : "down", disabled: !step || stuck || S.editing }, label);
-    if (!step) btn.title = dir < 0 ? "맨 앞 컷입니다" : "맨 뒤 컷입니다";
+    if (!step) btn.title = dir < 0 ? "맨 앞 장면입니다" : "맨 뒤 장면입니다";
     else if (stuck) btn.title = LAST_CUT_TEXT;
-    else if (step.crosses) btn.title = "섹션 경계를 넘으면 컷의 섹션이 바뀝니다";
+    else if (step.crosses) btn.title = "섹션 경계를 넘으면 장면의 섹션이 바뀝니다";
     btn.addEventListener("click", () => moveStep(cut.id, dir));
     return btn;
   };
@@ -1577,7 +1586,7 @@ function renderPanel() {
   // list view: on narrow screens, back up to the list. card view: close the panel and go back to the card.
   const cards = S.view === "cards";
   const back = h("button", { type: "button", class: cards ? "btn btn-s panel-close" : "btn back-to-list", "data-fk": "panel-close" },
-    cards ? "닫기" : "다른 컷 고르기");
+    cards ? "닫기" : "다른 장면 고르기");
   back.addEventListener("click", () => {
     const id = cut.id;
     if (cards) { S.sel = null; S.tabId = id; renderPanel(); renderCards(); }
@@ -1659,7 +1668,7 @@ function renderScenes(n) {
     box.append(h("p", { class: "muted" },
       `이 카테고리 레퍼런스에서 '${cut.size}' 장면을 찾지 못했습니다. 레퍼런스 화면에서 "샷 분류도 함께"로 분석하면 후보가 생깁니다.`));
   } else {
-    box.append(h("p", { class: "muted small" }, "같은 샷 크기·섹션의 레퍼런스 프레임입니다. 누르면 이 컷의 참고 프레임으로 고정합니다."));
+    box.append(h("p", { class: "muted small" }, "같은 샷 크기·섹션의 레퍼런스 프레임입니다. 누르면 이 장면의 참고 프레임으로 고정합니다."));
     const grid = h("ul", { class: "scene-grid" });
     for (const sc of rec.items) {
       const on = sc.frame === pinned;
@@ -1977,6 +1986,7 @@ async function editCuts(op) {
     mine.hash = res.hash;
     const keep = selId && res.cuts.find((c) => c.id === selId);
     mine.sel = keep ? keep.n : null;
+    contiChanged(mine);
     return res;
   } catch (e) {
     if (!alive(mine) || e.error === "aborted") return null;
@@ -2221,7 +2231,7 @@ const NAME_MAX = 30;
 const NAME_IDEAS = ["기획 완료", "촬영 후", "편집 중"];
 const RESTORE_NOTE = "지금 상태도 이력에 남아 있어 다시 되돌릴 수 있어요";
 const BUSY_TEXT = "저장 중이에요. 잠시 뒤 다시 눌러 주세요";
-const STATUS_TEXT = { same: "", changed: "바뀜", moved: "옮김", removed: "빠짐", added: "새 컷" };
+const STATUS_TEXT = { same: "", changed: "바뀜", moved: "옮김", removed: "빠짐", added: "새 장면" };
 
 function freshHist() {
   return { open: false, versions: null, error: null, pick: [], view: null, mode: "list", confirm: null, busy: false, loadingDiff: false, seq: 0, listSeq: 0 };
@@ -2411,7 +2421,7 @@ function versionList() {
       if (again) again.focus();
     });
     const s = v.summary || {};
-    const meta = [`컷 ${s.cuts}개`, fmtClock(s.total_sec), s.changed ? `바뀐 컷 ${s.changed}개` : "바뀐 컷 없음"].join(" · ");
+    const meta = [`장면 ${s.cuts}개`, fmtClock(s.total_sec), s.changed ? `바뀐 장면 ${s.changed}개` : "바뀐 장면 없음"].join(" · ");
     const label = h("label", { for: `hist-pick-${v.n}`, class: "hist-item-label" },
       h("span", { class: "hist-when num" }, fmtWhen(v.at)),
       h("span", { class: "hist-kind" + (v.kind === "named" ? " is-named" : "") }, versionLabel(v)),
@@ -2608,10 +2618,10 @@ function cellFor(cut, status, side, fields) {
 
 function sideBySide(diff) {
   const rows = alignCuts(diff.left, diff.right, diff.changes);
-  if (!rows.length) return h("p", { class: "muted" }, "컷이 없어요");
+  if (!rows.length) return h("p", { class: "muted" }, "장면이 없어요");
   return h("div", { class: "hist-side" },
     h("div", { class: "hist-side-head", "aria-hidden": "true" }, h("span", {}, "이전"), h("span", {}, "이후")),
-    h("ol", { class: "hist-side-list", "aria-label": "컷 나란히 보기" },
+    h("ol", { class: "hist-side-list", "aria-label": "장면 나란히 보기" },
       ...rows.map((r) => {
         const word = STATUS_TEXT[r.status];
         const what = r.fields.length ? `${word}: ${r.fields.map(fieldText).join(", ")}. ` : `${word}. `;

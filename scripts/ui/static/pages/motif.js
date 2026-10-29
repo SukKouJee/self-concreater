@@ -108,6 +108,15 @@ function ignorable(e) {
   return !e || e.error === "aborted";
 }
 
+// This page's polite live line (kept across renders): the header chip stays quiet about a job whose screen is open.
+function say(text) {
+  const mine = S;
+  const n = mine && mine.nodes.live;
+  if (!n) return;
+  n.textContent = "";
+  setTimeout(() => { if (S === mine && n.isConnected) n.textContent = text; }, 60);
+}
+
 // Moves focus to the page title after a run/save/discard; never behind an open bottom sheet.
 function focusStatus() {
   if (S && (sheetOpen() || inDetail())) return;
@@ -271,7 +280,12 @@ async function startRun() {
     if (!alive(mine) || ignorable(e)) return;
     mine.runError = e.message || "카드를 뽑지 못했습니다";
   } finally {
-    if (alive(mine)) { mine.running = false; render(); if (!mine.runError) focusStatus(); }
+    if (alive(mine)) {
+      mine.running = false;
+      render();
+      if (!mine.runError) focusStatus();
+      if (isActive(mine.job)) say("Claude가 모티브 카드를 만드는 중이에요");
+    }
   }
 }
 
@@ -296,6 +310,8 @@ function schedulePoll() {
         if (mine.job.status === "failed" || mine.job.status === "stopped") markHandled(mine.job.id);
         render();
         focusStatus();
+        const n = mine.job.status === "done" && mine.preview ? mine.preview.cards.length : 0;
+        if (n) say(`카드 ${n}장을 뽑았어요. 고른 뒤 저장하세요`);     // failures are an alert in the progress box
       } else {
         renderRunBox();
       }
@@ -440,7 +456,8 @@ function render() {
   const d = S.data;
   const hadDetailFocus = inDetail();
   // The detail panel / sheet survives a full render (a run or save finishing): same node, same key handler.
-  S.nodes = { detail: S.nodes.detail, scrim: S.nodes.scrim };
+  S.nodes = { detail: S.nodes.detail, scrim: S.nodes.scrim,
+    live: S.nodes.live || h("p", { class: "sr-only", "aria-live": "polite", "aria-atomic": "true" }) };
   S.runSig = null;
   S.alertSig = null;
   S.nodes.status = h("h1", { id: "motif-title", class: "motif-h1" }, "모티브");
@@ -454,7 +471,7 @@ function render() {
     S.nodes.run = h("section", { class: "motif-runbar", "aria-label": "새 카드 뽑기" });
     head.append(S.nodes.run);
   }
-  const kids = [head, S.nodes.progress];
+  const kids = [S.nodes.live, head, S.nodes.progress];
   if (d.ref > 0) kids.push(S.nodes.lib);
 
   const notes = [];

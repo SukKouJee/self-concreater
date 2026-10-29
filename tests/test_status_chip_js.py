@@ -255,7 +255,7 @@ def test_chip_module_is_safe_and_wired():
     # page snapshots (every second) must not push the chip's own poll away; a hung request is given up
     assert "nextDue({" in text and "ctl.abort()" in text
     # one polite live line beside the chip, outside the element that is re-rendered
-    assert '"aria-live": "polite"' in text and "el.after(live)" in text
+    assert '"aria-live": "polite"' in text and "document.body.append(live)" in text
     api = (STATIC_DIR / "api.js").read_text(encoding="utf-8")
     assert '"ytc:job"' in api
     app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
@@ -353,3 +353,36 @@ def test_finished_rows_stay_in_the_list_for_a_minute():
     ]
     assert one == "모티브 카드 뽑기 · 끝남" and later == 0
     assert mixed == "작업 2개"
+
+
+def test_sub_routes_of_a_result_screen_count_as_the_same_screen():
+    # final m-2: #/draft/new/<card> and #/report/review/<week> are the draft / review screens (no chip toast there);
+    # a one-part result (#/refs) does not swallow its detail pages (#/refs/<id> shows one ref, not the collect result)
+    r = run_js("""
+      const a = m.trackJobs([], [snap("draft", "running"), snap("review", "running"), snap("collect", "running")], 0, "");
+      const b = m.trackJobs(a, [snap("draft", "done"), snap("review", "done"), snap("collect", "done")], 1, "");
+      const [draft, review, collect] = m.finishedJobs(a, b);
+      return [m.finishToast(draft, "#/draft/new/card-1"),
+              m.finishToast(review, "#/report/review/2026-W43"), m.finishToast(review, "#/report").href,
+              m.finishToast(draft, "#/draft/newer").href, m.finishToast(collect, "#/refs/abc").href];
+    """)
+    assert r == [None, None, "#/report/review", "#/draft/new", "#/refs"]
+
+
+def test_live_line_skips_jobs_whose_screen_is_open():
+    # final m-1: a page showing its own job announces its start and end itself; the chip's live line stays quiet there
+    r = run_js("""
+      const a = m.trackJobs([], [snap("conti", "running", { item: "drafts/a.md" }), snap("motif", "running")], 0, "");
+      const [conti, motif] = a;
+      return [m.chipSays(conti, "#/video/a/conti"), m.chipSays(conti, "#/video/a"), m.chipSays(conti, "#/home"),
+              m.chipSays(motif, "#/motif"), m.chipSays(motif, "#/video/a/conti")];
+    """)
+    assert r == [False, False, True, False, True]
+    text = CHIP.read_text(encoding="utf-8")
+    assert ".filter((j) => chipSays(j, at))" in text
+
+
+def test_live_line_survives_the_hidden_shoot_mode_header():
+    # final (deferred T6 minor): the live line sits on <body>, not inside the header that shoot mode hides
+    text = CHIP.read_text(encoding="utf-8")
+    assert "document.body.append(live)" in text and "el.after(live)" not in text

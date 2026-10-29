@@ -885,6 +885,7 @@ async function save() {
     if (!alive(mine)) return;
     mine.ctx.toast("기획안을 저장했습니다", "info");
     mine.saving = false;
+    mine.dirty = false;                         // saved: leaving for the new video asks nothing
     mine.ctx.navigate(videoHref(videoId(res.path), "plan"));     // the new video's workspace (plan tab)
   } catch (e) {
     // An aborted request (page left mid-save) may still have been saved by the server: never restore that preview.
@@ -1588,17 +1589,24 @@ export async function mount(el, params, ctx) {
 // A draft (or an unsaved preview) belongs to one category: leave for the list of the new category.
 export function onCategory(category) {
   if (!S || S.category === category) return;
-  stopPolling();
   if (S.mode === "list") {
+    stopPolling();
     S = freshState(S.el, S.ctx, category, { mode: "list" });
     load();
     return;
   }
-  location.hash = "#/draft";      // hashchange remounts the list page
+  // unsaved preview edits: ask first; staying puts the draft's category back in the select and the sidebar
+  const mine = S;
+  const note = unsavedNote();
+  if (!note) { stopPolling(); location.hash = "#/draft"; return; }      // hashchange remounts the list page
+  mine.ctx.confirmLeave(note, () => mine.ctx.navigate("#/draft", { force: true }),
+    () => { if (alive(mine)) mine.ctx.setCategory(mine.category); });
 }
 
 // Hook/title/thumbnail edits in an open polish preview are not saved until 저장: named so leaving can ask first.
+// The new-draft preview editor (title, sections, shots) is not saved until 저장 either.
 export function unsavedNote() {
+  if (S && S.preview && S.edit && S.dirty) return "저장하지 않은 기획안 입력";
   const pl = S && S.pl;
   return pl && pl.edit && pl.dirty ? "저장하지 않은 다듬기 입력" : null;
 }

@@ -667,7 +667,7 @@ def test_conti_caption_video_contract():
 
 def test_conti_cut_editing_contract():
     text = (STATIC_DIR / "pages" / "conti.js").read_text(encoding="utf-8")
-    for token in ["/api/conti/cuts", "draggable", '"aria-haspopup"', '"여기에 컷 넣기"', '"되돌리기"', '"위로"', '"아래로"',
+    for token in ["/api/conti/cuts", "draggable", '"aria-haspopup"', '"여기에 장면 넣기"', '"되돌리기"', '"위로"', '"아래로"',
                   "fmtDelta(", "dropTarget(", "stepMove(", "canRemove(", "snapSec(", "장면 설명", "길이(초)", "샷 크기",
                   "위에 넣기", "아래에 넣기", "복제", "콘티가 바뀌었어요 — 다시 받아 주세요", "UNDO_MS"]:
         assert token in text, token
@@ -1632,3 +1632,91 @@ def test_fix1_mission_file_field_has_no_path_word():
     js = _js("pages/mission.js")
     label = re.search(r'h\("label", \{ for: "mi-file" \}, "([^"]+)"\)', js).group(1)
     assert "경로" not in label
+
+
+# ---- final review fix wave -----------------------------------------------------------------------
+
+def test_final_i1_conti_changes_repaint_the_video_header():
+    video = _js("pages/video.js")
+    host = video[video.index("const hostCtx = {"):video.index("fill(panel, h(\"p\"", video.index("const hostCtx = {"))]
+    assert "contiChanged: () => { if (live()) refreshHead(mine, true); }" in host
+    conti = _js("pages/conti.js")
+    assert "function contiChanged(mine)" in conti and "mine.ctx.contiChanged()" in conti
+    # merge, structure edits (insert/duplicate/move/delete/undo), editor reloads (cut save, restore, conflict
+    # reload), footage insert: each tells the workspace
+    merged = conti[conti.index("onMerged: (res) => {"):conti.index("onReload: () =>")]
+    assert "contiChanged(mine);" in merged
+    edit = conti[conti.index("async function editCuts("):conti.index("function showEdited(")]
+    assert "contiChanged(mine);\n    return res;" in edit
+    load = conti[conti.index("async function loadEditor("):conti.index("function currentCut(")]
+    assert "if (keep) contiChanged(mine);" in load
+    foot = conti[conti.index("async function reloadAfterFootageInsert("):conti.index("const DOT_TEXT")]
+    assert foot.count("contiChanged(mine);") == 1
+    for fn in ("async function saveCut(", "async function restoreTo("):
+        body = conti[conti.index(fn):]
+        assert "await loadEditor(true);" in body[:body.index("\n}\n")]
+
+
+def test_final_m3_replace_with_unsaved_input_pushes_an_entry():
+    app = _js("app.js")
+    nav = app[app.index("function navigate("):app.index("function pageNote(")]
+    assert "if (replace && (force || !pageNote())) location.replace(hash); else location.hash = hash;" in nav
+
+
+def test_final_m4_leave_question_sits_above_overlays_below_toasts():
+    css = _js("app.css")
+    rule = re.search(r"^\.leave-ask \{([^}]*)\}", css, re.M).group(1)
+    z = int(re.search(r"z-index: (\d+)", rule).group(1))
+    assert z == 48 and 47 < z < 70 and z > 45 and z > 40
+
+
+def test_final_m5_in_place_route_skips_the_sidebar_read_and_shares_status():
+    app = _js("app.js")
+    route = app[app.index("async function route()"):app.index("// ---- leaving with unsaved input")]
+    assert "routeChrome(hash, !inPlace);" in route and "if (inPlace) refreshSidebar();" in route
+    chrome = app[app.index("function routeChrome("):app.index("async function route()")]
+    assert "if (sidebar) refreshSidebar();" in chrome
+    assert "statusSeen: adoptStatus" in app and "function adoptStatus(category, answer)" in app
+    video = _js("pages/video.js")
+    assert video.count("shareStatus(mine, ") == 2
+
+
+def test_final_m6_lost_focus_goes_to_main_after_a_route():
+    app = _js("app.js")
+    assert "function keepFocus()" in app
+    route = app[app.index("async function route()"):app.index("// ---- leaving with unsaved input")]
+    assert "if (token === state.navToken) keepFocus();" in route
+    assert 'tabindex="-1"' in (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    assert ".main:focus { outline: none; }" in _js("app.css")
+
+
+def test_final_m7_conti_editor_names_scenes():
+    conti = _js("pages/conti.js")
+    for text in ['"여기에 장면 넣기"', '"섹션에 장면이 하나는 있어야 해요"', '"aria-label": "장면 목록"',
+                 "`콘티를 저장했습니다 · 장면 ${res.cuts}개`"]:
+        assert text in conti, text
+    for gone in ['"여기에 컷 넣기"', '"섹션에 컷이 하나는 있어야 해요"', '"aria-label": "컷 목록"', "· 컷 ${res.cuts}개",
+                 '"맨 앞 컷입니다"', '"다른 컷 고르기"', "`컷 ${cuts.length}개 · "]:
+        assert gone not in conti, gone
+
+
+def test_final_m9_progress_action_on_its_own_tab_focuses_the_panel_button():
+    video = _js("pages/video.js")
+    act = video[video.index("function progressActions("):video.index("// Draft-level")]
+    assert "act.kind === mine.tab" in act and "focusTabAction(mine)" in act
+    assert "[data-tab-primary]" in video
+    assert '"data-tab-primary": ""' in _js("pages/conti.js") and '"data-tab-primary": ""' in _js("pages/diagnose.js")
+
+
+def test_final_draft_preview_edits_ask_before_leaving():
+    draft = _js("pages/draft.js")
+    note = draft[draft.index("export function unsavedNote()"):draft.index("export function unmount()")]
+    assert "S.preview && S.edit && S.dirty" in note and "저장하지 않은 기획안 입력" in note
+    save = draft[draft.index("async function save()"):draft.index("function askDiscard()")]
+    assert save.index("mine.dirty = false;") < save.index("mine.ctx.navigate(")
+
+
+def test_final_motif_page_announces_its_own_job():
+    motif = _js("pages/motif.js")
+    assert "function say(text)" in motif and '"aria-live": "polite"' in motif
+    assert 'say("Claude가 모티브 카드를 만드는 중이에요")' in motif and "카드 ${n}장을 뽑았어요" in motif

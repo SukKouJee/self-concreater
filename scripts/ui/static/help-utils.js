@@ -15,7 +15,8 @@ export function helpPage(hash) {
   if (!m) return "home";
   if (m[1] === "add") return "refs";     // #/add is the 레퍼런스 screen with the add area open
   if (m[1] === "videos") return "draft";
-  if (m[1] === "video") return VIDEO_TAB_HELP[text.split("?")[0].split("/")[3]] || "draft";
+  // no tab: the workspace opens 콘티 (or 진단 once filmed; the hash cannot tell, 콘티 is the usual one)
+  if (m[1] === "video") return VIDEO_TAB_HELP[text.split("?")[0].split("/")[3] || "conti"] || "draft";
   if (m[1] === "refs" && /^#\/refs\?(.*&)?tab=library(&|$)/.test(text)) return "library";
   return m[1];
 }

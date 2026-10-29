@@ -33,6 +33,10 @@ function fresh(el, params, ctx) {
 }
 
 const alive = (mine) => V === mine && mine.ctx.isCurrent();
+// The sidebar takes this page's /api/status answer (the router skips its own read for in-place tab switches).
+const shareStatus = (mine, category, answer) => {
+  if (answer && typeof mine.ctx.statusSeen === "function") mine.ctx.statusSeen(category, answer);
+};
 const ignorable = (e) => !e || e.error === "aborted";
 const enc = encodeURIComponent;
 
@@ -52,6 +56,7 @@ async function fetchData(mine) {
     draft.conti ? mine.ctx.api("GET", `/api/conti?path=${enc(draft.conti)}`) : none,
   ]);
   const ok = (r) => (r.status === "fulfilled" ? r.value : null);
+  shareStatus(mine, category, ok(st));
   const cat = ok(st) ? (ok(st).categories || []).find((c) => c.category === category) : null;
   const applied = ok(ty) ? ok(ty).applied : null;
   return {
@@ -74,6 +79,7 @@ async function fetchLight(mine, withConti) {
     if (ignorable(e)) throw e;
     return fetchData(mine);
   }
+  shareStatus(mine, data.category, st);
   const cat = (st.categories || []).find((c) => c.category === data.category);
   const video = cat ? (cat.videos || []).find((v) => v.path === data.draft.path) || null : null;
   const contiDone = !!video && (video.steps || []).some((s) => s.key === "conti" && s.done);
@@ -252,6 +258,12 @@ function progressActions(mine) {
   const id = mine.params.id;
   const act = nextAction(mine.stages);
   if (act.kind === "conti" || act.kind === "diagnose") {
+    // on its own tab a link to the same address does nothing: the button goes to the panel's own start button
+    if (act.kind === mine.tab) {
+      const go = h("button", { type: "button", class: "btn btn-rec btn-s", "data-focus": act.kind }, act.label);
+      go.addEventListener("click", () => focusTabAction(mine));
+      return [go];
+    }
     return [h("a", { class: "btn btn-rec btn-s", href: videoHref(id, act.kind), "data-focus": act.kind }, act.label)];
   }
   if (act.kind === "shoot") {
@@ -264,6 +276,18 @@ function progressActions(mine) {
     ];
   }
   return act.kind === "done" ? [h("span", { class: "vp-done" }, act.label)] : [];   // unknown: no action
+}
+
+// The open tab's start button (콘티 만들기 / 설명 받기, marked data-tab-primary by the hosted page). Disabled or not
+// there yet (a job running, still loading): the panel itself, so the user lands where it happens.
+function focusTabAction(mine) {
+  const panel = mine.nodes.panel;
+  if (!panel) return;
+  const btn = panel.querySelector("[data-tab-primary]:not([disabled])");
+  const target = btn || panel;
+  if (!btn) panel.setAttribute("tabindex", "-1");
+  target.scrollIntoView({ block: "nearest" });
+  target.focus({ preventScroll: true });
 }
 
 // Draft-level "다 찍음" toggle (/api/drafts/filmed). aria-pressed shows the saved state.
@@ -395,6 +419,9 @@ async function mountTab(mine, tab, extra = {}) {
     isCurrent: live,
     confirmLeave: mine.ctx.confirmLeave,
     navigate: mine.ctx.navigate,
+    // the conti changed in the tab (merge, cut edits, footage insert, restore): the tab bar summary, the shoot
+    // count and the progress card follow without a tab switch
+    contiChanged: () => { if (live()) refreshHead(mine, true); },
   };
   fill(panel, h("p", { class: "muted", role: "status" }, "불러오는 중…"));
   try {
