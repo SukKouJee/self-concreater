@@ -941,7 +941,7 @@ def test_duplicate_gets_new_id_right_after(saved):
 
 
 @pytest.mark.parametrize("fields", [
-    {"sec": 0.4}, {"sec": 600.5}, {"sec": 1.3}, {"sec": "abc"}, {"sec": True},
+    {"sec": 0.4}, {"sec": 600.5}, {"sec": 1.234}, {"sec": "abc"}, {"sec": True},
     {"size": "없는크기"}, {"action": " "}, {"guide": ""},
 ])
 def test_update_rejects_bad_sec_size_action(saved, fields):
@@ -1332,3 +1332,28 @@ def test_html_note_with_descs_says_nothing_fit(draft_md, home):
     describe_frames(home, "a00", size="탑뷰")
     page = (home / conti.save(draft_md, conti_file(home))["html"]).read_text("utf-8")
     assert "맞는 사진이 없어 샷 크기만 맞췄습니다" in page and "사진 설명을 만들고" not in page
+
+
+# --- scene lengths off the 0.5s grid (merged scenes) -----------------------------------------
+
+@pytest.mark.parametrize("sec", [1.3, 7.2, 7.25, 0.5, 600])
+def test_update_accepts_any_length_to_the_hundredth(saved, sec):
+    _edit(saved, {"op": "update", "n": 1, "fields": {"sec": sec}})
+    assert _cuts(saved)[0]["sec"] == sec
+
+
+def test_deleted_scene_of_7_2_seconds_comes_back_exactly(saved):
+    _edit(saved, {"op": "update", "n": 2, "fields": {"sec": 7.2}})
+    gone = _cuts(saved)[1]
+    _edit(saved, {"op": "delete", "id": gone["id"]})
+    keys = ("id", "size", "angle", "sec", "action", "guide", "line", "caption", "sfx")
+    _edit(saved, {"op": "insert", "at": 1, "section": gone["section"],
+                  "cut": {k: gone[k] for k in keys if gone.get(k) not in (None, "")}})
+    back = _cuts(saved)[1]
+    assert back["id"] == gone["id"] and back["sec"] == 7.2
+
+
+@pytest.mark.parametrize("sec,text", [(12.5, "약 13초"), (25, "약 25초"), (2.25, "약 2.3초"), (2.5, "약 2.5초"),
+                                      (61.4, "약 61초"), (0.5, "약 0.5초")])
+def test_about_rounds_half_up_like_the_ui(sec, text):
+    assert conti._about(sec) == text

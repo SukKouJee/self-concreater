@@ -30,6 +30,7 @@ import base64
 import hashlib
 import html
 import json
+import math
 import re
 import secrets
 import statistics
@@ -550,7 +551,8 @@ def ref_figure(ref: dict | None) -> str:
 def _about(sec: float) -> str:
     """카드의 장면 길이 '약 25초'(10초 미만은 소수 한 자리). UI conti-utils.js aboutSec과 같은 규칙."""
     n = float(sec or 0)
-    return f"약 {round(n) if n >= 10 else round(n, 1):g}초"
+    shown = math.floor(n + 0.5) if n >= 10 else math.floor(n * 10 + 0.5) / 10   # JS Math.round처럼 .5는 올림
+    return f"약 {shown:g}초"
 
 
 def render_html(fm: dict) -> str:
@@ -736,7 +738,9 @@ def _find_cut(cuts: list[dict], n: int) -> dict:
     return cut
 
 
-MIN_CUT_SEC, MAX_CUT_SEC, SEC_STEP = 0.5, 600.0, 0.5   # 합친 장면은 몇 분이 될 수 있다
+# 합친 장면은 몇 분이 될 수 있고 길이는 컷 길이의 합이라(7.2초) 0.01초까지 받는다. SEC_STEP(0.5초)은 화면에서 길이를
+# 적을 때의 칸과 촬영 영상 구간에서 새 컷 길이를 정할 때만 쓴다.
+MIN_CUT_SEC, MAX_CUT_SEC, SEC_STEP, SEC_DIGITS = 0.5, 600.0, 0.5, 2
 CUT_DEFAULTS = {"size": "미디엄", "sec": 4, "action": "새 컷", "guide": "촬영 지시를 적어 주세요"}
 UPDATABLE_FIELDS = (*EDITABLE_FIELDS, "sec", "size", "action")
 PICK_FIELDS = ("action", "guide", "size")                # 내용 맞춤 사진(ref_auto)을 고를 때 본 필드
@@ -750,8 +754,8 @@ def _check_sec(value: Any) -> float:
         sec = float(value)
     except ValueError as e:
         raise ScriptError("invalid_edit", "컷 길이는 숫자여야 합니다") from e
-    if not MIN_CUT_SEC <= sec <= MAX_CUT_SEC or (sec / SEC_STEP) != round(sec / SEC_STEP):
-        raise ScriptError("invalid_edit", f"컷 길이는 {MIN_CUT_SEC:g}~{MAX_CUT_SEC:g}초, {SEC_STEP:g}초 단위여야 합니다")
+    if not MIN_CUT_SEC <= sec <= MAX_CUT_SEC or round(sec, SEC_DIGITS) != sec:
+        raise ScriptError("invalid_edit", f"컷 길이는 {MIN_CUT_SEC:g}~{MAX_CUT_SEC:g}초, 소수 둘째 자리까지 적을 수 있어요")
     return sec
 
 

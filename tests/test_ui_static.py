@@ -1400,7 +1400,7 @@ def test_conti_scene_actions_contract():
                   "nothing_to_merge", "conti_changed", "no_ref_descs", "data-job-kind", "conti_merge", "refs_describe",
                   "conti_refs", "mergeApplyCuts(preview)", "hash: preview.hash", "mergeView(preview)", "describeHint(",
                   "hasRepeats(", "isCurrent()", "clearTimeout", "aria-live", "markHandled", "장면으로 합치기 미리보기",
-                  "컷 ${preview.before}개 → 장면 ${preview.after}개", "line_too_long"]:
+                  "컷 ${preview.before}개 → 장면 ${preview.after}개", "m.warnings"]:
         assert token in js, token
     for banned in ["innerHTML", "outerHTML", "insertAdjacentHTML", "confirm(", "alert(", "prompt("]:
         assert banned not in js, banned
@@ -1416,3 +1416,28 @@ def test_conti_tab_hides_file_names():
     conti = _js("pages/conti.js")
     for gone in ['split("/").pop()} (', "${name} 받기", "C:\\\\Users", "fm.title || d.path"]:
         assert gone not in conti, gone
+
+
+def test_conti_fix_round_1_contracts():
+    conti = _js("pages/conti.js")
+    scenes = _js("conti-scenes.js")
+    # I-001: rows from layout tops through the tested helper
+    assert "gridMove(" in conti and "getBoundingClientRect().top" in conti and "offsetTop" not in conti
+    # I-002: only the merge's own warnings are toasted
+    assert "res.merged" in scenes and "line_too_long" not in scenes
+    # I-003: no length snap on undo
+    assert "fields.sec = snapSec(fields.sec)" not in conti
+    # I-004: a pick finishing during a save reloads afterwards
+    assert "reloadPending" in conti
+    # I-005: no merge over unsaved panel input
+    assert "저장하지 않은 입력이 있어요. 저장하거나 지운 뒤 합쳐 주세요" in scenes and "hasDrafts" in conti
+    # m-002 search debounce, m-009 header link to the folded subtitle tools
+    assert "SEARCH_MS" in conti and '"자막 내보내기"' in conti and "srtOpen = true" in conti
+    # m-005: scene wording
+    for gone in ["`컷 ${n} · ", "`컷 ${cut.n}`", "`컷 ${cut.n} 메뉴`", "저장하지 않은 입력(컷 "]:
+        assert gone not in conti, gone
+    # m-006: one closeMenu per redraw path
+    start = conti.index("function renderCutList")
+    assert conti[start:conti.index("function gapItem")].count("closeMenu(false)") == 1
+    help_text = (STATIC_DIR.parent.parent.parent / "docs" / "help" / "conti.md").read_text(encoding="utf-8")
+    assert "방향키" in help_text and "⋯" in help_text

@@ -217,7 +217,8 @@ def test_ref_caption_three_kinds():
 
 
 def test_about_sec_and_card_stamp():
-    assert run_js("[25, 2.5, 3, 0.5, 61.4, 12.6].map(m.aboutSec)") == ["약 25초", "약 2.5초", "약 3초", "약 0.5초", "약 61초", "약 13초"]
+    assert run_js("[25, 2.5, 3, 0.5, 61.4, 12.6, 12.5, 2.25].map(m.aboutSec)") == [
+        "약 25초", "약 2.5초", "약 3초", "약 0.5초", "약 61초", "약 13초", "약 13초", "약 2.3초"]
     assert run_js("m.cardStamp({n:1,start:0,end:10})") == "01 · 0:00–0:10"
     assert run_js("m.cardStamp({n:123,start:600,end:645})") == "123 · 10:00–10:45"
 
@@ -270,3 +271,15 @@ def test_merge_apply_cuts_send_order_section_line():
 
 def test_parse_view():
     assert run_js("['cards','list',null,'zzz',''].map(m.parseView)") == ["cards", "list", "cards", "cards", "cards"]
+
+
+def test_grid_move_by_rows_from_card_tops():
+    # 3 columns: tops 0,0,0,250,250,250,500 (positioned cards report offsetTop 0, so tops come from the layout)
+    tops = "[0,0,0,250,250,250,500]"
+    assert run_js(f"['ArrowDown','ArrowUp','ArrowRight','ArrowLeft','Home','End'].map(k => m.gridMove({tops}, 1, k))") == [
+        4, 1, 2, 0, 0, 6]
+    assert run_js(f"m.gridMove({tops}, 4, 'ArrowDown')") == 6            # last row is short: clamp to the last card
+    assert run_js(f"m.gridMove({tops}, 5, 'ArrowUp')") == 2
+    assert run_js("m.gridMove([0, 0.4, 0.6, 260], 0, 'ArrowDown')") == 3  # sub-pixel tops count as one row
+    assert run_js("m.gridMove([0, 200, 400], 0, 'ArrowDown')") == 1      # one column (phone)
+    assert run_js("m.gridMove([0, 0], 0, 'Tab')") is None

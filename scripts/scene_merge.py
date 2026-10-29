@@ -21,6 +21,7 @@ from scripts.common import ScriptError
 from scripts.conti import _norm
 
 NOTHING_MESSAGE = "합칠 장면이 없어요"
+MERGE_WARNING_KINDS = ("footage_not_transferred",)     # 합치기가 낸 경고(컷 경고 conti.warnings와 따로 알린다)
 CUT_FIELDS = ("id", "section", "size", "angle", "sec", "action", "line", "caption", "sfx", "guide", "ref_frame", "ref_auto")
 SCENE_BRIEF = ("id", "action", "guide", "size", "sec")
 

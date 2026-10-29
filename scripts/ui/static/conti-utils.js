@@ -288,6 +288,20 @@ export function mergeApplyCuts(preview) {
   return (preview && Array.isArray(preview.cuts) ? preview.cuts : []).map((c) => ({ id: c.id, section: c.section, line: c.line }));
 }
 
+// Card grid arrow keys. `tops` are the cards' layout tops (getBoundingClientRect: a positioned card's offsetTop is 0),
+// in order; the cards on the first row's top (within 1px) give the column count. ←→ one card, ↑↓ one row,
+// Home / End the ends. Returns the new index, or null for another key.
+export function gridMove(tops, i, key) {
+  const n = Array.isArray(tops) ? tops.length : 0;
+  if (!n) return null;
+  const cols = Math.max(1, tops.filter((t) => Math.abs(t - tops[0]) < 1).length);
+  // ↑ on the first row and ↓ on the last row stay; ↓ into a short last row lands on its last card
+  const lastRow = Math.floor((n - 1) / cols);
+  const down = Math.floor(i / cols) < lastRow ? Math.min(n - 1, i + cols) : i;
+  const to = { ArrowRight: i + 1, ArrowLeft: i - 1, ArrowDown: down, ArrowUp: i - cols >= 0 ? i - cols : i, Home: 0, End: n - 1 }[key];
+  return to === undefined ? null : Math.max(0, Math.min(n - 1, to));
+}
+
 // Card / list view switch as stored in the browser ("cards" unless the stored value is "list").
 export const parseView = (raw) => (raw === "list" ? "list" : "cards");
 

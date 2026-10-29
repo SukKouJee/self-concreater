@@ -8,7 +8,7 @@ import { h, filesUrl } from "/static/dom.js";
 import { sectionLabelName } from "/static/labels.js";
 import {
   SHOT_SIZES, alignCuts, canRemove, changeText, collapseChanges, dropTarget, fieldText, filterCuts, fmtClock, fmtDelta, fmtWhen,
-  idOfN, refCaption, remapByCutId, sectionGroups, snapSec, stepMove, versionLabel,
+  gridMove, idOfN, refCaption, remapByCutId, sectionGroups, snapSec, stepMove, versionLabel,
 } from "/static/conti-utils.js";
 import { noMatch, readView, sceneCard, toolRow, writeView } from "/static/conti-board.js";
 import { mountSceneActions } from "/static/conti-scenes.js";
@@ -626,6 +626,7 @@ function sceneActions() {
     getData: () => mine.data,
     getHash: () => mine.hash,
     isBusy: () => mine.editing || mine.saving || mine.conflict,
+    hasDrafts: () => unsavedCuts().length > 0,
     onMerged: (res) => {
       if (!alive(mine)) return;
       const before = mine.data;
@@ -646,12 +647,22 @@ function sceneActions() {
       if (mine.footage) mine.footage.refresh();
       announce(`장면 ${res.cuts.length}개로 합쳤습니다`);
     },
-    onReload: () => { if (alive(mine) && !mine.editing && !mine.saving) loadEditor(true); },
+    // a pick finishing while a cut save/edit is in flight: reload once that is done (flushReload)
+    onReload: () => { if (!alive(mine)) return; mine.reloadPending = true; flushReload(mine); },
   });
   return S.actions;
 }
 
+// Runs a reload asked for while the editor was busy. Not over a conflict: the user reloads from the banner.
+function flushReload(mine) {
+  if (!alive(mine) || !mine.reloadPending || mine.editing || mine.saving || mine.conflict) return;
+  mine.reloadPending = false;
+  loadEditor(true);
+}
+
 // ---- board tools: search, section chips, card / list --------------------------------------------
+
+const SEARCH_MS = 120;
 
 function shownCuts() {
   return filterCuts(S.data.cuts, { q: S.q, section: S.section });
@@ -666,7 +677,13 @@ function renderBoardTools() {
   if (S.section !== "all" && !groups.some((g) => g.key === S.section)) S.section = "all";
   slot.replaceChildren(toolRow({
     q: S.q, section: S.section, view: S.view, total: cuts.length, shown: shownCuts().length, groups,
-    onQuery: (q) => { S.q = q; updateCount(); renderCutList(); },
+    onQuery: (q) => {
+      S.q = q;
+      updateCount();
+      clearTimeout(S.searchTimer);
+      const mine = S;
+      S.searchTimer = setTimeout(() => { if (alive(mine)) renderCutList(); }, SEARCH_MS);   // big contis: no redraw per key
+    },
     onSection: (key) => { S.section = key; renderBoardTools(); renderCutList(); },
     onView: (view) => { S.view = view; writeView(view); renderBoardTools(); renderCutList(); renderPanel(); },
   }));
@@ -783,6 +800,18 @@ function renderHeader() {
   if (fm.category) meta.append(h("span", { class: "tag" }, fm.category));
   const actions = h("div", { class: "btn-row" });
   actions.append(historyButton());
+  // the subtitle tools are folded under the board: this opens them and goes there
+  const srtLink = h("button", { type: "button", class: "btn btn-link btn-s", "data-fk": "srt-link", "aria-controls": "srt-box" }, "자막 내보내기");
+  srtLink.addEventListener("click", () => {
+    S.srtOpen = true;
+    const box = S.el.querySelector("#srt-box");
+    if (!box) return;
+    box.open = true;
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    box.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
+    box.querySelector("summary").focus({ preventScroll: true });
+  });
+  actions.append(srtLink);
   if (d.html && !embedded()) actions.append(h("a", { class: "btn", href: filesUrl(d.html), target: "_blank", rel: "noopener" }, "스토리보드 HTML"));
   head.replaceChildren(h("div", { class: "conti-title" }, pageHeading(fm.title || "콘티"), actions), meta);
   if (S.nodes.srt) S.nodes.srt.replaceChildren(srtBox());
@@ -803,7 +832,7 @@ const TRACK_TEXT = { caption: "자막", line: "대사" };
 // The open state survives redraws (S.srtOpen); a stale output note shows on the folded line too.
 function srtBox() {
   const stale = S.data.outputs_stale && (S.data.outputs_stale.srt || S.data.outputs_stale.video);
-  const box = h("details", { class: "srt-box card" },
+  const box = h("details", { class: "srt-box card", id: "srt-box" },
     h("summary", {}, h("span", { class: "srt-box-title" }, "자막 내보내기"),
       h("span", { class: "muted small" }, " CapCut용 SRT · 움직이는 자막 영상"),
       stale ? h("span", { class: "stale-note srt-box-stale" }, " · 콘티가 바뀌어 다시 받아야 해요") : null),
@@ -1257,8 +1286,7 @@ function renderCutList(focusKey = null) {
   const cuts = S.data.cuts;
   const shown = new Set(shownCuts().map((c) => c.id));
   const filtered = shown.size !== cuts.length;
-  const tabId = [selectedId(), ...cuts.map((c) => c.id)].find((id) => id && shown.has(id));
-  closeMenu(false);
+  const tabId = [selectedId(), S.tabId, ...cuts.map((c) => c.id)].find((id) => id && shown.has(id));
   list.replaceChildren();
   list.classList.toggle("is-filtered", filtered);
   S.data.fm.script.forEach((sec, si) => {
@@ -1289,7 +1317,7 @@ function renderCutList(focusKey = null) {
 function gapItem(at, section, after) {
   const btn = h("button", { type: "button", class: "gap-btn", tabindex: "-1", "data-nav": `gap:${at}:${section}` },
     h("span", { "aria-hidden": "true" }, "＋ "), INSERT_LABEL,
-    h("span", { class: "sr-only" }, after ? ` (컷 ${after.n} 아래)` : " (섹션 맨 앞)"));
+    h("span", { class: "sr-only" }, after ? ` (장면 ${after.n} 아래)` : " (섹션 맨 앞)"));
   btn.addEventListener("click", () => insertCut(at, section));
   return h("li", { class: "cut-gap", "data-gap": String(at), "data-section": String(section) }, btn);
 }
@@ -1342,7 +1370,7 @@ function renderCards(focusKey = null) {
     : (grid.contains(active) && active.dataset ? active.dataset.nav || null : null);
   const warn = warnCutSet();
   const shown = shownCuts();
-  const tabId = [selectedId(), ...shown.map((c) => c.id)].find((id) => id && shown.some((c) => c.id === id));
+  const tabId = [selectedId(), S.tabId, ...shown.map((c) => c.id)].find((id) => id && shown.some((c) => c.id === id));
   closeMenu(false);
   grid.replaceChildren(...shown.map((c) => sceneCard(c, {
     selected: c.n === S.sel, isTab: c.id === tabId, warn: warn.has(c.n), dot: verdictDot(c),
@@ -1357,19 +1385,15 @@ function renderCards(focusKey = null) {
 }
 
 function onGridKey(e) {
-  const keys = ["ArrowDown", "ArrowUp", "Home", "End", "ArrowRight", "ArrowLeft"];
   const cur = document.activeElement;
-  if (!keys.includes(e.key) || !cur.classList.contains("cb-open")) return;
+  if (!cur.classList.contains("cb-open")) return;
   const cards = [...S.nodes.grid.querySelectorAll(".cb-open")];
   const i = cards.indexOf(cur);
-  if (i < 0) return;
+  // rows come from the layout: the cards are positioned, so their offset tops would all be 0
+  const j = i < 0 ? null : gridMove(cards.map((b) => b.getBoundingClientRect().top), i, e.key);
+  if (j === null) return;
   e.preventDefault();
-  // up / down jump a row: count the cards sharing the first card's top edge
-  const top = cards[0].offsetTop;
-  const cols = Math.max(1, cards.filter((b) => b.offsetTop === top).length);
-  const step = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: cols, ArrowUp: -cols }[e.key];
-  let j = e.key === "Home" ? 0 : e.key === "End" ? cards.length - 1 : i + step;
-  j = Math.max(0, Math.min(cards.length - 1, j));
+  S.tabId = cards[j].dataset.id;
   for (const b of cards) {
     b.setAttribute("tabindex", "-1");
     b.closest(".cb-card").querySelector(".cut-more").setAttribute("tabindex", "-1");
@@ -1435,7 +1459,7 @@ function renderTools() {
     btn.addEventListener("click", () => moveStep(cut.id, dir));
     return btn;
   };
-  box.replaceChildren(h("span", { class: "cut-tools-label" }, `컷 ${cut.n}`), mk("위로", -1), mk("아래로", 1));
+  box.replaceChildren(h("span", { class: "cut-tools-label" }, `장면 ${cut.n}`), mk("위로", -1), mk("아래로", 1));
 }
 
 // ⋯ menu: 위에 넣기 · 아래에 넣기 · 복제 · 삭제. Position is fixed so the scrolling list never clips it.
@@ -1470,7 +1494,7 @@ function openMenu(btn, cut) {
       { label: "앞으로 옮기기", ...step(-1), run: () => moveStep(cut.id, -1) },
       { label: "뒤로 옮기기", ...step(1), run: () => moveStep(cut.id, 1) });
   }
-  const menu = h("div", { class: "cut-menu", role: "menu", "aria-label": `컷 ${cut.n} 메뉴` });
+  const menu = h("div", { class: "cut-menu", role: "menu", "aria-label": `장면 ${cut.n} 메뉴` });
   const items = entries.map((en) => {
     const it = h("button", {
       type: "button", role: "menuitem", class: "cut-menu-item" + (en.danger ? " is-danger" : ""), tabindex: "-1",
@@ -1525,7 +1549,7 @@ function selectCut(n) {
     renderPanel();
     renderTools();
     const cut = currentCut();
-    announce(`컷 ${n} · ${cut ? sectionLabelName(cut.label) : ""}`);
+    announce(`장면 ${n} · ${cut ? sectionLabelName(cut.label) : ""}`);
   }
   if (narrow) {
     const title = S.nodes.panel.querySelector("#panel-title");
@@ -1556,7 +1580,7 @@ function renderPanel() {
     cards ? "닫기" : "다른 컷 고르기");
   back.addEventListener("click", () => {
     const id = cut.id;
-    if (cards) { S.sel = null; renderPanel(); renderCards(); }
+    if (cards) { S.sel = null; S.tabId = id; renderPanel(); renderCards(); }
     const b = navNode(id);
     if (b) { b.scrollIntoView({ block: "center" }); b.focus(); }
   });
@@ -1923,6 +1947,7 @@ async function saveCut(n, fields, focusKey) {
     }
   } finally {
     if (alive(mine) && mine.saving) { mine.saving = false; setPanelBusy(false); }
+    flushReload(mine);
   }
 }
 
@@ -1970,6 +1995,7 @@ async function editCuts(op) {
       mine.nodes.list.removeAttribute("aria-busy");
       renderTools();
       if (mine.nodes.panel) setPanelBusy(false);
+      setTimeout(() => flushReload(mine), 0);    // after the caller drew the edit's answer
     }
   }
 }
@@ -1991,7 +2017,7 @@ function showEdited(focusId, select, refreshFootage = true) {
       btn.focus({ preventScroll: true });
       btn.scrollIntoView({ block: "nearest" });
     }
-    announce(`컷 ${cut.n}`);
+    announce(`장면 ${cut.n}`);
   }
   refreshHistory();
   if (refreshFootage && S.footage) S.footage.refresh();
@@ -2034,8 +2060,6 @@ async function deleteCut(id) {
   if (!canRemove(cuts, id)) { S.ctx.toast(LAST_CUT_TEXT, "error"); return; }
   const fields = {};
   for (const k of RESTORE_KEYS) if (cut[k] !== undefined && cut[k] !== null && cut[k] !== "") fields[k] = cut[k];
-  // a merged scene can be any length (7.2s); putting it back goes through the 0.5s grid of POST /api/conti/cuts
-  if ("sec" in fields) fields.sec = snapSec(fields.sec);
   const res = await editCuts({ op: "delete", id });
   if (!res) return;
   const next = res.cuts[Math.min(index, res.cuts.length - 1)];
@@ -2441,7 +2465,7 @@ function restoreConfirm(n) {
   const unsaved = unsavedCuts();
   return h("div", { class: "hist-confirm" },
     h("p", { class: "hist-confirm-text" }, RESTORE_NOTE),
-    unsaved.length ? h("p", { class: "hist-confirm-text", "data-unsaved": "1" }, `저장하지 않은 입력(컷 ${unsaved.join(", ")})은 사라집니다`) : null,
+    unsaved.length ? h("p", { class: "hist-confirm-text", "data-unsaved": "1" }, `저장하지 않은 입력(장면 ${unsaved.join(", ")})은 사라집니다`) : null,
     h("div", { class: "btn-row" }, ok, no), note);
 }
 
@@ -2615,10 +2639,11 @@ function unsavedCuts() {
 // Named so leaving (another tab, another screen) can ask first.
 export function unsavedNote() {
   const cuts = unsavedCuts();
-  return cuts.length ? `저장하지 않은 입력(컷 ${cuts.join(", ")})` : null;
+  return cuts.length ? `저장하지 않은 입력(장면 ${cuts.join(", ")})` : null;
 }
 
 export function unmount() {
+  if (S) clearTimeout(S.searchTimer);
   if (S && S.footage) S.footage.unmount();
   if (S && S.actions) S.actions.unmount();
   stopPolling();

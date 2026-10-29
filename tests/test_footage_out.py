@@ -426,3 +426,14 @@ def test_remaining_html_shows_candidate_speech(scene_setup, home):
     path, _, _ = scene_setup
     text = (home / footage_out.remaining_html(path)).read_text("utf-8")
     assert "“1단계 갑니다 &lt;b&gt;”" in text             # 후보의 받아쓴 말(text), 이스케이프
+
+
+def test_remaining_html_pinned_caption_has_no_file_name(scene_setup, home, monkeypatch):
+    path, _, _ = scene_setup
+    frame = home / "workspace" / "frames" / "pin.jpg"
+    frame.parent.mkdir(parents=True, exist_ok=True)
+    frame.write_bytes(b"\xff\xd8pinned")
+    ref = {"frame": "workspace/frames/pin.jpg", "title": "pin.jpg", "match": "pinned", "desc": None}
+    monkeypatch.setattr(conti, "cut_refs", lambda fm: {c["n"]: ref for c in fm["cuts"]})
+    text = (home / footage_out.remaining_html(path)).read_text("utf-8")
+    assert "참고(고정)</figcaption>" in text and "pin.jpg" not in text

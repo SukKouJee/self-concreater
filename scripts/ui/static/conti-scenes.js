@@ -7,6 +7,7 @@
 // - 합치기 미리보기는 저장 전에는 파일을 바꾸지 않는다. 저장하면 편집기가 새 응답으로 다시 그린다(opts.onMerged).
 // - 화면에 보이는 글은 모두 h()의 글자 노드로 넣는다.
 // opts: { path, category, getData() -> GET /api/conti 응답, getHash(), isBusy() (컷 저장·편집 중),
+//         hasDrafts() (패널에 저장하지 않은 입력이 있음: 합치기를 막는다),
 //         onMerged(res) (합친 콘티 응답), onReload() (사진을 골랐거나 콘티가 밖에서 바뀜: 편집기 다시 불러오기) }
 import { h, fill } from "/static/dom.js";
 import { tag } from "/static/ui.js";
@@ -23,6 +24,7 @@ const PICK_LABEL = "사진 다시 고르기";
 const MERGE_FIRST = "반복 컷을 먼저 장면으로 합쳐 주세요";
 const AFTER_DESCRIBE = "사진 설명이 생겼어요. 사진 다시 고르기를 누르면 장면에 맞는 사진이 붙어요";
 const STALE_MERGE = "미리보기를 만든 뒤 콘티가 바뀌었어요. 장면으로 합치기를 다시 눌러 주세요";
+const DRAFTS_FIRST = "저장하지 않은 입력이 있어요. 저장하거나 지운 뒤 합쳐 주세요";
 const KINDS = { merge: "conti_merge", describe: "refs_describe", pick: "conti_refs" };
 
 let A = null;
@@ -177,6 +179,8 @@ async function saveMerge() {
   const preview = mergePreview(run.job);
   if (!preview || run.saving) return;
   if (mine.opts.isBusy()) { run.error = "저장 중이에요. 잠시 뒤 다시 눌러 주세요"; paint(); return; }
+  // merged-away cuts would drop their drafts, and a merged scene's line no longer matches what was typed
+  if (mine.opts.hasDrafts()) { run.error = DRAFTS_FIRST; paint(); return; }
   run.saving = true;
   run.error = "";
   paint();
@@ -189,8 +193,8 @@ async function saveMerge() {
     run.saving = false;
     const m = res.merged || { before: preview.before, after: preview.after };
     mine.ctx.toast(`장면으로 합쳤어요 · 컷 ${m.before}개 → 장면 ${m.after}개`, "info");
-    // footage_not_transferred (and any later non-cut warning) in plain words; cut-level warnings stay in the header
-    for (const w of (res.warnings || []).filter((x) => x.kind && x.kind !== "line_too_long")) mine.ctx.toast(w.message, "error");
+    // the merge's own warnings (footage_not_transferred) in plain words; cut warnings stay in the header warn box
+    for (const w of m.warnings || []) mine.ctx.toast(w.message, "error");
     paint();
     mine.opts.onMerged(res);
   } catch (e) {

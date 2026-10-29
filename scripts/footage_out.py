@@ -186,10 +186,10 @@ class _Images:
         if cls is None:
             cls = self.classes[ref["frame"]] = f"img{len(self.classes)}"
             self.rules.append(f".{cls}{{background-image:url({uri})}}")
-        title = conti._esc(ref["title"])
-        caption = conti._esc(ref.get("desc") or ref["title"])
-        return (f'<figure><div class="ref {cls}" role="img" aria-label="참고 프레임: {title}"></div>'
-                f'<figcaption title="{title}">{conti.ref_tag(ref["match"])} · {caption}</figcaption></figure>')
+        # 스토리보드와 같은 줄: '참고 · <설명>' / '구도만 참고 · <설명>' / '참고(고정)'(고정 사진의 제목은 파일 이름이라 쓰지 않는다)
+        caption = conti._esc(conti.ref_caption(ref))
+        return (f'<figure><div class="ref {cls}" role="img" aria-label="{caption}"></div>'
+                f'<figcaption>{caption}</figcaption></figure>')
 
 
 def render_remaining(fm: dict, cuts: list[dict], present: dict[str, Path], now: float | None = None) -> str:

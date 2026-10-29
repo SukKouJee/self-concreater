@@ -380,7 +380,10 @@ def _merge_apply(req: Request) -> dict:
     if job_running_on(req.app, ("footage", "footage_clips"), rel):
         raise ScriptError("conti_busy", "촬영 영상을 맞추는 중입니다. 끝나거나 멈춘 뒤에 합치세요")
     result, fm = scene_merge.apply_fm(path, cuts, expected)
-    return {**view_of(path, fm, result["hash"]), "merged": {"before": result["before"], "after": result["after"]}}
+    # 합치기 자체의 경고(촬영 영상 판정을 못 옮김)는 merged에. 응답 warnings는 다른 응답처럼 컷 경고만(머리말 경고 상자).
+    merge_warnings = [w for w in result["warnings"] if w["kind"] in scene_merge.MERGE_WARNING_KINDS]
+    return {**view_of(path, fm, result["hash"]),
+            "merged": {"before": result["before"], "after": result["after"], "warnings": merge_warnings}}
 
 
 # ---- 장면에 사진 다시 고르기(작업) ------------------------------------------------------------

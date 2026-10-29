@@ -837,7 +837,7 @@ def test_merge_preview_then_apply(client, home, draft_md, fakes):
     status, resp = client.json("POST", "/api/conti/merge/apply", body)
     assert status == 200, resp
     assert len(resp["cuts"]) == 4 and resp["hash"] == conti.content_hash(src) and "sketch" in resp["cuts"][0]
-    assert resp["merged"] == {"before": 6, "after": 4}
+    assert resp["merged"] == {"before": 6, "after": 4, "warnings": []}
     assert [v["kind"] for v in conti_history.list_versions(src)][:2] == ["auto", "before_merge"]
 
 
@@ -1126,3 +1126,29 @@ def test_refs_pick_cancel_writes_nothing(client, home, draft_md, fakes):
     gate.set()
     final = wait_for(client, body["job"]["id"], lambda j: j["status"] != "running")
     assert final["status"] == "stopped" and src.read_bytes() == before
+
+
+def test_merge_apply_returns_footage_warning(client, home, draft_md, fakes, monkeypatch):
+    from scripts import footage_match
+    src = _repeat_conti(home, draft_md)
+    footage_match.save_state(src, {"folders": [], "suggestions": [], "cuts": {}})
+    preview = _merge_preview(client, home, src, fakes)
+
+    def broken(path, state):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(footage_match, "save_state", broken)
+    body = {"path": rel(home, src), "cuts": preview["cuts"], "hash": preview["hash"]}
+    status, resp = client.json("POST", "/api/conti/merge/apply", body)
+    assert status == 200, resp
+    [warning] = resp["merged"]["warnings"]
+    assert warning["kind"] == "footage_not_transferred" and "disk full" in warning["message"]
+    assert all(w["kind"] != "footage_not_transferred" for w in resp["warnings"])     # header warnings stay cut-level
+
+
+def test_merge_apply_without_footage_has_no_merge_warnings(client, home, draft_md, fakes):
+    src = _repeat_conti(home, draft_md)
+    preview = _merge_preview(client, home, src, fakes)
+    body = {"path": rel(home, src), "cuts": preview["cuts"], "hash": preview["hash"]}
+    status, resp = client.json("POST", "/api/conti/merge/apply", body)
+    assert status == 200 and resp["merged"]["warnings"] == []
