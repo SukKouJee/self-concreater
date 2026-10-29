@@ -827,6 +827,7 @@ def test_merge_preview_then_apply(client, home, draft_md, fakes):
     assert preview["before"] == 6 and preview["after"] == 4 and preview["hash"] == conti.content_hash(src)
     assert [c["line"] for c in preview["cuts"]] == ["4단계 다 먹을 수 있을까?", "하나 둘", "셋 넷", ""]
     assert [s["idx"] for s in preview["sections"]] == [0, 1, 2]
+    assert preview["warnings"] == []
     rules, payload, _, _ = fakes.asks[0]
     assert rules == [claude_cli.SKILLS_DIR / "yt-conti" / "merge.md"]
     assert [s["idx"] for s in payload["sections"]] == [1] and payload["sections"][0]["text"] == "하나 둘 셋 넷"

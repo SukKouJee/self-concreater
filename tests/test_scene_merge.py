@@ -61,8 +61,10 @@ def test_transfer_footage_moves_user_only():
         "keep2": {"kind": "pinned", "user": True, "choice": 4},
         "gone3": {"kind": "pinned", "user": True, "choice": 5}}, "suggestions": []}
     out = scene_merge.transfer_footage(state, {"gone1": "keep", "gone2": "keep", "gone3": "keep2"})
-    assert out["cuts"] == {"keep": {"kind": "pinned", "user": True, "choice": 1},
-                           "keep2": {"kind": "pinned", "user": True, "choice": 4}}
+    assert out["cuts"] == {"gone1": {"kind": "pinned", "user": True, "choice": 1},     # 되돌리면 다시 보이게 남긴다
+                           "keep": {"kind": "pinned", "user": True, "choice": 1},
+                           "keep2": {"kind": "pinned", "user": True, "choice": 4},
+                           "gone3": {"kind": "pinned", "user": True, "choice": 5}}
     assert out["folders"] == ["x"] and out["suggestions"] == []
 
 
@@ -70,7 +72,8 @@ def test_transfer_footage_first_user_wins():
     state = {"cuts": {"g1": {"kind": "pinned", "user": True, "choice": 1},
                       "g2": {"kind": "not_filmed", "user": True, "choice": None}}}
     out = scene_merge.transfer_footage(state, {"g1": "keep", "g2": "keep"})
-    assert out["cuts"] == {"keep": {"kind": "pinned", "user": True, "choice": 1}}
+    assert out["cuts"]["keep"] == {"kind": "pinned", "user": True, "choice": 1}
+    assert set(out["cuts"]) == {"g1", "g2", "keep"}
 
 
 def test_transfer_footage_tolerates_state_without_cuts():
@@ -152,6 +155,7 @@ def test_validate_split_accepts_permutation(repeat_conti):
 @pytest.mark.parametrize("data", [
     {"sections": [{"idx": 1, "order": "AB", "lines": ["하나 둘", "셋 녯"]}]},       # 글자 하나 바뀜
     {"sections": [{"idx": 1, "order": "AB", "lines": ["하나 둘 셋", "넷 다섯"]}]},  # 글자 더함
+    {"sections": [{"idx": 1, "order": "AB", "lines": ["하나, 둘", "셋 넷"]}]},      # 문장부호 더함
     {"sections": [{"idx": 1, "order": "AB", "lines": ["하나 둘 셋 넷"]}]},           # 장면 수와 다름
     {"sections": [{"idx": 1, "order": "AA", "lines": ["하나 둘", "셋 넷"]}]},        # 순열 아님
     {"sections": [{"idx": 1, "order": "A", "lines": ["하나 둘 셋 넷"]}]},            # 장면 빠짐
@@ -231,8 +235,29 @@ def test_apply_transfers_footage_user_verdicts(repeat_conti):
         ids[0]: {"kind": "matched", "user": False}}})
     _applied(repeat_conti)
     state = footage_match.load_state(repeat_conti)
-    assert state["cuts"] == {ids[1]: pinned, ids[0]: {"kind": "matched", "user": False}}
+    assert state["cuts"] == {ids[1]: pinned, ids[3]: pinned, ids[0]: {"kind": "matched", "user": False}}
     assert state["folders"] == ["x"]
+
+
+def test_apply_warns_when_footage_state_cannot_be_saved(repeat_conti, monkeypatch):
+    footage_match.save_state(repeat_conti, {"folders": [], "suggestions": [], "cuts": {}})
+
+    def broken(path, state):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(footage_match, "save_state", broken)
+    _, out = _applied(repeat_conti)
+    assert out["status"] == "merged" and len(ids_of(repeat_conti)) == 4
+    [warning] = [w for w in out["warnings"] if w["kind"] == "footage_not_transferred"]
+    assert "disk full" in warning["message"]
+
+
+def test_plan_warns_scene_longer_than_max(repeat_conti, monkeypatch):
+    assert scene_merge.plan(repeat_conti)["warnings"] == []
+    monkeypatch.setattr(conti, "MAX_CUT_SEC", 1.5)
+    warnings = scene_merge.plan(repeat_conti)["warnings"]
+    assert [(w["kind"], w["sec"]) for w in warnings] == [("scene_too_long", 2.0), ("scene_too_long", 2.0)]
+    assert {w["id"] for w in warnings} == {s["id"] for s in scene_merge.plan(repeat_conti)["sections"][1]["scenes"]}
 
 
 def test_apply_keeps_pinned_frame_of_later_repeat(home, draft_md):  # noqa: F811
@@ -259,7 +284,8 @@ def test_apply_conflict_on_changed_hash(repeat_conti):
     assert exc.value.code == "conti_changed" and repeat_conti.read_bytes() == before
 
 
-@pytest.mark.parametrize("tamper", ["line", "id", "list_id", "drop", "not_list", "section", "pin"])
+@pytest.mark.parametrize("tamper", ["line", "id", "list_id", "drop", "not_list", "section", "section_bool",
+                                    "punct", "line_not_str", "nonsplit_line"])
 def test_apply_rejects_cuts_that_lose_lines_or_ids(repeat_conti, tamper):
     plan = scene_merge.plan(repeat_conti)
     cuts = scene_merge.validate_split(plan, split(plan, [0, 1], ["하나 둘", "셋 넷"]))
@@ -271,8 +297,14 @@ def test_apply_rejects_cuts_that_lose_lines_or_ids(repeat_conti, tamper):
         cuts[1]["id"] = ["x"]
     elif tamper == "section":
         cuts[1]["section"] = 0
-    elif tamper == "pin":
-        cuts[1]["ref_frame"] = "workspace/frames/other.jpg"
+    elif tamper == "section_bool":
+        cuts[1]["section"] = True
+    elif tamper == "punct":
+        cuts[1]["line"] = "하나 둘!"
+    elif tamper == "line_not_str":
+        cuts[3]["line"] = None
+    elif tamper == "nonsplit_line":
+        cuts[0]["line"] = "4단계 다 먹을 수 있을까"
     elif tamper == "drop":
         cuts.pop(1)
     else:
@@ -281,6 +313,46 @@ def test_apply_rejects_cuts_that_lose_lines_or_ids(repeat_conti, tamper):
     with pytest.raises(ScriptError) as exc:
         scene_merge.apply(repeat_conti, cuts, plan["hash"])
     assert exc.value.code == "invalid_merge" and repeat_conti.read_bytes() == before
+
+
+@pytest.mark.parametrize("tamper", ["drop_pin", "other_pin", "guide_changed", "sec_nan", "sec_big", "size_changed",
+                                    "angle_changed", "extra_key"])
+def test_apply_takes_only_order_and_lines_from_client(home, draft_md, tamper):  # noqa: F811
+    data = json.loads(json.dumps(REPEAT))
+    data["cuts"][3]["ref_frame"] = "workspace/frames/pin.jpg"
+    path = home / conti.save(draft_md, conti_file(home, data))["path"]
+    plan = scene_merge.plan(path)
+    cuts = scene_merge.validate_split(plan, split(plan, [1, 0], ["하나 둘", "셋 넷"]))
+    target = cuts[2]                                   # 뚜껑 뜯기 장면(고정 사진 있음)
+    change = {"drop_pin": lambda: target.pop("ref_frame"),
+              "other_pin": lambda: target.update(ref_frame="workspace/frames/other.jpg"),
+              "guide_changed": lambda: target.update(guide="덮어쓴 가이드"),
+              "sec_nan": lambda: target.update(sec="nan"), "sec_big": lambda: target.update(sec=9999),
+              "size_changed": lambda: target.update(size="와이드"),
+              "angle_changed": lambda: target.update(angle="로우"),
+              "extra_key": lambda: target.update(merged_ids=["x"], start=99)}
+    change[tamper]()
+    scene_merge.apply(path, cuts, plan["hash"])
+    fm, _ = refstore.read_md(path)
+    scene = fm["cuts"][2]
+    assert scene["ref_frame"] == "workspace/frames/pin.jpg" and scene["guide"] == "소리 크게 / 천천히"
+    assert scene["sec"] == 2 and scene["size"] == "클로즈업" and scene.get("angle") is None
+    assert "merged_ids" not in scene and scene["start"] == 4 and fm["target_sec"] == 8
+    assert scene["line"] == "셋 넷"
+
+
+def test_apply_puts_scenes_in_section_order_whatever_the_client_order(repeat_conti):
+    ids = ids_of(repeat_conti)
+    plan = scene_merge.plan(repeat_conti)
+    cuts = scene_merge.validate_split(plan, split(plan, [1, 0], ["하나 둘", "셋 넷"]))
+    scene_merge.apply(repeat_conti, [cuts[3], cuts[1], cuts[0], cuts[2]], plan["hash"])
+    assert ids_of(repeat_conti) == [ids[0], ids[2], ids[1], ids[5]]
+
+
+def test_validate_split_ignores_whitespace_only(repeat_conti):
+    plan = scene_merge.plan(repeat_conti)
+    cuts = scene_merge.validate_split(plan, split(plan, [0, 1], ["하나둘 ", "  셋  넷"]))
+    assert [c["line"] for c in cuts][1:3] == ["하나둘", "셋  넷"]
 
 
 def test_cli_merge_plan_then_apply(repeat_conti, home):

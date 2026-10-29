@@ -8,7 +8,7 @@
 - "collect"와 달리 exclusive가 아니라 수집 작업과 동시에 돌 수 있다.
 
 장면으로 합치기 작업(kind "conti_merge")도 같은 생애다. 항목은 콘티 하나(id = 콘티 상대 경로). 반복이 없으면 작업을
-만들지 않고 바로 `nothing_to_merge`. Claude가 대사 나눌 자리를 정하면 preview `{before, after, cuts, sections, hash}`로
+만들지 않고 바로 `nothing_to_merge`. Claude가 대사 나눌 자리를 정하면 preview `{before, after, cuts, sections, hash, warnings}`로
 `awaiting`. 저장은 `POST /api/conti/merge/apply {path, cuts, hash}`(미리보기 뒤 콘티가 바뀌면 `conti_changed`).
 """
 from __future__ import annotations
@@ -304,7 +304,7 @@ def merge_target(plan: dict) -> Any:
         _, cuts = llm.ask_validated(_merge_rules(), scene_merge.split_request(plan), MERGE_TASK,
                                     lambda d: scene_merge.validate_split(plan, d))
         preview = {"before": plan["before"], "after": plan["after"], "cuts": cuts, "sections": plan["sections"],
-                   "hash": plan["hash"]}
+                   "hash": plan["hash"], "warnings": plan["warnings"]}
         job.update(0, state="awaiting", step="preview", ask="save", preview=preview)
         job.finish("done", {"before": plan["before"], "after": plan["after"]})
 
