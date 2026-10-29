@@ -9,7 +9,6 @@ const POLL_MS = 1000;
 const POLL_MAX_MS = 15000;
 const HANDLED_KEY = "ytc.review.handled";
 const ACTIVE = new Set(["running", "awaiting"]);
-const INIT_COMMAND = "/yt-coach:yt-init";
 const WEEK_RE = /^\d{4}-W\d{2}$/;
 const STAGES = ["관찰", "모방", "제작", "변형"];
 const STAGE_SECTION = "성장 단계";
@@ -540,7 +539,7 @@ async function applyProfile() {
   try {
     const res = await mine.ctx.api("POST", "/api/review/apply", { week, sections });
     if (!alive(mine)) return;
-    mine.ctx.toast("profile.md를 갱신했습니다 — 다음 미션부터 반영됩니다", "info");
+    mine.ctx.toast("프로필을 갱신했습니다 — 다음 미션부터 반영됩니다", "info");
     V.applying = false;
     V.recorded = res.recorded !== false;
     if (V.data && V.week === week) {
@@ -775,18 +774,8 @@ function profileArea(saved, data) {
   const names = Object.keys(proposal);
   if (!names.length) return h("section", { class: "card", "aria-label": "프로필 반영" }, h("h3", {}, "프로필 반영"), h("p", { class: "muted" }, "이 회고에는 프로필 변경 제안이 없습니다"));
   if (!data.profile || !data.profile.exists) {
-    const copy = btn("명령 복사", "", async () => {
-      const mine = S;
-      try {
-        await navigator.clipboard.writeText(INIT_COMMAND);
-        if (alive(mine)) mine.ctx.toast("명령을 복사했습니다", "info");
-      } catch {
-        if (alive(mine)) mine.ctx.toast("복사하지 못했습니다. 직접 선택해 복사하세요", "error");
-      }
-    });
     return h("section", { class: "card", "aria-label": "프로필 반영" }, h("h3", {}, "프로필 반영"),
-      h("p", { class: "muted" }, "프로필이 없어 제안을 반영할 수 없습니다. 터미널에서 프로필을 먼저 만드세요"),
-      h("div", { class: "cmd-row" }, h("code", { class: "cmd" }, INIT_COMMAND), copy));
+      h("p", { class: "muted" }, "프로필이 없어 제안을 반영할 수 없습니다. Claude에게 “처음 설정해줘”라고 말하면 프로필을 먼저 만들어요"));
   }
   const approved = (Array.isArray(saved.fm.approved) ? saved.fm.approved : []).concat(V.applied || []);
   const current = data.profile.sections || {};
@@ -808,7 +797,7 @@ function profileArea(saved, data) {
   const go = btn(V.applying ? "반영하는 중…" : "체크한 항목을 프로필에 반영", "btn-primary", applyProfile, { disabled: V.applying || V.checked.size === 0 });
   return h("section", { class: "card", "aria-labelledby": "rv-apply-title" },
     h("h3", { id: "rv-apply-title" }, "프로필에 반영"),
-    h("p", { class: "muted small" }, "체크한 항목만 profile.md에 반영합니다. 눌러야 바뀝니다"),
+    h("p", { class: "muted small" }, "체크한 항목만 프로필에 반영합니다. 눌러야 바뀝니다"),
     h("ul", { class: "rv-apply-list" }, ...rows),
     h("div", { class: "btn-row" }, go),
     h("p", { class: "muted small", role: "status", "data-rv-apply-status": "", tabindex: "-1" }, V.recorded ? "" : "프로필은 바꿨지만 회고 파일 프런트매터를 읽지 못해 반영 기록을 남기지 못했습니다"),

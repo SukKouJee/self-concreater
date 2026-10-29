@@ -12,7 +12,6 @@ const POLL_MAX_MS = 15000;
 const HANDLED_KEY = "ytc.diagnose.handled";
 const ACTIVE = new Set(["running", "awaiting"]);
 const MAX_ACTIONS = 3;
-const MISSION_COMMAND = "/yt-coach:yt-mission today";
 const STEP_TEXT = { compare: "아키타입과 비교하는 중", claude: "Claude가 설명 쓰는 중" };
 // Mirrors scripts/ui/api_diagnose.AXIS_KO; the server's `axis_ko` wins when present.
 const AXIS_KO = { structure: "구조", hook: "훅", narrative: "서사", title: "제목", pacing: "컷 속도", shots: "샷" };
@@ -274,19 +273,8 @@ function renderList() {
 // ---- detail -------------------------------------------------------------------
 
 function missionHint() {
-  const btn = h("button", { type: "button", class: "btn" }, "명령 복사");
-  btn.addEventListener("click", async () => {
-    const mine = S;
-    try {
-      await navigator.clipboard.writeText(MISSION_COMMAND);
-      if (alive(mine)) mine.ctx.toast("명령을 복사했습니다", "info");
-    } catch {
-      if (alive(mine)) mine.ctx.toast("복사하지 못했습니다. 직접 선택해 복사하세요", "error");
-    }
-  });
   return h("section", { class: "diag-mission", "aria-label": "오늘 미션" },
-    h("p", { class: "muted small" }, "오늘 미션은 터미널에서 받습니다"),
-    h("div", { class: "cmd-row" }, h("code", { class: "cmd" }, MISSION_COMMAND), btn));
+    h("p", { class: "muted small" }, "진단에서 찾은 점은 오늘 미션으로 연습해 보세요 ", h("a", { href: "#/mission" }, "오늘 미션 보기")));
 }
 
 function renderDetail() {
@@ -309,7 +297,7 @@ function renderDetail() {
   fill(S.el,
     h("p", { class: "crumb" }, h("a", { href: "#/diagnose" }, "← 진단 목록")),
     S.nodes.status,
-    h("p", { class: "muted small" }, `${e.date} · ${e.path}`),
+    h("p", { class: "muted small" }, e.date),
     S.nodes.run, S.nodes.record, S.nodes.compare, S.nodes.preview, missionHint());
   renderRunBox();
   renderCompare();

@@ -91,3 +91,17 @@ def test_is_folded_only_for_paths_behind_the_more_button():
     assert run_js(f"['a','c','d','e','x',null].map(p => m.isFolded({vids}, p))") == [
         False, False, True, True, False, False]
     assert run_js("m.isFolded([], 'a')") is False
+
+
+# 최근 결과물은 파일 이름 대신 영상 제목·날짜로 보인다 (로컬 경로·파일 이름 숨기기)
+@pytest.mark.parametrize("item, expected", [
+    ({"path": "drafts/2026-10-25-a.md", "kind": "draft"}, "부루마블 1탄"),
+    ({"path": "drafts/2026-10-25-a-conti.html", "kind": "conti"}, "부루마블 1탄"),
+    ({"path": "drafts/sub/b-conti.html", "kind": "conti"}, "b"),                       # 제목을 모르면 이름에서 확장자를 뗀다
+    ({"path": "reports/travel-2026-10-27.html", "kind": "report"}, "travel 리포트 · 10월 27일"),
+    ({"path": "reports/odd.html", "kind": "report"}, "odd"),
+    ({"path": "drafts/2026-10-20-x-y.md", "kind": "draft"}, "x y"),                          # 앞 날짜는 떼고 - 는 띄어쓰기
+])
+def test_recent_name(item, expected):
+    titles = {"drafts/2026-10-25-a.md": "부루마블 1탄"}
+    assert run_js(f"m.recentName({json.dumps(item)}, {json.dumps(titles, ensure_ascii=False)})") == expected

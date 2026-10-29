@@ -332,7 +332,7 @@ async function save() {
     });
     if (!alive(mine)) return;
     markHandled(mine.jobId);
-    mine.ctx.toast("index.md에 저장했습니다", "info");
+    mine.ctx.toast("유형화 결과를 저장했습니다", "info");
     mine.preview = null;
     mine.job = null;
     mine.saving = false;
@@ -468,7 +468,7 @@ function renderBody() {
   if (S.data.applied) { fill(body, ...appliedView(S.data.applied)); return; }
   if (isActive(S.job)) { fill(body); return; }
   const text = S.data.typified_at
-    ? "이전 저장 결과는 index.md에 있습니다 — 다시 실행하면 이 화면에서 볼 수 있어요"
+    ? "이전에 저장한 결과가 있습니다 — 다시 실행하면 이 화면에서 볼 수 있어요"
     : "아직 유형화한 결과가 없습니다. 실행 버튼을 누르면 미리보기가 나옵니다.";
   fill(body, h("p", { class: "muted" }, text));
 }

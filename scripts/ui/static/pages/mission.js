@@ -12,7 +12,6 @@ const HANDLED_KEY = "ytc.mission.handled";
 const ACTIVE = new Set(["running", "awaiting"]);
 const MAX_NOTE = 300;
 const MAX_REASON = 100;
-const INIT_COMMAND = "/yt-coach:yt-init";
 const STATUS_KO = { open: "진행 중", submitted: "완료", skipped: "건너뜀" };
 const STATUS_ICON = { open: "…", submitted: "✓", skipped: "–" };
 const DIFF_OPTIONS = [["easy", "쉬움"], ["right", "적당"], ["hard", "어려움"]];
@@ -581,19 +580,8 @@ function render() {
 }
 
 function profileNote() {
-  const mine = S;
-  const btn = h("button", { type: "button", class: "btn" }, "명령 복사");
-  btn.addEventListener("click", async () => {
-    try {
-      await navigator.clipboard.writeText(INIT_COMMAND);
-      if (alive(mine)) mine.ctx.toast("명령을 복사했습니다", "info");
-    } catch {
-      if (alive(mine)) mine.ctx.toast("복사하지 못했습니다. 직접 선택해 복사하세요", "error");
-    }
-  });
   return h("div", { class: "mi-profile" },
-    h("p", { class: "muted" }, "프로필을 만들면 미션이 맞춤으로 나옵니다. 터미널에서 프로필을 만들 수 있어요"),
-    h("div", { class: "cmd-row" }, h("code", { class: "cmd" }, INIT_COMMAND), btn));
+    h("p", { class: "muted" }, "프로필을 만들면 미션이 맞춤으로 나옵니다. Claude에게 “처음 설정해줘”라고 말하면 함께 만들어요"));
 }
 
 function renderStale() {

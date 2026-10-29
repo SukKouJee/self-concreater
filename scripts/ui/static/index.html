@@ -2,8 +2,8 @@
 <html lang="ko">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light dark">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light">
 <title>yt-coach</title>
 <link rel="stylesheet" href="/static/app.css">
 </head>
@@ -15,11 +15,14 @@
 </div>
 <div class="layout">
   <nav id="menu" class="menu" aria-label="주 메뉴"></nav>
-  <div id="scrim" class="scrim" hidden></div>
-  <main id="main" class="main" tabindex="-1"></main>
+  <div class="content">
+    <nav id="subnav" class="subnav" aria-label="화면 메뉴" hidden></nav>
+    <main id="main" class="main" tabindex="-1"></main>
+  </div>
   <div id="help-scrim" class="scrim help-scrim" hidden></div>
   <aside id="help-panel" class="help-panel" aria-label="도움말" hidden></aside>
 </div>
+<nav id="tabbar" class="tabbar" aria-label="하단 메뉴"></nav>
 <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
 <noscript><p class="noscript">이 화면은 JavaScript가 필요합니다.</p></noscript>
 <script type="module" src="/static/app.js"></script>

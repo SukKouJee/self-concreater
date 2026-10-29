@@ -3,10 +3,8 @@ import re
 from scripts.ui.server import STATIC_DIR
 from tests.test_ui_server import client, no_browser  # noqa: F401  (fixture 재사용)
 
+# Every screen (name + route): app.js SCREENS, the same list the help chatbot gets (api_help.MENU).
 MENU_NAMES = ["홈", "레퍼런스", "공용 라이브러리", "유형화", "리포트", "모티브", "기획안", "콘티", "진단", "미션", "가이드"]
-# yt-draft is no longer a terminal-only item: the draft screen is a live route.
-# diagnose is live too: its terminal command no longer appears in the menu definition.
-# mission and report are live too: no menu item shows a terminal command any more.
 
 
 def test_index_loads_modules(client):
@@ -27,13 +25,119 @@ def test_static_files_served(client):
     assert "javascript" in headers["Content-Type"]
 
 
-def test_menu_definition_has_all_items():
+def test_screen_list_has_all_routes_and_names_the_page():
     text = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
-    for name in MENU_NAMES:
-        assert f'"{name}"' in text, name
-    menu_block = text.split("const MENU = [", 1)[1].split("];", 1)[0]
-    assert "soon:" not in menu_block                      # every menu item opens a live screen
-    assert menu_block.count("route:") == len(MENU_NAMES)
+    block = text.split("const SCREENS = [", 1)[1].split("];", 1)[0]
+    assert re.findall(r'name: "([^"]+)"', block) == MENU_NAMES
+    assert "soon:" not in block                           # every screen is a live route
+    assert "document.title" in text                       # the browser tab names the current screen
+
+
+def test_shell_markup_sidebar_tabbar_and_slots():
+    html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    assert 'id="menu"' in html and 'aria-label="주 메뉴"' in html
+    assert re.search(r'<nav id="tabbar" class="tabbar" aria-label="하단 메뉴"', html)
+    assert 'id="subnav"' in html
+    assert 'id="scrim"' not in html                       # no drawer any more: phones use the bottom tabs
+    assert '<meta name="color-scheme" content="light">' in html
+    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    imports = re.search(r'import \{([^}]*)\} from "/static/menu-utils\.js"', app).group(1)
+    for name in ("SIDEBAR", "PHONE_TABS", "isActive", "phoneTab", "videoProgress", "sidebarVideos", "subnavItems",
+                 "isVideoActive", "videoLinks"):
+        assert name in imports, name
+    assert 'const SVG_NS = "http://www.w3.org/2000/svg"' in app and "createElementNS(SVG_NS" in app
+    # tab icons are inline stroke SVGs, one per bottom tab
+    for icon in ("home:", "spark:", "film:", "target:"):
+        assert icon in app.split("const ICONS = {", 1)[1].split("};", 1)[0], icon
+    # header: logo, category, the status-chip slot (filled later), help menu; no local path
+    assert 'id: "status-chip"' in app
+    assert "work_root" not in app and "work-root" not in app
+    assert "menu-toggle" not in app and "drawer" not in app
+    # 서버 끄기 lives in the help menu
+    menu = app[app.index("function helpMenu("):app.index("// ---- router")]
+    for text in ('"도움말 열기"', '"사용 가이드"', '"서버 끄기"', '"aria-expanded"', '"Escape"'):
+        assert text in menu, text
+    assert "ytc ui" not in app and "터미널" not in app
+    # sidebar counts come from existing APIs only
+    for path in ("/api/status", "/api/typify", "/api/motif"):
+        assert path in app, path
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    phone = "\n".join(_media_blocks(css, 640))
+    assert "display: none" in _rule(phone, ".menu")
+    assert "display: grid" in _rule(phone, ".tabbar")
+    assert re.search(r"^\.tabbar \{[^}]*display: none", css, re.M)            # desktop: no bottom tabs
+    assert re.search(r"^\.menu \{[^}]*background: var\(--surface\)", css, re.M)  # white sidebar
+    width = re.search(r"--menu-w: (\d+)px", css).group(1)
+    assert 220 <= int(width) <= 260
+
+
+SPEC_TOKENS = {
+    "--bg": "#F5F6F8", "--surface": "#FFFFFF", "--ink": "#15171C", "--ink-2": "#3D424D", "--muted": "#5B616E",
+    "--border": "#E3E6EB", "--border-strong": "#D5D9E0", "--rec": "#C8322B", "--done": "#1F7A4D", "--link": "#2F5FD0",
+    "--kind-flow-bg": "#E8EEFB", "--kind-flow-fg": "#1E449E", "--kind-tech-bg": "#E3F3EA", "--kind-tech-fg": "#155C39",
+    "--kind-angle-bg": "#FBF0DC", "--kind-angle-fg": "#7A4800", "--kind-combo-bg": "#EFE8FB",
+    "--kind-combo-fg": "#4E2C93", "--sec-hook-bg": "#FBE6E4", "--sec-hook-fg": "#8E231E",
+    "--sec-check-bg": "#FBF0DC", "--sec-check-fg": "#7A4800", "--radius-card": "10px", "--radius-ctl": "8px",
+}
+
+
+def test_tokens_match_spec_and_dark_theme_is_shoot_mode_only():
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    root = css[css.index(":root {"):css.index("}", css.index(":root {"))]
+    for name, value in SPEC_TOKENS.items():
+        assert f"{name}: {value};" in root, name
+    assert "'Noto Sans KR'" in root and "'JetBrains Mono'" in root
+    assert "prefers-color-scheme" not in css
+    assert re.search(r"^html \{ color-scheme: light; \}", css, re.M)
+    shoot = _root_tokens(css)[1]
+    assert shoot["--bg"].upper() == "#0E1013"
+    # pages keep using the older names; they point at the spec tokens so both themes follow
+    for old, new in (("--page", "--bg"), ("--ink2", "--ink-2"), ("--grid", "--border"), ("--ok", "--done")):
+        assert f"{old}: var({new});" in css, old
+
+
+def test_tag_and_tab_colors_from_tokens_with_contrast():
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    light, _ = _root_tokens(css)
+    kinds = {"flow": "kind-flow", "tech": "kind-tech", "angle": "kind-angle", "combo": "kind-combo",
+             "hook": "sec-hook", "check": "sec-check", "intro": "kind-flow", "body": "kind-tech", "outro": "kind-combo"}
+    for kind, token in kinds.items():
+        rule = re.search(rf"\.ui-tag-{kind}[^{{]*\{{([^}}]*)\}}", css).group(1)
+        assert f"var(--{token}-bg)" in rule and f"var(--{token}-fg)" in rule, kind
+        assert _contrast(light[f"--{token}-fg"], light[f"--{token}-bg"]) >= 4.5, kind
+    assert _contrast(light["--on-rec"], light["--rec"]) >= 4.5
+    assert _contrast(light["--link"], light["--surface"]) >= 4.5
+    assert "var(--rec)" in re.search(r'\.ui-tab\[aria-selected="true"\] \{([^}]*)\}', css).group(1)
+    assert "var(--pick-bg)" in re.search(r'\.ui-chip\[aria-pressed="true"\] \{([^}]*)\}', css).group(1)
+    # desktop buttons 32px / 13px; main actions on phones at least 44px
+    btn = re.search(r"^\.btn \{([^}]*)\}", css, re.M).group(1)
+    assert "min-height: 32px" in btn and "font-size: 13px" in btn
+    phone = "\n".join(_media_blocks(css, 640))
+    assert "min-height: 44px" in _rule(phone, ".btn-primary, .btn-rec")
+
+
+# Strings shown to the user must not carry file names, local paths or terminal commands.
+_STRING = re.compile(r'"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\'|`(?:[^`\\]|\\.)*`')
+_HIDDEN = (".md", "-conti.html", "/yt-coach:", "workspace/", "work_root", "ytc ")
+# conti.js is edited on another branch: its captions setup command stays until the conti tab is rebuilt.
+_ALLOWED = {("conti.js", "ytc captions setup")}
+
+
+def test_pages_hide_paths_file_names_and_commands():
+    bad = []
+    for path in sorted((STATIC_DIR / "pages").glob("*.js")):
+        text = "\n".join(line for line in path.read_text(encoding="utf-8").splitlines()
+                         if not line.lstrip().startswith("//"))
+        for lit in _STRING.findall(text):
+            if any(h in lit for h in _HIDDEN) and (path.name, lit.strip("\"'`")) not in _ALLOWED:
+                bad.append((path.name, lit[:80]))
+    assert bad == []
+    home = (STATIC_DIR / "pages" / "home.js").read_text(encoding="utf-8")
+    assert "st.work_root" not in home
+    for name in ("refs.js", "draft.js"):
+        js = (STATIC_DIR / "pages" / name).read_text(encoding="utf-8")
+        assert "md 파일" not in js and "경로 복사" not in js, name
+    assert "res.trash}" not in "".join(p.read_text(encoding="utf-8") for p in (STATIC_DIR / "pages").glob("*.js"))
 
 
 def test_no_external_resources():
@@ -69,7 +173,7 @@ def test_add_page_confirm_card_and_guards():
     text = (STATIC_DIR / "pages" / "add.js").read_text(encoding="utf-8")
     assert ", ".join(f'"{x}"' for x in SECTION_LABELS) in text
     for token in ["isCurrent()", "/api/jobs/current?kind=collect", "encodeURIComponent", "filesUrl",
-                  "clearTimeout", "reviewed: true", "/review/"]:
+                  "clearTimeout", "레퍼런스 화면에서 영상을 열어 고칠 수 있어요", "/review/"]:
         assert token in text, token
     for gone in ["/decision", "save_all", "남은 영상 모두 저장", "음성 인식(STT)으로"]:
         assert gone not in text, gone
@@ -184,9 +288,7 @@ def _contrast(a, b):
 
 def test_text_on_danger_and_ok_meets_contrast_in_both_schemes():
     css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
-    dark_at = css.index("@media (prefers-color-scheme: dark)")
-    for block in (css[:dark_at], css[dark_at:css.index("}", css.index("--danger", dark_at)) + 1]):
-        tokens = dict(re.findall(r"(--[\w-]+):\s*(#[0-9a-fA-F]{6})", block))
+    for tokens in _root_tokens(css):
         assert _contrast(tokens["--on-danger"], tokens["--danger"]) >= 4.5
         assert _contrast(tokens["--on-ok"], tokens["--ok"]) >= 4.5
     for selector in (".banner", ".toast-error", ".btn-danger"):
@@ -206,7 +308,7 @@ def test_refs_page_contract_and_safety():
     js = (STATIC_DIR / "pages" / "refs.js").read_text(encoding="utf-8")
     # "signal" is not asserted: ctx.api (bound per page in app.js) already carries ctx.signal, so using it is the contract.
     for token in ["export async function mount", "export function unmount", "export function onCategory",
-                  "isCurrent()", "ctx.api(", "/api/refs", "경로 복사",
+                  "isCurrent()", "ctx.api(", "/api/refs",
                   "최근 추가순", "길이순", "제목순", "noopener", "lb-",
                   "/trash?category=", "레퍼런스", "aria-expanded", "workspace/trash/"]:
         assert token in js, token
@@ -329,7 +431,7 @@ def test_motif_page_contract_and_safety():
     for token in ["export async function mount", "export function unmount", "export function onCategory",
                   "isCurrent()", "ctx.api(", "/api/motif", "/api/motif/run", "/api/motif/save", "/api/motif/star",
                   "kind=motif", "새 카드 뽑기", "선택한 카드 저장", "저장하면서 ★", "기획안 만들기",
-                  "yt-inspire", "#/typify", "#/add", "#/refs/",
+                  "기법 모음 정리해줘", "#/typify", "#/add", "#/refs/",
                   "프로필이 없어 카드가 일반적으로 나옵니다", "유형화를 먼저 하면 흐름·조합 카드가 나옵니다",
                   "먼저 레퍼런스를 넣어 주세요", "즐겨찾기만", "res.warning", "job_id: mine.jobId"]:
         assert token in js, token
@@ -457,7 +559,7 @@ def test_diagnose_page_contract_and_safety():
                   "isCurrent()", "ctx.api(", "/api/diagnose/targets", "/api/diagnose/compare",
                   "/api/diagnose/explain", "/api/diagnose/save", "/api/diagnose/intentional",
                   "/api/diagnose/record", "kind=diagnose", "job_id", "비교하기", "설명 받기",
-                  "일부러 다르게 한 거예요", "renderMarkdown", "/yt-coach:yt-mission today",
+                  "일부러 다르게 한 거예요", "renderMarkdown", "#/mission",
                   "aria-pressed", "data-discard-yes", "aborted", "axis_ko", "정보 없음", "예비 진단",
                   "설명 다시 받기", "refreshCategories", "진단을 기록했습니다", "#/typify", "#/add", "#/draft"]:
         assert token in js, token
@@ -498,7 +600,7 @@ def test_mission_page_contract_and_safety():
                   "/api/mission/submit", "/api/mission/skip", "kind=mission", "kind=mission_feedback", "job_id",
                   "오늘 미션 받기", "이걸로 할게요", "이걸로 바꿀게요", "다른 걸로", "완료 제출", "피드백 받기",
                   "건너뛰기", "바꾸기", "renderMarkdown", "dropTitle", "fieldset", "legend", "mission_exists",
-                  "bad_file", "already_submitted", "aborted", "markHandled", "/yt-coach:yt-init",
+                  "bad_file", "already_submitted", "aborted", "markHandled", "처음 설정해줘",
                   "날짜가 바뀌었습니다", "다시 제출하면 이전 제출을 덮어씁니다", "원본은 건드리지 않고",
                   "adjust", "role: \"alert\"", "scope"]:
         assert token in js, token
@@ -530,7 +632,7 @@ def test_report_page_contract_and_safety():
                   "/api/review/write", "/api/review/save", "/api/review/apply", "kind=review", "job_id",
                   "리포트 만들기", "새 탭에서 열기", "sandbox", "회고 쓰기", "다시 쓰기", "프로필에 반영",
                   "tablist", "aria-selected", "ArrowRight", "renderMarkdown", "dropTitle", "markHandled",
-                  "aborted", "/yt-coach:yt-init", "#/typify", "이번 주 미션 기록이 없습니다", "회고 있음"]:
+                  "aborted", "처음 설정해줘", "#/typify", "이번 주 미션 기록이 없습니다", "회고 있음"]:
         assert token in js, token
     assert "allow-scripts" not in js
     assert re.search(r'sandbox:\s*""', js)
@@ -559,7 +661,7 @@ def test_conti_caption_video_contract():
 
 def test_conti_cut_editing_contract():
     text = (STATIC_DIR / "pages" / "conti.js").read_text(encoding="utf-8")
-    for token in ["/api/conti/cuts", "draggable", '"aria-haspopup"', '"여기에 컷 넣기"', '"되돌리기"', '"위로"', '"아래로"',
+    for token in ["/api/conti/cuts", "draggable", '"여기에 컷 넣기"', '"되돌리기"', '"위로"', '"아래로"',
                   "fmtDelta(", "dropTarget(", "stepMove(", "canRemove(", "snapSec(", "장면 설명", "길이(초)", "샷 크기",
                   "위에 넣기", "아래에 넣기", "복제", "콘티가 바뀌었어요 — 다시 받아 주세요", "UNDO_MS"]:
         assert token in text, token
@@ -724,60 +826,56 @@ def test_add_page_over_text_and_shown_percent():
     assert paint.index("monotonicFraction") < paint.index("rowText(")
 
 
-# --- 사이드바: 어두운 차콜, 아이콘 머리, 그룹 상자, 접고 펴기 ---------------------
+# --- 색 토큰: 라이트 고정, 촬영 모드(.shoot-dark)만 어두운 값 ---------------------
+
+def _token_block(css, selector):
+    out = {}
+    for m in re.finditer(rf"^{re.escape(selector)} \{{(.*?)^\}}", css, re.S | re.M):
+        out.update(re.findall(r"(--[\w-]+):\s*([^;]+);", m.group(1)))
+    return out
+
+
+def _resolve(raw):
+    def value(name, seen=()):
+        v = raw[name].strip()
+        m = re.fullmatch(r"var\((--[\w-]+)\)", v)
+        if m and m.group(1) not in seen:
+            return value(m.group(1), seen + (name,))
+        return v
+    return {k: value(k) for k in raw}
+
 
 def _root_tokens(css):
-    dark_at = css.index("@media (prefers-color-scheme: dark)")
-    light = dict(re.findall(r"(--[\w-]+):\s*(#[0-9a-fA-F]{6})", css[:dark_at]))
-    dark = dict(light, **dict(re.findall(r"(--[\w-]+):\s*(#[0-9a-fA-F]{6})", css[dark_at:css.index("}", dark_at)])))
-    return light, dark
-
-
-def test_sidebar_text_contrast_on_charcoal():
-    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
-    light, dark = _root_tokens(css)
-    for tokens in (light, dark):           # 사이드바 색은 두 모드에서 같아야 하고 글자 대비는 4.5 이상
-        for bg in ("--side-bg", "--side-grp", "--side-on-bg", "--side-hover"):
-            for fg in ("--side-ink", "--side-sub"):
-                assert _contrast(tokens[fg], tokens[bg]) >= 4.5, (fg, bg)
-        for bg in ("--side-bg", "--side-grp", "--side-on-bg", "--side-hover"):   # 현재 막대·포커스 테두리(비글자)
-            assert _contrast(tokens["--side-accent"], tokens[bg]) >= 3.0, bg
-    assert {k: v for k, v in light.items() if k.startswith("--side-")} == \
-        {k: v for k, v in dark.items() if k.startswith("--side-")}
+    """(light, shoot) tokens with var() aliases resolved; aliases sit in a ":root, .shoot-dark" block."""
+    base = _token_block(css, ":root")
+    alias = _token_block(css, ":root, .shoot-dark")
+    shoot = _token_block(css, ".shoot-dark")
+    light = _resolve({**base, **alias})
+    dark = _resolve({**base, **shoot, **alias})
+    hexes = lambda d: {k: v for k, v in d.items() if re.fullmatch(r"#[0-9a-fA-F]{6}", v)}
+    return hexes(light), hexes(dark)
 
 
 def test_light_page_text_contrast():
     css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
-    light, dark = _root_tokens(css)
-    for tokens in (light, dark):
+    for tokens in _root_tokens(css):
         for bg in ("--page", "--surface"):
             for fg in ("--ink", "--ink2", "--muted"):
                 assert _contrast(tokens[fg], tokens[bg]) >= 4.5, (fg, bg)
 
 
-def test_sidebar_groups_are_collapsible_buttons_with_icons():
-    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
-    menu_block = app.split("const MENU = [", 1)[1].split("];", 1)[0]
-    assert menu_block.count("icon:") == 6                 # 홈, 모으기, 분석, 만들기, 성장, 가이드
-    imports = re.search(r'import \{([^}]*)\} from "/static/menu-utils\.js"', app).group(1)
-    for name in ("activeGroup", "enterExpand", "isActive", "parseCollapsed", "toggleCollapsed"):
-        assert name in imports, name
-    assert '"aria-expanded"' in app and '"aria-controls"' in app
-    assert 'const SVG_NS = "http://www.w3.org/2000/svg"' in app and "createElementNS(SVG_NS" in app
-    assert "ytc.menu.collapsed" in app
-    assert re.search(r"try \{ return parseCollapsed\(localStorage\.getItem\(MENU_KEY\)\); \} catch \{ return \[\]; \}", app)
-    assert re.search(r"try \{ localStorage\.setItem\(MENU_KEY", app)
-
-
-def test_sidebar_styles_use_side_tokens():
+def test_sidebar_items_and_focus():
     css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
-    menu_rule = re.search(r"^\.menu \{([^}]*)\}", css, re.M).group(1)
-    assert "background: var(--side-bg)" in menu_rule
-    focus = re.search(r"\.menu-group-toggle:focus-visible[^{]*\{([^}]*)\}", css).group(1)
-    assert "box-shadow: var(--side-focus)" in focus
-    assert "outline: 2px solid transparent" in focus          # 고대비(forced-colors) 모드에서 테두리가 남는다
-    assert "--side-focus: 0 0 0 2px var(--side-accent)" in css
-    assert re.search(r"\.menu-group\.closed \.menu-list\s*\{[^}]*display: none", css)
+    assert "--side-" not in css                                   # the charcoal sidebar is gone
+    link = re.search(r'^\.menu-link\[aria-current="page"\] \{([^}]*)\}', css, re.M).group(1)
+    assert "font-weight: 700" in link
+    assert re.search(r"^\.vid-bar > span \{[^}]*background: var\(--done\)", css, re.M)
+    light, _ = _root_tokens(css)
+    assert _contrast(light["--muted"], light["--border"]) >= 4.5     # counts on the current (gray) item
+    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert '"aria-current", "page"' in app
+    assert 'role: "progressbar"' in app or '"progressbar"' in app
+
 
 
 # --- 카드 새 모양: 한국어 유형 이름, 레퍼런스 카드 정보, 선택 상태 색 ---------------------
@@ -815,7 +913,7 @@ def test_selected_states_use_pick_colors_with_contrast():
         assert _contrast(tokens["--muted"], tokens["--page"]) >= 4.5           # 숫자 칸(--page 바탕)의 이름
     for selector in ('.ref-filters .btn[aria-pressed="true"]', '.filter-btn[aria-pressed="true"]',
                      '.diag-toggle[aria-pressed="true"]', ".seg-opt input:checked + span",
-                     '.lib-tab[aria-selected="true"]', '.btn.help-toggle[aria-expanded="true"]'):
+                     '.lib-tab[aria-selected="true"]', '.ui-chip[aria-pressed="true"]'):
         rule = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", css).group(1)
         assert "var(--pick-bg)" in rule and "var(--pick-fg)" in rule, selector
     assert "box-shadow: var(--elev-1)" in re.search(r"^\.card \{([^}]*)\}", css, re.M).group(1)
@@ -988,12 +1086,15 @@ def test_new_job_keeps_state_of_adopted_review_cards_and_guards_before_apply():
     assert 'i.step !== "confirm"' in prog
 
 
-def test_topbar_fits_380px_phones():
-    # 380px 폰: 메뉴·브랜드·카테고리·도움말·서버 끄기가 한 줄에 들어가야 한다(넘치면 화면 전체가 400px로 넓어짐)
+def test_topbar_fits_390px_phones():
+    # 390px phones: logo, category, status slot and help button share one row (an overflow widens the whole page)
     css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
-    assert ".cat-select { min-width: 88px" not in css
-    assert ".cat-select { min-width: 64px; flex: 0 1 auto; }" in css
-    assert ".topbar .btn:not(.btn-icon) { padding: 6px var(--sp-3); }" in css
+    phone = "\n".join(_media_blocks(css, 640))
+    assert "min-width: 0" in _rule(phone, ".cat-select")
+    assert "display: none" in _rule(phone, ".cat-label")             # the "카테고리" word drops on phones
+    assert "flex-shrink: 0" in re.search(r"^\.brand \{([^}]*)\}", css, re.M).group(1)
+    assert "padding-bottom" in _rule(phone, ".main")                  # content clears the bottom tabs
+    assert "bottom:" in _rule(phone, ".toasts")                       # toasts sit above the bottom tabs
 
 
 def test_footage_area_contract_and_safety():

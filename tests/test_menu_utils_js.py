@@ -1,4 +1,4 @@
-"""menu-utils.js 순수 함수 검증: 현재 메뉴 판정, 접힌 그룹 기억, 현재 그룹 자동 펼침 (node 없으면 skip)."""
+"""menu-utils.js 순수 함수 검증: 사이드바·하단 탭 구성, 현재 메뉴 판정, 영상 진행 표시, 폰 보조 메뉴 (node 없으면 skip)."""
 import json
 import shutil
 import subprocess
@@ -12,18 +12,11 @@ UTILS = STATIC_DIR / "menu-utils.js"
 
 pytestmark = pytest.mark.skipif(NODE is None, reason="node not installed")
 
-MENU = [
-    {"group": None, "items": [{"name": "홈", "route": "#/home"}]},
-    {"group": "모으기", "items": [{"name": "레퍼런스 추가", "route": "#/add"}, {"name": "레퍼런스 목록", "route": "#/refs"}]},
-    {"group": "만들기", "items": [{"name": "기획안", "route": "#/draft"}, {"name": "콘티", "route": "#/conti"}]},
-    {"group": None, "items": [{"name": "가이드", "route": "#/guide"}]},
-]
-
 
 def run_js(expr: str):
     code = (
-        f"import({json.dumps(UTILS.as_uri())}).then(m => {{ const MENU = {json.dumps(MENU, ensure_ascii=False)}; "
-        f"console.log(JSON.stringify((function(m){{ return {expr}; }})(m))); }})"
+        f"import({json.dumps(UTILS.as_uri())}).then(m => "
+        f"console.log(JSON.stringify((function(m){{ return {expr}; }})(m))))"
     )
     out = subprocess.run([NODE, "-e", code], capture_output=True, text=True, encoding="utf-8", timeout=30)
     assert out.returncode == 0, out.stderr
@@ -34,6 +27,25 @@ def test_no_imports():
     assert "import " not in UTILS.read_text(encoding="utf-8").replace("import(", "")
 
 
+def test_sidebar_has_three_groups_in_spec_order():
+    got = run_js("m.SIDEBAR.map((g) => [g.group, g.items.map((it) => [it.label, it.href])])")
+    assert got == [
+        ["영감", [["레퍼런스", "#/refs"], ["유형", "#/typify"], ["모티브", "#/motif"]]],
+        ["내 영상", [["+ 새 영상 시작", "#/draft/new"]]],
+        ["성장", [["오늘 미션", "#/mission"], ["주간 리포트", "#/report"]]],
+    ]
+    assert run_js("m.SIDEBAR.map((g) => !!g.videos)") == [False, True, False]   # 영상 목록은 내 영상 그룹에만
+    assert run_js("m.SIDEBAR[0].items.map((it) => it.count)") == ["ref", "archetypes", "motifs"]
+
+
+def test_phone_tabs_are_four():
+    got = run_js("m.PHONE_TABS.map((t) => [t.key, t.label, t.href, typeof t.icon])")
+    assert got == [
+        ["home", "홈", "#/home", "string"], ["inspire", "영감", "#/refs", "string"],
+        ["videos", "내 영상", "#/draft", "string"], ["mission", "미션", "#/mission", "string"],
+    ]
+
+
 @pytest.mark.parametrize("href, hash_, expected", [
     ("#/home", "#/home", True),
     ("#/home", "", True),                       # 해시가 없으면 홈
@@ -41,9 +53,10 @@ def test_no_imports():
     ("#/conti", "#/conti/x", True),
     ("#/draft", "#/draft/x", True),
     ("#/diagnose", "#/diagnose/x", True),
-    ("#/report", "#/report/x", True),
+    ("#/report", "#/report/review", True),
     ("#/guide", "#/guide/shorts", True),
     ("#/refs", "#/add", True),                  # 추가 칸은 레퍼런스 화면의 일부
+    ("#/draft/new", "#/draft/new/abc", True),   # 출처를 고른 새 기획안도 "+ 새 영상 시작"
     ("#/add", "#/add/x", False),                # 하위 경로가 없는 메뉴는 정확히 같을 때만
     ("#/refs", "#/refsx", False),
     ("#/home", "#/add", False),
@@ -52,46 +65,78 @@ def test_is_active(href, hash_, expected):
     assert run_js(f"m.isActive({json.dumps(href)}, {json.dumps(hash_)})") is expected
 
 
-def test_active_group():
-    assert run_js('m.activeGroup(MENU, "#/conti/abc")') == "만들기"
-    assert run_js('m.activeGroup(MENU, "#/add")') == "모으기"
-    assert run_js('m.activeGroup(MENU, "#/home")') is None        # 그룹 밖 메뉴
-    assert run_js('m.activeGroup(MENU, "#/nope")') is None
-    assert run_js('m.activeGroup(MENU, "#/soon/x", (it) => it.route === "#/draft" ? "#/soon/x" : it.route)') == "만들기"
-
-
-@pytest.mark.parametrize("raw, expected", [
-    ('["모으기","만들기"]', ["모으기", "만들기"]),
-    (None, []),
-    ("", []),
-    ("not json", []),
-    ('{"a":1}', []),
-    ('["모으기", 3, null, "모으기"]', ["모으기"]),              # 문자열만, 중복 없이
+@pytest.mark.parametrize("hash_, expected", [
+    ("", "home"), ("#/home", "home"), ("#/zzz", "home"),
+    ("#/refs", "inspire"), ("#/refs/abc", "inspire"), ("#/add", "inspire"), ("#/library", "inspire"),
+    ("#/typify", "inspire"), ("#/motif", "inspire"),
+    ("#/draft", "videos"), ("#/draft/view/drafts%2Fa.md", "videos"), ("#/conti/x", "videos"),
+    ("#/diagnose", "videos"),
+    ("#/mission", "mission"), ("#/report", "mission"), ("#/report/review/2026-W43", "mission"),
+    ("#/guide", None), ("#/guide/long", None),
 ])
-def test_parse_collapsed(raw, expected):
-    assert run_js(f"m.parseCollapsed({json.dumps(raw)})") == expected
+def test_phone_tab(hash_, expected):
+    assert run_js(f"m.phoneTab({json.dumps(hash_)})") == expected
 
 
-def test_toggle_collapsed_adds_and_removes_without_mutating():
-    assert run_js('(() => { const a = ["분석"]; const b = m.toggleCollapsed(a, "모으기"); return [a, b]; })()') == [
-        ["분석"], ["분석", "모으기"]]
-    assert run_js('m.toggleCollapsed(["분석", "모으기"], "분석")') == ["모으기"]
+def test_video_links_cover_draft_conti_and_diagnose_screens():
+    got = run_js('m.videoLinks("drafts/2026-10-25 부루마블.md")')
+    enc = "drafts%2F2026-10-25%20%EB%B6%80%EB%A3%A8%EB%A7%88%EB%B8%94"
+    assert got == {
+        "view": f"#/draft/view/{enc}.md",
+        "screens": [f"#/draft/view/{enc}.md", f"#/conti/{enc}.md", f"#/conti/{enc}-conti.md",
+                    f"#/diagnose/{enc}.md"],
+    }
 
 
-def test_expand_for_opens_only_the_current_group():
-    assert run_js('m.expandFor(["모으기", "분석"], "모으기")') == ["분석"]   # 지금 보는 화면이 든 그룹은 펼친다
-    assert run_js('m.expandFor(["분석"], "모으기")') == ["분석"]
-    assert run_js('m.expandFor(["분석"], null)') == ["분석"]
+def test_is_video_active():
+    path = "drafts/a b.md"
+    assert run_js(f'm.isVideoActive({json.dumps(path)}, "#/conti/drafts%2Fa%20b-conti.md")') is True
+    assert run_js(f'm.isVideoActive({json.dumps(path)}, "#/draft/view/drafts%2Fa%20b.md")') is True
+    assert run_js(f'm.isVideoActive({json.dumps(path)}, "#/draft/view/drafts%2Fa%20bc.md")') is False
+    assert run_js(f'm.isVideoActive({json.dumps(path)}, "#/draft")') is False
 
 
-def test_enter_expand_only_when_moving_into_a_group():
-    got = run_js(
-        "["
-        "m.enterExpand(['모으기'], undefined, '모으기'),"   # 첫 화면(새로 고침): 접은 그대로
-        "m.enterExpand(['모으기'], '모으기', '모으기'),"    # 같은 그룹 안 이동: 접은 그대로
-        "m.enterExpand(['모으기'], '분석', '모으기'),"      # 다른 그룹에서 들어옴: 펼침
-        "m.enterExpand(['모으기'], null, '모으기'),"        # 홈 같은 맨 위 메뉴에서 들어옴: 펼침
-        "m.enterExpand(['모으기'], '모으기', null)"         # 그룹 밖으로 나감: 그대로
-        "]"
-    )
-    assert got == [["모으기"], ["모으기"], [], [], ["모으기"]]
+def _steps(done):
+    keys = [("draft", False), ("polish", True), ("conti", False), ("filmed", False), ("captions", True),
+            ("diagnose", False)]
+    return [{"key": k, "done": k in done, "optional": opt} for k, opt in keys]
+
+
+@pytest.mark.parametrize("done, next_, expected", [
+    ({"draft"}, "conti", {"pct": 25, "stage": "콘티"}),
+    ({"draft", "polish", "conti"}, "filmed", {"pct": 50, "stage": "촬영"}),       # 선택 단계는 진행률에 안 센다
+    ({"draft", "conti", "filmed"}, "diagnose", {"pct": 75, "stage": "진단"}),
+    ({"draft", "conti", "filmed", "diagnose"}, None, {"pct": 100, "stage": "완료"}),
+])
+def test_video_progress(done, next_, expected):
+    video = {"steps": _steps(done), "next": next_}
+    assert run_js(f"m.videoProgress({json.dumps(video)})") == expected
+
+
+def test_video_progress_tolerates_missing_steps():
+    assert run_js('m.videoProgress({ next: "conti" })') == {"pct": 0, "stage": "콘티"}
+    assert run_js("m.videoProgress({})") == {"pct": 0, "stage": "완료"}
+
+
+def test_sidebar_videos_lists_unfinished_first_up_to_limit():
+    videos = [{"path": f"drafts/{i}.md", "next": None if i >= 4 else "conti"} for i in range(7)]
+    got = run_js(f"m.sidebarVideos({json.dumps(videos)}, 3)")
+    assert [v["path"] for v in got["shown"]] == ["drafts/0.md", "drafts/1.md", "drafts/2.md"]
+    assert got["total"] == 7
+    assert run_js("m.sidebarVideos(undefined, 3)") == {"shown": [], "total": 0}
+    done_only = [{"path": "drafts/x.md", "next": None}]
+    assert run_js(f"m.sidebarVideos({json.dumps(done_only)}, 3)")["shown"] == []   # 다 만든 영상은 목록에서 뺀다
+
+
+def test_subnav_items():
+    refs = run_js('m.subnavItems("#/refs/abc")')
+    assert [(i["label"], i["href"], i["current"], i["phoneOnly"]) for i in refs] == [
+        ("레퍼런스", "#/refs", True, False), ("공용 라이브러리", "#/library", False, False),
+        ("유형", "#/typify", False, True), ("모티브", "#/motif", False, True),
+    ]
+    assert [i["current"] for i in run_js('m.subnavItems("#/library")')] == [False, True, False, False]
+    growth = run_js('m.subnavItems("#/report/review")')
+    assert [(i["label"], i["current"], i["phoneOnly"]) for i in growth] == [
+        ("오늘 미션", False, True), ("주간 리포트", True, True)]
+    assert run_js('m.subnavItems("#/home")') == []
+    assert run_js('m.subnavItems("#/draft")') == []

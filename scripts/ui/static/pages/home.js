@@ -1,6 +1,6 @@
 import { h, filesUrl, fill } from "/static/dom.js";
 import {
-  STEP_NAMES, NEXT_REASON, VISIBLE_VIDEOS, isFolded, nextButton, nextHeadline, stepState, stepSr, videoMeta, stageLine,
+  NEXT_REASON, STEP_NAMES, VISIBLE_VIDEOS, isFolded, nextButton, nextHeadline, recentName, stageLine, stepSr, stepState, videoMeta,
 } from "/static/home-utils.js";
 
 const MENU_ROUTES = { add: "#/add", conti: "#/conti", typify: "#/typify", draft: "#/draft", diagnose: "#/diagnose" };
@@ -211,7 +211,9 @@ function missionCard(m) {
   return card;
 }
 
-function recentCard(items) {
+function recentCard(items, categories) {
+  const titles = {};
+  for (const c of categories || []) for (const v of c.videos || []) titles[v.path] = v.title;
   const card = h("article", { class: "card" });
   card.append(h("h2", {}, "최근 결과물"));
   if (!items || items.length === 0) {
@@ -220,7 +222,7 @@ function recentCard(items) {
   }
   const ul = h("ul", { class: "recent" });
   for (const it of items) {
-    const name = it.path.split("/").pop();
+    const name = recentName(it, titles);
     const label = KIND_LABELS[it.kind] || it.kind;
     const link = it.kind === "draft"
       ? h("a", { href: `#/draft/view/${encodeURIComponent(it.path)}` }, name)
@@ -278,7 +280,7 @@ export async function mount(el, params, ctx) {
   if (!st.initialized) {
     const card = h("section", { class: "card" });
     card.append(h("h2", {}, "아직 작업 폴더가 아닙니다"),
-      h("p", { class: "muted" }, st.work_root));
+      h("p", { class: "muted" }, "지금 연 폴더를 작업 폴더로 만들면 레퍼런스와 기획안이 여기에 저장돼요."));
     const btn = primary("button", { type: "button" }, "이 폴더를 yt-coach 작업 폴더로 만들기");
     btn.addEventListener("click", async () => {
       btn.disabled = true;
@@ -303,7 +305,7 @@ export async function mount(el, params, ctx) {
   if (st.categories.length === 0) {
     el.append(h("section", { class: "card" },
       h("h2", {}, "카테고리가 없습니다"),
-      h("p", { class: "muted" }, "터미널에서 ", h("code", {}, "/yt-coach:yt-init"), " 으로 첫 카테고리를 만드세요.")));
+      h("p", { class: "muted" }, "Claude에게 “처음 설정해줘”라고 말하면 첫 카테고리를 함께 만들어요.")));
   } else {
     const cat = st.categories.find((c) => c.category === ctx.category) || st.categories[0];
     const view = { el, params, ctx, category: cat.category };
@@ -312,6 +314,6 @@ export async function mount(el, params, ctx) {
     el.append(h("div", { class: "home" }, nextCard(cat, view), videosCard(cat, view), categoryLine(cat),
       otherCategories(st.categories.filter((c) => c !== cat), ctx)));
   }
-  el.append(h("div", { class: "grid-2 home-sub" }, missionCard(st.mission), recentCard(st.recent)));
+  el.append(h("div", { class: "grid-2 home-sub" }, missionCard(st.mission), recentCard(st.recent, st.categories)));
   restoreFocus(el, pendingFocus, videos);
 }

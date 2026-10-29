@@ -420,7 +420,7 @@ function renderDetail(data) {
   }
 
   const trash = trashControls(v);
-  S.el.append(h("div", { class: "btn-row" }, trash.button), trash.panel, pathRow(data.md));
+  S.el.append(h("div", { class: "btn-row" }, trash.button), trash.panel);
 }
 
 // ---- delete (moves to workspace/trash/) ------------------------------------------
@@ -436,9 +436,9 @@ function trashControls(v) {
   const no = h("button", { type: "button", class: "btn" }, "취소");
   const panel = h("div", { class: "inline-confirm", id: "ref-trash", hidden: true },
     h("p", { class: "warn-text" },
-      `이 ${what}의 md와 분석 데이터(프레임·컷·샷 분류·자막)를 휴지통 폴더(workspace/trash/)로 옮깁니다`),
+      `이 ${what}의 분석 결과와 데이터(프레임·컷·샷 분류·자막)를 휴지통으로 옮깁니다`),
     h("p", { class: "muted hint" },
-      "기법 모음에서도 이 영상 출처를 뺍니다. 다른 카테고리에 같은 영상이 있으면 분석 데이터는 그대로 둡니다. 잘못 지웠으면 휴지통 폴더 안의 파일을 같은 경로로 다시 옮기면 됩니다."),
+      "기법 모음에서도 이 영상 출처를 뺍니다. 다른 카테고리에 같은 영상이 있으면 분석 데이터는 그대로 둡니다. 잘못 지웠으면 Claude에게 “휴지통에서 되살려줘”라고 말하세요."),
     h("div", { class: "btn-row" }, yes, no));
   const open = (on) => {
     panel.hidden = !on;
@@ -454,9 +454,9 @@ function trashControls(v) {
     try {
       const res = await mine.ctx.api("POST",
         `/api/refs/${encodeURIComponent(v.id)}/trash?category=${encodeURIComponent(mine.ctx.category)}`, {});
-      const notes = [`${whatObj} 휴지통 폴더로 옮겼습니다: ${res.trash}`];
+      const notes = [`${whatObj} 휴지통으로 옮겼습니다`];
       if (res.typified) notes.push("유형화에 들어간 영상이라, 유형화를 다시 하면 결과에서 빠집니다");
-      if (res.techniques_stale) notes.push("기법 모음(techniques.md)에서는 출처를 빼지 못했습니다");
+      if (res.techniques_stale) notes.push("기법 모음에서는 출처를 빼지 못했습니다");
       mine.ctx.toast(notes.join(" · "), "info");     // even if the user already left
       if (!alive(mine)) return;
       location.hash = "#/refs";      // hashchange remounts the list page
@@ -668,19 +668,6 @@ function framesBlock(frames) {
   return block;
 }
 
-function pathRow(md) {
-  const copy = h("button", { type: "button", class: "btn" }, "경로 복사");
-  copy.addEventListener("click", async () => {
-    const mine = S;
-    try {
-      await navigator.clipboard.writeText(md);
-      if (alive(mine)) mine.ctx.toast("경로를 복사했습니다");
-    } catch {
-      if (alive(mine)) mine.ctx.toast("복사하지 못했습니다 — 직접 선택해 복사하세요", "error");
-    }
-  });
-  return h("div", { class: "ref-path" }, h("span", { class: "muted small" }, "md 파일"), h("code", {}, md), copy);
-}
 
 // ---- page contract ------------------------------------------------------------
 

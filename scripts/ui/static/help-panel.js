@@ -2,7 +2,8 @@
 // workspace status. Markdown goes through renderMarkdown, everything else is text nodes.
 //
 //   createHelpPanel(root, getCategory) -> { setPage(page), onCategory(name), toggle(open?) }
-//   Expects the topbar button #help-toggle (app.js) and the scrim #help-scrim (index.html).
+//   Expects the toggle #help-toggle (inside the header help menu, app.js), the menu button #help-button (focus
+//   returns there: the toggle is hidden once the menu closes) and the scrim #help-scrim (index.html).
 //
 // Stale-answer rule: `epoch` is bumped on every page change, cancel and new question. Any async result that was
 // started under an older epoch is dropped (and its job cancelled), so a late answer never lands in another screen.
@@ -114,8 +115,9 @@ export function createHelpPanel(root, getCategory) {
         const sel = tabBtns.find((b) => b.dataset.tab === S.tab);
         if (sel) sel.focus();
       }
-    } else if (returnFocus && toggleBtn) {
-      toggleBtn.focus();
+    } else if (returnFocus) {
+      const back = document.getElementById("help-button") || toggleBtn;
+      if (back) back.focus();
     }
   }
 

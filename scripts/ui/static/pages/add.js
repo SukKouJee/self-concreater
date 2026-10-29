@@ -352,7 +352,7 @@ function renderJobFoot(p, job) {
     const lines = (sum.stage_text || "").split("\n").map((l) => l.replace(/^\s*-\s*/, "").trim()).filter(Boolean);
     if (lines.length) box.append(h("ul", { class: "stage-notes" }, ...lines.map((l) => h("li", {}, l))));
   }
-  box.append(h("p", { class: "muted" }, "분석이 틀리면 md를 고치고 ", h("code", {}, "reviewed: true"), "로 바꿔 두세요."));
+  box.append(h("p", { class: "muted" }, "분석이 틀리면 레퍼런스 화면에서 영상을 열어 고칠 수 있어요."));
   const again = h("button", { type: "button", class: "btn btn-primary" }, "새로 추가");
   again.addEventListener("click", () => {
     stopPolling();
@@ -1005,7 +1005,7 @@ function renderForm() {
   S.f = null;
   paintTitle();
   if (!S.category) {
-    S.formEl.append(h("p", { class: "muted" }, "먼저 ", h("code", {}, "/yt-coach:yt-init"), " 또는 홈에서 폴더 만들기를 진행하세요."));
+    S.formEl.append(h("p", { class: "muted" }, "먼저 ", h("a", { href: "#/home" }, "홈"), "에서 작업 폴더와 카테고리를 만들어 주세요."));
     return;
   }
 

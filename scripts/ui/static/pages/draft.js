@@ -302,15 +302,6 @@ function renderList(mine, drafts) {
 
 // ---- view (read only) ---------------------------------------------------------
 
-async function copyText(mine, text, okMsg) {
-  try {
-    await navigator.clipboard.writeText(text);
-    if (alive(mine)) mine.ctx.toast(okMsg, "info");
-  } catch {
-    if (alive(mine)) mine.ctx.toast("복사하지 못했습니다. 직접 선택해 복사하세요", "error");
-  }
-}
-
 function renderView(mine, d) {
   const sections = (d.sections || []).filter((s) => s && s.label);
   const pacing = d.pacing && typeof d.pacing === "object" ? d.pacing : null;
@@ -338,14 +329,11 @@ function renderView(mine, d) {
     const text = h("div", { class: "md" }, renderMarkdown(part.text || "", { dropTitle: String(d.title) }));
     kids.push(h("section", { class: "ref-block" }, part.heading ? h("h2", {}, part.heading) : null, text));
   }
-  const copy = h("button", { type: "button", class: "btn" }, "경로 복사");
-  copy.addEventListener("click", () => copyText(mine, d.path, "경로를 복사했습니다"));
   const trash = trashControls(mine, d);
   kids.push(
     h("div", { class: "btn-row" },
       h("a", { class: "btn btn-primary", href: contiHref(d.path) }, d.conti ? "콘티 보기" : "콘티 만들기"), trash.button),
-    trash.panel,
-    h("div", { class: "ref-path" }, h("span", { class: "muted small" }, "md 파일"), h("code", {}, d.path), copy));
+    trash.panel);
   fill(mine.el, ...kids);
   mine.pl.barSig = null;
   renderPolishBar(mine);
@@ -361,11 +349,11 @@ function trashControls(mine, d) {
   const yes = h("button", { type: "button", class: "btn btn-danger" }, "삭제");
   const no = h("button", { type: "button", class: "btn" }, "취소");
   const what = d.conti
-    ? "기획안과 그 콘티(스토리보드 HTML, SRT·자막 영상 포함)를 휴지통 폴더(workspace/trash/)로 옮깁니다"
-    : "기획안을 휴지통 폴더(workspace/trash/)로 옮깁니다";
+    ? "기획안과 그 콘티(스토리보드, SRT·자막 영상 포함)를 휴지통으로 옮깁니다"
+    : "기획안을 휴지통으로 옮깁니다";
   const panel = h("div", { class: "inline-confirm", id: "dr-trash", hidden: true },
     h("p", { class: "warn-text" }, what),
-    h("p", { class: "muted hint" }, "잘못 지웠으면 휴지통 폴더 안의 파일을 같은 경로로 다시 옮기면 됩니다."),
+    h("p", { class: "muted hint" }, "잘못 지웠으면 Claude에게 “휴지통에서 되살려줘”라고 말하세요."),
     h("div", { class: "btn-row" }, yes, no));
   const open = (on) => {
     panel.hidden = !on;
@@ -380,7 +368,7 @@ function trashControls(mine, d) {
     for (const b of [button, yes, no]) b.disabled = true;
     try {
       const res = await mine.ctx.api("POST", "/api/draft/trash", { path: d.path });
-      mine.ctx.toast(`기획안을 휴지통 폴더로 옮겼습니다: ${res.trash}`, "info");     // even if the user already left
+      mine.ctx.toast("기획안을 휴지통으로 옮겼습니다", "info");     // even if the user already left
       if (!alive(mine)) return;
       location.hash = "#/draft";      // hashchange remounts the list page
     } catch (e) {

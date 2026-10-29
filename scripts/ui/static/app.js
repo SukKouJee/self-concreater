@@ -9,56 +9,36 @@
 import { api, showBanner } from "/static/api.js";
 import { h } from "/static/dom.js";
 import { createHelpPanel, helpPage } from "/static/help-panel.js";
-import { activeGroup, enterExpand, isActive, parseCollapsed, toggleCollapsed } from "/static/menu-utils.js";
+import {
+  PHONE_TABS, SIDEBAR, isActive, isVideoActive, phoneTab, sidebarVideos, subnavItems, videoLinks, videoProgress,
+} from "/static/menu-utils.js";
 
 const CATEGORY_KEY = "ytc.category";
-const MENU_KEY = "ytc.menu.collapsed";
+const SIDEBAR_VIDEOS = 5;   // unfinished videos listed in the sidebar; the rest sit behind "전체 N편"
 
-// Menu definition. No item uses `soon` now; the `soon` mechanism and #/soon/<key> placeholder page are kept but unused.
-const MENU = [
-  { group: null, icon: "home", items: [{ name: "홈", route: "#/home" }] },
-  {
-    group: "모으기",
-    icon: "plus",
-    items: [
-      { name: "레퍼런스", route: "#/refs" },
-      { name: "공용 라이브러리", route: "#/library" },
-    ],
-  },
-  {
-    group: "분석",
-    icon: "chart",
-    items: [
-      { name: "유형화", route: "#/typify" },
-      { name: "리포트", route: "#/report" },
-    ],
-  },
-  {
-    group: "만들기",
-    icon: "pen",
-    items: [
-      { name: "모티브", route: "#/motif" },
-      { name: "기획안", route: "#/draft" },
-      { name: "콘티", route: "#/conti" },
-    ],
-  },
-  {
-    group: "성장",
-    icon: "trend",
-    items: [
-      { name: "진단", route: "#/diagnose" },
-      { name: "미션", route: "#/mission" },
-    ],
-  },
-  { group: null, icon: "help", items: [{ name: "가이드", route: "#/guide" }] },
+// Every screen with its name (browser tab title). The help chatbot gets the same list (api_help.MENU).
+// The sidebar and the phone tabs are defined in menu-utils.js.
+const SCREENS = [
+  { name: "홈", route: "#/home" },
+  { name: "레퍼런스", route: "#/refs" },
+  { name: "공용 라이브러리", route: "#/library" },
+  { name: "유형화", route: "#/typify" },
+  { name: "리포트", route: "#/report" },
+  { name: "모티브", route: "#/motif" },
+  { name: "기획안", route: "#/draft" },
+  { name: "콘티", route: "#/conti" },
+  { name: "진단", route: "#/diagnose" },
+  { name: "미션", route: "#/mission" },
+  { name: "가이드", route: "#/guide" },
 ];
-
-const SOON = {};
-for (const g of MENU) for (const it of g.items) if (it.soon) SOON[it.soon] = it;
 
 const $ = (id) => document.getElementById(id);
 let helpPanel = null;
-const state = { status: null, categories: [], current: null, currentPage: null, navToken: 0, abort: null };
+const state = {
+  categories: [], current: null, currentPage: null, navToken: 0, abort: null,
+  // sidebar data for the current category: { category, videos, ref, archetypes, motifs } (missing = unknown)
+  side: null, sideSeq: 0,
+};
 
 // ---- ctx ---------------------------------------------------------------
 
@@ -87,8 +67,9 @@ const ctx = {
     if (helpPanel) helpPanel.onCategory(ctx.category);
     if (state.currentPage === "home") {
       route();
-    } else if (state.current && typeof state.current.onCategory === "function") {
-      state.current.onCategory(ctx.category);
+    } else {
+      refreshSidebar();
+      if (state.current && typeof state.current.onCategory === "function") state.current.onCategory(ctx.category);
     }
   },
   refreshCategories,
@@ -114,148 +95,171 @@ async function refreshCategories() {
   } catch {
     state.categories = [];
   }
-  try { state.status = await api("GET", "/api/status"); } catch { /* keep previous */ }
   const names = state.categories.map((c) => c.category);
   const stored = readStoredCategory();
   ctx.category = names.includes(ctx.category) ? ctx.category
     : names.includes(stored) ? stored : (names[0] || null);
   updateTopbar();
+  refreshSidebar();
 }
 
-// ---- menu ----------------------------------------------------------------
+// ---- icons -----------------------------------------------------------------
 
-function itemHref(it) {
-  return it.soon ? `#/soon/${it.soon}` : it.route;
-}
-
-// Line icons for the menu (24x24, stroke). Built with createElementNS: h() makes HTML elements only.
+// Line icons (24x24, stroke). Built with createElementNS: h() makes HTML elements only.
 const ICONS = {
   home: ["M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"],
-  plus: ["M12 5v14M5 12h14"],
-  chart: ["M4 20V10M10 20V4M16 20v-7M22 20H2"],
-  pen: ["M4 20h4L19 9l-4-4L4 16z"],
-  trend: ["M3 17l6-6 4 4 8-8M15 7h6v6"],
-  help: ["M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z", "M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6M12 17h.01"],
-  chevron: ["M6 9l6 6 6-6"],
+  spark: ["M9 18h6M10 21h4", "M12 3a6 6 0 0 0-3.5 10.9c.6.4 1 1.1 1 1.8V16h5v-.3c0-.7.4-1.4 1-1.8A6 6 0 0 0 12 3z"],
+  film: ["M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z", "M10 9l5 3-5 3z"],
+  target: ["M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z", "M12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8z", "M12 12h.01"],
 };
 const SVG_NS = "http://www.w3.org/2000/svg";
 
+function svgEl(tag, attrs) {
+  const el = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+  return el;
+}
+
 function svgIcon(name, cls) {
-  const svg = document.createElementNS(SVG_NS, "svg");
-  svg.setAttribute("viewBox", "0 0 24 24");
-  svg.setAttribute("aria-hidden", "true");
-  svg.setAttribute("class", cls);
-  for (const d of ICONS[name]) {
-    const path = document.createElementNS(SVG_NS, "path");
-    path.setAttribute("d", d);
-    svg.append(path);
-  }
+  const svg = svgEl("svg", { viewBox: "0 0 24 24", "aria-hidden": "true", class: cls });
+  for (const d of ICONS[name]) svg.append(svgEl("path", { d }));
   return svg;
 }
 
-function readCollapsed() {
-  try { return parseCollapsed(localStorage.getItem(MENU_KEY)); } catch { return []; }
+// Logo: red rounded screen with a play mark (mockup), colors from the tokens via CSS classes.
+function logo() {
+  const svg = svgEl("svg", { viewBox: "0 0 24 24", "aria-hidden": "true", class: "logo" });
+  svg.append(svgEl("rect", { x: "2", y: "5", width: "20", height: "14", rx: "4", class: "logo-box" }),
+    svgEl("path", { d: "M10 9l5 3-5 3z", class: "logo-play" }));
+  return svg;
 }
-function storeCollapsed(list) {
-  try { localStorage.setItem(MENU_KEY, JSON.stringify(list)); } catch { /* storage unavailable */ }
+
+// ---- sidebar -----------------------------------------------------------------
+
+// Sidebar data for the current category from existing APIs: videos and the ref count (/api/status), the saved
+// archetypes (/api/typify) and motif cards (/api/motif). A failed call only leaves its number out.
+async function refreshSidebar() {
+  const seq = ++state.sideSeq;
+  const category = ctx.category;
+  if (!category) {
+    state.side = null;
+    renderSidebar();
+    return;
+  }
+  const q = `?category=${encodeURIComponent(category)}`;
+  const [st, ty, mo] = await Promise.allSettled([
+    api("GET", `/api/status${q}`), api("GET", `/api/typify${q}`), api("GET", `/api/motif${q}`),
+  ]);
+  if (seq !== state.sideSeq) return;
+  const cat = st.status === "fulfilled" ? (st.value.categories || []).find((c) => c.category === category) : null;
+  const applied = ty.status === "fulfilled" ? ty.value.applied : undefined;
+  state.side = {
+    category,
+    videos: cat ? cat.videos || [] : null,
+    ref: cat ? cat.ref : undefined,
+    archetypes: applied === undefined ? undefined : applied ? (applied.archetypes || []).length : 0,
+    motifs: mo.status === "fulfilled" && Array.isArray(mo.value.cards) ? mo.value.cards.length : undefined,
+  };
+  renderSidebar();
 }
 
-let lastGroup; // group of the previous route (undefined before the first route)
+function menuLink(it) {
+  const side = state.side || {};
+  const n = it.count ? side[it.count] : undefined;
+  const label = typeof n === "number" ? `${it.label} ${n}개` : it.label;
+  return h("a", { class: "menu-link" + (it.href === "#/draft/new" ? " menu-new" : ""), href: it.href,
+    "data-href": it.href, "aria-label": typeof n === "number" ? label : null },
+  h("span", {}, it.label), typeof n === "number" ? h("span", { class: "menu-count", "aria-hidden": "true" }, String(n)) : null);
+}
 
-const menuGroupId = (name) => `mg-${MENU.findIndex((g) => g.group === name)}`;
+function videoRow(v) {
+  const { pct, stage } = videoProgress(v);
+  const fill = h("span", { style: `width: ${pct}%` });
+  return h("li", {}, h("a", { class: "menu-link vid-link", href: videoLinks(v.path).view, "data-video": v.path },
+    h("span", { class: "vid-name" }, v.title),
+    h("span", { class: "vid-prog" },
+      h("span", { class: "vid-bar", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100",
+        "aria-valuenow": String(pct), "aria-label": "진행" }, fill),
+      h("span", { class: "vid-stage" }, stage))));
+}
 
-// Top-level items (홈, 가이드) are links with an icon; groups are a box with a toggle button and the sub links.
-function renderMenu() {
+function videoRows() {
+  const side = state.side;
+  if (!ctx.category) return [h("li", { class: "menu-note" }, "카테고리를 먼저 만들어요")];
+  if (!side || side.videos === null) return [];
+  const { shown, total } = sidebarVideos(side.videos, SIDEBAR_VIDEOS);
+  const rows = shown.map(videoRow);
+  if (shown.length === 0) rows.push(h("li", { class: "menu-note" }, total ? "만드는 중인 영상이 없어요" : "아직 영상이 없어요"));
+  if (total > shown.length) rows.push(h("li", {}, h("a", { class: "menu-link menu-all", href: "#/draft", "data-href": "#/draft" }, `전체 ${total}편`)));
+  return rows;
+}
+
+function renderSidebar() {
   const nav = $("menu");
-  nav.replaceChildren();
-  for (const g of MENU) {
-    if (!g.group) {
-      for (const it of g.items) {
-        nav.append(h("a", { class: "menu-link menu-top", href: itemHref(it), "data-href": itemHref(it) },
-          h("span", { class: "menu-icon" }, svgIcon(g.icon, "icon")), h("span", {}, it.name)));
-      }
-      continue;
-    }
-    const id = menuGroupId(g.group);
-    const toggle = h("button", {
-      type: "button", class: "menu-group-toggle", id: `${id}-t`, "aria-expanded": "true", "aria-controls": `${id}-list`,
-    }, h("span", { class: "menu-icon" }, svgIcon(g.icon, "icon")), h("span", { class: "menu-title" }, g.group),
-    svgIcon("chevron", "menu-chevron"));
-    toggle.addEventListener("click", () => {
-      storeCollapsed(toggleCollapsed(readCollapsed(), g.group));
-      applyCollapsed();
-    });
-    const ul = h("ul", { class: "menu-list", id: `${id}-list`, "aria-labelledby": `${id}-t` });
-    for (const it of g.items) {
-      const a = h("a", { class: "menu-link" + (it.soon ? " soon" : ""), href: itemHref(it), "data-href": itemHref(it) }, it.name);
-      if (it.soon) a.append(h("span", { class: "badge" }, "2차"));
-      ul.append(h("li", {}, a));
-    }
-    nav.append(h("div", { class: "menu-group", "data-group": g.group }, toggle, ul));
-  }
+  if (!nav) return;
+  nav.replaceChildren(...SIDEBAR.map((g, i) => {
+    const id = `menu-g${i}`;
+    const ul = h("ul", { class: "menu-list", "aria-labelledby": id });
+    if (g.videos) ul.append(...videoRows());
+    for (const it of g.items) ul.append(h("li", {}, menuLink(it)));
+    return h("div", { class: "menu-group" }, h("h2", { class: "menu-label", id }, g.group), ul);
+  }));
+  markActive();
 }
 
-function applyCollapsed() {
-  const collapsed = readCollapsed();
-  for (const sec of $("menu").querySelectorAll(".menu-group")) {
-    const open = !collapsed.includes(sec.dataset.group);
-    sec.classList.toggle("closed", !open);
-    sec.querySelector(".menu-group-toggle").setAttribute("aria-expanded", String(open));
-  }
+function renderTabbar() {
+  $("tabbar").replaceChildren(...PHONE_TABS.map((t) => h("a", { class: "tab", href: t.href, "data-tab": t.key },
+    svgIcon(t.icon, "tab-icon"), h("span", {}, t.label))));
+}
+
+function renderSubnav(hash) {
+  const nav = $("subnav");
+  const items = subnavItems(hash);
+  nav.hidden = items.length === 0;
+  nav.classList.toggle("subnav-phone", items.length > 0 && items.every((it) => it.phoneOnly));
+  nav.replaceChildren(...items.map((it) => h("a", {
+    class: "subnav-link" + (it.phoneOnly ? " subnav-phone-item" : ""), href: it.href,
+    "aria-current": it.current ? "page" : null,
+  }, it.label)));
 }
 
 function markActive() {
   const hash = location.hash || "#/home";
   for (const a of $("menu").querySelectorAll("a.menu-link")) {
-    if (isActive(a.dataset.href, hash)) a.setAttribute("aria-current", "page");
+    const on = a.dataset.video ? isVideoActive(a.dataset.video, hash) : isActive(a.dataset.href, hash);
+    if (on) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
   }
-  const group = activeGroup(MENU, hash, itemHref);
-  const collapsed = readCollapsed();
-  const expanded = enterExpand(collapsed, lastGroup, group);
-  if (expanded !== collapsed) storeCollapsed(expanded);
-  lastGroup = group;
-  applyCollapsed();
+  const tab = phoneTab(hash);
+  for (const a of $("tabbar").querySelectorAll("a.tab")) {
+    if (a.dataset.tab === tab) a.setAttribute("aria-current", "page");
+    else a.removeAttribute("aria-current");
+  }
+  renderSubnav(hash);
 }
 
-function setDrawer(open) {
-  document.body.classList.toggle("drawer-open", open);
-  $("scrim").hidden = !open;
-  const btn = document.getElementById("menu-toggle");
-  if (btn) btn.setAttribute("aria-expanded", String(open));
+function screenName(hash) {
+  const s = SCREENS.find((it) => isActive(it.route, hash)) || SCREENS[0];
+  return s.name;
 }
 
 // ---- top bar ----------------------------------------------------------------
 
 function buildTopbar() {
-  const bar = $("topbar");
-  const toggle = h("button", {
-    type: "button", class: "btn btn-icon menu-toggle", id: "menu-toggle", "aria-label": "메뉴 열기",
-    "aria-controls": "menu", "aria-expanded": "false",
-  }, "☰");
-  toggle.addEventListener("click", () => setDrawer(!document.body.classList.contains("drawer-open")));
-  const sel = h("select", { id: "category-select", "aria-label": "카테고리" });
+  const sel = h("select", { id: "category-select" });
   sel.addEventListener("change", () => ctx.setCategory(sel.value));
-  bar.append(
-    toggle,
-    h("a", { class: "brand", href: "#/home" }, "yt-coach"),
-    h("div", { class: "cat-select" }, sel),
-    h("span", { class: "work-root", id: "work-root" }),
-    helpToggle(),
-    shutdownArea(),
+  $("topbar").append(
+    h("a", { class: "brand", href: "#/home", "aria-label": "yt-coach 홈" }, logo(), h("span", {}, "yt-coach")),
+    h("label", { class: "cat-select" }, h("span", { class: "cat-label" }, "카테고리"), sel),
+    h("div", { class: "topbar-gap" }),
+    // Claude job status chip: filled by a later phase; kept empty so the header layout already has its place.
+    h("div", { id: "status-chip", class: "status-chip" }),
+    helpMenu(),
   );
   updateTopbar();
 }
 
-function helpToggle() {
-  const btn = h("button", {
-    type: "button", class: "btn help-toggle", id: "help-toggle", "aria-controls": "help-panel", "aria-expanded": "false",
-  }, "도움말");
-  btn.addEventListener("click", () => { if (helpPanel) helpPanel.toggle(); });
-  return btn;
-}
-
-// Only refresh dynamic parts so focus and a pending shutdown confirm survive.
+// Only refresh dynamic parts so focus survives.
 function updateTopbar() {
   const sel = $("category-select");
   if (!sel) return;
@@ -268,18 +272,59 @@ function updateTopbar() {
   }
   sel.disabled = names.length === 0;
   if (ctx.category && sel.value !== ctx.category) sel.value = ctx.category;
-  const root = state.status ? state.status.work_root : "";
-  const rootEl = $("work-root");
-  rootEl.textContent = root;
-  rootEl.title = root;
 }
 
-function shutdownArea() {
-  const box = h("div", { class: "shutdown", id: "shutdown-area" });
-  const btn = h("button", { type: "button", class: "btn" }, "서버 끄기");
-  btn.addEventListener("click", onShutdownClick);
-  box.append(btn);
-  return box;
+// ---- help menu: 도움말 열기 / 사용 가이드 / 서버 끄기 (a disclosure popover under the 도움말 button) ----------
+
+function helpMenu() {
+  const btn = h("button", {
+    type: "button", class: "btn help-button", id: "help-button", "aria-expanded": "false", "aria-controls": "help-pop",
+  }, "도움말");
+  const pop = h("div", { class: "help-pop", id: "help-pop", hidden: true });
+  btn.addEventListener("click", () => setHelpMenu(pop.hidden));
+  pop.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.stopPropagation(); setHelpMenu(false); btn.focus(); }
+  });
+  document.addEventListener("click", (e) => {
+    const box = $("help-menu");
+    if (box && !box.contains(e.target)) setHelpMenu(false);
+  });
+  fillHelpPop(pop);
+  return h("div", { class: "help-menu", id: "help-menu" }, btn, pop);
+}
+
+function fillHelpPop(pop) {
+  // #help-toggle opens/closes the side panel; help-panel.js keeps its aria-expanded in sync.
+  const toggle = h("button", { type: "button", class: "pop-item", id: "help-toggle", "aria-controls": "help-panel",
+    "aria-expanded": "false" }, "도움말 열기");
+  toggle.addEventListener("click", () => {
+    setHelpMenu(false);
+    if (helpPanel) helpPanel.toggle();
+  });
+  const guide = h("a", { class: "pop-item", href: "#/guide" }, "사용 가이드");
+  guide.addEventListener("click", () => setHelpMenu(false));
+  const off = h("button", { type: "button", class: "pop-item pop-danger" }, "서버 끄기");
+  off.addEventListener("click", onShutdownClick);
+  // a shutdown confirm (only while a collect job runs) appears here
+  const confirm = h("div", { class: "pop-confirm", id: "help-confirm", hidden: true });
+  pop.replaceChildren(toggle, guide, h("div", { class: "pop-sep", role: "separator" }), off, confirm);
+}
+
+function setHelpMenu(open) {
+  const btn = $("help-button");
+  const pop = $("help-pop");
+  if (!btn || !pop || pop.hidden === !open) return;
+  if (open) {
+    const confirm = $("help-confirm");      // a cancelled shutdown confirm starts over
+    confirm.hidden = true;
+    confirm.replaceChildren();
+    const toggle = $("help-toggle");
+    toggle.setAttribute("aria-expanded", String(document.body.classList.contains("help-open")));
+    toggle.textContent = document.body.classList.contains("help-open") ? "도움말 닫기" : "도움말 열기";
+  }
+  pop.hidden = !open;
+  btn.setAttribute("aria-expanded", String(open));
+  if (open) pop.querySelector(".pop-item").focus();
 }
 
 async function collectBusy() {
@@ -297,16 +342,14 @@ async function onShutdownClick() {
     doShutdown();
     return;
   }
-  const box = $("shutdown-area");
-  const yes = h("button", { type: "button", class: "btn btn-danger" }, "끄기");
-  const no = h("button", { type: "button", class: "btn" }, "취소");
-  box.replaceChildren(h("span", { class: "confirm-text", role: "alert" }, "진행 중인 작업이 멈춥니다. 끌까요?"), yes, no);
+  const box = $("help-confirm");
+  const yes = h("button", { type: "button", class: "btn btn-danger btn-s" }, "끄기");
+  const no = h("button", { type: "button", class: "btn btn-s" }, "취소");
+  box.replaceChildren(h("p", { class: "confirm-text", role: "alert" }, "진행 중인 작업이 멈춥니다. 끌까요?"),
+    h("div", { class: "btn-row" }, yes, no));
+  box.hidden = false;
   yes.addEventListener("click", doShutdown);
-  no.addEventListener("click", () => {
-    const fresh = shutdownArea();
-    box.replaceWith(fresh);
-    fresh.querySelector("button").focus();
-  });
+  no.addEventListener("click", () => { setHelpMenu(false); $("help-button").focus(); });
   no.focus();
 }
 
@@ -316,9 +359,10 @@ async function doShutdown() {
   } catch (e) {
     if (e.error !== "network") { toast(e.message, "error"); return; }
   }
-  showBanner("서버를 껐습니다. 다시 쓰려면 터미널에서 ytc ui를 실행하세요.");
+  showBanner("서버를 껐습니다. 다시 쓰려면 Claude에게 “화면 열어줘”라고 말하세요.");
   $("main").replaceChildren(h("p", { class: "muted" }, "서버가 꺼졌습니다."));
-  $("shutdown-area").replaceChildren();
+  setHelpMenu(false);
+  $("help-button").disabled = true;
 }
 
 // ---- router ----------------------------------------------------------------
@@ -365,11 +409,6 @@ function parseHash() {
       if (!tail) return { page: "refs", params: {} };
       try { return { page: "refs", params: { id: decodeURIComponent(tail) } }; } catch { return null; }
     }
-    case "soon": {
-      const it = SOON[tail];
-      if (it) return { page: "placeholder", params: { title: it.name, command: it.command, note: it.note } };
-      return { page: "home", params: {} };
-    }
     default: return { page: "home", params: {} };
   }
 }
@@ -385,8 +424,10 @@ async function route() {
   }
   state.current = null;
   state.currentPage = null;
-  setDrawer(false);
+  setHelpMenu(false);
   markActive();
+  document.title = `${screenName(location.hash || "#/home")} · yt-coach`;
+  refreshSidebar();             // progress and counts change as the user works; cheap local reads
   if (helpPanel) helpPanel.setPage(helpPage(location.hash));
   // A malformed #/refs/<id> (undecodable) parses to null: show the list instead.
   const { page, params } = parseHash() || { page: "refs", params: {} };
@@ -407,11 +448,10 @@ async function route() {
 // ---- start ----------------------------------------------------------------
 
 async function start() {
-  renderMenu();
   buildTopbar();
+  renderTabbar();
+  renderSidebar();
   helpPanel = createHelpPanel($("help-panel"), () => ctx.category);
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") setDrawer(false); });
-  $("scrim").addEventListener("click", () => setDrawer(false));
   window.addEventListener("hashchange", () => {
     // Ignore non-route hashes (e.g. the skip link's "#main"); only "#/..." drives the router.
     if (location.hash === "" || location.hash.startsWith("#/")) route();

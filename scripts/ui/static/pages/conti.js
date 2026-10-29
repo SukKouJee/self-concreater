@@ -17,7 +17,7 @@ const POLL_MAX_MS = 15000;
 const ALT_COUNT = 3;
 const NARROW = "(max-width: 900px)";
 const HANDLED_KEY = "ytc.conti.handled";
-const TRASH_WARNING = "콘티와 스토리보드 HTML, 이 콘티로 만든 자막 파일(SRT·자막 영상)을 휴지통 폴더(workspace/trash/)로 옮깁니다. 기획안은 그대로 둡니다";
+const TRASH_WARNING = "콘티와 스토리보드, 이 콘티로 만든 자막(SRT·자막 영상)을 휴지통으로 옮깁니다. 기획안은 그대로 둡니다";
 const RECREATE_WARNING = "다시 만들면 화면에서 바꾼 대사·가이드·고정한 참고 프레임이 사라지고 내 메모만 남습니다";
 const SAVED_TOAST = "저장했습니다 · 스토리보드도 다시 그렸습니다";
 const CHANGED_TEXT = "파일이 밖에서 바뀌었습니다 — 다시 불러오기";
@@ -227,12 +227,11 @@ function renderDraftList() {
     const card = h("li", { class: "card empty" });
     if (only) {
       card.append(h("h2", {}, "기획안을 찾을 수 없습니다"),
-        h("p", { class: "muted" }, `${only} 파일이 없거나 프런트매터가 깨졌습니다.`),
+        h("p", { class: "muted" }, "기획안이 지워졌거나 내용을 읽을 수 없습니다."),
         h("a", { class: "btn", href: "#/conti" }, "콘티 목록"));
     } else {
       card.append(h("h2", {}, "기획안이 아직 없습니다"),
-        h("p", { class: "muted" }, "콘티는 기획안(drafts/)에서 만듭니다. 터미널에서 먼저 기획안을 만드세요."),
-        h("p", {}, h("code", { class: "cmd" }, "/yt-coach:yt-draft")),
+        h("p", { class: "muted" }, "콘티는 기획안에서 만듭니다. 먼저 기획안을 만드세요."),
         h("a", { class: "btn", href: "#/draft/new" }, "기획안 만들기"));
     }
     list.append(card);
@@ -250,7 +249,6 @@ function draftCard(d) {
     h("span", { class: `state ${d.conti ? "state-saved" : ""}` }, d.conti ? "콘티 있음" : "콘티 없음")));
   const meta = h("p", { class: "meta-line muted" }, h("time", { datetime: d.date }, d.date));
   if (d.category) meta.append(h("span", { class: "tag" }, d.category));
-  meta.append(h("span", { class: "draft-path" }, d.path));
   li.append(meta);
 
   const row = h("div", { class: "btn-row" });
@@ -309,7 +307,7 @@ function draftCard(d) {
     });
     li.append(h("div", { class: "inline-confirm", role: "alert" },
       h("p", { class: "warn-text" }, TRASH_WARNING),
-      h("p", { class: "muted hint" }, "잘못 지웠으면 휴지통 폴더 안의 파일을 같은 경로로 다시 옮기면 됩니다."),
+      h("p", { class: "muted hint" }, "잘못 지웠으면 Claude에게 “휴지통에서 되살려줘”라고 말하세요."),
       h("div", { class: "btn-row" }, yes, no)));
   }
   return li;
@@ -331,7 +329,7 @@ async function trashConti(d) {
     const res = await mine.ctx.api("POST", "/api/conti/trash", { path: d.conti });
     if (!alive(mine)) return;
     mine.trashOpen = null;
-    mine.ctx.toast(`콘티를 휴지통 폴더로 옮겼습니다: ${res.trash}`);
+    mine.ctx.toast("콘티를 휴지통으로 옮겼습니다");
   } catch (e) {
     if (!alive(mine) || e.error === "aborted") return;
     mine.ctx.toast(e.message, "error");

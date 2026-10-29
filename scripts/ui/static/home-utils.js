@@ -69,3 +69,15 @@ export function stageLine(cat) {
   if (m) return `레퍼런스 ${m[2]} · ${m[1]}단계`;
   return `레퍼런스 ${cat.ref}개 · ${cat.stage}단계`;
 }
+
+// Recent-output label without file names: the video title for a draft or its conti page (titles: draft path ->
+// title), "<category> 리포트 · M월 D일" for a report, else the file name without date prefix, extension or dashes.
+export function recentName(item, titles) {
+  const path = String(item.path || "");
+  const draft = path.replace(/-conti\.html$/i, ".md");
+  if (titles && titles[draft]) return titles[draft];
+  const file = path.split("/").pop().replace(/\.(md|html)$/i, "").replace(/-conti$/i, "");
+  const rep = /^(.+)-(\d{4})-(\d{2})-(\d{2})$/.exec(file);
+  if (item.kind === "report" && rep) return `${rep[1]} 리포트 · ${Number(rep[3])}월 ${Number(rep[4])}일`;
+  return file.replace(/^\d{4}-\d{2}-\d{2}-/, "").replace(/-/g, " ");
+}
