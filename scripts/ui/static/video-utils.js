@@ -191,7 +191,7 @@ export function contiSummary(conti) {
   return `장면 ${cuts.length}개 · ${clock(total)} · 평균 ${avg >= 10 ? Math.round(avg) : Math.round(avg * 10) / 10}초`;
 }
 
-// "촬영 0 / 6컷". Per-cut checks come with the shoot mode; until then the draft-level 다 찍음 counts every cut.
-export function shootLine(count, filmed) {
-  return `촬영 ${filmed ? count : 0} / ${count}컷`;
+// "촬영 2 / 6장면": the scenes checked in this browser (shoot-utils shootStore); the draft-level 다 찍음 counts all.
+export function shootLine(count, filmed, checked = 0) {
+  return `촬영 ${filmed ? count : Math.min(Math.max(0, checked), count)} / ${count}장면`;
 }

@@ -1,7 +1,7 @@
 // 영상 작업 공간 (spec 4.2)
 //   #/videos                     내 영상 목록 + "+ 새 영상 시작"(모티브로)
 //   #/video/<id>[/<tab>]         한 영상: 브레드크럼, 제목, 메타, 진행 카드, 탭(기획안/콘티/촬영 체크/진단)
-//   #/video/<id>/shoot           폰 촬영 모드 (Phase 5가 채운다: 지금은 첫 컷만 보여 주는 작은 화면)
+//   (#/video/<id>/shoot, the phone shoot mode, is its own page: pages/shoot.js)
 // 탭은 기존 화면 모듈(draft.js 상세, conti.js, diagnose.js)을 그대로 mount/unmount 한다(params.embedded: 머리말은
 // 이 페이지가 보여 준다). 같은 영상의 탭 이동은 app.js가 update()로 넘겨 페이지를 다시 만들지 않는다. 떠나기 전 확인은
 // unsavedNote()로 탭 모듈에 묻는다(app.js가 묻는 창을 띄운다).
@@ -11,6 +11,7 @@ import { videoMeta as listMeta } from "/static/home-utils.js";
 import { sectionLabelName } from "/static/labels.js";
 import { videoProgress } from "/static/menu-utils.js";
 import { tabs, tag } from "/static/ui.js";
+import { doneCount, shootStore } from "/static/shoot-utils.js";
 import {
   TABS, contiSummary, defaultTab, draftPath, nextAction, shootLine, shortTitle, stageText, stages, videoHref, videoId,
   videoMeta,
@@ -95,7 +96,12 @@ function adoptCategory(mine, category) {
 }
 
 const isFilmed = (data) => !!(data.video && data.video.filmed_at);
-const cutCount = (data) => (data.conti && Array.isArray(data.conti.cuts) ? data.conti.cuts.length : 0);
+const contiCuts = (data) => (data.conti && Array.isArray(data.conti.cuts) ? data.conti.cuts : []);
+// "촬영 N / M장면": scenes checked in this browser (the shoot mode's store); 다 찍음 counts every scene.
+const shootText = (mine) => {
+  const cuts = contiCuts(mine.data);
+  return shootLine(cuts.length, isFilmed(mine.data), doneCount(shootStore(mine.params.id).get(), cuts));
+};
 
 // ---- list: #/videos ---------------------------------------------------------------------------------
 
@@ -183,7 +189,6 @@ async function loadVideo(mine) {
   mine.stages = stagesOf(data);
   mine.tab = mine.params.tab || defaultTab(mine.stages);
   document.title = `${shortTitle(data.draft.title)} · yt-coach`;
-  if (mine.params.mode === "shoot") { renderShoot(mine); return; }
   renderWorkspace(mine);
   mountTab(mine, mine.tab);
 }
@@ -249,9 +254,11 @@ function progressActions(mine) {
     return [h("a", { class: "btn btn-rec btn-s", href: videoHref(id, act.kind), "data-focus": act.kind }, act.label)];
   }
   if (act.kind === "shoot") {
+    // the 촬영 체크 tab has its own red 폰 촬영 모드 button: one red action per screen
+    const cls = mine.tab === "check" ? "btn btn-s" : "btn btn-rec btn-s";
     return [
-      h("span", { class: "vp-count" }, shootLine(cutCount(mine.data), isFilmed(mine.data))),
-      h("a", { class: "btn btn-rec btn-s", href: videoHref(id) + "/shoot", "data-focus": "shoot" }, act.label),
+      h("span", { class: "vp-count" }, shootText(mine)),
+      h("a", { class: cls, href: videoHref(id) + "/shoot", "data-focus": "shoot" }, act.label),
       filmedButton(mine, "card"),
     ];
   }
@@ -405,55 +412,67 @@ async function mountTab(mine, tab, extra = {}) {
   }
 }
 
-// 촬영 체크 (this phase: the conti's cuts + the draft-level 다 찍음; per-cut checks come with the shoot mode).
+// 촬영 체크: the scenes in order with the same per-scene checks as the shoot mode (browser storage), the count, the red
+// 폰 촬영 모드 button and the draft-level 다 찍음.
 function renderCheck(mine) {
   const panel = mine.nodes.panel;
   const id = mine.params.id;
-  const cuts = mine.data.conti && Array.isArray(mine.data.conti.cuts) ? mine.data.conti.cuts : [];
+  const cuts = contiCuts(mine.data);
+  const store = shootStore(id);
+  // red while filming is the next step (the progress card's own button is plain on this tab); after filming the
+  // card's next step (진단하기) keeps the one red button
+  const red = nextAction(mine.stages).kind === "shoot";
+  const count = h("span", { class: "vp-count", role: "status" });
+  const left = h("p", { class: "check-left" });
+  const paintCount = () => {
+    const done = doneCount(store.get(), cuts);
+    count.textContent = shootLine(cuts.length, isFilmed(mine.data), done);
+    left.textContent = done >= cuts.length ? "모든 장면에 체크했어요." : `남은 장면 ${cuts.length - done}개`;
+  };
   const head = h("div", { class: "check-head" },
     h("h2", { class: "sr-only" }, "촬영 체크"),
-    h("span", { class: "vp-count" }, shootLine(cuts.length, isFilmed(mine.data))),
-    filmedButton(mine, "check"),
-    cuts.length ? h("a", { class: "btn btn-s", href: videoHref(id) + "/shoot" }, "폰 촬영 모드") : null);
+    count,
+    cuts.length ? h("a", { class: red ? "btn btn-rec btn-s" : "btn btn-s", href: videoHref(id) + "/shoot", "data-focus": "shoot-mode" },
+      "폰 촬영 모드") : null,
+    filmedButton(mine, "check"));
   if (!cuts.length) {
     fill(panel, head, h("div", { class: "ui-card check-empty" },
       h("p", {}, "콘티가 아직 없어요."),
-      h("p", { class: "muted" }, "콘티를 만들면 여기에서 찍을 컷을 순서대로 확인해요. ",
+      h("p", { class: "muted" }, "콘티를 만들면 여기에서 찍을 장면을 순서대로 확인해요. ",
         h("a", { href: videoHref(id, "conti") }, "콘티 탭으로 가기"))));
     return;
   }
+  const checked = store.get();
   const sections = (mine.data.conti.fm && mine.data.conti.fm.script) || [];
-  fill(panel, head, h("ol", { class: "check-list", "aria-label": "찍을 컷" }, ...cuts.map((c) => {
+  const rows = cuts.map((c, i) => {
     const label = c.label || (sections[c.section] || {}).label || "";
-    return h("li", { class: "check-row" },
-      h("span", { class: "check-no" }, String(c.n).padStart(2, "0")),
-      h("div", { class: "check-body" },
-        label ? tag(sectionLabelName(label), SECTION_TAG[label] || "check") : null,
-        h("p", { class: "check-action" }, c.action || ""),
-        c.line ? h("p", { class: "check-line" }, `“${c.line}”`) : null,
-        h("p", { class: "check-shot" }, [c.size, c.sec ? `${c.sec}초` : null].filter(Boolean).join(" · "))));
-  })));
-}
-
-// ---- shoot mode (minimal; Phase 5 replaces it) ------------------------------------------------------
-
-function renderShoot(mine) {
-  const id = mine.params.id;
-  const d = mine.data.draft;
-  const cuts = mine.data.conti && Array.isArray(mine.data.conti.cuts) ? mine.data.conti.cuts : [];
-  const close = h("a", { class: "btn shoot-close", href: videoHref(id, "check"), "aria-label": "촬영 모드 닫기" }, "닫기");
-  const top = h("div", { class: "shoot-top" }, close,
-    h("div", { class: "shoot-name" }, h("span", { class: "shoot-k" }, "촬영 모드"), h("h1", {}, shortTitle(d.title))),
-    cuts.length ? h("span", { class: "shoot-count" }, `1 / ${cuts.length}`) : null);
-  const first = cuts[0];
-  const body = first
-    ? h("div", { class: "shoot-cut" },
-      first.label ? tag(sectionLabelName(first.label), SECTION_TAG[first.label] || "check") : null,
-      h("h2", { class: "shoot-action" }, first.action || ""),
-      first.line ? h("p", { class: "shoot-line" }, `“${first.line}”`) : null,
-      first.guide ? h("p", { class: "shoot-guide" }, first.guide) : null)
-    : h("p", { class: "shoot-empty" }, "콘티를 만들면 컷이 여기에 나와요. ", h("a", { href: videoHref(id, "conti") }, "콘티 탭으로 가기"));
-  fill(mine.el, h("section", { class: "shoot-dark shoot-stub", "aria-label": "촬영 모드" }, top, body));
+    const box = h("input", { type: "checkbox", class: "check-box", id: `check-${i}`, "data-focus": `check-${c.id}` });
+    box.checked = checked.has(c.id);
+    const row = h("li", { class: "check-row" + (box.checked ? " is-done" : "") }, box,
+      h("label", { class: "check-body", for: `check-${i}` },
+        h("span", { class: "check-top" },
+          h("span", { class: "check-no" }, String(c.n).padStart(2, "0")),
+          label ? tag(sectionLabelName(label), SECTION_TAG[label] || "check") : null,
+          box.checked ? h("span", { class: "check-done" }, "찍음") : null),
+        h("span", { class: "check-action" }, c.action || ""),
+        c.line ? h("span", { class: "check-line" }, `“${c.line}”`) : null,
+        h("span", { class: "check-shot" }, [c.size, c.sec ? `${c.sec}초` : null].filter(Boolean).join(" · "))));
+    box.addEventListener("change", () => {
+      store.set(c.id, box.checked);
+      row.classList.toggle("is-done", box.checked);
+      const top = row.querySelector(".check-top");
+      const mark = top.querySelector(".check-done");
+      if (box.checked && !mark) top.append(h("span", { class: "check-done" }, "찍음"));
+      if (!box.checked && mark) mark.remove();
+      paintCount();
+      renderProgress(mine);
+    });
+    return row;
+  });
+  paintCount();
+  const note = store.persistent() ? null
+    : h("p", { class: "muted check-note" }, "이 브라우저는 체크를 저장할 수 없어요. 창을 닫으면 체크가 사라져요.");
+  fill(panel, head, left, note, h("ol", { class: "check-list", "aria-label": "장면 체크" }, ...rows));
 }
 
 // ---- page contract ------------------------------------------------------------------------------

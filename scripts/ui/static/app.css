@@ -1387,6 +1387,77 @@ code { background: var(--chip); padding: 1px 6px; border-radius: 4px; }
 .check-line { font-size: 13px; color: var(--ink-2); }
 .check-shot { font-size: 12px; color: var(--muted); }
 .check-empty p { margin: 0 0 4px; }
+.check-left { font-size: 13px; color: var(--ink-2); margin: 0 0 var(--sp-2); }
+.check-note { font-size: 13px; margin: 0 0 var(--sp-2); }
+.check-row { align-items: flex-start; }
+.check-row.is-done { background: var(--bg); }
+.check-row.is-done .check-action { color: var(--muted); }
+.check-box { flex: none; width: 20px; height: 20px; margin: 2px 0 0; accent-color: var(--done); cursor: pointer; }
+.check-body { flex: 1; cursor: pointer; }
+.check-top { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.check-top .check-no { padding-top: 0; }
+.check-done { font-size: 12px; font-weight: 700; color: var(--done); }
+@media (max-width: 640px) {
+  .check-head .btn-rec { flex: 1 1 100%; }
+  .check-box { width: 24px; height: 24px; }
+}
+
+/* Phone shoot mode (Phase 5, mockup PhoneShoot): app.js puts .shoot-mode and .shoot-dark on <body> on this route,
+   so the app chrome is gone and the tokens are the dark ones. One 390-480px column, centered on wide screens. */
+body.shoot-mode :is(.head, .menu, .subnav, .tabbar, .help-panel, .help-scrim) { display: none; }
+body.shoot-mode .layout { min-height: 100dvh; }
+body.shoot-mode .main { padding: 0; max-width: none; }
+body.shoot-mode .toasts { bottom: var(--sp-4); }
+.shoot { max-width: 480px; margin: 0 auto; min-height: 100dvh; display: flex; flex-direction: column; color: var(--ink); }
+.shoot-top { display: flex; align-items: center; gap: 10px; padding: var(--sp-4) var(--sp-4) 10px; }
+.shoot-close { flex: none; display: flex; align-items: center; justify-content: center; width: 44px; height: 44px;
+  border-radius: 12px; background: var(--surface); color: var(--ink); }
+.shoot-name { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.shoot-name h1 { font-size: 15px; font-weight: 700; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: 0; }
+.shoot-k { font-size: 12px; color: var(--muted); }
+.shoot-count { flex: none; font-family: var(--mono); font-size: 14px; padding: 6px 10px; border-radius: var(--radius-ctl); background: var(--surface); }
+.shoot-bar { display: flex; gap: 4px; padding: 0 var(--sp-4) 14px; }
+.shoot-seg { flex: 1; height: 5px; border-radius: 3px; background: var(--border); }
+.shoot-seg.is-now { background: var(--ink); }
+.shoot-seg.is-done { background: var(--done); }
+.shoot-scene { flex: 1; padding: 0 var(--sp-4); display: flex; flex-direction: column; gap: 14px; }
+.shoot-frame { position: relative; height: 216px; flex: none; border-radius: 16px; overflow: hidden; background: var(--border-strong);
+  display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 500; color: var(--ink); }
+.shoot-frame img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.shoot-pill, .shoot-frame.has-photo .shoot-shot { position: absolute; padding: 3px 9px; border-radius: 6px; font-size: 12px;
+  background: color-mix(in srgb, var(--bg) 72%, transparent); color: var(--ink); }
+.shoot-sec { top: 10px; left: 10px; font-weight: 700; }
+.shoot-time { top: 10px; right: 10px; font-family: var(--mono); }
+.shoot-shot { position: relative; padding: 0 var(--sp-4); text-align: center; }
+.shoot-frame.has-photo .shoot-shot { bottom: 10px; left: 10px; max-width: calc(100% - 110px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shoot-badge { position: absolute; bottom: 10px; right: 10px; padding: 4px 10px; border-radius: 999px; background: var(--done);
+  color: var(--on-rec); font-size: 12px; font-weight: 700; }
+.shoot-undo { align-self: flex-start; margin: -6px 0 -6px -8px; color: var(--ink-2); }
+.shoot-action { font-size: 22px; font-weight: 700; line-height: 1.4; letter-spacing: -.01em; margin: 0; overflow-wrap: anywhere; }
+.shoot-line { font-size: 18px; font-weight: 500; line-height: 1.55; margin: 0; padding: 12px 14px; border-radius: 12px; border-left: 4px solid var(--rec);
+  background: var(--surface); color: var(--ink); overflow-wrap: anywhere; }
+.shoot-line.is-empty { color: var(--muted); font-size: 15px; }
+.shoot-tips { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--sp-2); font-size: 15px; color: var(--ink-2); }
+.shoot-tips li { display: flex; gap: var(--sp-2); align-items: flex-start; }
+.shoot-tips li::before { content: ""; flex: none; width: 6px; height: 6px; margin-top: 9px; border-radius: 50%; background: var(--rec); }
+/* bottom actions stay reachable when a long scene scrolls */
+.shoot-nav { position: sticky; bottom: 0; background: var(--bg); padding: 14px var(--sp-4) calc(28px + env(safe-area-inset-bottom)); }
+.shoot-nav-row { display: flex; gap: 10px; }
+.shoot-side, .shoot-main { font: inherit; min-height: 60px; border-radius: 14px; cursor: pointer; }
+.shoot-side { flex: none; width: 64px; border: 1px solid var(--border-strong); background: var(--surface); color: var(--ink); font-size: 20px; }
+.shoot-side[aria-disabled="true"] { opacity: .4; cursor: default; }
+.shoot-main { flex: 1; min-width: 0; border: 0; background: var(--rec); color: var(--on-rec); font-size: 18px; font-weight: 800; }
+.shoot-main.is-done { background: var(--done); }
+.shoot-main[aria-disabled="true"] { opacity: .6; cursor: progress; }
+.shoot-error { margin: 0 0 var(--sp-2); color: var(--ink); font-size: 13px; }
+.shoot-error:empty { display: none; }
+.shoot-note { margin: var(--sp-2) 0 0; font-size: 12px; color: var(--muted); }
+.shoot-msg { padding: var(--sp-5) var(--sp-4); display: flex; flex-direction: column; align-items: flex-start; gap: var(--sp-3); }
+.shoot-msg h2 { font-size: 20px; }
+.shoot-msg p { margin: 0; color: var(--ink-2); }
+.shoot-done h2 { font-size: 24px; font-weight: 800; }
+.shoot-done h2:focus { outline: none; }
+.shoot-done .btn { min-height: 44px; font-size: 15px; padding: 0 var(--sp-4); }
 /* sticky: a question raised from far down a long page (a sidebar click) stays in view under the header */
 .leave-ask { position: sticky; top: calc(var(--topbar-h) + var(--sp-2)); z-index: 30; box-shadow: var(--elev-2);
   margin: var(--sp-3) var(--sp-6) 0; padding: var(--sp-3) var(--sp-4); max-width: 980px; background: var(--surface);
@@ -1405,18 +1476,6 @@ code { background: var(--chip); padding: 1px 6px; border-radius: 4px; }
 .videos-empty { margin-top: var(--sp-3); }
 .videos-empty p { margin: 0 0 4px; }
 .videos-uploads { margin-top: var(--sp-5); }
-/* fills the screen below the header (main padding cancelled on all sides) */
-.shoot-stub { margin: calc(-1 * var(--sp-5)) calc(-1 * var(--sp-6)) -48px; min-height: calc(100dvh - var(--topbar-h)); padding: var(--sp-4); display: flex; flex-direction: column; gap: var(--sp-4); }
-.shoot-top { display: flex; align-items: center; gap: var(--sp-3); }
-.shoot-close { min-height: 44px; min-width: 44px; }
-.shoot-name { flex: 1; min-width: 0; }
-.shoot-name h1 { font-size: 16px; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.shoot-k { font-size: 12px; color: var(--muted); }
-.shoot-count { font-family: var(--mono); font-size: 14px; }
-.shoot-cut { display: flex; flex-direction: column; gap: var(--sp-3); }
-.shoot-action { font-size: 22px; font-weight: 700; line-height: 1.4; }
-.shoot-line { font-size: 18px; padding: var(--sp-3); border: 1px solid var(--border); border-radius: var(--radius-card); background: var(--surface); margin: 0; }
-.shoot-guide { color: var(--ink-2); margin: 0; }
 @media (max-width: 640px) {
   .video-title { font-size: 24px; }
   .video-progress { padding: var(--sp-3); }
@@ -1424,8 +1483,6 @@ code { background: var(--chip); padding: 1px 6px; border-radius: 4px; }
   .vp-label { font-size: 11px; }
   .video-tools { margin-left: 0; }
   .leave-ask { margin: var(--sp-3) var(--sp-4) 0; }
-  .shoot-stub { margin: calc(-1 * var(--sp-4)) calc(-1 * var(--sp-4)) calc(-1 * var(--sp-6));
-    min-height: calc(100dvh - var(--topbar-h) - var(--tabbar-h) - env(safe-area-inset-bottom)); }
   .vp-actions .btn-rec { min-height: 44px; }
 }
 

@@ -1194,7 +1194,7 @@ def test_video_page_has_four_tabs_and_progress_card():
                   "nextAction(", "stageText(", "contiSummary(", "shootLine(", "videoMeta(", "shortTitle(",
                   '"진행 단계"', '"내 영상"', '"폰 촬영 모드"', '"다 찍음"', '"인쇄"', '"다시 만들기"',
                   '"+ 새 영상 시작"', "/api/drafts/filmed", "/api/status", "/api/draft?path=", "/api/conti?path=",
-                  'role: "tabpanel"', "isCurrent()", "shoot-dark"]:
+                  'role: "tabpanel"', "isCurrent()"]:
         assert token in js, token
     # the hosted pages: plan = draft view, conti, diagnose - mounted with their own mount/unmount and a flag
     for token in ['"/static/pages/draft.js"', '"/static/pages/conti.js"', '"/static/pages/diagnose.js"',
@@ -1277,7 +1277,6 @@ def test_sidebar_new_video_is_an_action_link():
 def test_css_fix_round_1():
     css = _js("app.css")
     assert re.search(r"\.leave-ask \{[^}]*position: sticky", css)
-    assert re.search(r"\.shoot-stub \{[^}]*min-height: calc\(100dvh - var\(--topbar-h\)\)", css)
     assert re.search(r"\.subnav \{[^}]*overflow-y: hidden", css)
 
 
@@ -1441,3 +1440,51 @@ def test_conti_fix_round_1_contracts():
     assert conti[start:conti.index("function gapItem")].count("closeMenu(false)") == 1
     help_text = (STATIC_DIR.parent.parent.parent / "docs" / "help" / "conti.md").read_text(encoding="utf-8")
     assert "방향키" in help_text and "⋯" in help_text
+
+
+# ---- Phase 5: phone shoot mode -----------------------------------------------------------------
+
+def test_shoot_page_contract():
+    js = _js("pages/shoot.js")
+    for token in ["export async function mount", "export function unmount", 'from "/static/shoot-utils.js"',
+                  "shootStore(", "mainLabel(", "tipsFrom(", "nextTodo(", "firstTodo(", "barStates(", "sceneTime(",
+                  "/api/draft?path=", "/api/conti?path=", "/api/drafts/filmed", "filmed: true",
+                  '"촬영 모드"', '"촬영 모드 닫기"', '"이전 장면"', '"다음 장면"', '"찍음 ✓"', '"콘티 탭으로 가기"',
+                  '"영상으로 돌아가기"', "filesUrl(", "isCurrent()", "shoot-dark"]:
+        assert token in js, token
+    for bad in ["innerHTML", "insertAdjacentHTML", "outerHTML", "confirm(", "alert(", "prompt(", "다음 컷"]:
+        assert bad not in js, bad
+
+
+def test_shoot_page_wake_lock_and_keys_are_scoped():
+    js = _js("pages/shoot.js")
+    # screen stays on while shooting (when supported), released on leave; failures ignored
+    assert "navigator.wakeLock" in js and '.request("screen")' in js and ".release()" in js
+    assert '"visibilitychange"' in js                      # the lock drops when the tab hides: ask again
+    # arrow keys only on this screen (listener removed on leave) and never while typing
+    assert '"ArrowLeft"' in js and '"ArrowRight"' in js
+    assert 'addEventListener("keydown"' in js and 'removeEventListener("keydown"' in js
+    assert "isContentEditable" in js and "TEXTAREA" in js
+
+
+def test_router_opens_the_shoot_page_without_app_chrome():
+    app = _js("app.js")
+    assert 'page: "shoot"' in app
+    assert "shoot-mode" in app and "shoot-dark" in app      # body classes: chrome hidden, dark tokens
+    css = _js("app.css")
+    assert re.search(r"body\.shoot-mode :is\(\.head, \.menu, \.subnav, \.tabbar, \.help-panel, \.help-scrim\) \{[^}]*display: none", css)
+    assert re.search(r"\.shoot \{[^}]*max-width: 480px", css)
+    assert re.search(r"\.shoot-frame \{[^}]*height: 216px", css)
+    assert re.search(r"\.shoot-close \{[^}]*width: 44px[^}]*height: 44px", css)
+    assert re.search(r"\.shoot-action \{[^}]*font-size: 22px[^}]*font-weight: 700", css)
+    assert re.search(r"\.shoot-line \{[^}]*font-size: 18px[^}]*border-left: 4px solid var\(--rec\)", css)
+    assert ".shoot-stub" not in css and "renderShoot" not in _js("pages/video.js")
+
+
+def test_check_tab_uses_the_shoot_store():
+    video = _js("pages/video.js")
+    for token in ['from "/static/shoot-utils.js"', "shootStore(", "shootLine(", 'type: "checkbox"', '"폰 촬영 모드"',
+                  '"다 찍음"', "남은 장면"]:
+        assert token in video, token
+    check = video[video.index("function renderCheck("):]
+    assert "btn-rec" in check                                # the red shoot-mode button of the tab

@@ -414,7 +414,12 @@ function parseHash() {
   const tail = rest.join("/");
   switch (head) {
     case "videos":
-    case "video": return { page: "video", params: parseVideoHash(hash) || { mode: "list" } };
+    case "video": {
+      // #/video/<id>/shoot is the phone shoot mode: its own page (full screen, no app chrome)
+      const params = parseVideoHash(hash) || { mode: "list" };
+      if (params.mode === "shoot") return { page: "shoot", params };
+      return { page: "video", params };
+    }
     case "add": return { page: "refs", params: { add: true } };
     case "library": return { page: "library", params: {} };
     case "guide": return { page: "guide", params: { tab: tail === "long" ? "long" : "shorts" } };
@@ -470,6 +475,10 @@ function routeChrome(hash) {
   document.title = `${screenName(hash)} · yt-coach`;
   refreshSidebar();             // progress and counts change as the user works; cheap local reads
   if (helpPanel) helpPanel.setPage(helpPage(hash));
+  // Shoot mode: dark full screen without header, sidebar, sub links and bottom tabs; any other route restores them.
+  const shoot = (parseVideoHash(hash) || {}).mode === "shoot";
+  document.body.classList.toggle("shoot-mode", shoot);
+  document.body.classList.toggle("shoot-dark", shoot);
 }
 
 async function route() {

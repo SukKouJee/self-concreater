@@ -201,5 +201,8 @@ def test_conti_summary_and_shoot_line():
     assert run_js("m.contiSummary({cuts: [{sec: 3}, {sec: 3}], total_sec: 6})") == "장면 2개 · 0:06 · 평균 3초"
     assert run_js("m.contiSummary(null)") == ""
     assert run_js("m.contiSummary({cuts: [], total_sec: 0})") == ""
-    assert run_js("m.shootLine(6, false)") == "촬영 0 / 6컷"
-    assert run_js("m.shootLine(6, true)") == "촬영 6 / 6컷"
+    # per-scene checks (browser storage) count; the draft-level 다 찍음 counts every scene
+    assert run_js("m.shootLine(6, false)") == "촬영 0 / 6장면"
+    assert run_js("m.shootLine(6, false, 2)") == "촬영 2 / 6장면"
+    assert run_js("m.shootLine(6, false, 9)") == "촬영 6 / 6장면"
+    assert run_js("m.shootLine(6, true, 2)") == "촬영 6 / 6장면"
