@@ -10,6 +10,13 @@
 장면으로 합치기 작업(kind "conti_merge")도 같은 생애다. 항목은 콘티 하나(id = 콘티 상대 경로). 반복이 없으면 작업을
 만들지 않고 바로 `nothing_to_merge`. Claude가 대사 나눌 자리를 정하면 preview `{before, after, cuts, sections, hash, warnings}`로
 `awaiting`. 저장은 `POST /api/conti/merge/apply {path, cuts, hash}`(미리보기 뒤 콘티가 바뀌면 `conti_changed`).
+
+장면에 사진 고르기
+- 만들기 작업: 콘티 검증 뒤 설명(desc)이 있는 레퍼런스 사진이 있으면 Claude가 장면마다 사진을 골라 preview 컷(`cuts`와
+  `conti.cuts`)에 `ref_auto`를 넣는다. 실패하면 사진 없이 계속하고 경고 `refs_pick_failed`.
+- 사진 다시 고르기(kind "conti_refs"): `POST /api/conti/refs/pick {path, hash}`. 미리보기 없이 컷의 `ref_auto`만 저장하고
+  (콘티 내용이 아니라 표시용) 이력 auto를 남긴다. 고르는 사이 콘티가 바뀌면 `conti_changed`로 실패.
+  끝나면 summary `{path, hash, picked, scenes}`.
 """
 from __future__ import annotations
 
@@ -18,13 +25,14 @@ from urllib.parse import quote
 from pathlib import Path
 from typing import Any
 
-from scripts import captions, claude_cli, conti, conti_history, llm, refstore, scene_merge
+from scripts import captions, claude_cli, conti, conti_history, conti_refs, llm, refstore, scene_merge
 from scripts.common import ScriptError, work_root, workspace_dir
 from scripts.ui.jobs import Job, JobCancelled, new_item
 from scripts.ui.server import Request, route
 
 KIND = "conti"
 MERGE_KIND = "conti_merge"
+REFS_KIND = "conti_refs"
 CONTI_SUFFIX = conti.CONTI_SUFFIX
 MAX_ALTERNATIVES = 10
 CREATE_TASK = "yt-conti 규칙대로 입력 draft의 콘티 JSON을 만드세요."
@@ -109,12 +117,34 @@ def create_target(ctx: dict) -> Any:
         data, (script, cuts) = llm.ask_validated(
             _rules(), ctx, CREATE_TASK, lambda d: conti.validate(d, ctx["sections"]),
         )
-        preview = {"conti": data, "script": script, "cuts": cuts,
-                   "warnings": conti.warnings(script, cuts, ctx["speech_cps"])}
+        warnings = conti.warnings(script, cuts, ctx["speech_cps"])
+        if conti_refs.candidates(ctx.get("category")):
+            job.update(0, step="refs")
+            try:
+                picks = conti_refs.pick(cuts, ctx["category"], lambda done, total: job.check_cancelled())
+            except ScriptError as e:                 # 사진은 표시용: 고르지 못해도 콘티 미리보기는 낸다
+                warnings.append({"kind": "refs_pick_failed",
+                                 "message": f"장면에 맞는 사진을 고르지 못했어요({e.message}). 저장한 뒤 사진 다시 고르기를 눌러 주세요"})
+            else:
+                cuts = conti_refs.apply_picks(cuts, picks)
+                data = {**data, "cuts": _with_picked(data["cuts"], cuts)}
+        preview = {"conti": data, "script": script, "cuts": cuts, "warnings": warnings}
         job.update(0, state="awaiting", step="preview", ask="save", preview=preview)
         job.finish("done", {"cuts": len(cuts), "warnings": len(preview["warnings"])})
 
     return target
+
+
+def _with_picked(raw_cuts: list[dict], cuts: list[dict]) -> list[dict]:
+    """Claude가 낸 컷(저장할 때 다시 검증된다)에 검증한 컷의 id와 ref_auto를 옮긴다. id가 같아야 저장 뒤에도 사진이 남는다."""
+    out = []
+    for raw, cut in zip(raw_cuts, cuts, strict=True):
+        merged = {k: v for k, v in raw.items() if k != "ref_auto"}
+        merged["id"] = cut["id"]
+        if cut.get("ref_auto"):
+            merged["ref_auto"] = cut["ref_auto"]
+        out.append(merged)
+    return out
 
 
 @route("POST", "/api/conti/create")
@@ -152,7 +182,7 @@ def _save(req: Request) -> dict:
 # ---- 삭제(휴지통) ------------------------------------------------------------------------
 
 # 콘티 파일을 읽어 산출물을 쓰는 작업(촬영 영상 처리·컷 파일은 summary의 path로 콘티를 가리킨다)
-FILE_JOB_KINDS = ("srtfit", "caption_video", "footage", "footage_clips", MERGE_KIND)
+FILE_JOB_KINDS = ("srtfit", "caption_video", "footage", "footage_clips", MERGE_KIND, REFS_KIND)
 
 
 def job_running_on(app: Any, kinds: tuple[str, ...], item_id: str) -> bool:
@@ -167,7 +197,7 @@ def _trash(req: Request) -> dict:
     path = _safe_path(req.json.get("path"), conti_file=True)
     rel = _rel(path)
     if job_running_on(req.app, FILE_JOB_KINDS, rel):
-        raise ScriptError("conti_busy", "이 콘티로 작업하는 중입니다(자막·촬영 영상·컷 파일·합치기). 끝나거나 멈춘 뒤에 삭제하세요")
+        raise ScriptError("conti_busy", "이 콘티로 작업하는 중입니다(자막·촬영 영상·컷 파일·합치기·사진 고르기). 끝나거나 멈춘 뒤에 삭제하세요")
     return conti.trash(rel)
 
 
@@ -187,21 +217,12 @@ def conti_view(path: Path) -> dict:
 
 def view_of(path: Path, fm: dict, digest: str) -> dict:
     """이미 읽은(또는 막 쓴) fm과 그 파일의 content hash로 화면 응답을 만든다. 콘티 md를 다시 읽지 않는다."""
-    sections = [{"label": s["label"]} for s in fm["script"]]
-    pool = conti.frame_pool(fm.get("category"))
-    matched = conti.match_frames(fm["cuts"], sections, pool)
+    refs = conti.cut_refs(fm)                            # 컷마다 {frame, match(pinned/content/composition), title, desc}
     vertical = fm.get("format") == "shorts"
     cuts = []
     for c in fm["cuts"]:
-        pinned = c.get("ref_frame")
-        ref: dict | None = None
-        if pinned and (work_root() / pinned).exists():
-            ref = {"frame": pinned, "match": "pinned", "title": Path(pinned).name}
-        elif c["n"] in matched:
-            m = matched[c["n"]]
-            ref = {"frame": m["frame"], "match": m["match"], "title": m.get("title")}
         cuts.append({**c, "label": fm["script"][c["section"]]["label"], "sketch": conti.sketch(c["size"], vertical),
-                     "ref": ref, "max_chars": int(fm["speech_cps"] * c["sec"])})
+                     "ref": refs.get(c["n"]), "max_chars": int(fm["speech_cps"] * c["sec"])})
     base = path.stem[: -len(CONTI_SUFFIX)]
     srt_files = [path.with_name(f"{base}-{suffix}.srt") for _, suffix in conti.SRT_TRACKS.values()]
     return {"path": _rel(path), "hash": digest, "fm": fm, "html": fm.get("html"),
@@ -334,6 +355,51 @@ def _merge_apply(req: Request) -> dict:
         raise ScriptError("conti_busy", "촬영 영상을 맞추는 중입니다. 끝나거나 멈춘 뒤에 합치세요")
     result, fm = scene_merge.apply_fm(path, cuts, expected)
     return {**view_of(path, fm, result["hash"]), "merged": {"before": result["before"], "after": result["after"]}}
+
+
+# ---- 장면에 사진 다시 고르기(작업) ------------------------------------------------------------
+
+def refs_pick_target(path: Path, category: str | None, cuts: list[dict], expected: str) -> Any:
+    rel = _rel(path)
+
+    def target(job: Job) -> None:
+        job.update(0, state="running", step="claude")
+
+        def on_batch(done: int, total: int) -> None:
+            job.check_cancelled()
+            if total > 1:
+                job.update(0, message=f"{done}/{total} 묶음")
+
+        picks = conti_refs.pick(cuts, category, on_batch)
+        job.check_cancelled()
+        job.update(0, step="save", message=None)
+        result = conti_refs.save_picks(path, picks, expected)
+        job.update(0, state="done", step="save", ask=None)
+        job.finish("done", {"path": rel, "hash": result["hash"], "picked": result["picked"], "scenes": result["scenes"]})
+
+    return target
+
+
+@route("POST", "/api/conti/refs/pick")
+def _refs_pick(req: Request) -> dict:
+    body = req.json
+    path = _safe_path(body.get("path"), conti_file=True)
+    expected = _hash(body)
+    rel = _rel(path)
+    if job_running_on(req.app, (REFS_KIND,), rel):
+        raise ScriptError("conti_busy", "이 콘티의 사진을 고르는 중입니다. 끝난 뒤에 다시 눌러 주세요")
+    with conti.HISTORY_LOCK:
+        cf = conti.read_conti(path)
+        if conti.bytes_hash(cf.raw) != expected:
+            raise ScriptError("conti_changed", "파일이 밖에서 바뀌었습니다. 다시 불러오세요")
+        current, fm, _ = conti.ensure_ids_file(cf)        # 옛 파일은 id를 먼저 붙여야 고른 사진을 같은 컷에 저장한다
+    if not conti_refs.candidates(fm.get("category")):
+        raise ScriptError("no_ref_descs", "설명이 있는 레퍼런스 사진이 없어요. 레퍼런스 사진 설명을 먼저 만들어 주세요")
+    llm.check()
+    items = [new_item(rel, title=path.name, step="claude")]
+    target = refs_pick_target(path, fm.get("category"), fm["cuts"], conti.bytes_hash(current.raw))
+    job = req.app.jobs.start(REFS_KIND, target, items=items, summary={"path": rel})
+    return {"job": job.snapshot()}
 
 
 # ---- 이력 ------------------------------------------------------------------------------

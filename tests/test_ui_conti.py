@@ -5,7 +5,7 @@ from urllib.parse import quote
 
 import pytest
 
-from scripts import claude_cli, conti, conti_history, llm
+from scripts import claude_cli, conti, conti_history, llm, refstore
 from scripts.common import ScriptError
 from scripts.ui import api_conti
 from tests.test_conti import CONTI, DRAFT, conti_file, draft_md, home, pin_frame  # noqa: F401 - fixtures
@@ -894,3 +894,115 @@ def test_merge_apply_refuses_while_footage_job_uses_the_conti(client, home, draf
     status, resp = client.json("POST", "/api/conti/merge/apply", body)
     assert status == 400 and resp["error"] == "conti_busy" and src.read_bytes() == before
     assert seen == [(("footage", "footage_clips"), rel(home, src))]
+
+
+# ---- Task 4: 장면에 사진 고르기 ------------------------------------------------------------
+
+def _described(home):
+    from tests.test_conti_refs import describe
+    return describe(home, "a00", ["시장 골목", "국물 한 숟갈", None, None], size="탑뷰")
+
+
+def _create_then_pick(frames):
+    """콘티 만들기 요청엔 CONTI, 사진 고르기 요청엔 모든 장면에 frames[1]."""
+    def answer(payload):
+        if "candidates" in payload:
+            return {"picks": [{"id": s["id"], "frame": frames[1]} for s in payload["scenes"]]}
+        return CONTI
+    return answer
+
+
+def test_create_preview_has_ref_auto(client, home, draft_md, fakes):
+    frames = _described(home)
+    fakes.answer = _create_then_pick(frames)
+    status, body = client.json("POST", "/api/conti/create", {"draft": rel(home, draft_md)})
+    assert status == 200
+    job = wait_for(client, body["job"]["id"], lambda j: j["status"] == "done")
+    preview = job["items"][0]["preview"]
+    assert [c["ref_auto"] for c in preview["cuts"]] == [{"frame": frames[1], "match": "content"}] * 4
+    assert [c["ref_auto"] for c in preview["conti"]["cuts"]] == [{"frame": frames[1], "match": "content"}] * 4
+    assert [rules[0].name for rules, *_ in fakes.asks] == ["SKILL.md", "pick-refs.md"]
+    assert all(w["kind"] != "refs_pick_failed" for w in preview["warnings"])
+    status, saved = client.json("POST", "/api/conti/save", {"draft": rel(home, draft_md), "conti": preview["conti"]})
+    assert status == 200, saved
+    stored, _ = refstore.read_md(home / saved["path"])
+    assert stored["cuts"][0]["ref_auto"] == {"frame": frames[1], "match": "content"}
+
+
+def test_create_continues_when_pick_fails(client, home, draft_md, fakes):
+    _described(home)
+
+    def answer(payload):
+        if "candidates" in payload:
+            raise ScriptError("claude_failed", "Claude 응답이 없습니다")
+        return CONTI
+
+    fakes.answer = answer
+    body = client.json("POST", "/api/conti/create", {"draft": rel(home, draft_md)})[1]
+    job = wait_for(client, body["job"]["id"], lambda j: j["status"] == "done")
+    preview = job["items"][0]["preview"]
+    assert len(preview["cuts"]) == 4 and all("ref_auto" not in c for c in preview["cuts"])
+    assert [w["kind"] for w in preview["warnings"]].count("refs_pick_failed") == 1
+
+
+def test_create_without_described_frames_skips_pick(client, home, draft_md, fakes):
+    body = client.json("POST", "/api/conti/create", {"draft": rel(home, draft_md)})[1]
+    wait_for(client, body["job"]["id"], lambda j: j["status"] == "done")
+    assert len(fakes.asks) == 1
+
+
+def test_refs_pick_route_saves_ref_auto(client, home, draft_md, fakes):
+    src = saved_conti(home, draft_md)
+    frames = _described(home)
+    fakes.answer = _create_then_pick(frames)
+    view = _view(client, home, src)
+    status, body = client.json("POST", "/api/conti/refs/pick", {"path": rel(home, src), "hash": view["hash"]})
+    assert status == 200 and body["job"]["kind"] == "conti_refs", body
+    job = wait_for(client, body["job"]["id"], lambda j: j["status"] == "done")
+    assert job["summary"]["picked"] == 4 and job["summary"]["hash"] == conti.content_hash(src)
+    assert job["summary"]["path"] == rel(home, src) and not job["items"][0].get("preview")
+    stored, _ = refstore.read_md(src)
+    assert all(c["ref_auto"] == {"frame": frames[1], "match": "content"} for c in stored["cuts"])
+    assert conti_history.list_versions(src)[0]["kind"] == "auto"
+    after = _view(client, home, src)
+    ref = after["cuts"][0]["ref"]
+    assert ref["match"] == "content" and ref["frame"] == frames[1] and ref["desc"] == "국물 한 숟갈"
+    assert "참고 · 국물 한 숟갈" in (home / after["html"]).read_text("utf-8")
+
+
+def test_refs_pick_route_conflict_when_conti_changes(client, home, draft_md, fakes):
+    src = saved_conti(home, draft_md)
+    frames = _described(home)
+    pick = _create_then_pick(frames)
+
+    def answer(payload):
+        conti.update_cut(src, 1, {"sfx": "밖에서 고침"})          # Claude가 고르는 사이에 콘티가 바뀐다
+        return pick(payload)
+
+    fakes.answer = answer
+    digest = conti.content_hash(src)
+    body = client.json("POST", "/api/conti/refs/pick", {"path": rel(home, src), "hash": digest})[1]
+    job = wait_for(client, body["job"]["id"], lambda j: j["status"] == "failed")
+    assert "다시 불러오세요" in job["message"]
+    stored, _ = refstore.read_md(src)
+    assert all("ref_auto" not in c for c in stored["cuts"])
+
+
+def test_refs_pick_route_rejects_before_job(client, home, draft_md, fakes):
+    src = saved_conti(home, draft_md)
+    status, resp = client.json("POST", "/api/conti/refs/pick", {"path": rel(home, src), "hash": conti.content_hash(src)})
+    assert status == 400 and resp["error"] == "no_ref_descs"             # 설명 있는 사진이 없다
+    _described(home)
+    status, resp = client.json("POST", "/api/conti/refs/pick", {"path": rel(home, src), "hash": "0" * 64})
+    assert status == 400 and resp["error"] == "conti_changed"
+    status, resp = client.json("POST", "/api/conti/refs/pick", {"path": rel(home, src)})
+    assert status == 400 and resp["error"] == "bad_request"
+    assert not fakes.asks and client.app.jobs.current("conti_refs") is None
+
+
+def test_get_conti_ref_has_match_and_desc(client, home, draft_md):
+    src = saved_conti(home, draft_md)
+    frames = _described(home)
+    ref = _view(client, home, src)["cuts"][0]["ref"]
+    assert ref["match"] == "composition" and ref["frame"] in frames
+    assert ref["desc"] == {frames[0]: "시장 골목", frames[1]: "국물 한 숟갈"}.get(ref["frame"])

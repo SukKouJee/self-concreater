@@ -196,6 +196,22 @@ def new_cut_id() -> str:
     return "".join(secrets.choice(_ID_ALPHABET) for _ in range(8))
 
 
+FRAMES_PREFIX = "workspace/frames/"
+
+
+def ref_auto_of(value: Any) -> dict | None:
+    """컷의 ref_auto(Claude가 내용으로 고른 사진) 정리. 형식이 맞으면 {"frame", "match": "content"}, 아니면 None.
+    frame은 작업 폴더 기준 workspace/frames/ 아래 상대 경로(슬래시, `..`·드라이브 없음)만 받는다."""
+    if not isinstance(value, dict) or value.get("match") != "content":
+        return None
+    frame = value.get("frame")
+    if not isinstance(frame, str) or not frame.startswith(FRAMES_PREFIX) or "\\" in frame or ":" in frame:
+        return None
+    if any(part in ("", ".", "..") for part in frame.split("/")):
+        return None
+    return {"frame": frame, "match": "content"}
+
+
 def validate(data: dict, sections: list[dict]) -> tuple[list[dict], list[dict]]:
     """(script, cuts) — script에 섹션 시간을 붙이고, cuts에 번호·시작·끝을 붙인다."""
     script = data.get("script") or []
@@ -236,6 +252,9 @@ def validate(data: dict, sections: list[dict]) -> tuple[list[dict], list[dict]]:
         pinned = c.get("ref_frame")
         if isinstance(pinned, str) and pinned.strip():
             out_cuts[-1]["ref_frame"] = pinned.strip()
+        auto = ref_auto_of(c.get("ref_auto"))
+        if auto:
+            out_cuts[-1]["ref_auto"] = auto
     for s in sections:
         mine = [c for c in out_cuts if c["section"] == s["idx"]]
         total, length = sum(c["sec"] for c in mine), s["end"] - s["start"]
@@ -276,7 +295,8 @@ def _section_at(sections: list[dict], t: float) -> str | None:
 
 
 def frame_pool(category: str | None) -> list[dict]:
-    """ref 대표 프레임 후보. 프레임별 라벨(workspace/shots)이 있으면 exact, 없으면 섹션별 대표 샷 크기로 approx."""
+    """ref 대표 프레임 후보. 프레임별 라벨(workspace/shots)이 있으면 exact, 없으면 섹션별 대표 샷 크기로 approx.
+    라벨의 한 줄 설명(desc)·앵글도 싣는다(없으면 None)."""
     if not category:
         return []
     try:
@@ -299,15 +319,17 @@ def frame_pool(category: str | None) -> list[dict]:
             for lab in json.loads(labels_path.read_text("utf-8")).get("labels") or []:
                 t = mid.get(lab["frame"])
                 current = _section_at(fm.get("sections") or [], t) if t is not None else None
+                desc = lab.get("desc")
                 pool.append({"frame": lab["frame"], "size": lab["size"], "section": current or lab.get("section"),
-                             "video": vid, "title": fm.get("title"), "match": "exact"})
+                             "video": vid, "title": fm.get("title"), "match": "exact", "angle": lab.get("angle"),
+                             "desc": desc if isinstance(desc, str) and desc.strip() else None})
             continue
         by_section = (fm.get("shots") or {}).get("by_section") or {}
         for scene in (load_cuts(vid) or {}).get("scenes") or []:
             label = _section_at(fm.get("sections") or [], (scene["start"] + scene["end"]) / 2)
             if scene.get("frame") and by_section.get(label):
                 pool.append({"frame": scene["frame"], "size": by_section[label], "section": label,
-                             "video": vid, "title": fm.get("title"), "match": "approx"})
+                             "video": vid, "title": fm.get("title"), "match": "approx", "angle": None, "desc": None})
     return [p for p in pool if (work_root() / p["frame"]).exists()]
 
 
@@ -466,26 +488,52 @@ def _data_uri(rel: str) -> str | None:
     return "data:image/jpeg;base64," + base64.b64encode(path.read_bytes()).decode("ascii")
 
 
+REF_TAGS = {"pinned": "참고(고정)", "content": "참고", "composition": "구도만 참고"}
+
+
 def cut_refs(fm: dict) -> dict[int, dict]:
-    """컷 번호 → 참고 프레임. 사용자가 고정한 프레임(ref_frame, 파일이 있을 때)이 자동 매칭보다 먼저."""
-    sections = [{"label": s["label"]} for s in fm["script"]]
-    refs = match_frames(fm["cuts"], sections, frame_pool(fm.get("category")))
+    """컷 번호 → 참고 프레임 {frame, title, match, desc}. 순서: 사용자가 고정한 프레임(ref_frame, `pinned`) →
+    Claude가 내용으로 고른 프레임(ref_auto, `content`) → 샷 크기(+섹션) 맞춤(`composition`). 파일이 없으면 다음으로.
+    desc는 그 프레임의 한 줄 설명(레퍼런스 라벨에 있을 때, 없으면 None). Claude는 부르지 않는다."""
+    pool = frame_pool(fm.get("category"))
+    by_frame = {p["frame"]: p for p in pool}
+    root = work_root()
+
+    def ref(frame: str, match: str) -> dict:
+        known = by_frame.get(frame) or {}
+        return {"frame": frame, "title": known.get("title") or Path(frame).name, "match": match, "desc": known.get("desc")}
+
+    refs: dict[int, dict] = {}
+    rest = []
     for c in fm["cuts"]:
         pinned = c.get("ref_frame")
-        if pinned and (work_root() / pinned).exists():
-            refs[c["n"]] = {"frame": pinned, "title": Path(pinned).name, "match": "pinned"}
+        auto = (ref_auto_of(c.get("ref_auto")) or {}).get("frame")
+        if pinned and (root / pinned).exists():
+            refs[c["n"]] = {**ref(pinned, "pinned"), "title": Path(pinned).name}
+        elif auto and (root / auto).exists():
+            refs[c["n"]] = ref(auto, "content")
+        else:
+            rest.append(c)
+    sections = [{"label": s["label"]} for s in fm["script"]]
+    for n, m in match_frames(rest, sections, pool).items():
+        refs[n] = {"frame": m["frame"], "title": m.get("title"), "match": "composition", "desc": m.get("desc")}
     return refs
 
 
+def ref_tag(match: str) -> str:
+    """참고 사진 표시 이름: 고정 '참고(고정)', 내용 맞춤 '참고', 구도 맞춤 '구도만 참고'."""
+    return REF_TAGS.get(match, REF_TAGS["composition"])
+
+
 def ref_figure(ref: dict | None) -> str:
-    """참고 프레임 한 칸(이미지는 base64로 넣는다). 없으면 빈 칸 안내."""
+    """참고 프레임 한 칸(이미지는 base64로 넣는다). 없으면 빈 칸 안내. 아래 줄은 '참고 · <설명>'(설명이 없으면 제목)."""
     uri = _data_uri(ref["frame"]) if ref else None
     if not uri or not ref:
         return ('<figure><div class="noref">같은 샷의 레퍼런스 프레임 없음</div>'
                 '<figcaption>&nbsp;</figcaption></figure>')
-    tag = {"exact": "참고", "pinned": "참고(고정)"}.get(ref["match"], "참고(근사)")
-    return (f'<figure><img class="ref" src="{uri}" alt="참고 프레임: {_esc(ref["title"])}">'
-            f'<figcaption title="{_esc(ref["title"])}">{tag} · {_esc(ref["title"])}</figcaption></figure>')
+    title = _esc(ref["title"])
+    return (f'<figure><img class="ref" src="{uri}" alt="참고 프레임: {title}">'
+            f'<figcaption title="{title}">{ref_tag(ref["match"])} · {_esc(ref.get("desc") or ref["title"])}</figcaption></figure>')
 
 
 def render_html(fm: dict) -> str:
@@ -528,11 +576,11 @@ def render_html(fm: dict) -> str:
                        f'<td>{_esc(c["line"])}</td><td>{_esc(c["caption"])}</td><td>{_esc(c["sfx"])}</td>'
                        f'<td>{_esc(c["guide"])}</td></tr>' for c in cuts)
              + "</tbody></table></div></details>")
-    approx = sum(1 for c in cuts if c["n"] in refs and refs[c["n"]]["match"] not in ("exact", "pinned"))
-    note = ('<p class="sub" style="margin-top:24px;font-size:12px">참고 프레임은 같은 샷 크기의 레퍼런스 장면으로, '
-            "구도만 참고하세요. 도식은 샷 크기를 단순화한 그림입니다."
-            + (f" '참고(근사)' {approx}장은 프레임별 샷 분류가 없어 섹션 대표 샷 크기로 고른 것이라 틀릴 수 있습니다. "
-               "/yt-coach:yt-add &lt;카테고리&gt; --shots-only로 보강하면 정확해집니다." if approx else "") + "</p>")
+    loose = sum(1 for r in refs.values() if r["match"] == "composition")
+    note = ('<p class="sub" style="margin-top:24px;font-size:12px">'
+            "'참고'는 장면 내용에 맞춰 고른 레퍼런스 사진입니다. 도식은 샷 크기를 단순화한 그림입니다."
+            + (f" '구도만 참고' {loose}장은 샷 크기만 맞춘 사진이라 장면 내용과 다를 수 있습니다. "
+               "레퍼런스 사진 설명을 만들고 사진을 다시 고르면 장면에 맞는 사진이 붙습니다." if loose else "") + "</p>")
     return ('<!doctype html><html lang="ko"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             f"<title>{_esc(fm['title'])} 콘티</title><style>{CSS % (_vars(0), _vars(1), _vars(1))}"
@@ -939,7 +987,7 @@ def scenes(conti: str | Path, n: int, limit: int = 6) -> list[dict]:
             if p["frame"] in seen:
                 continue
             seen.add(p["frame"])
-            out.append({k: p.get(k) for k in ("frame", "size", "section", "video", "title", "match")})
+            out.append({k: p.get(k) for k in ("frame", "size", "section", "video", "title", "match", "desc")})
     return out[:limit]
 
 

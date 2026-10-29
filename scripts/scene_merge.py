@@ -21,7 +21,7 @@ from scripts.common import ScriptError
 from scripts.conti import _norm
 
 NOTHING_MESSAGE = "합칠 장면이 없어요"
-CUT_FIELDS = ("id", "section", "size", "angle", "sec", "action", "line", "caption", "sfx", "guide", "ref_frame")
+CUT_FIELDS = ("id", "section", "size", "angle", "sec", "action", "line", "caption", "sfx", "guide", "ref_frame", "ref_auto")
 SCENE_BRIEF = ("id", "action", "guide", "size", "sec")
 
 
@@ -62,10 +62,10 @@ def merge_fields(members: list[dict[str, Any]]) -> dict[str, Any]:
         "sfx": _join_unique(members, "sfx"), "line": "",
         "merged_ids": [m["id"] for m in members],
     }
-    for member in members:
-        if member.get("ref_frame"):
-            merged["ref_frame"] = member["ref_frame"]
-            break
+    for key in ("ref_frame", "ref_auto"):            # 고정 사진·내용 맞춤 사진은 첫 번째로 있는 것
+        found = next((m[key] for m in members if m.get(key)), None)
+        if found:
+            merged[key] = found
     return merged
 
 

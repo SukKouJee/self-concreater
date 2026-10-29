@@ -377,3 +377,21 @@ def test_cli_merge_hash_requires_cuts(repeat_conti):
     with pytest.raises(ScriptError) as exc:
         conti.main(["merge", str(repeat_conti), "--hash", "abc"])
     assert exc.value.code == "bad_request"
+
+
+def test_merge_fields_carries_first_ref_auto():
+    first, later = {"frame": "workspace/frames/a.jpg", "match": "content"}, {"frame": "workspace/frames/b.jpg", "match": "content"}
+    members = [cut(1, 1, "A"), cut(2, 1, "A", ref_auto=first), cut(3, 1, "A", ref_auto=later)]
+    assert scene_merge.merge_fields(members)["ref_auto"] == first
+    assert "ref_auto" not in scene_merge.merge_fields([cut(1, 1, "A")])
+
+
+def test_apply_keeps_ref_auto_of_merged_and_single_scenes(home, draft_md):  # noqa: F811
+    data = json.loads(json.dumps(REPEAT))
+    a, b = {"frame": "workspace/frames/a.jpg", "match": "content"}, {"frame": "workspace/frames/b.jpg", "match": "content"}
+    data["cuts"][0]["ref_auto"] = a                       # 혼자인 장면
+    data["cuts"][3]["ref_auto"] = b                       # 묶인 장면의 뒤 컷
+    path = home / conti.save(draft_md, conti_file(home, data))["path"]
+    _applied(path)
+    fm, _ = refstore.read_md(path)
+    assert [c.get("ref_auto") for c in fm["cuts"]] == [a, None, b, None]
