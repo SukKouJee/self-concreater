@@ -326,7 +326,7 @@ async function trashConti(d) {
   mine.trashing = true;
   renderDraftList();
   try {
-    const res = await mine.ctx.api("POST", "/api/conti/trash", { path: d.conti });
+    await mine.ctx.api("POST", "/api/conti/trash", { path: d.conti });
     if (!alive(mine)) return;
     mine.trashOpen = null;
     mine.ctx.toast("콘티를 휴지통으로 옮겼습니다");

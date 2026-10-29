@@ -367,7 +367,7 @@ function trashControls(mine, d) {
     mine.trashing = true;
     for (const b of [button, yes, no]) b.disabled = true;
     try {
-      const res = await mine.ctx.api("POST", "/api/draft/trash", { path: d.path });
+      await mine.ctx.api("POST", "/api/draft/trash", { path: d.path });
       mine.ctx.toast("기획안을 휴지통으로 옮겼습니다", "info");     // even if the user already left
       if (!alive(mine)) return;
       location.hash = "#/draft";      // hashchange remounts the list page

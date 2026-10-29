@@ -13,7 +13,7 @@ const FILTER_ORDER = ["flow", "combo", "technique", "angle"];
 const STEP_TEXT = { context: "자료 모으는 중", claude: "Claude가 카드 만드는 중" };
 const LIB_IDS_KEY = "ytc.motif.library_ids";      // set by the library screen ("모티브 재료로 쓰기"); chosen per run, not saved
 const MAX_LIB = 10;
-const CATALOG_HINT = "같은 기법 합치기 같은 기법 모음 정리는 Claude에게 “기법 모음 정리해줘”라고 말하면 해요";
+const CATALOG_HINT = "기법 모음 정리(같은 기법 합치기)는 Claude에게 “기법 모음 정리해줘”라고 말하면 돼요";
 
 // ---- helpers ------------------------------------------------------------------
 

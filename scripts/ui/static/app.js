@@ -100,7 +100,6 @@ async function refreshCategories() {
   ctx.category = names.includes(ctx.category) ? ctx.category
     : names.includes(stored) ? stored : (names[0] || null);
   updateTopbar();
-  refreshSidebar();
 }
 
 // ---- icons -----------------------------------------------------------------
@@ -179,7 +178,7 @@ function videoRow(v) {
     h("span", { class: "vid-name" }, v.title),
     h("span", { class: "vid-prog" },
       h("span", { class: "vid-bar", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100",
-        "aria-valuenow": String(pct), "aria-label": "진행" }, fill),
+        "aria-valuenow": String(pct), "aria-valuetext": `${stage} 단계 · ${pct}%`, "aria-label": "진행" }, fill),
       h("span", { class: "vid-stage" }, stage))));
 }
 
@@ -190,13 +189,19 @@ function videoRows() {
   const { shown, total } = sidebarVideos(side.videos, SIDEBAR_VIDEOS);
   const rows = shown.map(videoRow);
   if (shown.length === 0) rows.push(h("li", { class: "menu-note" }, total ? "만드는 중인 영상이 없어요" : "아직 영상이 없어요"));
-  if (total > shown.length) rows.push(h("li", {}, h("a", { class: "menu-link menu-all", href: "#/draft", "data-href": "#/draft" }, `전체 ${total}편`)));
+  if (total > shown.length) rows.push(h("li", {}, h("a", { class: "menu-link menu-all", href: "#/draft", "data-href": "#/draft", "data-exact": "1" }, `전체 ${total}편`)));
   return rows;
+}
+
+// Key of a sidebar link (video path or href) so focus can return to the same link after a re-render.
+function linkKey(a) {
+  return a && a.classList && a.classList.contains("menu-link") ? (a.dataset.video ? `v:${a.dataset.video}` : `h:${a.dataset.href}`) : null;
 }
 
 function renderSidebar() {
   const nav = $("menu");
   if (!nav) return;
+  const focused = nav.contains(document.activeElement) ? linkKey(document.activeElement) : null;
   nav.replaceChildren(...SIDEBAR.map((g, i) => {
     const id = `menu-g${i}`;
     const ul = h("ul", { class: "menu-list", "aria-labelledby": id });
@@ -205,6 +210,10 @@ function renderSidebar() {
     return h("div", { class: "menu-group" }, h("h2", { class: "menu-label", id }, g.group), ul);
   }));
   markActive();
+  if (focused) {
+    const again = [...nav.querySelectorAll("a.menu-link")].find((a) => linkKey(a) === focused);
+    if (again) again.focus();
+  }
 }
 
 function renderTabbar() {
@@ -226,7 +235,8 @@ function renderSubnav(hash) {
 function markActive() {
   const hash = location.hash || "#/home";
   for (const a of $("menu").querySelectorAll("a.menu-link")) {
-    const on = a.dataset.video ? isVideoActive(a.dataset.video, hash) : isActive(a.dataset.href, hash);
+    const on = a.dataset.video ? isVideoActive(a.dataset.video, hash)
+      : a.dataset.exact ? a.dataset.href === hash : isActive(a.dataset.href, hash);
     if (on) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
   }
@@ -246,7 +256,7 @@ function screenName(hash) {
 // ---- top bar ----------------------------------------------------------------
 
 function buildTopbar() {
-  const sel = h("select", { id: "category-select" });
+  const sel = h("select", { id: "category-select", "aria-label": "카테고리" });
   sel.addEventListener("change", () => ctx.setCategory(sel.value));
   $("topbar").append(
     h("a", { class: "brand", href: "#/home", "aria-label": "yt-coach 홈" }, logo(), h("span", {}, "yt-coach")),
@@ -280,10 +290,16 @@ function helpMenu() {
   const btn = h("button", {
     type: "button", class: "btn help-button", id: "help-button", "aria-expanded": "false", "aria-controls": "help-pop",
   }, "도움말");
-  const pop = h("div", { class: "help-pop", id: "help-pop", hidden: true });
+  // tabindex -1: a click on the menu's text keeps focus inside it, so focusout does not close the menu
+  const pop = h("div", { class: "help-pop", id: "help-pop", tabindex: "-1", hidden: true });
   btn.addEventListener("click", () => setHelpMenu(pop.hidden));
   pop.addEventListener("keydown", (e) => {
     if (e.key === "Escape") { e.stopPropagation(); setHelpMenu(false); btn.focus(); }
+  });
+  // focus moving out of the menu (Tab past the last item) closes it; focus stays where the user moved it
+  pop.addEventListener("focusout", (e) => {
+    const box = $("help-menu");
+    if (box && !(e.relatedTarget && box.contains(e.relatedTarget))) setHelpMenu(false);
   });
   document.addEventListener("click", (e) => {
     const box = $("help-menu");

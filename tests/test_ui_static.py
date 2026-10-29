@@ -133,7 +133,7 @@ def test_pages_hide_paths_file_names_and_commands():
                 bad.append((path.name, lit[:80]))
     assert bad == []
     home = (STATIC_DIR / "pages" / "home.js").read_text(encoding="utf-8")
-    assert "st.work_root" not in home
+    assert "st.work_root" not in home and "m.path" not in home     # no file path on the mission card
     for name in ("refs.js", "draft.js"):
         js = (STATIC_DIR / "pages" / name).read_text(encoding="utf-8")
         assert "md 파일" not in js and "경로 복사" not in js, name
@@ -661,7 +661,7 @@ def test_conti_caption_video_contract():
 
 def test_conti_cut_editing_contract():
     text = (STATIC_DIR / "pages" / "conti.js").read_text(encoding="utf-8")
-    for token in ["/api/conti/cuts", "draggable", '"여기에 컷 넣기"', '"되돌리기"', '"위로"', '"아래로"',
+    for token in ["/api/conti/cuts", "draggable", '"aria-haspopup"', '"여기에 컷 넣기"', '"되돌리기"', '"위로"', '"아래로"',
                   "fmtDelta(", "dropTarget(", "stepMove(", "canRemove(", "snapSec(", "장면 설명", "길이(초)", "샷 크기",
                   "위에 넣기", "아래에 넣기", "복제", "콘티가 바뀌었어요 — 다시 받아 주세요", "UNDO_MS"]:
         assert token in text, token
@@ -874,6 +874,17 @@ def test_sidebar_items_and_focus():
     assert _contrast(light["--muted"], light["--border"]) >= 4.5     # counts on the current (gray) item
     app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
     assert '"aria-current", "page"' in app
+    # one current item: "전체 N편" (#/draft) matches only the list itself, not every draft screen
+    assert "a.dataset.exact ? a.dataset.href === hash" in app and '"data-exact": "1"' in app
+    assert '"aria-valuetext": `${stage} 단계 · ${pct}%`' in app
+    # re-rendering on every route keeps keyboard focus on the same link
+    side = app[app.index("function renderSidebar("):app.index("function renderTabbar(")]
+    assert "document.activeElement" in side and ".focus()" in side
+    # counts refresh on route changes and category switches only (no duplicate startup requests)
+    refresh = app[app.index("async function refreshCategories("):app.index("// ---- icons")]
+    assert "refreshSidebar()" not in refresh
+    # the help menu closes when focus leaves it
+    assert '"focusout"' in app[app.index("function helpMenu("):app.index("function fillHelpPop(")]
     assert 'role: "progressbar"' in app or '"progressbar"' in app
 
 
@@ -1094,6 +1105,8 @@ def test_topbar_fits_390px_phones():
     assert "display: none" in _rule(phone, ".cat-label")             # the "카테고리" word drops on phones
     assert "flex-shrink: 0" in re.search(r"^\.brand \{([^}]*)\}", css, re.M).group(1)
     assert "padding-bottom" in _rule(phone, ".main")                  # content clears the bottom tabs
+    app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    assert 'h("select", { id: "category-select", "aria-label": "카테고리" })' in app   # name kept when the label hides
     assert "bottom:" in _rule(phone, ".toasts")                       # toasts sit above the bottom tabs
 
 
