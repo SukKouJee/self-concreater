@@ -1252,6 +1252,30 @@ def test_ref_auto_survives_edits_and_restore(saved, home):
     assert next(c for c in stored["cuts"] if c["sfx"] == "쿵")["ref_auto"] == auto(a[0])
 
 
+@pytest.mark.parametrize("fields,kept", [
+    ({"action": "다른 동작"}, False), ({"guide": "다른 가이드"}, False), ({"size": "탑뷰"}, False),
+    ({"sfx": "쿵"}, True), ({"line": "새 대사"}, True), ({"caption": "자막"}, True)])
+def test_update_drops_ref_auto_when_picked_fields_change(saved, home, fields, kept):
+    a = describe_frames(home, "a00")
+    fm, _ = refstore.read_md(saved)
+    fm["cuts"][1]["ref_auto"] = auto(a[0])
+    refstore.update_frontmatter(saved, {"cuts": fm["cuts"]})
+    conti.update_cut(saved, 2, fields)
+    stored, _ = refstore.read_md(saved)
+    assert ("ref_auto" in stored["cuts"][1]) is kept
+
+
+def test_update_keeps_ref_auto_when_picked_field_value_unchanged(saved, home):
+    a = describe_frames(home, "a00")
+    fm, _ = refstore.read_md(saved)
+    fm["cuts"][1]["ref_auto"] = auto(a[0])
+    refstore.update_frontmatter(saved, {"cuts": fm["cuts"]})
+    same = {k: fm["cuts"][1][k] for k in ("action", "guide", "size")}
+    conti.update_cut(saved, 2, {**same, "sfx": "쿵"})
+    stored, _ = refstore.read_md(saved)
+    assert stored["cuts"][1]["ref_auto"] == auto(a[0])
+
+
 def test_composition_spreads_past_content_frames(saved, home):
     a = describe_frames(home, "a00", size="탑뷰")
     fm = conti._load_conti(saved)

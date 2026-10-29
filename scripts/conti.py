@@ -713,6 +713,7 @@ def _find_cut(cuts: list[dict], n: int) -> dict:
 MIN_CUT_SEC, MAX_CUT_SEC, SEC_STEP = 0.5, 600.0, 0.5   # 합친 장면은 몇 분이 될 수 있다
 CUT_DEFAULTS = {"size": "미디엄", "sec": 4, "action": "새 컷", "guide": "촬영 지시를 적어 주세요"}
 UPDATABLE_FIELDS = (*EDITABLE_FIELDS, "sec", "size", "action")
+PICK_FIELDS = ("action", "guide", "size")                # 내용 맞춤 사진(ref_auto)을 고를 때 본 필드
 LAST_CUT_MESSAGE = "섹션에 컷이 하나는 있어야 해요"
 
 
@@ -905,6 +906,11 @@ def _unused_id(cuts: list[dict]) -> str:
     return cut_id
 
 
+def picked_changed(cut: dict, fields: dict) -> bool:
+    """내용 맞춤 사진(ref_auto)을 고른 근거(PICK_FIELDS) 중 하나라도 값이 달라지는지."""
+    return any(key in fields and fields[key] != cut.get(key) for key in PICK_FIELDS)
+
+
 def _apply_op(fm: dict, op: dict) -> tuple[dict, str | None]:
     """op를 적용한 새 fm(시간은 아직 안 맞춤)과 새로 생기거나 고친 컷 id."""
     kind = op.get("op")
@@ -945,7 +951,10 @@ def _apply_op(fm: dict, op: dict) -> tuple[dict, str | None]:
         fields = op.get("fields")
         if not isinstance(fields, dict):
             raise ScriptError("invalid_edit", "fields는 JSON 객체여야 합니다")
-        for key, value in _check_edit(fields).items():
+        edit = _check_edit(fields)
+        if picked_changed(cuts[pos], edit):              # 사진을 고른 근거가 바뀌면 내용 맞춤 사진은 버린다(구도 맞춤으로)
+            cuts[pos].pop("ref_auto", None)
+        for key, value in edit.items():
             if key == "ref_frame" and not value:
                 cuts[pos].pop("ref_frame", None)
             else:
