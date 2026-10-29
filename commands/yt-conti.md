@@ -2,7 +2,7 @@
 description: 기획안(draft)으로 전체 대사와 컷별 가이드가 들어간 콘티·스토리보드를 만든다
 argument-hint: '<draft 파일 | latest | 콘티 파일(-conti.md)>'
 ---
-저장된 기획안을 컷 단위 콘티로 바꾸고, 도식과 레퍼런스 참고 프레임이 붙은 HTML 스토리보드를 만든다. 대화는 한국어로 한다.
+저장된 기획안을 장면 단위 콘티로 바꾸고, 도식과 레퍼런스 참고 사진이 붙은 HTML 스토리보드를 만든다. 대화는 한국어로 한다.
 
 스크립트 실행기: `"${CLAUDE_PLUGIN_ROOT}/bin/ytc"` (아래 `ytc`. 실제 호출은 항상 전체 경로로)
 콘티 규칙: `${CLAUDE_PLUGIN_ROOT}/skills/yt-conti/SKILL.md` — 만들기 전에 읽는다
@@ -11,6 +11,7 @@ argument-hint: '<draft 파일 | latest | 콘티 파일(-conti.md)>'
 ## 1. 인자
 
 - 인자가 `-conti.md`로 끝나면 **다시 그리기**다: `ytc conti render <파일>` → 4절로 간다(사용자가 프런트매터를 고친 경우).
+  사용자가 "반복 컷을 합쳐 줘", "장면으로 합치기"라고 하면 4-1절로 간다.
 - `latest`이거나 비어 있으면 `drafts/`에서 `-conti`가 아닌 가장 최근 md를 고르고, 무엇을 골랐는지 한 줄로 알린다. drafts가 비어 있으면 `/yt-coach:yt-draft`를 먼저 안내하고 멈춘다.
 - 그 외에는 draft 파일 경로(`drafts/…md`).
 
@@ -34,10 +35,28 @@ conti JSON을 `workspace/tmp/conti.json`에 Write로 쓰고 `ytc conti save <dra
 ```
 ✅ 콘티 저장 → drafts/2026-10-20-편의점-컵라면-맵기-4단계-도전-conti.md
 🖼 스토리보드 → drafts/2026-10-20-편의점-컵라면-맵기-4단계-도전-conti.html (브라우저로 열기·인쇄)
-컷 36개 · 참고 프레임은 같은 샷 크기의 레퍼런스 장면입니다(구도만 참고).
+장면 12개 · 참고 사진: 장면 내용에 맞춰 고른 사진은 "참고", 맞는 사진이 없으면 같은 샷 크기의 사진("구도만 참고")입니다.
 고치고 싶으면 -conti.md의 script·cuts를 직접 수정하고 /yt-coach:yt-conti <그 파일> 로 다시 그리세요.
 ```
 - 결과의 `abs_html` 경로를 함께 보여 준다.
+
+## 4-1. 반복 컷 장면으로 합치기
+
+예전 콘티처럼 한 섹션 안에 같은 장면(`action`)이 여러 번 나오면 장면 하나로 합친다. 대사는 바꾸지 않고 나눌 자리만 정한다.
+
+1. 계획: `ytc conti merge <파일>` → `{hash, before, after, sections, warnings}`
+   - `nothing_to_merge`("합칠 장면이 없어요")면 그대로 알리고 멈춘다.
+   - `warnings`의 `scene_too_long`은 message를 그대로 전한다(합친 장면이 길다).
+2. 나누기: `${CLAUDE_PLUGIN_ROOT}/skills/yt-conti/merge.md` 규칙대로 `sections` 중 `split: true`인 섹션만 장면 순서(`order`)와
+   대사 나눌 자리(`lines`)를 정한다. 대사 글자·문장부호는 바꾸지 않는다.
+3. 미리보기: 섹션마다 "장면(action) — 대사"를 순서대로 보여 주고 "컷 {before}개 → 장면 {after}개로 합칠까요?"라고 묻는다.
+   **저장 전 사용자 확인**을 받는다. 고칠 곳을 말하면 반영해 다시 보여 준다.
+4. 저장: 나누기 결과(`{"sections": [...]}`)를 `workspace/tmp/merge.json`에 Write로 쓰고
+   `ytc conti merge <파일> --cuts workspace/tmp/merge.json --hash <1의 hash>`
+   - `invalid_merge` → message대로 고쳐 다시 실행한다. `conti_changed` → 1부터 다시 한다(그사이 콘티가 바뀜).
+   - 합치기 전 상태는 이력(`before_merge`)에 남아 화면의 이력에서 되돌릴 수 있다고 알린다.
+   - 합친 장면은 묶음 첫 컷의 참고 사진을 이어받는다. 장면에 더 맞는 사진은 화면의 "사진 다시 고르기"로 고른다
+     (CLI에는 사진 고르기 명령이 없다).
 
 ## 5. 자막 SRT 내보내기
 

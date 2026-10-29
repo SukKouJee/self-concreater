@@ -20,7 +20,7 @@
 | `/yt-inspire <category> [주제]` | 모티브 카드(흐름·기법·각도·조합) 생성·누적, `star <id>`로 ★ 표시, 기법 카탈로그 중복 병합, 지인 기법을 재료로 고르기(`--library`) | ✅ |
 | `/yt-draft <category> <motif-id\|archetype> "<주제>"` | 섹션별 대본 + 샷 리스트 → `drafts/`, 아키타입 비율 비교, 지인 기획안 틀(`library:<id>`)로 시작 | ✅ |
 | `/yt-polish <draft\|latest>` | 저장된 기획안의 훅 5개·제목 10개·썸네일 지시서를 만들고, 한국어 기준 점수·지적과 내 레퍼런스 근거를 붙여 보여 준다. 고른 것만 기획안에 반영(제목·훅 대본·훅 유형 교체, `## 패키징`에 썸네일 지시서와 이전 값 이력) | ✅ |
-| `/yt-conti <draft\|latest\|-conti.md>` | 기획안 → 전체 대사 + 컷별 대사·자막·효과음·가이드 콘티(`-conti.md`), 샷 도식 + 레퍼런스 참고 프레임 HTML 스토리보드. `-conti.md`를 고치면 다시 그리기 | ✅ |
+| `/yt-conti <draft\|latest\|-conti.md>` | 기획안 → 전체 대사 + 컷별 대사·자막·효과음·가이드 콘티(`-conti.md`), 샷 도식 + 레퍼런스 참고 프레임 HTML 스토리보드. `-conti.md`를 고치면 다시 그리기, 반복 컷은 장면으로 합치기(`ytc conti merge`) | ✅ |
 | `/yt-diagnose <category> <link\|draft\|대본>` | 내 콘텐츠를 아키타입과 축별 비교(근접도·갭·다음 행동) → `mine/`, `intentional`로 의도한 차이 제외 | ✅ |
 | `/yt-mission [today\|submit <file>\|skip\|swap]` | 하루 15~30분 미션, 제출 피드백·난이도 기록, 난이도에 따라 크기 조정 | ✅ |
 | `/yt-review [YYYY-Www]` | 주간 회고 → `reviews/`, 카테고리 HTML 리포트 링크, 승인 시 profile 갱신 | ✅ |

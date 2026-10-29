@@ -401,3 +401,12 @@ def test_apply_keeps_ref_auto_of_merged_and_single_scenes(home, draft_md):  # no
     _applied(path)
     fm, _ = refstore.read_md(path)
     assert [c.get("ref_auto") for c in fm["cuts"]] == [a, None, b, None]
+
+
+def test_command_doc_describes_merge_flow():
+    from scripts.common import PLUGIN_ROOT
+    doc = (PLUGIN_ROOT / "commands" / "yt-conti.md").read_text("utf-8")
+    assert "반복 컷 장면으로 합치기" in doc
+    assert "ytc conti merge <파일>" in doc and "--cuts" in doc and "--hash" in doc
+    assert "skills/yt-conti/merge.md" in doc and "저장 전 사용자 확인" in doc
+    assert "참고 프레임은 같은 샷 크기의 레퍼런스 장면입니다(구도만 참고)" not in doc
