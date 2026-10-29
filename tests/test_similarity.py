@@ -51,7 +51,7 @@ def test_draft_following_archetype_is_close(home):
     ax = out["axes"]
     assert ax["structure"]["proximity"] >= 0.5
     assert ax["hook"]["proximity"] == pytest.approx(6 / 7, abs=0.01)
-    assert ax["pacing"]["proximity"] is not None
+    assert ax["pacing"] == {"proximity": None, "note": "컷 정보 없음"}       # 장면 단위 기획: 컷 길이로 재지 않는다
     assert [g["key"] for g in out["gaps"]] == []
     assert out["preliminary"] is False
 
@@ -72,6 +72,13 @@ def test_restructured_draft_is_far_with_gaps(home):
     assert "structure:body" in keys and "structure:demo" in keys and "hook" in keys
     body = next(g for g in out["gaps"] if g["key"] == "structure:body")
     assert body["target"] == 0 and body["archetype"] > 0.5
+
+
+def test_old_draft_stored_pacing_still_scored(home):
+    path = make_draft(home, LIKE_A1)
+    refstore.update_frontmatter(path, {"pacing": {"avg_cut_sec": 1.3, "by_section": {"hook": 1.5, "body": 1.29}}})
+    out = similarity.compare(CAT, path)
+    assert out["axes"]["pacing"]["proximity"] is not None
 
 
 def test_script_only_skips_pacing(home):

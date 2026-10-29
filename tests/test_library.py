@@ -283,7 +283,7 @@ def test_preview_template_computes_ratio_shot_mix_and_excludes_script_and_memo(p
     # 시간 가중: 클로즈업 3+48=51초, 탑뷰 3+6=9초 / 60초
     assert fm["shot_mix"] == {"클로즈업": 0.85, "탑뷰": 0.15}
     assert fm["hook_type"] == "result_first" and fm["narrative_type"] == "journey" and fm["target_sec"] == 60.0
-    assert fm["pacing"]["avg_cut_sec"] == 2.22
+    assert fm["pacing"] == {"avg_cut_sec": None}                  # 장면 단위 기획: 평균 컷 없음
     stored = (a / "workspace" / "tmp" / f"library_preview_{pv['preview_id']}.json").read_text("utf-8")
     dumped = json.dumps(pv, ensure_ascii=False) + stored
     for secret in ("비밀대사ABC", "본론 원문XYZ", "비밀메모QQQ", "컵라면 3종", "삼각대", str(a)):

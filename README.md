@@ -183,7 +183,7 @@ Claude가 라이브러리를 직접 부를 수 있는 도구 8개를 제공합�
 | `features` | (라이브러리) md 프런트매터 → 축별 피처 |
 | `cluster` | `run <cat>` (ref만 축별 군집·판정·아키타입·이상치 → `workspace/typify/<cat>.json`), `apply <cat> --notes <json>` (index.md 기록) |
 | `motif` | `context <cat> [--topic]`, `add <cat> --cards <json>`, `star <cat> <id> [--off]`, `merge-techniques <cat> --plan <json>` |
-| `draft` | `context <cat> <motif-id\|A1>`, `save <cat> --draft <json>` (검증·계획 컷·아키타입 비교 → `drafts/`) |
+| `draft` | `context <cat> <motif-id\|A1>`, `save <cat> --draft <json>` (검증·장면 수·아키타입 비교 → `drafts/`) |
 | `polish` | `context <draft.md>`, `evaluate <draft.md> --data <json>`, `apply <draft.md> --choice <json> --hash <sha>` (훅·제목·썸네일 한국어 점수·지적·레퍼런스 근거 → 고른 것을 기획안에 반영, 이전 값은 `## 패키징` 이력. 해시가 다르면 `draft_changed`) |
 | `conti` | `context <draft.md>`, `save <draft.md> --conti <json> [--force]`, `render <conti.md>`, `srt <conti.md> [--track caption\|line] [--video <편집본>]`(CapCut용 `.srt`. `--video`면 자막 없는 편집본의 실제 컷에 시간을 맞춤), `update`, `scenes`, `cut-context`, `history`, `history-name`, `history-restore`, `history-diff`, `merge <conti.md> [--cuts <json> --hash <sha>]`(반복 컷을 장면으로 합침: 인자 없이 부르면 계획 미리보기 JSON, `--cuts`·`--hash`를 주면 저장하고 이력에 "합치기 전"을 남김. 장면별 레퍼런스 사진 `ref_auto`는 화면의 "사진 다시 고르기"로만 고르며 CLI 명령은 없음) (검증·대사 길이 경고·참고 프레임 매칭 → `drafts/*-conti.md`·`.html`. update·scenes·cut-context는 화면의 컷 단위 편집·장면 후보·대사 대안 입력) |
 | `captions` | `setup`(처음 한 번, `remotion/`에서 `npm ci`), `check`, `render <conti.md> [--video <편집본>] [--track caption\|line]` — 콘티 자막을 초록 배경 움직이는 자막 MP4(`drafts/<기획안>-captions.mp4`)로 렌더(선택 설치, Remotion). 취소·시간 초과 시 그 하위 프로세스만 종료 |

@@ -86,13 +86,24 @@ def test_save_writes_draft_md(home):
     fm, body = refstore.read_md(path)
     assert fm["category"] == CAT and fm["source"] == "M-mukbang-001" and fm["archetype"] == "A1"
     assert fm["sections"][1] == {"label": "body", "sub": "story", "start": 3.0, "end": 52.0}
-    assert fm["pacing"] == {"avg_cut_sec": 2.61, "by_section": {"hook": 3.0, "body": 2.33, "cta": 8.0}}
+    assert fm["pacing"] == {"avg_cut_sec": None, "by_section": {}, "basis": "scenes"}
     assert fm["target_sec"] == 60.0 and fm["status"] == "draft"
     assert "### 0:00–0:03 · hook (3초)" in body
     assert "| 1 | 탑뷰 | 탑뷰 | 3초 | 완성된 라면 3개 |" in body
     assert "## 아키타입 비교" in body and "| body | 82% |" in body
+    assert "- 길이: 1:00 · 장면 23개 · 평균 2.61초" in body and "계획 컷" not in body
+    assert "이 기획은 장면 단위라 컷 길이 비교 없음" in body
     assert body.rstrip().endswith("## 내 메모")
     assert not (home / "workspace" / "tmp" / "draft.json").exists()
+
+
+def test_planned_pacing_scene_draft_has_no_cut_average():
+    assert draft.planned_pacing(draft.validate(DRAFT)["sections"]) == {"avg_cut_sec": None, "by_section": {}, "basis": "scenes"}
+
+
+def test_planned_pacing_script_only_unchanged():
+    sections = [{"label": "hook", "start": 0, "end": 3, "script": "x"}]
+    assert draft.planned_pacing(sections) == {"avg_cut_sec": None, "by_section": {}}
 
 
 def test_compare_with_archetype(home):
@@ -150,7 +161,7 @@ CHARACTERIZED = {
 }
 CHARACTERIZED_BODY = (
     "# 편의점 라면 3단계 맵기 도전!\n\n## 개요\n- 주제: 편의점 라면\n- 출처: 직접\n"
-    "- 길이: 0:20 · 계획 컷 2개 (평균 10.0초)\n- 훅: result_first · 서사: journey\n\n## 대본\n\n"
+    "- 길이: 0:20 · 장면 2개 · 평균 10.0초\n- 훅: result_first · 서사: journey\n\n## 대본\n\n"
     "### 0:00–0:03 · hook (3초)\n첫째\n\n| # | 샷 | 앵글 | 길이 | 내용 |\n|---|---|---|---|---|\n"
     "| 1 | 탑뷰 | 정면 | 3초 | x |\n\n"
     "### 0:03–0:20 · body (17초)\n둘째\n줄 | 파이프\n\n| # | 샷 | 앵글 | 길이 | 내용 |\n|---|---|---|---|---|\n"
