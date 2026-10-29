@@ -86,17 +86,20 @@ const CATEGORY_ACTION = {
 };
 const NEW_VIDEO = { label: "새 영상 시작", href: "#/motif" };
 
-function videoAction(step, path) {
+// Filming: the phone opens the shoot mode; the desktop opens the video's 촬영 체크 tab (scene list, 다 찍음).
+function videoAction(step, path, phone) {
   const id = videoId(path);
-  if (step === "filmed") return { label: "촬영 모드 시작", href: `${videoHref(id)}/shoot` };
+  if (step === "filmed") {
+    return phone ? { label: "촬영 모드 시작", href: `${videoHref(id)}/shoot` } : { label: "촬영 체크 열기", href: videoHref(id, "check") };
+  }
   if (step === "conti") return { label: "콘티 만들기", href: videoHref(id, "conti") };
   if (step === "diagnose") return { label: "진단하기", href: videoHref(id, "diagnose") };
   return { label: "영상 열기", href: videoHref(id) };
 }
 
-// The "다음 할 일" card from /api/status next_action (desktop and phone): { title, why, action: {label, href},
+// The "다음 할 일" card from /api/status next_action (desktop, or phone: true): { title, why, action: {label, href},
 // film (filming is next: the phone card shows the shoot count), path (the video's draft path or null) }.
-export function nextStep(cat) {
+export function nextStep(cat, { phone = false } = {}) {
   const c = cat || {};
   const videos = Array.isArray(c.videos) ? c.videos : [];
   const na = c.next_action || { kind: "new_draft" };
@@ -105,7 +108,7 @@ export function nextStep(cat) {
     const title = na.title || (video && video.title) || videoId(na.path);
     return {
       title: `${title}, ${NEXT_TITLE[na.step] || "이어서 할 차례예요"}`, why: NEXT_WHY[na.step] || "",
-      action: videoAction(na.step, na.path), film: na.step === "filmed", path: na.path,
+      action: videoAction(na.step, na.path, phone), film: na.step === "filmed", path: na.path,
     };
   }
   if (na.kind === "category") {

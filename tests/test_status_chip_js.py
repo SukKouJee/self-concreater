@@ -57,7 +57,8 @@ def test_every_backend_kind_has_a_label_except_the_help_chat():
         assert info["label"].startswith("Claude가") == info["claude"], kind
     assert labels["motif"]["label"] == "Claude가 모티브 카드를 만드는 중"
     assert labels["conti"]["label"] == "Claude가 콘티를 만드는 중"
-    assert not labels["footage"]["claude"] and not labels["srtfit"]["claude"] and not labels["caption_video"]["claude"]
+    assert labels["footage"] == {"label": "Claude가 촬영 영상을 맞추는 중", "name": "촬영 영상 맞추기", "claude": True}
+    assert not labels["footage_clips"]["claude"] and not labels["srtfit"]["claude"] and not labels["caption_video"]["claude"]
     assert labels["refs_describe"]["label"] == "Claude가 사진 설명을 만드는 중"
 
 
@@ -106,7 +107,7 @@ def test_status_chip_multiple_jobs():
     assert text == "작업 2개" and short == "작업 2개"
     assert items == [
         {"id": "collect-1", "text": "Claude가 레퍼런스를 분석하는 중 · 5초", "href": "#/refs", "link": "보기"},
-        {"id": "footage-1", "text": "촬영 영상 처리하는 중 · 5초", "href": "#/video/a/conti", "link": "보기"},
+        {"id": "footage-1", "text": "Claude가 촬영 영상을 맞추는 중 · 5초", "href": "#/video/a/conti", "link": "보기"},
     ]
     # two jobs of the same kind (two contis at once) stay apart by job id
     r = run_js("""
@@ -217,7 +218,7 @@ def test_finish_toast_text_and_link():
         {"text": "유형 나누기 못 끝냈어요: Claude 응답이 비었어요", "kind": "error", "href": "#/typify", "link": "보러 가기"},
         {"text": "레퍼런스 분석 · 확인할 게 있어요", "kind": "info", "href": "#/add", "link": "결과 보기"},
         {"text": "모티브 카드 뽑기 멈췄어요", "kind": "info", "href": "#/motif", "link": "보러 가기"},
-        {"text": "촬영 영상 처리 끝났어요", "kind": "ok", "href": "#/video/a/conti", "link": "결과 보기"},
+        {"text": "촬영 영상 맞추기 끝났어요", "kind": "ok", "href": "#/video/a/conti", "link": "결과 보기"},
     ]
     # already on the result screen: the page shows (and toasts) the result itself -> no chip toast
     r = run_js("""
@@ -252,9 +253,103 @@ def test_chip_module_is_safe_and_wired():
     assert '"ytc:job"' in text                                                # snapshots seen by pages
     assert "aria-expanded" in text and "Escape" in text                       # the job list is a disclosure
     # page snapshots (every second) must not push the chip's own poll away; a hung request is given up
-    assert "if (S.timer && S.due <= due) return;" in text and "ctl.abort()" in text
+    assert "nextDue({" in text and "ctl.abort()" in text
+    # one polite live line beside the chip, outside the element that is re-rendered
+    assert '"aria-live": "polite"' in text and "el.after(live)" in text
     api = (STATIC_DIR / "api.js").read_text(encoding="utf-8")
     assert '"ytc:job"' in api
     app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
     assert 'from "/static/status-chip.js"' in app and "createStatusChip(" in app
     assert "jobStarted" in app
+
+
+def test_fast_poll_only_for_jobs_that_work():
+    # m-002: a collect job that only waits for the user's review stays on the slow sweep
+    r = run_js("""
+      const jobs = m.trackJobs([], [snap("collect", "awaiting", { items: [{ id: "a", state: "awaiting", ask: "review" }, { id: "b", state: "saved" }] }),
+        snap("footage", "awaiting", { items: [{ id: "f", state: "awaiting" }, { id: "g", state: "running" }] })], 0, "");
+      return [jobs.map((j) => j.working), m.dueKinds(jobs, 20000, 10000, 15000)];
+    """)
+    assert r == [[False, True], {"sweep": False, "kinds": ["footage"]}]
+
+
+def test_next_due_keeps_an_earlier_poll_and_pauses_when_hidden():
+    # m-009: page snapshots arrive every second; the chip's own poll must still come (no starvation)
+    r = run_js("""
+      const run = m.trackJobs([], [snap("motif", "running")], 0, "");
+      const wait = m.trackJobs([], [snap("collect", "awaiting", { items: [{ id: "a", state: "awaiting" }] })], 0, "");
+      const at = (jobs, now, current, hidden = false) => m.nextDue({ jobs, now, lastSweep: 1000, hidden, current });
+      // first schedule while a job runs: 1.5 s later
+      const first = at(run, 2000, null);
+      // page events at +0.5 s, +1.0 s: the 3.5 s poll stays, it is not pushed to +1.5 s from each event
+      const again = [at(run, 2500, first), at(run, 3000, first)];
+      return [first, again, at([], 2000, null), at(wait, 2000, null), at(run, 2000, null, true), at([], 20000, null)];
+    """)
+    first, again, idle, waiting, hidden, overdue = r
+    assert first == 3500 and again == [3500, 3500]
+    assert idle == 16000 and waiting == 16000          # slow sweep 15 s after the last one
+    assert hidden is None
+    assert overdue == 20000                             # a sweep already due: now
+
+
+def test_poll_outcome_failures_and_bad_token():
+    # m-004: three polls in a row with every request failing clear the tracked jobs; bad_token stops polling
+    r = run_js("""
+      const fail = [{ err: "network" }, { err: "network" }];
+      const a = m.pollOutcome(0, fail), b = m.pollOutcome(a.fails, fail), c = m.pollOutcome(b.fails, fail);
+      return [a, b, c, m.pollOutcome(2, [{ err: "network" }, { ok: null }]), m.pollOutcome(1, [{ err: "bad_token" }]),
+              m.pollOutcome(1, [])];
+    """)
+    a, b, c, mixed, token, empty = r
+    assert a == {"fails": 1, "clear": False, "stop": False} and b == {"fails": 2, "clear": False, "stop": False}
+    assert c == {"fails": 3, "clear": True, "stop": False}
+    assert mixed == {"fails": 0, "clear": False, "stop": False}
+    assert token["stop"] is True
+    assert empty == {"fails": 1, "clear": False, "stop": False}           # nothing asked: unchanged
+
+
+def test_add_and_refs_are_the_same_screen_for_collect():
+    # m-005: the add form lives on the 레퍼런스 screen; collect results show there (no toast, live text instead)
+    r = run_js("""
+      const a = m.trackJobs([], [snap("collect", "running")], 0, "#/add");
+      const done = m.finishedJobs(a, m.trackJobs(a, [snap("collect", "done")], 1, ""))[0];
+      const b = m.trackJobs([], [snap("collect", "running")], 0, "#/refs");
+      const wait = m.finishedJobs(b, m.trackJobs(b, [snap("collect", "awaiting")], 1, ""))[0];
+      return [m.finishToast(done, "#/add"), m.finishToast(done, "#/refs"), m.finishToast(wait, "#/refs"),
+              m.finishToast(wait, "#/home").href];
+    """)
+    assert r == [None, None, None, "#/add"]
+
+
+def test_live_text_for_started_and_quiet_finishes():
+    # I-001: a polite live line says when a job starts and when it ends on the screen the user is looking at
+    r = run_js("""
+      const a = m.trackJobs([], [snap("conti", "running", { item: "drafts/a.md" })], 0, "");
+      const b = m.trackJobs(a, [snap("conti", "running", { item: "drafts/a.md" }), snap("polish", "running", { item: "drafts/a.md" })], 1, "");
+      const c = m.trackJobs(b, [snap("polish", "done", { item: "drafts/a.md" }), snap("conti", "running", { item: "drafts/a.md" })], 2, "");
+      return [m.startedJobs([], a).map((j) => m.startText(j)), m.startedJobs(a, b).map((j) => j.kind), m.startedJobs(b, c),
+              m.finishedJobs(b, c).map((j) => m.finishText(j))];
+    """)
+    assert r == [["Claude가 콘티를 만드는 중이에요"], ["polish"], [], ["다듬기 끝났어요"]]
+
+
+def test_finished_rows_stay_in_the_list_for_a_minute():
+    # m-006: a finished job stays reachable from the chip ("끝남 · 결과 보기") for 60 s
+    r = run_js("""
+      const a = m.trackJobs([], [snap("motif", "running"), snap("typify", "running")], 0, "");
+      const b = m.trackJobs(a, [snap("motif", "done"), snap("typify", "failed")], 1000, "");
+      const recent = m.keepRecent([], m.finishedJobs(a, b), 1000);
+      const later = m.keepRecent(recent, [], 61001);
+      return [recent.map((r) => [r.id, r.until]), m.chipText(b, 2000, { recent }), m.chipItems(b, 2000, recent),
+              m.chipText([], 2000, { recent: recent.slice(0, 1) }), later.length,
+              m.chipText(m.trackJobs([], [snap("conti", "running")], 0, ""), 2000, { recent: recent.slice(0, 1) })];
+    """)
+    kept, text, items, one, later, mixed = r
+    assert kept == [["motif-1", 61000], ["typify-1", 61000]]
+    assert text == "끝난 작업 2개"
+    assert items == [
+        {"id": "motif-1", "text": "모티브 카드 뽑기 · 끝남", "href": "#/motif", "link": "결과 보기"},
+        {"id": "typify-1", "text": "유형 나누기 · 못 끝냄", "href": "#/typify", "link": "결과 보기"},
+    ]
+    assert one == "모티브 카드 뽑기 · 끝남" and later == 0
+    assert mixed == "작업 2개"

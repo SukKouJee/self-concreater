@@ -104,9 +104,12 @@ def cat(na, videos=None):
 
 
 def test_next_step_follows_the_video_step():
-    film = run_js(f"m.nextStep({cat({'kind': 'video', 'path': 'drafts/a b.md', 'step': 'filmed', 'title': '부루마블 1탄'})})")
+    film = run_js(f"m.nextStep({cat({'kind': 'video', 'path': 'drafts/a b.md', 'step': 'filmed', 'title': '부루마블 1탄'})}, {{ phone: true }})")
     assert film == {"title": "부루마블 1탄, 촬영할 차례예요", "why": "촬영 모드로 장면을 하나씩 찍어요",
                     "action": {"label": "촬영 모드 시작", "href": "#/video/a%20b/shoot"}, "film": True, "path": "drafts/a b.md"}
+    # m-007: desktop opens the video's 촬영 체크 tab (the phone shoot mode is for the phone)
+    desk = run_js(f"m.nextStep({cat({'kind': 'video', 'path': 'drafts/a b.md', 'step': 'filmed', 'title': 'A'})})")
+    assert desk["action"] == {"label": "촬영 체크 열기", "href": "#/video/a%20b/check"} and desk["film"] is True
     conti = run_js(f"m.nextStep({cat({'kind': 'video', 'path': 'drafts/a.md', 'step': 'conti', 'title': 'A'})})")
     assert conti["title"] == "A, 콘티 만들 차례예요" and conti["film"] is False
     assert conti["action"] == {"label": "콘티 만들기", "href": "#/video/a/conti"}

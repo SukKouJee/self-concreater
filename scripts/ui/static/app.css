@@ -92,6 +92,7 @@ a.chip-job:hover, button.chip-job:hover { background: color-mix(in srgb, var(--k
 .chip-short { display: none; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .chip-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--link); }
 .chip-dot.is-running { animation: chip-pulse 1.6s ease-in-out infinite; }
+.chip-dot.is-done { background: var(--done); }
 @keyframes chip-pulse { 50% { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .chip-dot.is-running { animation: none; } }
 .chip-pop { position: absolute; right: 0; top: calc(100% + 6px); z-index: 50; width: max-content; max-width: min(360px, calc(100vw - 32px));

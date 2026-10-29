@@ -171,7 +171,7 @@ function recentCard(items, categories) {
 // ---- phone --------------------------------------------------------------------
 
 function phoneNext(cat, view) {
-  const step = nextStep(cat);
+  const step = nextStep(cat, { phone: true });
   const go = h("a", { class: "btn btn-rec home-go", href: step.action.href, "data-home-next": "1" },
     step.film ? h("span", { class: "home-go-rec", "aria-hidden": "true" }) : null, step.action.label);
   let count = null;
