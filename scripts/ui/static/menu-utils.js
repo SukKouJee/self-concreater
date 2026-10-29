@@ -64,12 +64,12 @@ export function phoneTab(hash) {
   return key in TAB_OF ? TAB_OF[key] : "home";
 }
 
-// Second-level links shown under the header: 레퍼런스/공용 라이브러리 on every width (the library is part of
-// 레퍼런스 until the refs screen gets its own tabs), the rest only on phones where the sidebar is hidden.
+// Second-level links shown under the header. 레퍼런스/공용 라이브러리 are the tabs of the 레퍼런스 screen (spec 2:
+// the library is a tab inside 레퍼런스), so desktop shows them only there; phones (no sidebar) show the whole group.
 const SUBNAV = {
   inspire: [
-    { label: "레퍼런스", href: "#/refs", phoneOnly: false },
-    { label: "공용 라이브러리", href: "#/refs?tab=library", phoneOnly: false },
+    { label: "레퍼런스", href: "#/refs", phoneOnly: false, refsTab: true },
+    { label: "공용 라이브러리", href: "#/refs?tab=library", phoneOnly: false, refsTab: true },
     { label: "유형", href: "#/typify", phoneOnly: true },
     { label: "모티브", href: "#/motif", phoneOnly: true },
   ],
@@ -81,7 +81,10 @@ const SUBNAV = {
 
 export function subnavItems(hash) {
   const items = SUBNAV[phoneTab(hash)] || [];
-  return items.map((it) => ({ ...it, current: isActive(it.href, hash) }));
+  const onRefs = ["refs", "library"].includes(head(hash));
+  return items.map(({ refsTab, ...it }) => ({
+    ...it, phoneOnly: it.phoneOnly || (!!refsTab && !onRefs), current: isActive(it.href, hash),
+  }));
 }
 
 // Where a sidebar video row goes: the video workspace of that draft (draft path "drafts/x.md").

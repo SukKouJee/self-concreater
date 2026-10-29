@@ -1386,6 +1386,7 @@ code { background: var(--chip); padding: 1px 6px; border-radius: 4px; }
 .motif-thumb { flex: none; width: 44px; height: 26px; border-radius: 4px; object-fit: cover; background: var(--border); }
 .motif-thumb.is-empty, .motif-ev-thumb.is-empty { display: inline-block; }
 .motif-ev-n { font-size: 12px; color: var(--muted); margin-left: 2px; }
+.motif-filters .ui-chip.is-locked { border-style: dashed; color: var(--muted); }
 .motif-empty { margin: 0; }
 .motif-detail-wrap { position: sticky; top: calc(var(--topbar-h) + var(--sp-4)); min-width: 0; }
 .motif-detail { display: flex; flex-direction: column; gap: 14px; padding: 20px; background: var(--surface);
@@ -1407,16 +1408,10 @@ code { background: var(--chip); padding: 1px 6px; border-radius: 4px; }
 .motif-made { margin: 0; font-size: 13px; color: var(--muted); }
 .motif-start { width: 100%; min-height: 44px; font-size: 15px; }
 .motif-scrim { display: none; }
+/* Below 900px the detail is a modal bottom sheet over everything (header, phone tab bar); no empty placeholder. */
 @media (max-width: 900px) {
   .motif-layout { grid-template-columns: minmax(0, 1fr); }
   .motif-detail-wrap { position: static; }
-  .motif-detail { max-height: none; }
-}
-@media (max-width: 640px) {
-  .motif-h1 { font-size: 24px; }
-  .motif-runbar, .motif-topic { width: 100%; }
-  .motif-topic input { min-height: 44px; }
-  .motif-run-btn { width: 100%; }
   .motif-detail { position: fixed; left: 0; right: 0; bottom: 0; z-index: 56; max-height: 85dvh;
     border-radius: 14px 14px 0 0; border-bottom: 0; box-shadow: var(--elev-2);
     padding: 20px var(--sp-4) calc(var(--sp-4) + env(safe-area-inset-bottom)); }
@@ -1425,4 +1420,10 @@ code { background: var(--chip); padding: 1px 6px; border-radius: 4px; }
   .motif-scrim { display: block; position: fixed; inset: 0; z-index: 55; background: rgba(0, 0, 0, .45); }
   .motif-scrim[hidden] { display: none; }
   body.motif-sheet-open { overflow: hidden; }
+}
+@media (max-width: 640px) {
+  .motif-h1 { font-size: 24px; }
+  .motif-runbar, .motif-topic { width: 100%; }
+  .motif-topic input { min-height: 44px; }
+  .motif-run-btn { width: 100%; }
 }

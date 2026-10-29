@@ -1303,8 +1303,45 @@ def test_motif_detail_is_a_modal_sheet_on_phones():
     css = _js("app.css")
     assert re.search(r"\.motif-cards \{[^}]*grid-template-columns: repeat\(auto-fill, minmax\(230px, 1fr\)\)", css)
     assert re.search(r"\.motif-layout \{[^}]*grid-template-columns: minmax\(0, 1fr\) 380px", css)
-    phone = "\n".join(_media_blocks(css, 640))
-    assert re.search(r"\.motif-detail \{[^}]*position: fixed", phone)
+    # sheet below 900px (where the 380px panel no longer fits next to the grid); empty placeholder hidden there
+    narrow = "\n".join(_media_blocks(css, 900))
+    assert re.search(r"\.motif-detail \{[^}]*position: fixed", narrow)
+    assert re.search(r"\.motif-detail:not\(\.is-open\) \{[^}]*display: none", narrow)
+    assert 'const SHEET = "(max-width: 900px)"' in js
+    assert not re.search(r"\.motif-detail \{[^}]*position: fixed", "\n".join(_media_blocks(css, 640)))
+
+
+def _fn(js, name):
+    start = js.index(f"function {name}(")
+    return js[start:js.index("\n}\n", start)]
+
+
+def test_motif_render_keeps_an_open_detail_and_its_focus():
+    """I-001: a run finishing (render()) must not drop the open panel/sheet node, its Esc/Tab handler or focus."""
+    js = _js("pages/motif.js")
+    render = _fn(js, "render")
+    assert "detail: S.nodes.detail" in render and "scrim: S.nodes.scrim" in render     # node survives S.nodes reset
+    assert "focusDetailTitle()" in render                                               # focus comes back into it
+    focus = _fn(js, "focusStatus")
+    assert "inDetail()" in focus                                                        # never pulled out of the panel
+
+
+def test_motif_closes_the_sheet_before_the_leave_question():
+    """I-002: the leave question would open under the sheet's scrim: onStay() closes the sheet first."""
+    js = _js("pages/motif.js")
+    stay = js[js.index("export function onStay"):]
+    assert "closeDetail()" in stay[:stay.index("\n}\n")]
+    app = _js("app.js")
+    assert app.index("state.current.onStay()") < app.index("confirmLeave(note, () => navigate(target")
+
+
+def test_motif_detail_toggles_selection_in_place_and_follows_the_viewport():
+    js = _js("pages/motif.js")
+    for name in ("openDetail", "closeDetail"):
+        body = _fn(js, name)
+        assert "markSelected()" in body and "renderList(" not in body, name           # m-005: no grid rebuild
+    assert "focusDetailTitle()" in _fn(js, "onMedia")                                   # m-007
+    assert "lockedReason(" in js and 'href: "#/typify"' in js                          # m-003
 
 
 def test_motif_progress_has_a_hook_for_the_status_chip():

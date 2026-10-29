@@ -5,7 +5,9 @@
 //   미리보기 단계에서는 index.md가 바뀌지 않는다. 저장은 사용자가 누른 뒤에만, 고른 카드만 보낸다.
 import { h, fill, filesUrl } from "/static/dom.js";
 import { chip, tag } from "/static/ui.js";
-import { FILTERS, evidenceItems, filterCards, kindCounts, madeFrom, oneLine, tagKind } from "/static/motif-utils.js";
+import {
+  FILTERS, evidenceItems, filterCards, kindCounts, lockedReason, madeFrom, oneLine, tagKind,
+} from "/static/motif-utils.js";
 import { videoHref, videoId } from "/static/video-utils.js";
 
 const POLL_MS = 1000;
@@ -20,7 +22,7 @@ const MAX_LIB = 10;
 const CATALOG_HINT = "기법 모음 정리(같은 기법 합치기)는 Claude에게 “기법 모음 정리해줘”라고 말하면 돼요";
 const THUMBS = 3;                                  // evidence thumbnails on a card
 const DETAIL_ID = "motif-detail";
-const PHONE = "(max-width: 640px)";               // same breakpoint as the phone shell (bottom tabs)
+const SHEET = "(max-width: 900px)";               // below this the 380px panel no longer fits beside the grid
 
 // ---- helpers ------------------------------------------------------------------
 
@@ -109,7 +111,7 @@ function ignorable(e) {
 
 // Moves focus to the page title after a run/save/discard; never behind an open bottom sheet.
 function focusStatus() {
-  if (S && sheetOpen()) return;
+  if (S && (sheetOpen() || inDetail())) return;
   const t = S && S.nodes.status;
   if (t) { t.setAttribute("tabindex", "-1"); t.focus({ preventScroll: true }); }
 }
@@ -437,7 +439,9 @@ function leadText(d) {
 
 function render() {
   const d = S.data;
-  S.nodes = {};
+  const hadDetailFocus = inDetail();
+  // The detail panel / sheet survives a full render (a run or save finishing): same node, same key handler.
+  S.nodes = { detail: S.nodes.detail, scrim: S.nodes.scrim };
   S.runSig = null;
   S.alertSig = null;
   S.nodes.status = h("h1", { id: "motif-title", class: "motif-h1" }, "모티브");
@@ -472,6 +476,7 @@ function render() {
   renderBody();
   renderList();
   renderDetail();
+  if (hadDetailFocus) focusDetailTitle();
 }
 
 // Compact progress line (no banner): the page stays usable while Claude works.
@@ -705,6 +710,15 @@ function savedCard(card) {
       h("span", { class: "motif-ev-n" }, `근거 영상 ${ev.length}`)) : null);
 }
 
+// Empty filter: say why when this category cannot draw the kind yet (stage / typify), else just "none yet".
+function emptyFilter() {
+  const why = lockedReason(S.filter, S.data);
+  if (!why) return h("p", { class: "muted motif-empty" }, "이 종류의 카드가 아직 없어요");
+  const typify = why.includes("유형화");
+  return h("p", { class: "muted motif-empty", role: "note" }, why,
+    typify ? h("span", {}, " · ", h("a", { href: "#/typify" }, "유형화 하러 가기")) : null);
+}
+
 function filterChips() {
   const counts = kindCounts(S.cards);
   if (!FILTERS.some(([k]) => k === S.filter)) S.filter = "all";
@@ -716,6 +730,8 @@ function filterChips() {
     });
     b.setAttribute("data-filter", key);
     if (key === "star") b.setAttribute("aria-label", `즐겨찾기만 ${counts.star}`);
+    const why = counts[key] ? "" : lockedReason(key, S.data);
+    if (why) { b.setAttribute("title", why); b.classList.add("is-locked"); }
     row.append(b);
   }
   return row;
@@ -742,9 +758,7 @@ function renderList(focusId, focusFilter) {
   } else {
     kids.push(filterChips());
     const shown = filterCards(S.cards, S.filter, S.pinned);
-    const grid = shown.length
-      ? h("div", { class: "motif-cards" }, ...shown.map(savedCard))
-      : h("p", { class: "muted motif-empty" }, "이 종류의 카드가 아직 없어요");
+    const grid = shown.length ? h("div", { class: "motif-cards" }, ...shown.map(savedCard)) : emptyFilter();
     kids.push(h("div", { class: "motif-layout" }, grid, detailSlot()));
   }
   fill(box, ...kids);
@@ -780,7 +794,7 @@ function renderList(focusId, focusFilter) {
   }
 }
 
-// ---- detail: right panel (desktop) / bottom sheet (phone) ---------------------------------
+// ---- detail: right panel (wide) / bottom sheet (below 900px) ---------------------------------
 
 // The detail node lives across list re-renders (star / filter clicks), so an open sheet keeps its focus.
 function detailSlot() {
@@ -793,24 +807,41 @@ function detailSlot() {
   return h("div", { class: "motif-detail-wrap" }, S.nodes.scrim, S.nodes.detail);
 }
 
-const isPhone = () => !!(S && S.mq && S.mq.matches);
-const sheetOpen = () => isPhone() && !!S.selected && !!cardById(S.selected);
+const isSheet = () => !!(S && S.mq && S.mq.matches);
+const sheetOpen = () => isSheet() && !!S.selected && !!cardById(S.selected);
+const inDetail = () => !!(S && S.nodes.detail && S.nodes.detail.contains(document.activeElement));
+
+function focusDetailTitle() {
+  const title = S.nodes.detail && S.nodes.detail.querySelector("#motif-detail-title");
+  if (title) title.focus({ preventScroll: !isSheet() });
+}
+
+// The selected card's border and every title button's aria-expanded, without rebuilding the grid.
+function markSelected() {
+  const box = S.nodes.list;
+  if (!box) return;
+  for (const tile of box.querySelectorAll(".motif-tile")) {
+    const btn = tile.querySelector("[data-open-id]");
+    const on = !!btn && btn.getAttribute("data-open-id") === S.selected;
+    tile.classList.toggle("is-selected", on);
+    if (btn) btn.setAttribute("aria-expanded", String(on));
+  }
+}
 
 function openDetail(id) {
   S.selected = id;
   S.returnFocus = id;
-  renderList();
+  markSelected();
   renderDetail();
-  const title = S.nodes.detail && S.nodes.detail.querySelector("#motif-detail-title");
-  if (title) title.focus({ preventScroll: !isPhone() });
-  if (!isPhone() && S.nodes.detail) S.nodes.detail.scrollIntoView({ block: "nearest" });
+  focusDetailTitle();
+  if (!isSheet() && S.nodes.detail) S.nodes.detail.scrollIntoView({ block: "nearest" });
 }
 
 function closeDetail() {
   const back = S.returnFocus;
   S.selected = null;
   S.returnFocus = null;
-  renderList();
+  markSelected();
   renderDetail();
   const btn = back && S.nodes.list.querySelector(`[data-open-id="${CSS.escape(back)}"]`);
   if (btn) btn.focus();
@@ -839,12 +870,12 @@ function onDetailKey(e) {
   else if (!e.shiftKey && at === last) { e.preventDefault(); first.focus(); }
 }
 
-// Sheet attributes follow the width: a modal dialog on phones, a labelled side panel on desktop.
+// Sheet attributes follow the width: a modal dialog below 900px, a labelled side panel on wider screens.
 function applyDetailMode() {
   const panel = S.nodes.detail;
   if (!panel) return;
   const card = S.selected ? cardById(S.selected) : null;
-  const modal = isPhone() && !!card;
+  const modal = isSheet() && !!card;
   panel.classList.toggle("is-open", !!card);
   if (modal) {
     panel.setAttribute("role", "dialog");
@@ -904,9 +935,11 @@ function renderDetail() {
   applyDetailMode();
 }
 
+// Crossing the breakpoint with a card open: entering sheet mode moves focus into the (now modal) sheet.
 function onMedia() {
   if (!S) return;
   applyDetailMode();
+  if (sheetOpen() && !inDetail()) focusDetailTitle();
 }
 
 // ---- page contract ------------------------------------------------------------
@@ -921,7 +954,7 @@ export async function mount(el, params, ctx) {
 
 function watchMedia() {
   if (typeof matchMedia !== "function") return;
-  S.mq = matchMedia(PHONE);
+  S.mq = matchMedia(SHEET);
   S.mq.addEventListener("change", onMedia);
 }
 
@@ -937,6 +970,12 @@ export function onCategory(category) {
   S = freshState(S.el, S.ctx, category);
   watchMedia();
   load();
+}
+
+// The router calls this before it shows the leave question: an open sheet (and its scrim) would cover the
+// question, so it closes first and focus goes back to the card; "계속 편집" then returns focus there.
+export function onStay() {
+  if (sheetOpen()) closeDetail();
 }
 
 // Unsaved preview edits (titles, ideas, which cards to keep) ask before leaving the page.

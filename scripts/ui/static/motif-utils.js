@@ -59,3 +59,17 @@ export function madeFrom(drafts, cardId) {
   return list(drafts).filter((d) => d && d.source === cardId && typeof d.path === "string")
     .map((d) => ({ path: d.path, title: (typeof d.title === "string" && d.title.trim()) || UNTITLED }));
 }
+
+const KIND_KO = { flow: "흐름", technique: "기법", angle: "각도", combo: "조합" };
+
+// Why a kind cannot be drawn yet in this category ("" = it can, or not a kind). `data` is /api/motif
+// (stage, has_typify, allowed_types; same rule as motif.allowed_types on the server).
+export function lockedReason(kind, data) {
+  if (!data || !KINDS.includes(kind)) return "";
+  const allowed = Array.isArray(data.allowed_types) ? data.allowed_types : [];
+  if (allowed.includes(kind)) return "";
+  if (data.stage === 3 && !data.has_typify && (kind === "flow" || kind === "combo")) {
+    return "흐름·조합 카드는 유형화를 마친 뒤에 나와요";
+  }
+  return `${KIND_KO[kind]} 카드는 레퍼런스가 더 모이면 뽑을 수 있어요`;
+}

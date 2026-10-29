@@ -123,3 +123,22 @@ def test_made_from_card():
     assert got == [{"path": "drafts/2026-10-25-a.md", "title": "부루마블 1탄"},
                    {"path": "drafts/2026-10-21-c.md", "title": "제목 없는 영상"}]
     assert run_js("m.madeFrom(null, 'x')") == []
+
+
+def reason(kind, data):
+    return run_js(f"m.lockedReason({json.dumps(kind)}, {json.dumps(data)})")
+
+
+def test_locked_reason_explains_kinds_the_category_cannot_make_yet():
+    # /api/motif fields: stage, has_typify, allowed_types
+    no_typify = {"stage": 3, "has_typify": False, "allowed_types": ["technique", "angle"]}
+    assert reason("flow", no_typify) == "흐름·조합 카드는 유형화를 마친 뒤에 나와요"
+    assert reason("combo", no_typify) == "흐름·조합 카드는 유형화를 마친 뒤에 나와요"
+    assert reason("technique", no_typify) == ""
+    stage1 = {"stage": 1, "has_typify": False, "allowed_types": ["technique"]}
+    assert reason("angle", stage1) == "각도 카드는 레퍼런스가 더 모이면 뽑을 수 있어요"
+    assert reason("flow", stage1) == "흐름 카드는 레퍼런스가 더 모이면 뽑을 수 있어요"
+    full = {"stage": 3, "has_typify": True, "allowed_types": ["flow", "technique", "angle", "combo"]}
+    assert [reason(k, full) for k in ("flow", "combo", "angle", "technique")] == ["", "", "", ""]
+    assert reason("all", stage1) == "" and reason("star", stage1) == ""
+    assert reason("flow", None) == ""
