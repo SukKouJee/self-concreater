@@ -166,6 +166,10 @@ def _candidate_lines(verdict: dict, names: _Names, present: dict[str, Path]) -> 
     return '<ul class="cands">' + "".join(items) + "</ul>" if items else ""
 
 
+# 참고 사진이 없는 남은 컷 칸(콘티 스토리보드는 이때 도식을 그리지만 남은 컷 목록은 빈 칸 안내를 둔다)
+NO_REF = '<figure><div class="noref">같은 샷의 레퍼런스 프레임 없음</div><figcaption>&nbsp;</figcaption></figure>'
+
+
 class _Images:
     """참고 사진을 한 번씩만 싣는다: 같은 사진은 CSS 클래스(배경 이미지) 하나를 함께 쓴다
     (긴 콘티는 같은 레퍼런스 프레임을 여러 컷이 써서, 컷마다 base64를 넣으면 수십 MB가 된다)."""
@@ -177,7 +181,7 @@ class _Images:
     def figure(self, ref: dict | None) -> str:
         uri = conti._data_uri(ref["frame"]) if ref else None
         if not uri or not ref:
-            return conti.ref_figure(None)
+            return NO_REF
         cls = self.classes.get(ref["frame"])
         if cls is None:
             cls = self.classes[ref["frame"]] = f"img{len(self.classes)}"

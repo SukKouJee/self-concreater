@@ -248,7 +248,10 @@ def test_html_embeds_reference_frames(draft_md, home):
     shots.write_text(json.dumps({"labels": [{"frame": frames[0], "size": "탑뷰", "section": "hook"}]}), encoding="utf-8")
     page = (home / conti.save(draft_md, conti_file(home))["html"]).read_text("utf-8")
     assert page.count("data:image/jpeg;base64,") == 1      # 탑뷰 컷 #1만 같은 크기 프레임이 있다
-    assert page.count("같은 샷의 레퍼런스 프레임 없음") == 3
+    # 사진이 주 그림: 사진이 있는 컷엔 도식이 없고, 사진이 없는 3컷만 도식을 보인다
+    assert page.count('class="sk"') == 3 and "같은 샷의 레퍼런스 프레임 없음" not in page
+    first = page.split('<article class="cut"')[1]
+    assert "data:image/jpeg;base64," in first and 'class="sk"' not in first
 
 
 # --- render ------------------------------------------------------------------------
@@ -263,7 +266,7 @@ def test_render_after_user_edit(draft_md, home):
     res = conti.render(out["path"])
     page = (home / res["html"]).read_text("utf-8")
     assert res["status"] == "rendered" and "사용자가 고친 가이드" in page
-    assert "0:05 · 1초" in page                             # 컷 3 시작이 2+3=5초로 다시 계산
+    assert "0:05 · " in page and "약 1초" in page            # 컷 3 시작이 2+3=5초로 다시 계산
 
 
 def test_render_rejects_broken_edit(draft_md, home):
@@ -1220,6 +1223,18 @@ def test_html_captions_content_and_composition(draft_md, home):
     data = with_cuts(c0={"ref_auto": auto(a[1])}, c3={"size": "탑뷰"})
     page = (home / conti.save(draft_md, conti_file(home, data))["html"]).read_text("utf-8")
     assert "참고 · 국물 한 숟갈" in page and "구도만 참고 · " in page and "참고(근사)" not in page
+
+
+def test_html_scene_header_length_and_pinned_caption(draft_md, home):
+    pin = pin_frame(home)
+    data = with_cuts(c1={"ref_frame": pin})
+    page = (home / conti.save(draft_md, conti_file(home, data))["html"]).read_text("utf-8")
+    assert "장면 4개" in page and "컷 4개" not in page and "평균" not in page.split("</p>")[0]
+    assert "약 2초" in page
+    pinned = page.split('<article class="cut"')[2]
+    assert "<figcaption" in pinned and "참고(고정)</figcaption>" in pinned and "pin.jpg" not in pinned
+    assert 'class="sk"' not in pinned and 'class="len"' in pinned
+    assert page.count('class="len"') == 4
 
 
 def test_save_keeps_only_ref_auto_from_described_candidates(draft_md, home):

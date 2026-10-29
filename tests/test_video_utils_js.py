@@ -197,8 +197,8 @@ def test_short_title():
 
 def test_conti_summary_and_shoot_line():
     conti = {"cuts": [{"sec": 2}, {"sec": 4}, {"sec": 3}], "total_sec": 900}
-    assert run_js(f"m.contiSummary({json.dumps(conti)})") == "3컷 · 15:00 · 평균 컷 300.0초"
-    assert run_js("m.contiSummary({cuts: [{sec: 3}, {sec: 3}], total_sec: 6})") == "2컷 · 0:06 · 평균 컷 3.0초"
+    assert run_js(f"m.contiSummary({json.dumps(conti)})") == "장면 3개 · 15:00 · 평균 300초"
+    assert run_js("m.contiSummary({cuts: [{sec: 3}, {sec: 3}], total_sec: 6})") == "장면 2개 · 0:06 · 평균 3초"
     assert run_js("m.contiSummary(null)") == ""
     assert run_js("m.contiSummary({cuts: [], total_sec: 0})") == ""
     assert run_js("m.shootLine(6, false)") == "촬영 0 / 6컷"

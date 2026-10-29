@@ -1,14 +1,17 @@
 // 콘티 화면
 //   #/conti            기획안 목록 + 콘티 만들기(작업 폴링 → 미리보기 → 저장)
 //   #/conti/<draft>    기획안 하나(콘티가 있으면 그 콘티로 바로 이동)
-//   #/conti/<conti>    편집: 왼쪽 컷 목록, 오른쪽 패널(레퍼런스 실제 장면 · 대사 대안 · 직접 고치기)
+//   #/conti/<conti>    편집: 장면 도구 줄(합치기 · 사진 설명 · 사진 다시 고르기, conti-scenes.js), 도구 줄(검색 · 구간 칩 ·
+//                      카드/리스트), 장면 카드 보드(conti-board.js) 또는 컷 목록, 패널(레퍼런스 실제 장면 · 대사 대안 · 직접 고치기)
 // 모든 컷 저장은 마지막으로 받은 hash를 보낸다. 파일이 밖에서 바뀌면 서버가 conti_changed로 거절한다.
 import { h, filesUrl } from "/static/dom.js";
 import { sectionLabelName } from "/static/labels.js";
 import {
-  SHOT_SIZES, alignCuts, canRemove, changeText, collapseChanges, dropTarget, fieldText, fmtClock, fmtDelta, fmtWhen, idOfN,
-  remapByCutId, snapSec, stepMove, versionLabel,
+  SHOT_SIZES, alignCuts, canRemove, changeText, collapseChanges, dropTarget, fieldText, filterCuts, fmtClock, fmtDelta, fmtWhen,
+  idOfN, refCaption, remapByCutId, sectionGroups, snapSec, stepMove, versionLabel,
 } from "/static/conti-utils.js";
+import { noMatch, readView, sceneCard, toolRow, writeView } from "/static/conti-board.js";
+import { mountSceneActions } from "/static/conti-scenes.js";
 import { mountFootageArea } from "/static/footage-area.js";
 import { KIND_TEXT, kindGroup } from "/static/footage-utils.js";
 
@@ -124,7 +127,8 @@ function freshState(el, params, ctx) {
     scenes: new Map(), alts: new Map(), forms: new Map(),
     nodes: {}, live: null, lastAnnounce: "",
     editing: false, undo: null, menu: null, drag: null, hist: freshHist(),
-    footage: null, verdicts: new Map(),
+    footage: null, verdicts: new Map(), actions: null,
+    view: readView(), q: "", section: "all",
   };
 }
 
@@ -551,7 +555,7 @@ async function loadEditor(keep = false) {
     mine.conflict = false;
     if (mine.sel !== null && !data.cuts.some((c) => c.n === mine.sel)) mine.sel = null;
     if (!keep || !mine.nodes.board) renderEditor();
-    else { renderHeader(); renderCutList(); renderPanel(); if (mine.footage) mine.footage.refresh(); }
+    else { renderHeader(); renderBoardTools(); renderCutList(); renderPanel(); if (mine.footage) mine.footage.refresh(); }
     if (!mine.fitChecked) { mine.fitChecked = true; resumeFit(); }
     if (!mine.cvChecked) { mine.cvChecked = true; loadCaptionVideo(); }
     refreshHistory();
@@ -579,14 +583,19 @@ function renderEditor() {
   if (!embedded()) S.el.append(h("p", { class: "crumb" }, h("a", { href: "#/conti" }, "← 콘티 목록")));
   S.nodes.header = h("div", { class: "conti-head" });
   S.nodes.conflict = h("div", { class: "conflict-slot" });
+  S.nodes.srt = h("div", { class: "srt-slot" });
   const vertical = S.data.fm.format === "shorts";
   S.nodes.tools = h("div", { class: "cut-tools" });
   S.nodes.list = h("ol", { class: "cut-list", "aria-label": "컷 목록" });
+  S.nodes.grid = h("ul", { class: "cb-grid", "aria-label": "장면 카드" });
+  S.nodes.gridCol = h("div", { class: "cb-col" }, S.nodes.grid);
+  S.nodes.boardTools = h("div", { class: "cb-tools-slot" });
   S.nodes.panel = h("section", { class: "cut-panel", "aria-labelledby": "panel-title" });
   S.nodes.board = h("div", { class: `conti-board ${vertical ? "is-vertical" : "is-wide"}` },
-    h("div", { class: "cut-col" }, S.nodes.tools, S.nodes.list), S.nodes.panel);
-  S.el.append(S.nodes.header, S.nodes.conflict, footageArea().el, S.nodes.board);
+    h("div", { class: "cut-col" }, S.nodes.tools, S.nodes.list), S.nodes.gridCol, S.nodes.panel);
+  S.el.append(S.nodes.header, S.nodes.conflict, sceneActions().el, footageArea().el, S.nodes.boardTools, S.nodes.board, S.nodes.srt);
   S.nodes.list.addEventListener("keydown", onListKey);
+  S.nodes.grid.addEventListener("keydown", onGridKey);
   wireDrag(S.nodes.list);
   S.nodes.list.parentElement.addEventListener("scroll", closeMenu, { passive: true });
   if (typeof ResizeObserver === "function") {
@@ -598,9 +607,95 @@ function renderEditor() {
     ro.observe(S.nodes.tools);
   }
   renderHeader();
+  renderBoardTools();
   renderCutList();
   renderPanel();
   mountHistory();
+}
+
+// ---- scene actions (장면으로 합치기 · 사진 설명 만들기 · 사진 다시 고르기) ----------------------------------
+// Mounted once per editor visit like the footage area. After a merge the editor redraws from the answer: drafts and
+// alternatives follow their scene by id (merged-away cuts drop theirs), scene lists are dropped.
+
+function sceneActions() {
+  if (S.actions) return S.actions;
+  const mine = S;
+  S.actions = mountSceneActions(S.ctx, {
+    path: S.data.path,
+    category: S.data.fm.category || null,
+    getData: () => mine.data,
+    getHash: () => mine.hash,
+    isBusy: () => mine.editing || mine.saving || mine.conflict,
+    onMerged: (res) => {
+      if (!alive(mine)) return;
+      const before = mine.data;
+      const selId = idOfN(before, mine.sel);
+      remapByCutId(mine.forms, before, res);
+      remapByCutId(mine.alts, before, res);
+      mine.scenes.clear();
+      mine.data = res;
+      mine.hash = res.hash;
+      mine.conflict = false;
+      const keep = selId && res.cuts.find((c) => c.id === selId);
+      mine.sel = keep ? keep.n : null;
+      renderHeader();
+      renderBoardTools();
+      renderCutList();
+      renderPanel();
+      refreshHistory();
+      if (mine.footage) mine.footage.refresh();
+      announce(`장면 ${res.cuts.length}개로 합쳤습니다`);
+    },
+    onReload: () => { if (alive(mine) && !mine.editing && !mine.saving) loadEditor(true); },
+  });
+  return S.actions;
+}
+
+// ---- board tools: search, section chips, card / list --------------------------------------------
+
+function shownCuts() {
+  return filterCuts(S.data.cuts, { q: S.q, section: S.section });
+}
+
+function renderBoardTools() {
+  const slot = S.nodes.boardTools;
+  if (!slot) return;
+  const keep = slot.contains(document.activeElement) ? document.activeElement.dataset.fk : null;
+  const cuts = S.data.cuts;
+  const groups = sectionGroups(S.data.fm.script, cuts);
+  if (S.section !== "all" && !groups.some((g) => g.key === S.section)) S.section = "all";
+  slot.replaceChildren(toolRow({
+    q: S.q, section: S.section, view: S.view, total: cuts.length, shown: shownCuts().length, groups,
+    onQuery: (q) => { S.q = q; updateCount(); renderCutList(); },
+    onSection: (key) => { S.section = key; renderBoardTools(); renderCutList(); },
+    onView: (view) => { S.view = view; writeView(view); renderBoardTools(); renderCutList(); renderPanel(); },
+  }));
+  S.nodes.board.classList.toggle("is-cards", S.view === "cards");
+  S.nodes.board.classList.toggle("is-list", S.view === "list");
+  if (keep) { const again = slot.querySelector(`[data-fk="${CSS.escape(keep)}"]`); if (again) again.focus(); }
+}
+
+// Typing in the search box only updates the "3/40개" count (the box itself is not rebuilt).
+function updateCount() {
+  const count = S.nodes.boardTools.querySelector(".cb-count");
+  const shown = shownCuts().length;
+  if (count) count.textContent = shown === S.data.cuts.length ? "" : `${shown}/${S.data.cuts.length}개`;
+}
+
+function clearFilter() {
+  S.q = "";
+  S.section = "all";
+  renderBoardTools();
+  renderCutList();
+  const box = S.nodes.boardTools.querySelector(".cb-search");
+  if (box) box.focus();
+}
+
+// The cut's button in the view on screen (card or list row).
+function navNode(id) {
+  if (!id) return null;
+  return S.view === "cards" ? S.nodes.grid.querySelector(`[data-nav="card:${CSS.escape(id)}"]`)
+    : S.nodes.list.querySelector(`[data-nav="cut:${CSS.escape(id)}"]`);
 }
 
 // ---- footage area (촬영 영상) -------------------------------------------------------------
@@ -628,7 +723,7 @@ function footageArea() {
       const cut = mine.data.cuts.find((c) => c.id === id);
       if (!cut) return;
       selectCut(cut.n);
-      const row = mine.nodes.list.querySelector(`[data-nav="cut:${CSS.escape(id)}"]`);
+      const row = navNode(id);
       if (row) { row.scrollIntoView({ block: "nearest" }); if (!window.matchMedia(NARROW).matches) row.focus({ preventScroll: true }); }
     },
   });
@@ -655,6 +750,7 @@ async function reloadAfterFootageInsert(mine, cutId) {
     const added = cutId && data.cuts.find((c) => c.id === cutId);
     if (added) { showEdited(added.id, true, false); return; }
     renderHeader();
+    renderBoardTools();
     renderCutList();
     renderPanel();
     refreshHistory();
@@ -681,14 +777,15 @@ function renderHeader() {
   const head = S.nodes.header;
   const meta = h("p", { class: "meta-line muted" },
     h("span", { class: "tag" }, fm.format === "shorts" ? "쇼츠" : "롱폼"),
-    h("span", {}, `컷 ${d.cuts.length}개`),
+    h("span", {}, `장면 ${d.cuts.length}개`),
     h("span", { class: "total-delta" }, fmtDelta(d.total_sec, d.target_sec)),
     h("span", {}, `말 속도 ${fm.speech_cps}자/초`));
   if (fm.category) meta.append(h("span", { class: "tag" }, fm.category));
   const actions = h("div", { class: "btn-row" });
   actions.append(historyButton());
   if (d.html && !embedded()) actions.append(h("a", { class: "btn", href: filesUrl(d.html), target: "_blank", rel: "noopener" }, "스토리보드 HTML"));
-  head.replaceChildren(h("div", { class: "conti-title" }, pageHeading(fm.title || d.path), actions), meta, srtRow());
+  head.replaceChildren(h("div", { class: "conti-title" }, pageHeading(fm.title || "콘티"), actions), meta);
+  if (S.nodes.srt) S.nodes.srt.replaceChildren(srtBox());
   const warns = d.warnings || [];
   if (warns.length) {
     head.append(h("details", { class: "warn-box" },
@@ -696,9 +793,25 @@ function renderHeader() {
       h("ul", { class: "warn-list" }, ...warns.map((w) => h("li", {}, w.message)))));
   }
   renderConflict();
+  if (S.actions) S.actions.refresh();
 }
 
-const SRT_HINT = "CapCut PC: 캡션 → 자막 불러오기에서 이 파일을 고르세요. 콘티 시간 기준이라 실제 편집과 어긋나면 자막 칸을 끌어 맞추세요";
+const SRT_HINT = "CapCut PC: 캡션 → 자막 불러오기에서 받은 자막 파일을 고르세요. 콘티 시간 기준이라 실제 편집과 어긋나면 자막 칸을 끌어 맞추세요";
+const TRACK_TEXT = { caption: "자막", line: "대사" };
+
+// SRT, edited-video fit and the caption video sit under the board, folded (they come after filming and editing).
+// The open state survives redraws (S.srtOpen); a stale output note shows on the folded line too.
+function srtBox() {
+  const stale = S.data.outputs_stale && (S.data.outputs_stale.srt || S.data.outputs_stale.video);
+  const box = h("details", { class: "srt-box card" },
+    h("summary", {}, h("span", { class: "srt-box-title" }, "자막 내보내기"),
+      h("span", { class: "muted small" }, " CapCut용 SRT · 움직이는 자막 영상"),
+      stale ? h("span", { class: "stale-note srt-box-stale" }, " · 콘티가 바뀌어 다시 받아야 해요") : null),
+    srtRow());
+  box.open = !!S.srtOpen;
+  box.addEventListener("toggle", () => { S.srtOpen = box.open; });
+  return box;
+}
 
 function srtRow() {
   const note = h("p", { class: "muted srt-note", role: "status", "aria-live": "polite" }, S.srtMsg || "");
@@ -730,7 +843,7 @@ function srtFitBox() {
   const inputId = "srtfit-video";
   const input = h("input", {
     type: "text", id: inputId, class: "srtfit-input", value: S.fitVideo || "", autocomplete: "off", spellcheck: "false",
-    placeholder: "예: C:\\Users\\…\\Videos\\편집본.mp4", "aria-describedby": "srtfit-hint",
+    placeholder: "편집본 영상 파일의 경로", "aria-describedby": "srtfit-hint",
   });
   input.addEventListener("input", () => { S.fitVideo = input.value; });
   const caption = h("button", { type: "button", class: "btn", disabled: busy }, "실제 컷에 맞춰 SRT 받기");
@@ -750,7 +863,7 @@ function srtFitBox() {
     } else {
       const name = d.preview.path.split("/").pop();
       status.append(h("p", { class: "srt-note" }, `${fitSummary(d.preview)} · `,
-        h("a", { class: "btn", href: d.preview.url, download: name }, `${name} 받기`)));
+        h("a", { class: "btn", href: d.preview.url, download: name }, `맞춘 ${TRACK_TEXT[d.track] || "자막"} SRT 받기`)));
     }
     const warns = (d.preview.retime && d.preview.retime.warnings) || [];
     if (warns.length) status.append(h("ul", { class: "warn-list" }, ...warns.map((w) => h("li", {}, w))));
@@ -776,7 +889,7 @@ function adoptFit(job) {
   S.fitJob = job;
   const item = job.items && job.items[0];
   if (job.status === "done" && item && item.state === "done" && item.preview) {
-    S.fitDone = { preview: item.preview };
+    S.fitDone = { preview: item.preview, track: S.fitTrack };
     S.fitError = "";
     const r = item.preview.retime || {};
     announce(`자막 시간 맞추기가 끝났습니다. 컷 ${r.snapped ?? 0}/${r.inner ?? 0}개를 맞췄습니다`);
@@ -799,6 +912,7 @@ async function startFit(track, input) {
     return;
   }
   mine.fitStarting = true;
+  mine.fitTrack = track;
   mine.fitError = "";
   mine.fitDone = null;
   refreshFit();
@@ -905,7 +1019,7 @@ function captionVideoBox() {
     const p = S.cvDone.preview;
     const name = p.path.split("/").pop();
     status.append(h("p", { class: "srt-note" }, `${p.width}×${p.height} · ${fmtSec(p.duration_sec)} · 자막 ${p.count}개 · `,
-      h("a", { class: "btn", href: p.url, download: name }, `${name} 받기`)),
+      h("a", { class: "btn", href: p.url, download: name }, "자막 영상 받기")),
     h("p", { class: "muted hint" }, CV_HINT));
   }
   const err = h("p", { class: "error field-error", role: "alert" }, S.cvError || "");
@@ -1081,7 +1195,7 @@ async function exportSrt(track, buttons, note) {
       document.body.append(a);
       a.click();
       a.remove();
-      mine.srtMsg = `${res.path.split("/").pop()} (${res.count}개) · ${SRT_HINT}`;
+      mine.srtMsg = `${TRACK_TEXT[track] || "자막"} SRT를 받았어요 (${res.count}개) · ${SRT_HINT}`;
     }
     note.textContent = mine.srtMsg;
   } catch (e) {
@@ -1126,7 +1240,14 @@ function selectedId() {
   return c ? c.id : null;
 }
 
+// Redraws the view on screen: the card grid, or the cut list. A search or section filter hides scenes in both; the
+// list then has no insert slots and no drag handles (the slots would sit between scenes that are not neighbours).
 function renderCutList(focusKey = null) {
+  closeMenu(false);
+  // only the view on screen holds scene buttons (no hidden duplicates of every data-nav)
+  if (S.view === "cards") { S.nodes.list.replaceChildren(); renderCards(focusKey); return; }
+  S.nodes.grid.replaceChildren();
+  S.nodes.gridCol.querySelector(".cb-empty")?.remove();
   const list = S.nodes.list;
   const col = list.parentElement;
   const scroll = col ? col.scrollTop : 0;
@@ -1134,23 +1255,29 @@ function renderCutList(focusKey = null) {
   const keep = focusKey || (list.contains(active) && active.dataset ? active.dataset.nav || null : null);
   const warn = warnCutSet();
   const cuts = S.data.cuts;
-  const tabId = selectedId() || (cuts[0] || {}).id;
+  const shown = new Set(shownCuts().map((c) => c.id));
+  const filtered = shown.size !== cuts.length;
+  const tabId = [selectedId(), ...cuts.map((c) => c.id)].find((id) => id && shown.has(id));
   closeMenu(false);
   list.replaceChildren();
+  list.classList.toggle("is-filtered", filtered);
   S.data.fm.script.forEach((sec, si) => {
-    const mine = cuts.filter((c) => c.section === si);
-    const head = h("div", { class: "sec-head", "data-section": String(si), "data-gap": String(mine.length ? cuts.indexOf(mine[0]) : cuts.length) },
+    const all = cuts.filter((c) => c.section === si);
+    const mine = all.filter((c) => shown.has(c.id));
+    if (filtered && !mine.length) return;
+    const head = h("div", { class: "sec-head", "data-section": String(si), "data-gap": String(all.length ? cuts.indexOf(all[0]) : cuts.length) },
       sectionTag(sec.label),
       h("span", { class: "sec-range num" }, `${fmtClock(sec.start)}–${fmtClock(sec.end)}`),
-      h("span", { class: "sec-count muted" }, `컷 ${mine.length}개`));
-    const rows = h("ul", { class: "sec-cuts", "aria-label": `${sectionLabelName(sec.label)} 컷` });
-    if (mine.length) rows.append(gapItem(cuts.indexOf(mine[0]), si, null));
+      h("span", { class: "sec-count muted" }, filtered ? `장면 ${mine.length}/${all.length}개` : `장면 ${all.length}개`));
+    const rows = h("ul", { class: "sec-cuts", "aria-label": `${sectionLabelName(sec.label)} 장면` });
+    if (mine.length && !filtered) rows.append(gapItem(cuts.indexOf(mine[0]), si, null));
     for (const c of mine) {
-      rows.append(cutRow(c, warn.has(c.n), c.id === tabId));
-      rows.append(gapItem(cuts.indexOf(c) + 1, si, c));
+      rows.append(cutRow(c, warn.has(c.n), c.id === tabId, !filtered));
+      if (!filtered) rows.append(gapItem(cuts.indexOf(c) + 1, si, c));
     }
     list.append(h("li", { class: "sec-group" }, head, rows));
   });
+  if (!shown.size) list.append(h("li", {}, noMatch(clearFilter)));
   if (col) col.scrollTop = scroll;
   if (keep) {
     const again = list.querySelector(`[data-nav="${CSS.escape(keep)}"]`);
@@ -1167,14 +1294,15 @@ function gapItem(at, section, after) {
   return h("li", { class: "cut-gap", "data-gap": String(at), "data-section": String(section) }, btn);
 }
 
-function cutRow(c, w, isTab) {
+function cutRow(c, w, isTab, movable = true) {
   const selected = c.n === S.sel;
   const btn = h("button", {
     type: "button", class: "cut-item" + (selected ? " is-selected" : ""), "data-n": String(c.n), "data-id": c.id,
     "data-nav": `cut:${c.id}`, "aria-current": selected ? "true" : false, tabindex: isTab ? "0" : "-1",
   });
+  // the photo is the picture; the shot sketch only when the scene has no photo
   const sk = h("span", { class: "cut-sketch" });
-  const svg = sanitizeSvg(c.sketch);
+  const svg = c.ref ? null : sanitizeSvg(c.sketch);
   if (svg) sk.append(svg);
   const top = h("span", { class: "cut-top" },
     h("span", { class: "cut-n" }, `#${c.n}`),
@@ -1189,13 +1317,67 @@ function cutRow(c, w, isTab) {
   btn.append(sk, body, ref);
   btn.addEventListener("click", () => selectCut(c.n));
 
-  const handle = h("span", { class: "cut-handle", draggable: "true", "aria-hidden": "true", title: "끌어서 순서 바꾸기" }, "⋮⋮");
+  const handle = movable ? h("span", { class: "cut-handle", draggable: "true", "aria-hidden": "true", title: "끌어서 순서 바꾸기" }, "⋮⋮")
+    : h("span", { class: "cut-handle is-off", "aria-hidden": "true" });
+  return h("li", { class: "cut-row", "data-id": c.id }, handle, btn, moreButton(c, isTab));
+}
+
+function moreButton(c, isTab) {
   const more = h("button", {
-    type: "button", class: "cut-more", "aria-haspopup": "menu", "aria-expanded": "false", "aria-label": `컷 ${c.n} 메뉴`,
+    type: "button", class: "cut-more", "aria-haspopup": "menu", "aria-expanded": "false", "aria-label": `장면 ${c.n} 메뉴`,
     "data-nav": `more:${c.id}`, tabindex: isTab ? "0" : "-1",
   }, "⋯");
   more.addEventListener("click", () => (S.menu && S.menu.id === c.id ? closeMenu() : openMenu(more, c)));
-  return h("li", { class: "cut-row", "data-id": c.id }, handle, btn, more);
+  return more;
+}
+
+// ---- card grid ------------------------------------------------------------------------------
+// One Tab stop for the grid (the selected card, else the first); arrow keys move between cards. ⋯ on each card has
+// the same menu as the list (넣기 · 복제 · 삭제, plus 앞으로 / 뒤로 옮기기 here since cards have no drag).
+
+function renderCards(focusKey = null) {
+  const grid = S.nodes.grid;
+  const active = document.activeElement;
+  const keep = focusKey ? focusKey.replace(/^cut:/, "card:")
+    : (grid.contains(active) && active.dataset ? active.dataset.nav || null : null);
+  const warn = warnCutSet();
+  const shown = shownCuts();
+  const tabId = [selectedId(), ...shown.map((c) => c.id)].find((id) => id && shown.some((c) => c.id === id));
+  closeMenu(false);
+  grid.replaceChildren(...shown.map((c) => sceneCard(c, {
+    selected: c.n === S.sel, isTab: c.id === tabId, warn: warn.has(c.n), dot: verdictDot(c),
+    onOpen: () => selectCut(c.n), more: moreButton(c, c.id === tabId),
+  })));
+  S.nodes.gridCol.querySelector(".cb-empty")?.remove();
+  if (!shown.length) S.nodes.gridCol.append(noMatch(clearFilter));
+  if (keep) {
+    const again = grid.querySelector(`[data-nav="${CSS.escape(keep)}"]`);
+    if (again) again.focus({ preventScroll: true });
+  }
+}
+
+function onGridKey(e) {
+  const keys = ["ArrowDown", "ArrowUp", "Home", "End", "ArrowRight", "ArrowLeft"];
+  const cur = document.activeElement;
+  if (!keys.includes(e.key) || !cur.classList.contains("cb-open")) return;
+  const cards = [...S.nodes.grid.querySelectorAll(".cb-open")];
+  const i = cards.indexOf(cur);
+  if (i < 0) return;
+  e.preventDefault();
+  // up / down jump a row: count the cards sharing the first card's top edge
+  const top = cards[0].offsetTop;
+  const cols = Math.max(1, cards.filter((b) => b.offsetTop === top).length);
+  const step = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: cols, ArrowUp: -cols }[e.key];
+  let j = e.key === "Home" ? 0 : e.key === "End" ? cards.length - 1 : i + step;
+  j = Math.max(0, Math.min(cards.length - 1, j));
+  for (const b of cards) {
+    b.setAttribute("tabindex", "-1");
+    b.closest(".cb-card").querySelector(".cut-more").setAttribute("tabindex", "-1");
+  }
+  cards[j].setAttribute("tabindex", "0");
+  cards[j].closest(".cb-card").querySelector(".cut-more").setAttribute("tabindex", "0");
+  cards[j].focus();
+  cards[j].scrollIntoView({ block: "nearest" });
 }
 
 function onListKey(e) {
@@ -1279,6 +1461,15 @@ function openMenu(btn, cut) {
     { label: "복제", run: () => duplicateCut(cut.id) },
     { label: "삭제", danger: true, disabled: !removable, title: LAST_CUT_TEXT, run: () => deleteCut(cut.id) },
   ];
+  if (S.view === "cards") {
+    const step = (dir) => {
+      const st = stepMove(cuts, cut.id, dir);
+      return { disabled: !st || (st.crosses && !removable), title: !st ? (dir < 0 ? "맨 앞 장면입니다" : "맨 뒤 장면입니다") : LAST_CUT_TEXT };
+    };
+    entries.splice(2, 0,
+      { label: "앞으로 옮기기", ...step(-1), run: () => moveStep(cut.id, -1) },
+      { label: "뒤로 옮기기", ...step(1), run: () => moveStep(cut.id, 1) });
+  }
   const menu = h("div", { class: "cut-menu", role: "menu", "aria-label": `컷 ${cut.n} 메뉴` });
   const items = entries.map((en) => {
     const it = h("button", {
@@ -1288,7 +1479,7 @@ function openMenu(btn, cut) {
     it.addEventListener("click", () => {
       if (en.disabled) return;
       closeMenu(false);
-      const row = S.nodes.list.querySelector(`[data-nav="cut:${cut.id}"]`);
+      const row = navNode(cut.id);
       if (row) row.focus({ preventScroll: true });
       en.run();
     });
@@ -1324,9 +1515,11 @@ function selectCut(n) {
   const narrow = window.matchMedia(NARROW).matches;
   if (S.sel !== n) {
     S.sel = n;
-    for (const b of S.nodes.list.querySelectorAll(".cut-item")) {
+    for (const b of S.nodes.board.querySelectorAll(".cut-item, .cb-open")) {
       const on = Number(b.dataset.n) === n;
       b.classList.toggle("is-selected", on);
+      const card = b.closest(".cb-card");
+      if (card) card.classList.toggle("is-selected", on);
       if (on) b.setAttribute("aria-current", "true"); else b.removeAttribute("aria-current");
     }
     renderPanel();
@@ -1351,24 +1544,29 @@ function renderPanel() {
   const cut = currentCut();
   const focusKey = panel.contains(document.activeElement) && document.activeElement.dataset ? document.activeElement.dataset.fk : null;
   const caret = focusKey && "selectionStart" in document.activeElement ? document.activeElement.selectionStart : null;
+  S.nodes.board.classList.toggle("has-sel", !!cut);
   if (!cut) {
-    panel.replaceChildren(h("h2", { id: "panel-title", tabindex: "-1" }, "컷을 고르세요"),
-      h("p", { class: "muted" }, "컷 목록에서 컷을 누르면 여기에 레퍼런스 실제 장면과 대사 대안이 나옵니다. 대안은 Claude가 만들기 때문에 10초~1분 걸립니다."));
+    panel.replaceChildren(h("h2", { id: "panel-title", tabindex: "-1" }, "장면을 고르세요"),
+      h("p", { class: "muted" }, "장면을 누르면 여기에 레퍼런스 실제 장면과 대사 대안이 나옵니다. 대안은 Claude가 만들기 때문에 10초~1분 걸립니다."));
     return;
   }
-  const back = h("button", { type: "button", class: "btn back-to-list" }, "다른 컷 고르기");
+  // list view: on narrow screens, back up to the list. card view: close the panel and go back to the card.
+  const cards = S.view === "cards";
+  const back = h("button", { type: "button", class: cards ? "btn btn-s panel-close" : "btn back-to-list", "data-fk": "panel-close" },
+    cards ? "닫기" : "다른 컷 고르기");
   back.addEventListener("click", () => {
-    const b = S.nodes.list.querySelector(`[data-n="${cut.n}"]`);
+    const id = cut.id;
+    if (cards) { S.sel = null; renderPanel(); renderCards(); }
+    const b = navNode(id);
     if (b) { b.scrollIntoView({ block: "center" }); b.focus(); }
   });
-  const svg = sanitizeSvg(cut.sketch);
-  const compare = h("div", { class: "cut-compare" },
-    h("figure", {}, h("div", { class: "fig-box" }, svg || ""), h("figcaption", {}, `도식 · ${cut.size}`)),
-    h("figure", {},
-      h("div", { class: "fig-box" }, cut.ref
-        ? h("img", { src: filesUrl(cut.ref.frame), alt: `참고 프레임: ${cut.ref.title || ""}` })
-        : h("span", { class: "muted" }, "참고 프레임 없음")),
-      h("figcaption", {}, cut.ref ? `${MATCH_TEXT[cut.ref.match] || "참고"} · ${cut.ref.desc || cut.ref.title || ""}` : "참고 프레임")));
+  // the scene photo is the picture; the shot sketch only when there is no photo
+  const svg = cut.ref ? null : sanitizeSvg(cut.sketch);
+  const compare = h("div", { class: "cut-compare" }, cut.ref
+    ? h("figure", {},
+      h("div", { class: "fig-box" }, h("img", { src: filesUrl(cut.ref.frame), alt: `참고 사진: ${cut.ref.desc || ""}` })),
+      h("figcaption", {}, refCaption(cut.ref)))
+    : h("figure", {}, h("div", { class: "fig-box" }, svg || ""), h("figcaption", {}, `도식 · ${cut.size} · 참고 사진 없음`)));
   const info = h("div", { class: "cut-info" },
     h("p", { class: "panel-line" + (cut.line ? "" : " muted") }, cut.line ? `“${cut.line}”` : "(대사 없음)"),
     cut.action ? h("p", { class: "muted small" }, `장면 · ${cut.action}`) : null,
@@ -1378,7 +1576,7 @@ function renderPanel() {
   S.nodes.alts = h("div", { class: "panel-body" });
   panel.replaceChildren(
     h("div", { class: "panel-head" },
-      h("h2", { id: "panel-title", tabindex: "-1" }, `컷 ${cut.n}`,
+      h("h2", { id: "panel-title", tabindex: "-1" }, `장면 ${cut.n}`,
         h("span", { class: "panel-sub" }, sectionTag(cut.label), ` ${cut.size} · ${fmtSec(cut.sec)}`)),
       back),
     h("div", { class: "panel-top" }, compare, info),
@@ -1444,10 +1642,11 @@ function renderScenes(n) {
       const btn = h("button", {
         type: "button", class: "scene" + (on ? " is-pinned" : ""), "aria-pressed": String(on),
         "data-fk": `scene:${sc.frame}`, disabled: S.saving,
-        "aria-label": `${sc.title || sc.video} · ${sc.size} · ${sc.section || ""} ${on ? "(고정됨)" : "고정하기"}`,
+        "aria-label": `${sc.desc ? `${sc.desc} · ` : ""}${sc.title || sc.video} · ${sc.size} · ${sc.section || ""} ${on ? "(고정됨)" : "고정하기"}`,
       },
       h("img", { src: filesUrl(sc.frame), alt: "", loading: "lazy" }),
       h("span", { class: "scene-meta" },
+        sc.desc ? h("span", { class: "scene-desc" }, sc.desc) : null,
         h("span", { class: "scene-title" }, sc.title || sc.video),
         h("span", { class: "scene-tags" },
           h("span", { class: `badge match-${sc.match}` }, sc.match === "exact" ? "일치" : "근사"),
@@ -1780,14 +1979,15 @@ function showEdited(focusId, select, refreshFootage = true) {
   const cut = S.data.cuts.find((c) => c.id === focusId) || S.data.cuts[0];
   if (select && cut) S.sel = cut.n;
   renderHeader();
+  renderBoardTools();
   renderCutList(cut ? `cut:${cut.id}` : null);
   renderPanel();
   if (cut) {
-    const btn = S.nodes.list.querySelector(`[data-nav="cut:${cut.id}"]`);
+    const btn = navNode(cut.id);
     if (btn) {
-      for (const b of S.nodes.list.querySelectorAll(".cut-item, .cut-more")) b.setAttribute("tabindex", "-1");
+      for (const b of S.nodes.board.querySelectorAll(".cut-item, .cb-open, .cut-more")) b.setAttribute("tabindex", "-1");
       btn.setAttribute("tabindex", "0");
-      btn.closest(".cut-row").querySelector(".cut-more").setAttribute("tabindex", "0");
+      btn.closest(".cut-row, .cb-card").querySelector(".cut-more").setAttribute("tabindex", "0");
       btn.focus({ preventScroll: true });
       btn.scrollIntoView({ block: "nearest" });
     }
@@ -1818,7 +2018,7 @@ function moveStep(id, dir) {
   moveCut(id, step.to, step.section).then(() => {
     const btn = S.nodes.tools && S.nodes.tools.querySelector(`[data-tool="${dir < 0 ? "up" : "down"}"]`);
     if (btn && !btn.disabled) btn.focus({ preventScroll: true });
-    else { const row = S.nodes.list.querySelector(`[data-nav="cut:${id}"]`); if (row) row.focus({ preventScroll: true }); }
+    else { const row = navNode(id); if (row) row.focus({ preventScroll: true }); }
   });
 }
 
@@ -1834,6 +2034,8 @@ async function deleteCut(id) {
   if (!canRemove(cuts, id)) { S.ctx.toast(LAST_CUT_TEXT, "error"); return; }
   const fields = {};
   for (const k of RESTORE_KEYS) if (cut[k] !== undefined && cut[k] !== null && cut[k] !== "") fields[k] = cut[k];
+  // a merged scene can be any length (7.2s); putting it back goes through the 0.5s grid of POST /api/conti/cuts
+  if ("sec" in fields) fields.sec = snapSec(fields.sec);
   const res = await editCuts({ op: "delete", id });
   if (!res) return;
   const next = res.cuts[Math.min(index, res.cuts.length - 1)];
@@ -1876,7 +2078,7 @@ function showUndo(info) {
   clearUndo();
   const mine = S;
   const undo = h("button", { type: "button", class: "btn btn-sm", title: "Ctrl+Z" }, "되돌리기");
-  const el = h("div", { class: "toast toast-undo", role: "status" }, h("span", {}, `컷 ${info.n}을 지웠습니다`), undo);
+  const el = h("div", { class: "toast toast-undo", role: "status" }, h("span", {}, `${info.n}번 장면을 지웠습니다`), undo);
   const u = { el, timer: null, onKey: null, hold: 0 };
   const arm = () => { clearTimeout(u.timer); u.timer = setTimeout(() => { if (mine.undo === u) clearUndo(); }, UNDO_MS); };
   const hold = () => { clearTimeout(u.timer); };
@@ -2418,6 +2620,7 @@ export function unsavedNote() {
 
 export function unmount() {
   if (S && S.footage) S.footage.unmount();
+  if (S && S.actions) S.actions.unmount();
   stopPolling();
   closeMenu(false);
   clearUndo();

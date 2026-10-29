@@ -1362,6 +1362,57 @@ def test_conti_page_uses_new_ref_match_values():
     assert 'const MATCH_TEXT = { pinned: "참고(고정)", content: "참고", composition: "구도만 참고" };' in text
     badge = text[text.index("function matchBadge"):text.index("// Cut list")]
     assert 'match === "content"' in badge and "exact" not in badge
-    assert '${MATCH_TEXT[cut.ref.match] || "참고"} · ${cut.ref.desc || cut.ref.title || ""}' in text
+    assert "refCaption(cut.ref)" in text                     # 참고 · <설명> / 구도만 참고 · <설명> / 참고(고정)
     css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
     assert ".badge.match-composition" in css
+
+
+# ---- Phase 3: conti card board, scene actions --------------------------------------------------
+
+def test_conti_board_files_served(client):
+    for rel in ["conti-board.js", "conti-scenes.js"]:
+        status, headers, _ = client.call("GET", f"/static/{rel}")
+        assert status == 200 and "javascript" in headers["Content-Type"], rel
+
+
+def test_conti_board_tool_row_and_cards():
+    board = _js("conti-board.js")
+    for token in ['"장면 검색"', '"구간 필터"', '"보기 방식"', '"카드"', '"리스트"', '"전체"', "aria-pressed", "localStorage",
+                  "try {", "ytc.conti.view", "cardStamp(c)", "aboutSec(c.sec)", "refCaption(c.ref)", "filesUrl(c.ref.frame)",
+                  "“${c.line}”", '"찾는 장면이 없어요"', '"필터 지우기"', "tag(sectionLabelName(c.label), tagKind(c.label))"]:
+        assert token in board, token
+    conti = _js("pages/conti.js")
+    for token in ['from "/static/conti-board.js"', 'from "/static/conti-scenes.js"', "filterCuts(", "sectionGroups(",
+                  "function renderCards", "function onGridKey", "selectCut(c.n)", "writeView(view)", '"앞으로 옮기기"',
+                  '"뒤로 옮기기"', "has-sel", "panel-close", "장면 ${d.cuts.length}개"]:
+        assert token in conti, token
+    # the photo is the picture: the sketch only when a scene has no photo (list rows and the panel)
+    assert conti.count("c.ref ? null : sanitizeSvg(c.sketch)") == 1 and "cut.ref ? null : sanitizeSvg(cut.sketch)" in conti
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    assert "repeat(auto-fill, minmax(210px, 1fr))" in _rule(css, ".cb-grid")
+    assert "height: 112px" in _rule(css, ".cb-frame")
+
+
+def test_conti_scene_actions_contract():
+    js = _js("conti-scenes.js")
+    for token in ['"장면으로 합치기"', '"사진 설명 만들기"', '"사진 다시 고르기"', "/api/conti/merge/preview", "/api/conti/merge/apply",
+                  "/api/refs/describe-status?category=", '"/api/refs/describe"', "/api/conti/refs/pick", "/cancel",
+                  "nothing_to_merge", "conti_changed", "no_ref_descs", "data-job-kind", "conti_merge", "refs_describe",
+                  "conti_refs", "mergeApplyCuts(preview)", "hash: preview.hash", "mergeView(preview)", "describeHint(",
+                  "hasRepeats(", "isCurrent()", "clearTimeout", "aria-live", "markHandled", "장면으로 합치기 미리보기",
+                  "컷 ${preview.before}개 → 장면 ${preview.after}개", "line_too_long"]:
+        assert token in js, token
+    for banned in ["innerHTML", "outerHTML", "insertAdjacentHTML", "confirm(", "alert(", "prompt("]:
+        assert banned not in js, banned
+    # merge save redraws the editor from the answer with drafts following their scene by id
+    conti = _js("pages/conti.js")
+    merged = conti[conti.index("onMerged: (res) =>"):conti.index("onReload:")]
+    for token in ["remapByCutId(mine.forms, before, res)", "remapByCutId(mine.alts, before, res)", "mine.scenes.clear()",
+                  "mine.hash = res.hash"]:
+        assert token in merged, token
+
+
+def test_conti_tab_hides_file_names():
+    conti = _js("pages/conti.js")
+    for gone in ['split("/").pop()} (', "${name} 받기", "C:\\\\Users", "fm.title || d.path"]:
+        assert gone not in conti, gone

@@ -184,6 +184,113 @@ export function collapseChanges(changes) {
   return out;
 }
 
+// ---- card board (tool row, cards, scene actions) -------------------------------------------------
+
+// Section filter groups: 도입 = hook + intro, 마무리 = cta + outro, 본론 = everything else (body, demo, transition).
+export const SECTION_GROUPS = [{ key: "intro", label: "도입" }, { key: "main", label: "본론" }, { key: "end", label: "마무리" }];
+const GROUP_OF = { hook: "intro", intro: "intro", cta: "end", outro: "end" };
+export const sectionGroupOf = (label) => GROUP_OF[label] || "main";
+
+// Filter chips present in this conti: [{key, label, count}]. count = cuts in the group when cuts are given, else sections.
+export function sectionGroups(script, cuts) {
+  const labels = Array.isArray(cuts) ? cuts.map((c) => c.label) : (Array.isArray(script) ? script : []).map((s) => s && s.label);
+  const count = {};
+  for (const l of labels) { const g = sectionGroupOf(l); count[g] = (count[g] || 0) + 1; }
+  return SECTION_GROUPS.filter((g) => count[g.key]).map((g) => ({ ...g, count: count[g.key] }));
+}
+
+const SEARCH_KEYS = ["action", "line", "guide", "caption", "sfx", "size", "angle"];
+
+// Search box + section chip. Every word of q must appear in the scene's text (or its photo description);
+// a bare number or "#3" also finds scene 3.
+export function filterCuts(cuts, { q = "", section = "all" } = {}) {
+  if (!Array.isArray(cuts)) return [];
+  const words = String(q || "").toLowerCase().split(/\s+/).filter(Boolean);
+  const num = words.length === 1 && /^#?\d+$/.test(words[0]) ? Number(words[0].replace("#", "")) : null;
+  return cuts.filter((c) => {
+    if (section && section !== "all" && sectionGroupOf(c.label) !== section) return false;
+    if (!words.length) return true;
+    if (num !== null) return c.n === num;
+    const text = [...SEARCH_KEYS.map((k) => c[k]), c.ref && c.ref.desc].filter(Boolean).join(" ").toLowerCase();
+    return words.every((w) => text.includes(w));
+  });
+}
+
+const MATCH_LABEL = { pinned: "참고(고정)", content: "참고", composition: "구도만 참고" };
+
+// Caption under a scene photo: "참고 · <설명>", "구도만 참고 · <설명>", "참고(고정)". A pinned photo's title is its
+// file name, so only its description is shown.
+export function refCaption(ref) {
+  if (!ref) return "";
+  const label = MATCH_LABEL[ref.match] || MATCH_LABEL.composition;
+  const what = ref.desc || (ref.match === "pinned" ? "" : ref.title || "");
+  return what ? `${label} · ${what}` : label;
+}
+
+function secText(sec) {
+  const n = Number(sec) || 0;
+  return String(n >= 10 ? Math.round(n) : Math.round(n * 10) / 10);
+}
+
+// Scene length on a card: "약 25초".
+export const aboutSec = (sec) => `약 ${secText(sec)}초`;
+
+// Frame badge: "01 · 0:00–0:10".
+export function cardStamp(c) {
+  return `${String(c.n).padStart(2, "0")} · ${clock(c.start)}–${clock(c.end)}`;
+}
+
+// ui.js tag kind for a section label (transition shows as the 체크 tag color).
+const TAG_OF = { hook: "hook", intro: "intro", transition: "check", cta: "outro", outro: "outro" };
+export const tagKind = (label) => TAG_OF[label] || "body";
+
+// Same rule as scripts/scene_merge.groups: cuts in one section whose action matches once spaces and punctuation are
+// dropped are one scene. True when some scene is still repeated (장면으로 합치기 is offered).
+const bare = (t) => String(t || "").replace(/[^\p{L}\p{N}]+/gu, "");
+export function hasRepeats(cuts) {
+  const seen = new Set();
+  for (const c of Array.isArray(cuts) ? cuts : []) {
+    const key = `${c.section}\u0000${bare(c.action)}`;
+    if (seen.has(key)) return true;
+    seen.add(key);
+  }
+  return false;
+}
+
+// 사진 설명 만들기: Claude looks at 8 photos per call, about 45 seconds each (scripts/timings.py "describe").
+const DESC_BATCH = 8;
+const DESC_BATCH_SEC = 45;
+
+// Hint above the button while some reference photos have no description; null when there is nothing to describe.
+export function describeHint(status) {
+  if (!status) return null;
+  const todo = Math.max(0, (Number(status.frames) || 0) - (Number(status.described) || 0));
+  if (!todo) return null;
+  const minutes = Math.max(1, Math.ceil((Math.ceil(todo / DESC_BATCH) * DESC_BATCH_SEC) / 60));
+  return { todo, minutes, text: `레퍼런스 사진 설명을 만들면 장면에 맞는 사진이 붙어요 (사진 ${todo}장, 약 ${minutes}분)` };
+}
+
+const MERGE_SCENE_KEYS = ["n", "id", "action", "sec", "line", "size"];
+
+// Merge preview by section: how many cuts it had, whether it changes, and its scenes (new order, new lines).
+export function mergeView(preview) {
+  if (!preview || !Array.isArray(preview.sections)) return [];
+  const cuts = Array.isArray(preview.cuts) ? preview.cuts : [];
+  return preview.sections.map((s) => ({
+    idx: s.idx, label: s.label, changed: !!s.split,
+    before: (s.scenes || []).reduce((n, sc) => n + ((sc.merged_ids || []).length || 1), 0),
+    scenes: cuts.filter((c) => c.section === s.idx).map((c) => Object.fromEntries(MERGE_SCENE_KEYS.map((k) => [k, c[k]]))),
+  }));
+}
+
+// What POST /api/conti/merge/apply takes: the scenes in their new order with section and line only.
+export function mergeApplyCuts(preview) {
+  return (preview && Array.isArray(preview.cuts) ? preview.cuts : []).map((c) => ({ id: c.id, section: c.section, line: c.line }));
+}
+
+// Card / list view switch as stored in the browser ("cards" unless the stored value is "list").
+export const parseView = (raw) => (raw === "list" ? "list" : "cards");
+
 // Cut id at number n in a conti answer, or null.
 export function idOfN(data, n) {
   const c = data.cuts.find((x) => x.n === n);

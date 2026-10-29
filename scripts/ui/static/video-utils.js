@@ -181,12 +181,14 @@ function clock(sec) {
   return h ? `${h}:${String(mm).padStart(2, "0")}:${ss}` : `${mm}:${ss}`;
 }
 
-// Tab bar summary from GET /api/conti: "6컷 · 15:00 · 평균 컷 3.0초" ("" without cuts).
+// Tab bar summary from GET /api/conti: "장면 6개 · 15:00 · 평균 25초" ("" without cuts). A conti cut is a scene to
+// film now (scene-conti): its length is not an edit cut, so no "평균 컷".
 export function contiSummary(conti) {
   const cuts = conti && Array.isArray(conti.cuts) ? conti.cuts : [];
   if (!cuts.length) return "";
   const total = typeof conti.total_sec === "number" ? conti.total_sec : cuts.reduce((n, c) => n + Number(c.sec || 0), 0);
-  return `${cuts.length}컷 · ${clock(total)} · 평균 컷 ${(total / cuts.length).toFixed(1)}초`;
+  const avg = total / cuts.length;
+  return `장면 ${cuts.length}개 · ${clock(total)} · 평균 ${avg >= 10 ? Math.round(avg) : Math.round(avg * 10) / 10}초`;
 }
 
 // "촬영 0 / 6컷". Per-cut checks come with the shoot mode; until then the draft-level 다 찍음 counts every cut.

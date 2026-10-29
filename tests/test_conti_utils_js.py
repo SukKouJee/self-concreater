@@ -157,3 +157,116 @@ def test_remap_by_cut_id_follows_cuts_after_an_insert():
     assert run_js(expr) == [[3, "draft-y"], [4, "draft-z"]]
     assert run_js("m.idOfN({cuts:[{n:1,id:'x'}]}, 1)") == "x"
     assert run_js("m.idOfN({cuts:[{n:1,id:'x'}]}, 2)") is None
+
+
+# ---- card board (Phase 3) ----
+
+BOARD = ("[{n:1,id:'a',section:0,label:'hook',action:'시장 입구 걷기',line:'여기가 시장입니다',guide:'눈높이',size:'와이드'},"
+         "{n:2,id:'b',section:1,label:'intro',action:'메뉴판',line:'',guide:'탑뷰로',size:'탑뷰',"
+         "ref:{frame:'f',match:'content',desc:'국수 그릇'}},"
+         "{n:3,id:'c',section:2,label:'body',action:'국수 먹기',line:'맛있다 Wow',guide:'클로즈업',size:'클로즈업'},"
+         "{n:4,id:'d',section:3,label:'transition',action:'이동',line:'다음 가게',guide:'걷기',size:'POV'},"
+         "{n:5,id:'e',section:4,label:'outro',action:'인사',line:'구독',guide:'바스트',size:'바스트'},"
+         "{n:12,id:'f',section:4,label:'cta',action:'손 흔들기',line:'',guide:'',size:'바스트'}]")
+
+
+def board(expr: str):
+    return run_js(f"(() => {{ const B = {BOARD}; return {expr}; }})()")
+
+
+def test_section_group_of_labels():
+    assert run_js("['hook','intro','body','demo','transition','cta','outro','zzz'].map(m.sectionGroupOf)") == [
+        "intro", "intro", "main", "main", "main", "end", "end", "main"]
+
+
+def test_section_groups():
+    script = "[{label:'hook'},{label:'intro'},{label:'body'},{label:'transition'},{label:'outro'}]"
+    assert run_js(f"m.sectionGroups({script})") == [
+        {"key": "intro", "label": "도입", "count": 2}, {"key": "main", "label": "본론", "count": 2},
+        {"key": "end", "label": "마무리", "count": 1}]
+    # with cuts the count is the number of cuts in the group; empty groups are left out
+    assert board("m.sectionGroups([{label:'hook'},{label:'body'}], B.filter(c => c.label === 'hook' || c.label === 'body'))") == [
+        {"key": "intro", "label": "도입", "count": 1}, {"key": "main", "label": "본론", "count": 1}]
+    assert run_js("m.sectionGroups(null)") == []
+
+
+def test_filter_cuts_by_section_and_query():
+    assert board("m.filterCuts(B, {}).length") == 6
+    assert board("m.filterCuts(B, {section: 'all', q: '  '}).length") == 6
+    assert board("m.filterCuts(B, {section: 'intro'}).map(c => c.id)") == ["a", "b"]
+    assert board("m.filterCuts(B, {section: 'main'}).map(c => c.id)") == ["c", "d"]
+    assert board("m.filterCuts(B, {section: 'end'}).map(c => c.id)") == ["e", "f"]
+    assert board("m.filterCuts(B, {q: '시장'}).map(c => c.id)") == ["a"]            # action and line
+    assert board("m.filterCuts(B, {q: '국수'}).map(c => c.id)") == ["b", "c"]       # photo description too
+    assert board("m.filterCuts(B, {q: 'wow'}).map(c => c.id)") == ["c"]             # case-insensitive
+    assert board("m.filterCuts(B, {q: '국수 먹기'}).map(c => c.id)") == ["c"]        # every word must match
+    assert board("m.filterCuts(B, {q: '12'}).map(c => c.id)") == ["f"]              # a scene number
+    assert board("m.filterCuts(B, {q: '#3'}).map(c => c.id)") == ["c"]
+    assert board("m.filterCuts(B, {q: '국수', section: 'main'}).map(c => c.id)") == ["c"]
+    assert run_js("m.filterCuts(null, {q: 'x'})") == []
+
+
+def test_ref_caption_three_kinds():
+    assert run_js("m.refCaption({frame:'f',match:'content',desc:'시장 골목',title:'영상'})") == "참고 · 시장 골목"
+    assert run_js("m.refCaption({frame:'f',match:'composition',desc:'국물',title:'영상'})") == "구도만 참고 · 국물"
+    assert run_js("m.refCaption({frame:'f',match:'pinned',desc:null,title:'scene001.jpg'})") == "참고(고정)"
+    assert run_js("m.refCaption({frame:'f',match:'pinned',desc:'시장',title:'scene001.jpg'})") == "참고(고정) · 시장"
+    assert run_js("m.refCaption({frame:'f',match:'content',desc:null,title:'여행 영상'})") == "참고 · 여행 영상"
+    assert run_js("m.refCaption({frame:'f',match:'composition',desc:null,title:null})") == "구도만 참고"
+    assert run_js("m.refCaption(null)") == ""
+
+
+def test_about_sec_and_card_stamp():
+    assert run_js("[25, 2.5, 3, 0.5, 61.4, 12.6].map(m.aboutSec)") == ["약 25초", "약 2.5초", "약 3초", "약 0.5초", "약 61초", "약 13초"]
+    assert run_js("m.cardStamp({n:1,start:0,end:10})") == "01 · 0:00–0:10"
+    assert run_js("m.cardStamp({n:123,start:600,end:645})") == "123 · 10:00–10:45"
+
+
+def test_tag_kind_for_sections():
+    assert run_js("['hook','intro','body','demo','transition','cta','outro','zzz'].map(m.tagKind)") == [
+        "hook", "intro", "body", "body", "check", "outro", "outro", "body"]
+
+
+def test_has_repeats_same_section_same_action():
+    assert run_js("m.hasRepeats([{section:0,action:'공원 걷기'},{section:0,action:'벤치'},{section:0,action:'공원  걷기!'}])") is True
+    assert run_js("m.hasRepeats([{section:0,action:'공원 걷기'},{section:1,action:'공원 걷기'}])") is False
+    assert run_js("m.hasRepeats([{section:0,action:'벤치에서 쉬기'},{section:0,action:'벤치에 앉아 쉬며 한마디'}])") is False
+    assert run_js("m.hasRepeats([])") is False
+
+
+def test_describe_hint():
+    assert run_js("m.describeHint({frames: 840, described: 0, videos_todo: ['a']})") == {
+        "todo": 840, "minutes": 79, "text": "레퍼런스 사진 설명을 만들면 장면에 맞는 사진이 붙어요 (사진 840장, 약 79분)"}
+    assert run_js("m.describeHint({frames: 20, described: 18, videos_todo: ['a']})") == {
+        "todo": 2, "minutes": 1, "text": "레퍼런스 사진 설명을 만들면 장면에 맞는 사진이 붙어요 (사진 2장, 약 1분)"}
+    assert run_js("m.describeHint({frames: 20, described: 20, videos_todo: []})") is None
+    assert run_js("m.describeHint({frames: 0, described: 0, videos_todo: []})") is None
+    assert run_js("m.describeHint(null)") is None
+
+
+MERGE = ("{before: 5, after: 3, hash: 'h1', warnings: [],"
+         " sections: [{idx:0,label:'hook',split:false,scenes:[{id:'a',merged_ids:['a']}]},"
+         "            {idx:1,label:'body',split:true,scenes:[{id:'b',merged_ids:['b','d']},{id:'c',merged_ids:['c','e']}]}],"
+         " cuts: [{n:1,id:'a',section:0,action:'훅',sec:3,line:'안녕',size:'바스트'},"
+         "        {n:2,id:'c',section:1,action:'먹기',sec:8,line:'맛있다',size:'클로즈업'},"
+         "        {n:3,id:'b',section:1,action:'걷기',sec:10,line:'가 보자',size:'와이드'}]}")
+
+
+def test_merge_view_groups_scenes_by_section():
+    assert run_js(f"m.mergeView({MERGE})") == [
+        {"idx": 0, "label": "hook", "changed": False, "before": 1,
+         "scenes": [{"n": 1, "id": "a", "action": "훅", "sec": 3, "line": "안녕", "size": "바스트"}]},
+        {"idx": 1, "label": "body", "changed": True, "before": 4,
+         "scenes": [{"n": 2, "id": "c", "action": "먹기", "sec": 8, "line": "맛있다", "size": "클로즈업"},
+                    {"n": 3, "id": "b", "action": "걷기", "sec": 10, "line": "가 보자", "size": "와이드"}]}]
+    assert run_js("m.mergeView(null)") == []
+
+
+def test_merge_apply_cuts_send_order_section_line():
+    assert run_js(f"m.mergeApplyCuts({MERGE})") == [
+        {"id": "a", "section": 0, "line": "안녕"}, {"id": "c", "section": 1, "line": "맛있다"},
+        {"id": "b", "section": 1, "line": "가 보자"}]
+
+
+def test_parse_view():
+    assert run_js("['cards','list',null,'zzz',''].map(m.parseView)") == ["cards", "list", "cards", "cards", "cards"]

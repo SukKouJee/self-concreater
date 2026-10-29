@@ -463,7 +463,7 @@ h2{font-size:18px;margin:32px 0 12px}.sub{color:var(--ink2);margin:0}
 .cut{background:var(--surface);border:1px solid var(--grid);border-radius:10px;padding:10px;break-inside:avoid;
 border-top:4px solid var(--sc)}
 .cut header{display:flex;justify-content:space-between;align-items:baseline;gap:8px;font-size:13px;color:var(--ink2)}
-.cut header b{color:var(--ink);font-size:15px}.pics{display:flex;gap:6px;margin:8px 0}
+.cut header b{color:var(--ink);font-size:15px}.cut header .len{color:var(--ink);font-weight:700;font-size:14px;white-space:nowrap}.pics{display:flex;gap:6px;margin:8px 0}
 .pics figure{margin:0;flex:1;min-width:0}.pics figcaption{font-size:11px;color:var(--muted);line-height:1.3;margin-top:2px;
 overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sk,.ref{width:100%%;display:block;border-radius:4px}.ref{aspect-ratio:var(--ar);object-fit:cover;border:1px solid var(--axis)}
@@ -530,15 +530,27 @@ def ref_tag(match: str) -> str:
     return REF_TAGS.get(match, REF_TAGS["composition"])
 
 
+def ref_caption(ref: dict) -> str:
+    """사진 아래 줄: '참고 · <설명>', '구도만 참고 · <설명>', '참고(고정)'. 설명이 없으면 영상 제목(고정 사진의 제목은
+    파일 이름이라 쓰지 않는다). UI conti-utils.js refCaption과 같은 규칙."""
+    what = ref.get("desc") or ("" if ref["match"] == "pinned" else ref.get("title") or "")
+    return f"{ref_tag(ref['match'])} · {what}" if what else ref_tag(ref["match"])
+
+
 def ref_figure(ref: dict | None) -> str:
-    """참고 프레임 한 칸(이미지는 base64로 넣는다). 없으면 빈 칸 안내. 아래 줄은 '참고 · <설명>'(설명이 없으면 제목)."""
+    """장면 사진 한 칸(이미지는 base64로 넣는다). 사진 파일이 없으면 빈 문자열(그때만 도식을 그린다)."""
     uri = _data_uri(ref["frame"]) if ref else None
     if not uri or not ref:
-        return ('<figure><div class="noref">같은 샷의 레퍼런스 프레임 없음</div>'
-                '<figcaption>&nbsp;</figcaption></figure>')
-    title = _esc(ref["title"])
-    return (f'<figure><img class="ref" src="{uri}" alt="참고 프레임: {title}">'
-            f'<figcaption title="{title}">{ref_tag(ref["match"])} · {_esc(ref.get("desc") or ref["title"])}</figcaption></figure>')
+        return ""
+    alt = _esc(ref.get("desc") or ("" if ref["match"] == "pinned" else ref.get("title") or ""))
+    return (f'<figure><img class="ref" src="{uri}" alt="참고 사진: {alt}">'
+            f'<figcaption>{_esc(ref_caption(ref))}</figcaption></figure>')
+
+
+def _about(sec: float) -> str:
+    """카드의 장면 길이 '약 25초'(10초 미만은 소수 한 자리). UI conti-utils.js aboutSec과 같은 규칙."""
+    n = float(sec or 0)
+    return f"약 {round(n) if n >= 10 else round(n, 1):g}초"
 
 
 def render_html(fm: dict) -> str:
@@ -549,8 +561,8 @@ def render_html(fm: dict) -> str:
     color = lambda label: f"var(--s{LABELS.index(label) + 1})" if label in LABELS else "var(--muted)"
     used = list(dict.fromkeys(s["label"] for s in script))
 
-    head = (f"<h1>{_esc(fm['title'])}</h1><p class=\"sub\">콘티 · {fmt_time(fm['target_sec'])} · 컷 {len(cuts)}개 · "
-            f"평균 {round(fm['target_sec'] / len(cuts), 2)}초 · 말 속도 기준 초당 {fm['speech_cps']}자"
+    head = (f"<h1>{_esc(fm['title'])}</h1><p class=\"sub\">콘티 · {fmt_time(fm['target_sec'])} · 장면 {len(cuts)}개 · "
+            f"말 속도 기준 초당 {fm['speech_cps']}자"
             + (f" · 대사 길이 경고 {len(warn)}개" if warn else "") + "</p>"
             + '<div class="legend">' + "".join(f'<span><i class="sw" style="background:{color(l)}"></i>{_esc(l)}</span>'
                                                for l in used) + "</div>")
@@ -561,15 +573,16 @@ def render_html(fm: dict) -> str:
     cards = []
     for c in cuts:
         label = script[c["section"]]["label"]
-        ref_html = ref_figure(refs.get(c["n"]))
-        rows = [("화면", _esc(c["action"]), ""), ("대사", _esc(c["line"]) or "—", "line"), ("자막", _esc(c["caption"]) or "—", ""),
-                ("효과음", _esc(c["sfx"]) or "—", ""), ("가이드", _esc(c["guide"]), "")]
+        shot = _esc(c["size"]) + (" · " + _esc(c["angle"]) if c.get("angle") else "")
+        # 사진이 주 그림: 장면 사진이 있으면 그것만, 없을 때만 샷 크기 도식
+        picture = ref_figure(refs.get(c["n"])) or f'<figure>{sketch(c["size"], vertical)}<figcaption>{shot}</figcaption></figure>'
+        rows = [("화면", _esc(c["action"]), ""), ("샷", shot, ""), ("대사", _esc(c["line"]) or "—", "line"),
+                ("자막", _esc(c["caption"]) or "—", ""), ("효과음", _esc(c["sfx"]) or "—", ""), ("가이드", _esc(c["guide"]), "")]
         w = warn.get(c["n"])
         cards.append(
             f'<article class="cut" style="--sc:{color(label)}"><header><b>#{c["n"]}</b>'
-            f'<span>{fmt_time(c["start"])} · {c["sec"]:g}초 · {_esc(label)}</span></header>'
-            f'<div class="pics"><figure>{sketch(c["size"], vertical)}<figcaption>{_esc(c["size"])}'
-            f'{" · " + _esc(c["angle"]) if c.get("angle") else ""}</figcaption></figure>{ref_html}</div>'
+            f'<span>{fmt_time(c["start"])} · {_esc(label)}</span><span class="len">{_about(c["sec"])}</span></header>'
+            f'<div class="pics">{picture}</div>'
             + "<dl>" + "".join(f'<dt>{k}</dt><dd class="{cls}">{v}</dd>' for k, v, cls in rows) + "</dl>"
             + (f'<p class="warn">⚠ 대사 {w["chars"]}자 — {c["sec"]:g}초에는 약 {w["fits"]}자</p>' if w else "")
             + "</article>")
@@ -590,7 +603,7 @@ def render_html(fm: dict) -> str:
         why = (f" '구도만 참고' {loose}장은 샷 크기만 맞춘 사진이라 장면 내용과 다를 수 있습니다. "
                "레퍼런스 사진 설명을 만들고 사진을 다시 고르면 장면에 맞는 사진이 붙습니다.")
     note = ('<p class="sub" style="margin-top:24px;font-size:12px">'
-            "'참고'는 장면 내용에 맞춰 고른 레퍼런스 사진입니다. 도식은 샷 크기를 단순화한 그림입니다." + why + "</p>")
+            "'참고'는 장면 내용에 맞춰 고른 레퍼런스 사진입니다. 도식은 사진이 없는 장면에만 그린, 샷 크기를 단순화한 그림입니다." + why + "</p>")
     return ('<!doctype html><html lang="ko"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             f"<title>{_esc(fm['title'])} 콘티</title><style>{CSS % (_vars(0), _vars(1), _vars(1))}"

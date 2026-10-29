@@ -822,7 +822,8 @@ function updateSummary() {
   if (!node || !S.edit) return;
   const dur = lastEnd(S.edit.sections.map((s) => s.src));
   const cuts = cutCount();
-  const parts = [`길이 ${fmtTime(dur)}`, `컷 ${cuts}개`, cuts ? `평균 컷 ${round2(dur / cuts)}초` : "평균 컷 -"];
+  // a shot is a scene to film (pacing basis "scenes"): "장면 N개 · 평균 X초", not an edit-cut average
+  const parts = [`길이 ${fmtTime(dur)}`, `장면 ${cuts}개`, cuts ? `평균 ${round2(dur / cuts)}초` : "평균 -"];
   const arch = S.preview.compare && S.preview.compare.archetype_avg_cut;
   if (arch) parts.push(`아키타입 평균 컷 ${round2(num(arch))}초`);
   const text = parts.join(" · ");
