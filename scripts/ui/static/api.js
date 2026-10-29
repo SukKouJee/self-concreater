@@ -44,5 +44,14 @@ export async function api(method, path, body, signal) {
     }
     throw err;
   }
+  announceJob(data);
   return data;
+}
+
+// Every answer that carries a job snapshot (a page started or polled a job) is also told to the header status
+// chip (status-chip.js), so it shows a new job at once without its own request.
+function announceJob(data) {
+  const job = data && data.job;
+  if (!job || typeof job.kind !== "string" || typeof window === "undefined") return;
+  try { window.dispatchEvent(new CustomEvent("ytc:job", { detail: job })); } catch { /* no listener problems */ }
 }

@@ -16,7 +16,6 @@ const HANDLED_KEY = "ytc.motif.handled";
 const ACTIVE = new Set(["running", "awaiting"]);
 const MAX_TOPIC = 100;
 const TYPE_KO = { flow: "흐름", combo: "조합", technique: "기법", angle: "각도" };
-const STEP_TEXT = { context: "자료 모으는 중", claude: "Claude가 카드 만드는 중" };
 const LIB_IDS_KEY = "ytc.motif.library_ids";      // set by the library screen ("모티브 재료로 쓰기"); chosen per run, not saved
 const MAX_LIB = 10;
 const CATALOG_HINT = "기법 모음 정리(같은 기법 합치기)는 Claude에게 “기법 모음 정리해줘”라고 말하면 돼요";
@@ -447,7 +446,8 @@ function render() {
   S.nodes.status = h("h1", { id: "motif-title", class: "motif-h1" }, "모티브");
   S.nodes.lead = h("p", { class: "motif-lead" }, leadText(d));
   const head = h("div", { class: "motif-head" }, h("div", { class: "motif-head-text" }, S.nodes.status, S.nodes.lead));
-  // Phase 6: the header status chip takes over this line (same job, kind "motif"); until then it sits under the title.
+  // While cards are drawn the header status chip says so ("Claude가 모티브 카드를 만드는 중 · 18초"); this box under
+  // the title keeps only what belongs to this page: a failure, a run error, the re-run question.
   S.nodes.progress = h("div", { class: "motif-progress", "data-job-kind": "motif" });
   S.nodes.lib = h("div", { class: "lib-choose" });
   if (d.ref > 0) {            // without ref there is nothing to run: no empty form
@@ -479,18 +479,12 @@ function render() {
   if (hadDetailFocus) focusDetailTitle();
 }
 
-// Compact progress line (no banner): the page stays usable while Claude works.
-function renderProgress(active, failed, item0) {
+// Failure, run error and the re-run question (the running state is the header status chip and the run button).
+function renderProgress(failed, item0) {
   const box = S.nodes.progress;
   if (!box) return;
   const job = S.job;
   const kids = [];
-  if (active) {
-    const step = (item0 && STEP_TEXT[item0.step]) || "준비 중";
-    kids.push(h("div", { class: "motif-progress-line", role: "status" },
-      h("progress", { class: "motif-progress-bar", "aria-label": "카드 뽑기 진행" }),
-      h("span", {}, `${step}… 다른 카드를 보며 기다려도 돼요`)));
-  }
   if (failed) {
     kids.push(h("p", { class: "error", role: "alert" },
       `${(item0 && item0.message) || job.message || "카드를 뽑지 못했습니다"} 저장된 카드는 그대로입니다.`));
@@ -521,12 +515,13 @@ function renderRunBox() {
   topic.value = S.topic;
   topic.addEventListener("input", () => { S.topic = topic.value; });
   topic.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) requestRerun("run"); });
-  const btn = h("button", { type: "button", class: "btn btn-primary motif-run-btn", disabled: busy }, "새 카드 뽑기 · 약 30초");
+  const btn = h("button", { type: "button", class: "btn btn-primary motif-run-btn", disabled: busy },
+    active ? "카드 뽑는 중…" : "새 카드 뽑기 · 약 30초");
   btn.addEventListener("click", () => requestRerun("run"));
   // Keep a half-typed topic and focus when only the status changed.
   const hadFocus = document.activeElement && document.activeElement.id === "motif-topic";
   fill(box, h("div", { class: "field motif-topic" }, h("label", { for: "motif-topic" }, "새 카드 주제 (선택)"), topic), btn);
-  renderProgress(active, failed, item0);
+  renderProgress(failed, item0);
   renderLibChoose();
   if (hadFocus && !busy) topic.focus();
 }

@@ -1,35 +1,38 @@
+// Home (spec 4.1). Desktop: 다음 할 일 (one line + small main button) -> 만들고 있는 영상 (3, 더 보기) -> 오늘 미션 ->
+// 최근 결과물 ("영상 제목 · 콘티 · 10월 29일"). Phone (<= 640px): dark 다음 할 일 card with a big red button (촬영 모드
+// 시작 when filming is next) -> 오늘 미션 -> three videos (photo, six stage dots, current stage).
+// Data: /api/status (+ /api/mission for today's title; a failure leaves the status card's own text). The phone
+// layout also reads the conti of the next video (scene count) and of the listed videos (first scene photo).
+// The layout follows the width (matchMedia): switching repaints from the loaded data without new requests.
 import { h, filesUrl, fill } from "/static/dom.js";
 import {
-  NEXT_REASON, STEP_NAMES, VISIBLE_VIDEOS, isFolded, nextButton, nextHeadline, recentName, stageLine, stepSr, stepState, videoMeta,
+  HOME_ORDER, STEP_NAMES, VISIBLE_VIDEOS, contiOf, isFolded, missionView, nextButton, nextStep, phoneVideos, recentLine,
+  shootProgress, stageDots, stageWord, stepSr, stepState, videoMeta,
 } from "/static/home-utils.js";
+import { shootStore } from "/static/shoot-utils.js";
 import { videoHref, videoId } from "/static/video-utils.js";
 
-const MENU_ROUTES = { add: "#/add", conti: "#/conti", typify: "#/typify", draft: "#/draft", diagnose: "#/diagnose" };
-const MENU_NAMES = { add: "레퍼런스", conti: "콘티", typify: "유형화", draft: "기획안", diagnose: "진단" };
-const KIND_LABELS = { conti: "콘티", report: "리포트", draft: "기획안" };
-const MISSION_STATUS = { done: "제출함", skipped: "건너뜀", replaced: "교체됨", pending: "진행 전", active: "진행 중" };
-// Category stage tags. The diagnose count is every diagnosis record of the category, not per video: "진단 기록".
-const CAT_TAG_NAMES = { collect: "모으기", typify: "유형화", draft: "기획안", conti: "콘티", diagnose: "진단 기록" };
-const TAG_SR = { done: " (완료)", now: " (지금 단계)", todo: " (아직)" };
-// Where focus goes after the home reloads (filmed toggle, reload, category switch): { next: true } or { path }.
+const PHONE = "(max-width: 640px)";
+// Where focus goes after the home reloads (filmed toggle, reload): { next: true } or { path }.
 // mount() takes it out first thing, so a key never survives a navigation away.
 let focusAfter = null;
+let H = null;          // the open home: { el, params, ctx, st, today, media, onMedia, contis: Map(draft path -> conti) }
 
-// The only way this page makes a primary button. Exactly one is on screen at a time; call sites are
-// the init screen (no work folder, shown instead of the home) and nextCard's four branches
-// (video link, video filmed toggle, category, new draft), which are mutually exclusive.
+const alive = (view) => H === view && view.ctx.isCurrent();
+
+// The only way this page makes a desktop main button (the init screen and the desktop next card; one on screen).
 function primary(tag, attrs, text) {
   return h(tag, { ...attrs, class: "btn btn-primary" }, text);
 }
 
-// ---- filmed toggle ------------------------------------------------------
+// ---- filmed toggle (desktop video rows) --------------------------------------
 
-// Lock -> POST -> reload the home. draft_changed shows a warning (with a reload button) in `warnHost`.
-// Every control that toggles this video's filmed state (next-action button, step button, row-end button).
+// Every control that toggles this video's filmed state (step button, row-end button).
 function filmPeers(view, path) {
   return [...view.el.querySelectorAll("[data-film-path]")].filter((b) => b.dataset.filmPath === path);
 }
 
+// Lock -> POST -> reload the home. draft_changed shows a warning (with a reload button) in `warnHost`.
 async function toggleFilmed(btn, video, filmed, warnHost, view) {
   const peers = filmPeers(view, video.path);
   if (!peers.includes(btn)) peers.push(btn);
@@ -60,42 +63,19 @@ async function toggleFilmed(btn, video, filmed, warnHost, view) {
   }
 }
 
-// ---- 1. next action -----------------------------------------------------
+// ---- desktop ----------------------------------------------------------------
 
-function nextCard(cat, view) {
-  const card = h("section", { class: "card home-next", "aria-labelledby": "home-next-k" });
-  const body = h("div", { class: "home-next-body" }, h("h2", { id: "home-next-k", class: "home-next-k" }, "다음 할 일"));
-  const warn = h("div", { class: "vid-warn", hidden: true });
-  const na = cat.next_action || { kind: "new_draft" };
-  let action = null;
-  if (na.kind === "video") {
-    const video = (cat.videos || []).find((v) => v.path === na.path);
-    body.append(h("p", { class: "home-next-t" }, nextHeadline(na.title || (video && video.title) || na.path, na.step)),
-      h("p", { class: "home-next-why" }, NEXT_REASON[na.step] || ""));
-    const nb = nextButton(na.step, na.path);
-    if (nb && nb.href) action = primary("a", { href: nb.href }, nb.text);
-    else if (nb && nb.action === "film" && video) {
-      action = primary("button", { type: "button", "data-film-path": video.path }, nb.text);
-      action.addEventListener("click", () => toggleFilmed(action, video, true, warn, { ...view, focusKey: { next: true } }));
-    }
-  } else if (na.kind === "category") {
-    const allDone = (cat.videos || []).length > 0;
-    body.append(h("p", { class: "home-next-t" }, na.text),
-      h("p", { class: "home-next-why" }, allDone ? "만들고 있는 영상은 모두 마쳤어요. 카테고리 단계를 이어가요"
-        : "카테고리 단계를 이어가요"));
-    const route = MENU_ROUTES[na.menu];
-    if (route) action = primary("a", { href: route }, `${MENU_NAMES[na.menu]} 열기`);
-  } else {
-    body.append(h("p", { class: "home-next-t" }, "다음 영상을 기획할 차례예요"),
-      h("p", { class: "home-next-why" }, "카테고리 단계와 만들고 있는 영상을 모두 마쳤어요"));
-    action = primary("a", { href: "#/draft/new" }, "새 기획안 만들기");
-  }
-  if (action) action.dataset.homeNext = "1";
-  fill(card, body, action, warn);
-  return card;
+// 1. 다음 할 일: one line (label, headline, reason) and the small main button.
+function nextCard(cat) {
+  const step = nextStep(cat);
+  const action = primary("a", { href: step.action.href, "data-home-next": "1" }, step.action.label);
+  return h("section", { class: "card home-next", "aria-labelledby": "home-next-k" },
+    h("div", { class: "home-next-body" },
+      h("h2", { id: "home-next-k", class: "home-next-k" }, "다음 할 일"),
+      h("p", { class: "home-next-t" }, step.title),
+      step.why ? h("p", { class: "home-next-why" }, step.why) : null),
+    action);
 }
-
-// ---- 2. videos in progress ------------------------------------------------
 
 function stepItem(step, video, warn, view) {
   const state = stepState(step, video.next);
@@ -133,6 +113,7 @@ function videoRow(video, view) {
   return h("li", { class: "vid-row" + (video.next ? "" : " vid-row-complete") }, head, steps, h("div", { class: "vid-end" }, end), warn);
 }
 
+// 2. 만들고 있는 영상: three rows, the rest behind "N개 더 보기".
 function videosCard(cat, view) {
   const videos = cat.videos || [];
   const done = videos.filter((v) => !v.next).length;
@@ -140,7 +121,7 @@ function videosCard(cat, view) {
   const card = h("section", { class: "card", "aria-labelledby": "home-videos-h" },
     h("h2", { id: "home-videos-h", class: "card-title" }, "만들고 있는 영상", count && h("span", { class: "muted" }, count)));
   if (videos.length === 0) {
-    card.append(h("p", { class: "muted" }, "아직 기획안이 없어요. 기획안을 만들면 영상마다 어느 단계까지 왔는지 여기에 나와요."));
+    card.append(h("p", { class: "muted" }, "아직 영상이 없어요. 모티브 카드를 골라 새 영상을 시작하면 단계가 여기에 나와요."));
     return card;
   }
   const list = h("ul", { class: "vid-list" }, ...videos.slice(0, VISIBLE_VIDEOS).map((v) => videoRow(v, view)));
@@ -159,99 +140,130 @@ function videosCard(cat, view) {
   return card;
 }
 
-// ---- 3. category stage line ----------------------------------------------
-
-function catTagText(step) {
-  const name = CAT_TAG_NAMES[step.key] || step.label || step.key;
-  return Number.isInteger(step.count) ? `${name} ${step.count}` : name;
+// 3. 오늘 미션
+function missionCard(st, today, phone) {
+  const m = missionView(today, st.mission);
+  const head = h("div", { class: "home-card-head" }, h("h2", { id: "home-mission-h" }, "오늘 미션"),
+    m.meta ? h("span", { class: "home-card-meta" }, m.meta) : null);
+  return h("section", { class: `card home-mission${phone ? " home-mission-phone" : ""}`, "aria-labelledby": "home-mission-h" },
+    head,
+    h("p", { class: "home-mission-t" }, m.title),
+    m.text ? h("p", { class: "home-mission-text" }, m.text) : null,
+    h("a", { class: "btn home-mission-go", href: "#/mission" }, m.action));
 }
 
-// Tags + stage text. `inButton` uses spans only (a button may hold phrasing content, not lists).
-function catLineParts(cat, inButton) {
-  const tags = cat.steps.map((s) => {
-    const state = s.done ? "done" : s.key === cat.current ? "now" : "todo";
-    return h(inButton ? "span" : "li", { class: `cat-tag cat-tag-${state}` }, catTagText(s),
-      h("span", { class: "sr-only" }, TAG_SR[state]));
-  });
-  const box = inButton ? h("span", { class: "cat-tags" }, ...tags)
-    : h("ol", { class: "cat-tags", "aria-label": `${cat.category} 단계` }, ...tags);
-  return [box, h("span", { class: "cat-stage" }, stageLine(cat))];
-}
-
-function categoryLine(cat) {
-  return h("section", { class: "card cat-line", "aria-label": `${cat.category} 카테고리 단계` },
-    h("h2", { class: "cat-name" }, cat.category), ...catLineParts(cat, false));
-}
-
-// Other categories: one line each; pressing it switches the selected category (the home reloads).
-function otherCategories(cats, ctx) {
-  if (cats.length === 0) return null;
-  const list = h("ul", { class: "cat-others" }, ...cats.map((cat) => {
-    const btn = h("button", { type: "button", class: "cat-line cat-line-btn" },
-      h("span", { class: "cat-name" }, cat.category), ...catLineParts(cat, true),
-      h("span", { class: "sr-only" }, " — 이 카테고리 보기"));
-    btn.addEventListener("click", () => { focusAfter = { next: true }; ctx.setCategory(cat.category); });
-    return h("li", {}, btn);
-  }));
-  return h("section", { class: "home-others", "aria-labelledby": "home-others-h" },
-    h("h2", { id: "home-others-h", class: "home-others-h" }, "다른 카테고리"), list);
-}
-
-// ---- 4. mission / recent ------------------------------------------------
-
-function missionCard(m) {
-  const card = h("article", { class: "card" });
-  card.append(h("h2", {}, "오늘 미션"));
-  if (!m || !m.exists) {
-    card.append(h("p", { class: "muted" }, "오늘 미션이 없습니다 — 미션 화면에서 받을 수 있어요"));
-  } else {
-    const parts = [m.date, m.kind, MISSION_STATUS[m.status] || m.status].filter(Boolean);
-    card.append(h("p", {}, parts.join(" · ")));
-  }
-  card.append(h("div", { class: "btn-row" }, h("a", { class: "btn btn-sm", href: "#/mission" }, "미션 화면 열기")));
-  return card;
-}
-
+// 4. 최근 결과물: "영상 제목 · 콘티 · 10월 29일" (no file names).
 function recentCard(items, categories) {
   const titles = {};
   for (const c of categories || []) for (const v of c.videos || []) titles[v.path] = v.title;
-  const card = h("article", { class: "card" });
-  card.append(h("h2", {}, "최근 결과물"));
+  const card = h("section", { class: "card", "aria-labelledby": "home-recent-h" }, h("h2", { id: "home-recent-h" }, "최근 결과물"));
   if (!items || items.length === 0) {
-    card.append(h("p", { class: "muted" }, "아직 결과물이 없습니다."));
+    card.append(h("p", { class: "muted" }, "아직 결과물이 없어요."));
     return card;
   }
-  const ul = h("ul", { class: "recent" });
-  for (const it of items) {
-    const name = recentName(it, titles);
-    const label = KIND_LABELS[it.kind] || it.kind;
-    const link = it.kind === "draft"
-      ? h("a", { href: videoHref(videoId(it.path), "plan") }, name)
-      : it.kind === "report" ? h("a", { href: "#/report" }, name)
-      : h("a", { href: filesUrl(it.path), target: "_blank", rel: "noopener" }, name);
-    const when = new Date(it.mtime * 1000).toLocaleString("ko-KR", { dateStyle: "short", timeStyle: "short" });
-    ul.append(h("li", {}, h("span", { class: "tag" }, label), link, h("time", { class: "muted" }, when)));
-  }
-  card.append(ul);
+  card.append(h("ul", { class: "recent" }, ...items.map((it) => {
+    const line = recentLine(it, titles);
+    return h("li", {}, h("a", { href: line.href }, line.text));
+  })));
   return card;
 }
 
-// ---- mount --------------------------------------------------------------
+// ---- phone --------------------------------------------------------------------
 
-// The step toggle of `path` (expanding "더 보기" if that row is folded), else the next-action button, else the h1.
-function findFilmStep(el, path) {
-  return [...el.querySelectorAll(".vid-film")].find((b) => b.dataset.filmPath === path) || null;
+function phoneNext(cat, view) {
+  const step = nextStep(cat);
+  const go = h("a", { class: "btn btn-rec home-go", href: step.action.href, "data-home-next": "1" },
+    step.film ? h("span", { class: "home-go-rec", "aria-hidden": "true" }) : null, step.action.label);
+  let count = null;
+  if (step.film && step.path) {
+    const bar = h("span", { class: "home-shoot-fill" });
+    const text = h("span", { class: "home-shoot-text" });
+    count = h("div", { class: "home-shoot", hidden: true },
+      h("span", { class: "home-shoot-bar", "aria-hidden": "true" }, bar), text);
+    view.shoot = { path: step.path, el: count, fill: bar, text };
+  }
+  return h("section", { class: "home-next-phone", "aria-labelledby": "home-next-k" },
+    h("h2", { id: "home-next-k", class: "home-next-k" }, "다음 할 일"),
+    h("p", { class: "home-next-t" }, step.title), count, go);
 }
+
+function dots(video) {
+  return h("span", { class: "home-dots", "aria-hidden": "true" },
+    ...stageDots(video).map((s) => h("span", { class: `home-dot is-${s}` })));
+}
+
+function phoneVideoRow(video, view) {
+  const thumb = h("span", { class: "home-thumb", "aria-hidden": "true" });
+  view.thumbs.set(video.path, thumb);
+  const word = stageWord(video);
+  return h("li", {}, h("a", { class: "home-pv", href: videoHref(videoId(video.path)), "aria-label": `${video.title}, ${word}` },
+    thumb,
+    h("span", { class: "home-pv-body" },
+      h("span", { class: "home-pv-title" }, video.title), dots(video),
+      h("span", { class: "home-pv-stage" + (video.next ? " is-next" : "") }, word))));
+}
+
+function phoneVideoList(cat, view) {
+  const { shown, total } = phoneVideos(cat.videos);
+  const head = h("div", { class: "home-card-head" }, h("h2", { id: "home-videos-h" }, "만들고 있는 영상"),
+    total ? h("a", { href: "#/videos" }, `전체 ${total}편`) : null);
+  const body = shown.length ? h("ul", { class: "home-pv-list" }, ...shown.map((v) => phoneVideoRow(v, view)))
+    : h("p", { class: "muted" }, total ? "만드는 중인 영상이 없어요" : "아직 영상이 없어요");
+  return h("section", { class: "home-videos-phone", "aria-labelledby": "home-videos-h" }, head, body);
+}
+
+// Conti reads for the phone layout: the next video's scene count, the listed videos' first scene photo.
+async function loadContis(view, cat) {
+  const want = new Set();
+  if (view.shoot) want.add(view.shoot.path);
+  for (const v of phoneVideos(cat.videos).shown) {
+    if ((v.steps || []).some((s) => s.key === "conti" && s.done)) want.add(v.path);
+  }
+  await Promise.all([...want].filter((p) => !view.contis.has(p)).map(async (p) => {
+    try {
+      view.contis.set(p, await view.ctx.api("GET", `/api/conti?path=${encodeURIComponent(contiOf(p))}`));
+    } catch {
+      view.contis.set(p, null);              // no conti or unreadable: no photo, no count
+    }
+  }));
+  if (!alive(view)) return;
+  paintContis(view, cat);
+}
+
+function paintContis(view, cat) {
+  if (view.shoot) {
+    const conti = view.contis.get(view.shoot.path);
+    const video = (cat.videos || []).find((v) => v.path === view.shoot.path);
+    if (conti && Array.isArray(conti.cuts) && conti.cuts.length) {
+      const ids = shootStore(videoId(view.shoot.path)).get();
+      const { done, total } = shootProgress(conti.cuts, ids, !!(video && video.filmed_at));
+      view.shoot.fill.style.width = `${Math.round((done / total) * 100)}%`;
+      view.shoot.text.textContent = `${done} / ${total}장면`;
+      view.shoot.el.hidden = false;
+    }
+  }
+  for (const [path, box] of view.thumbs) {
+    const conti = view.contis.get(path);
+    const cut = conti && Array.isArray(conti.cuts) ? conti.cuts.find((c) => c && c.ref && c.ref.frame) : null;
+    if (!cut || box.firstChild) continue;
+    const img = h("img", { src: filesUrl(cut.ref.frame), alt: "", loading: "lazy" });
+    img.addEventListener("error", () => img.remove());
+    box.append(img);
+  }
+}
+
+// ---- render -----------------------------------------------------------------
 
 function restoreFocus(el, target, videos) {
   if (!target) return;
   let node = null;
   if (target.path) {
-    node = findFilmStep(el, target.path);
+    const find = () => [...el.querySelectorAll(".vid-film")].find((b) => b.dataset.filmPath === target.path) || null;
+    node = find();
     const more = el.querySelector(".vid-more");
     if (!node && more && isFolded(videos, target.path)) {
       more.click();
-      node = findFilmStep(el, target.path);
+      node = find();
     }
   }
   node = node || el.querySelector("[data-home-next]");
@@ -262,13 +274,70 @@ function restoreFocus(el, target, videos) {
   if (node) node.focus();
 }
 
+function render(view, pendingFocus) {
+  const { el, st, ctx } = view;
+  const phone = view.media.matches;
+  const cat = st.categories.find((c) => c.category === ctx.category) || st.categories[0];
+  const rv = { el, params: view.params, ctx, category: cat ? cat.category : null };
+  view.shoot = null;
+  view.thumbs = new Map();
+  const build = {
+    next: () => (phone ? phoneNext(cat, view) : nextCard(cat)),
+    videos: () => (phone ? phoneVideoList(cat, view) : videosCard(cat, rv)),
+    mission: () => missionCard(st, view.today, phone),
+    recent: () => recentCard(st.recent, st.categories),
+  };
+  const order = HOME_ORDER[phone ? "phone" : "desktop"];
+  // `.home` is the size container: desktop rows switch layout by the column width (menu, help panel)
+  fill(el, h("h1", { class: phone ? "sr-only" : null }, "홈"),
+    h("div", { class: `home${phone ? " home-phone" : ""}` }, ...order.map((key) => (cat || key === "mission" || key === "recent" ? build[key]() : null))));
+  if (!cat) el.querySelector(".home").prepend(h("section", { class: "card" }, h("h2", {}, "카테고리가 없습니다"),
+    h("p", { class: "muted" }, "Claude에게 “처음 설정해줘”라고 말하면 첫 카테고리를 함께 만들어요.")));
+  restoreFocus(el, pendingFocus, cat ? cat.videos : []);
+  if (phone && cat) {
+    paintContis(view, cat);
+    loadContis(view, cat);
+  }
+}
+
+function initCard(el, params, ctx) {
+  const card = h("section", { class: "card" });
+  card.append(h("h2", {}, "아직 작업 폴더가 아닙니다"),
+    h("p", { class: "muted" }, "지금 연 폴더를 작업 폴더로 만들면 레퍼런스와 기획안이 여기에 저장돼요."));
+  const btn = primary("button", { type: "button" }, "이 폴더를 yt-coach 작업 폴더로 만들기");
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    try {
+      await ctx.api("POST", "/api/init", {});
+      if (!ctx.isCurrent()) return;
+      ctx.toast("작업 폴더를 만들었습니다", "ok");
+      await ctx.refreshCategories();
+      if (!ctx.isCurrent()) return;
+      mount(el, params, ctx);
+    } catch (e) {
+      if (!ctx.isCurrent()) return;
+      btn.disabled = false;
+      ctx.toast(e.message, "error");
+    }
+  });
+  card.append(btn);
+  return card;
+}
+
 export async function mount(el, params, ctx) {
+  unmount();
   const pendingFocus = focusAfter;
   focusAfter = null;
   el.replaceChildren(h("h1", {}, "홈"), h("p", { class: "muted", role: "status" }, "불러오는 중…"));
   let st;
+  let today;
   try {
-    st = await ctx.api("GET", "/api/status");
+    const [status, mission] = await Promise.all([
+      ctx.api("GET", "/api/status"),
+      ctx.api("GET", "/api/mission").then((m) => (m ? m.today : undefined), () => undefined),
+    ]);
+    st = status;
+    today = mission;
   } catch (e) {
     if (!ctx.isCurrent()) return;
     const retry = h("button", { type: "button", class: "btn" }, "다시 시도");
@@ -277,44 +346,19 @@ export async function mount(el, params, ctx) {
     return;
   }
   if (!ctx.isCurrent()) return;
-  el.replaceChildren(h("h1", {}, "홈"));
   if (!st.initialized) {
-    const card = h("section", { class: "card" });
-    card.append(h("h2", {}, "아직 작업 폴더가 아닙니다"),
-      h("p", { class: "muted" }, "지금 연 폴더를 작업 폴더로 만들면 레퍼런스와 기획안이 여기에 저장돼요."));
-    const btn = primary("button", { type: "button" }, "이 폴더를 yt-coach 작업 폴더로 만들기");
-    btn.addEventListener("click", async () => {
-      btn.disabled = true;
-      try {
-        await ctx.api("POST", "/api/init", {});
-        if (!ctx.isCurrent()) return;
-        ctx.toast("작업 폴더를 만들었습니다", "ok");
-        await ctx.refreshCategories();
-        if (!ctx.isCurrent()) return;
-        mount(el, params, ctx);
-      } catch (e) {
-        if (!ctx.isCurrent()) return;
-        btn.disabled = false;
-        ctx.toast(e.message, "error");
-      }
-    });
-    card.append(btn);
-    el.append(card);
+    el.replaceChildren(h("h1", {}, "홈"), initCard(el, params, ctx));
     return;
   }
-  let videos = [];
-  if (st.categories.length === 0) {
-    el.append(h("section", { class: "card" },
-      h("h2", {}, "카테고리가 없습니다"),
-      h("p", { class: "muted" }, "Claude에게 “처음 설정해줘”라고 말하면 첫 카테고리를 함께 만들어요.")));
-  } else {
-    const cat = st.categories.find((c) => c.category === ctx.category) || st.categories[0];
-    const view = { el, params, ctx, category: cat.category };
-    videos = cat.videos;
-    // `.home` is the size container: its cards and rows switch layout by the column width (menu, help panel)
-    el.append(h("div", { class: "home" }, nextCard(cat, view), videosCard(cat, view), categoryLine(cat),
-      otherCategories(st.categories.filter((c) => c !== cat), ctx)));
-  }
-  el.append(h("div", { class: "grid-2 home-sub" }, missionCard(st.mission), recentCard(st.recent, st.categories)));
-  restoreFocus(el, pendingFocus, videos);
+  const media = window.matchMedia(PHONE);
+  const view = { el, params, ctx, st, today, media, contis: new Map(), shoot: null, thumbs: new Map() };
+  view.onMedia = () => { if (alive(view)) render(view, null); };
+  media.addEventListener("change", view.onMedia);
+  H = view;
+  render(view, pendingFocus);
+}
+
+export function unmount() {
+  if (H) H.media.removeEventListener("change", H.onMedia);
+  H = null;
 }

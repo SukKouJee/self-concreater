@@ -8,14 +8,18 @@
 //   export function unsavedNote()            // optional; text naming unsaved input ("저장하지 않은 입력(컷 2)") or
 //                                            // null. The router asks before leaving (hash put back meanwhile).
 //   export function onStay()                 // optional; the user stayed after the leave question (repaint state)
-// ctx: { category, setCategory(name), refreshCategories(), toast(msg, kind), api(method, path, body),
+// ctx: { category, setCategory(name), refreshCategories(), toast(msg, kind, action?), api(method, path, body),
 //        signal (AbortSignal, aborted when the user navigates away), isCurrent() (false once navigated away),
 //        confirmLeave(note, go, stayed) (the leave question: go() when the user leaves, stayed() when they stay),
-//        navigate(hash, { replace, force }) (replace: no new history entry; force: no leave question) }
+//        navigate(hash, { replace, force }) (replace: no new history entry; force: no leave question),
+//        jobStarted(kind) (a long job started: the header status chip asks for it now; api() answers that carry
+//        a job reach the chip by themselves, so this is only needed when a page learns of a job another way) }
+//   toast action: { href, label } adds a link ("결과 보기") to the toast.
 // Rule: after EVERY await in mount/handlers, `if (!ctx.isCurrent()) return;` before touching the DOM.
 import { api, showBanner } from "/static/api.js";
 import { h } from "/static/dom.js";
 import { createHelpPanel, helpPage } from "/static/help-panel.js";
+import { createStatusChip } from "/static/status-chip.js";
 import { legacyRoute, parseVideoHash } from "/static/video-utils.js";
 import {
   PHONE_TABS, SIDEBAR, isActive, isVideoActive, phoneTab, sidebarVideos, subnavItems, videoLinks, videoProgress,
@@ -48,6 +52,7 @@ const VIDEO_SCREENS = [
 
 const $ = (id) => document.getElementById(id);
 let helpPanel = null;
+let statusChip = null;
 const state = {
   categories: [], current: null, currentPage: null, navToken: 0, abort: null,
   // sidebar data for the current category: { category, videos, ref, archetypes, motifs } (missing = unknown)
@@ -67,10 +72,23 @@ function storeCategory(v) {
   try { localStorage.setItem(CATEGORY_KEY, v); } catch { /* storage unavailable */ }
 }
 
-function toast(msg, kind = "info") {
-  const t = h("div", { class: `toast toast-${kind}` }, msg);
+// action { href, label }: a link to the result ("결과 보기"). A toast with a link stays longer and does not go away
+// while the pointer or the keyboard focus is on it.
+function toast(msg, kind = "info", action = null) {
+  const link = action && action.href ? h("a", { class: "toast-link", href: action.href }, action.label || "보기") : null;
+  const t = h("div", { class: `toast toast-${kind}${link ? " toast-action" : ""}` }, h("span", {}, msg), link);
   $("toasts").append(t);
-  setTimeout(() => t.remove(), kind === "error" ? 7000 : 3500);
+  const ms = link ? 10000 : kind === "error" ? 7000 : 3500;
+  let timer = setTimeout(() => t.remove(), ms);
+  if (link) {
+    link.addEventListener("click", () => t.remove());
+    const hold = () => clearTimeout(timer);
+    const resume = () => { clearTimeout(timer); timer = setTimeout(() => t.remove(), 4000); };
+    t.addEventListener("mouseenter", hold);
+    t.addEventListener("focusin", hold);
+    t.addEventListener("mouseleave", resume);
+    t.addEventListener("focusout", resume);
+  }
 }
 
 // Shared (app-level) context. Pages receive a per-mount view of it, see pageCtx().
@@ -105,6 +123,7 @@ function pageCtx(token, signal) {
     isCurrent: () => token === state.navToken,
     confirmLeave,
     navigate,
+    jobStarted: (kind) => { if (statusChip) statusChip.jobStarted(kind); },
   };
 }
 
@@ -286,7 +305,7 @@ function buildTopbar() {
     h("a", { class: "brand", href: "#/home", "aria-label": "yt-coach 홈" }, logo(), h("span", {}, "yt-coach")),
     h("label", { class: "cat-select" }, h("span", { class: "cat-label" }, "카테고리"), sel),
     h("div", { class: "topbar-gap" }),
-    // Claude job status chip: filled by a later phase; kept empty so the header layout already has its place.
+    // Claude job status chip (status-chip.js): empty (hidden) while nothing runs.
     h("div", { id: "status-chip", class: "status-chip" }),
     helpMenu(),
   );
@@ -399,6 +418,7 @@ async function doShutdown() {
   } catch (e) {
     if (e.error !== "network") { toast(e.message, "error"); return; }
   }
+  if (statusChip) statusChip.stop();
   showBanner("서버를 껐습니다. 다시 쓰려면 Claude에게 “화면 열어줘”라고 말하세요.");
   $("main").replaceChildren(h("p", { class: "muted" }, "서버가 꺼졌습니다."));
   setHelpMenu(false);
@@ -609,6 +629,7 @@ async function start() {
   renderTabbar();
   renderSidebar();
   helpPanel = createHelpPanel($("help-panel"), () => ctx.category);
+  statusChip = createStatusChip({ el: $("status-chip"), api, toast });
   window.addEventListener("hashchange", onHashChange);
   document.querySelector(".skip").addEventListener("click", (e) => {
     e.preventDefault();

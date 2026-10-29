@@ -18,11 +18,15 @@ def test_index_loads_modules(client):
 
 def test_static_files_served(client):
     for rel in ["app.css", "app.js", "api.js", "pages/home.js", "pages/placeholder.js", "pages/add.js",
-                "help-panel.js", "help-utils.js", "progress-utils.js", "pages/guide.js"]:
+                "help-panel.js", "help-utils.js", "progress-utils.js", "pages/guide.js", "status-chip.js"]:
         status, headers, _ = client.call("GET", f"/static/{rel}")
         assert status == 200, rel
     status, headers, _ = client.call("GET", "/static/app.js")
     assert "javascript" in headers["Content-Type"]
+
+
+def _home_js():
+    return "\n".join((STATIC_DIR / rel).read_text(encoding="utf-8") for rel in ("pages/home.js", "home-utils.js"))
 
 
 def test_screen_list_has_all_routes_and_names_the_page():
@@ -384,7 +388,7 @@ def test_refs_edit_mode_focus_and_quiet_reload():
 
 def test_typify_menu_is_live_route():
     app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
-    home = (STATIC_DIR / "pages" / "home.js").read_text(encoding="utf-8")
+    home = _home_js()                                 # the page and its helpers
     assert 'route: "#/typify"' in app
     assert 'soon: "typify"' not in app
     assert 'case "typify"' in app
@@ -450,11 +454,11 @@ def test_motif_page_served(client):
 
 def test_draft_menu_is_live_route():
     app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
-    home = (STATIC_DIR / "pages" / "home.js").read_text(encoding="utf-8")
+    home = _home_js()                                 # the page and its helpers
     assert 'route: "#/draft"' in app
     assert 'soon: "draft"' not in app
     assert 'case "draft"' in app
-    assert '"#/draft"' in home
+    assert '"#/motif"' in home                        # a new video starts from a motif card (spec 4.3)
     assert "videoHref(videoId(" in home               # in-progress videos open the video workspace
     assert "#/draft/view/" not in home
 
@@ -546,11 +550,11 @@ def test_md_table_cells_scroll_instead_of_breaking_and_draft_drops_repeated_titl
 
 def test_diagnose_menu_is_live_route():
     app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
-    home = (STATIC_DIR / "pages" / "home.js").read_text(encoding="utf-8")
+    home = _home_js()                                 # the page and its helpers
     assert 'route: "#/diagnose"' in app
     assert 'soon: "diagnose"' not in app
     assert 'case "diagnose"' in app
-    assert '"#/diagnose"' in home
+    assert 'videoHref(id, "diagnose")' in home       # diagnosing opens the video's 진단 tab
     assert "#/soon/diagnose" not in home
 
 
@@ -619,7 +623,7 @@ def test_mission_page_served(client):
 
 def test_report_menu_is_live_route():
     app = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
-    home = (STATIC_DIR / "pages" / "home.js").read_text(encoding="utf-8")
+    home = _home_js()                                 # the page and its helpers
     assert 'route: "#/report"' in app
     assert 'soon: "report"' not in app
     assert 'case "report"' in app
@@ -945,35 +949,51 @@ def test_pages_show_korean_section_names():
 
 def test_home_layout_tokens():
     home = (STATIC_DIR / "pages" / "home.js").read_text(encoding="utf-8")
-    for token in ['"다음 할 일"', '"만들고 있는 영상"', '"/api/drafts/filmed"', '"aria-pressed"', '"draft_changed"',
-                  '"다시 불러오기"', "개 더 보기", '"진단 기록"', 'from "/static/home-utils.js"']:
+    for token in ['"다음 할 일"', '"만들고 있는 영상"', '"오늘 미션"', '"최근 결과물"', '"/api/drafts/filmed"', '"/api/mission"',
+                  '"aria-pressed"', '"draft_changed"', '"다시 불러오기"', "개 더 보기", 'from "/static/home-utils.js"',
+                  'from "/static/shoot-utils.js"', "shootStore(videoId(", "recentLine(", "missionView(", "nextStep("]:
         assert token in home, token
-    # Every primary button goes through primary(); "btn-primary" lives only in its body. Call sites: the init
-    # screen (shown instead of the home) and nextCard's four mutually exclusive branches -> one on screen.
+    # Desktop main buttons go through primary() (init screen, next card); the phone next card has the one red button.
     assert home.count("btn-primary") == 1
     assert re.search(r'function primary\(tag, attrs, text\) \{\s*return h\(tag, \{ \.\.\.attrs, class: "btn btn-primary" \}', home)
-    assert len(re.findall(r"(?<!function )\bprimary\(", home)) == 5
-    next_card = home[home.index("function nextCard("):home.index("// ---- 2.")]
-    assert len(re.findall(r"\bprimary\(", next_card)) == 4
-    assert "PRIMARY" not in home
+    assert len(re.findall(r"(?<!function )\bprimary\(", home)) == 2
+    assert home.count("btn-rec") == 1
     assert "innerHTML" not in home
-    assert "stepBar" not in home and "stage-notes" not in home
+    # no file names on the recent list, no category stage line / other categories (spec 4.1 lists four sections)
+    assert "filesUrl(it.path)" not in home and "toLocaleString" not in home
+    assert "cat-line" not in home and "otherCategories" not in home
     # focus key is taken out at the start of mount; peers of one video are locked together
-    assert "const pendingFocus = focusAfter;" in home and "restoreFocus(el, pendingFocus, videos)" in home
-    # "더 보기" is pressed only when the focus target sits behind it
-    restore = home[home.index("function restoreFocus("):home.index("export async function mount(")]
+    assert "const pendingFocus = focusAfter;" in home and "restoreFocus(el, pendingFocus, cat ? cat.videos : [])" in home
+    restore = home[home.index("function restoreFocus("):home.index("function render(")]
     assert "isFolded(videos, target.path)" in restore
-    # draft_changed: this video's toggles stay locked; "다시 불러오기" is the only way on
-    toggle = home[home.index("async function toggleFilmed("):home.index("// ---- 1.")]
+    toggle = home[home.index("async function toggleFilmed("):home.index("// ---- desktop")]
     assert re.search(r'const changed = e && e\.error === "draft_changed";\s*'
                      r'if \(!changed\) for \(const b of peers\) b\.disabled = false;', toggle)
-    assert home.count('"data-film-path": video.path') == 3
+    assert home.count('"data-film-path": video.path') == 2
     assert '", 다음 단계"' in home
     css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
-    for sel in [".home-next", ".vid-steps", ".cat-line"]:
+    for sel in [".home-next", ".vid-steps", ".home-next-phone", ".home-pv", ".home-dot", ".home-thumb"]:
         assert re.search(rf"^{re.escape(sel)}[\s{{.,:\[]", css, re.M), sel
+    assert not re.search(r"^\.cat-(line|tags?|stage|others)\b", css, re.M)          # removed with the stage line
     narrow = [m.group(1) for m in re.finditer(r"@container vid-list \(max-width: \d+px\) \{(.*?)\n\}", css, re.S)]
     assert any(".vid-row" in block for block in narrow)
+
+
+def test_home_order_and_layout_switch():
+    home = (STATIC_DIR / "pages" / "home.js").read_text(encoding="utf-8")
+    # sections are laid out from HOME_ORDER (home-utils, spec 4.1), one builder per key
+    assert 'HOME_ORDER[phone ? "phone" : "desktop"]' in home
+    build = home[home.index("const build = {"):home.index("const order =")]
+    for key in ("next", "videos", "mission", "recent"):
+        assert re.search(rf"^\s+{key}: \(\) =>", build, re.M), key
+    # the layout follows the width without new requests; the listener goes away with the page
+    assert 'const PHONE = "(max-width: 640px)";' in home
+    assert 'media.addEventListener("change", view.onMedia)' in home
+    assert 'H.media.removeEventListener("change", H.onMedia)' in home
+    assert "export function unmount()" in home
+    # phone: the next video's scene count and the listed videos' photos come from their contis, after the paint
+    assert "loadContis(view, cat)" in home and "/api/conti?path=" in home
+    assert "img.remove()" in home                                        # broken photo: the grey box stays
 
 
 def _media_blocks(css, width):
@@ -997,11 +1017,11 @@ def test_home_narrow_layout_wraps_instead_of_overflowing():
     assert re.search(r"^\.home \{[^}]*container: home / inline-size", css, re.M)
     assert re.search(r"^\.vid-list \{[^}]*container: vid-list / inline-size", css, re.M)
     home_js = (STATIC_DIR / "pages" / "home.js").read_text(encoding="utf-8")
-    assert 'h("div", { class: "home" }' in home_js
+    assert 'class: `home${phone ? " home-phone" : ""}`' in home_js
     for width in (720, 560):
         for block in _media_blocks(css, width):
             for sel in (".vid-row", ".vid-head", ".vid-step", ".vid-steps", ".vid-film", ".vid-end",
-                        ".home-next", ".home-next-body", ".cat-stage", ".cat-tags"):
+                        ".home-next", ".home-next-body"):
                 assert not re.search(rf"^\s*{re.escape(sel)}[ ,>]", block, re.M), (width, sel)
 
     rows_mid = "\n".join(_container_blocks(css, "vid-list", 640))     # title on top, dots + button below
@@ -1011,15 +1031,10 @@ def test_home_narrow_layout_wraps_instead_of_overflowing():
     assert "grid-template-columns: minmax(0, 1fr);" in _rule(rows, ".vid-row")
     assert "flex: 1 1 0" in _rule(rows, ".vid-step") and "min-width: 0" in _rule(rows, ".vid-step")
     assert "justify-self: start" in _rule(rows, ".vid-end")
-    cards_mid = "\n".join(_container_blocks(css, "home", 720))
-    assert "flex-basis: 100%" in _rule(cards_mid, ".cat-stage")       # stage text on its own line
     cards = "\n".join(_container_blocks(css, "home", 560))
-    assert "flex-direction: column" in _rule(cards, ".home-next")     # primary button goes under the text
-    assert "flex-basis: 100%" in _rule(cards, ".cat-tags")            # tags get their own wrapping row
-    phone = "\n".join(_media_blocks(css, 560))
-    assert "flex-wrap: wrap" in _rule(phone, ".recent li")            # date drops below the file name
-    # tags wrap in every width; two-column cards never demand more than the viewport
-    assert "flex-wrap: wrap" in re.search(r"^\.cat-tags \{([^}]*)\}", css, re.M).group(1)
+    assert "flex-direction: column" in _rule(cards, ".home-next")     # main button goes under the text
+    # phone cards: long titles cut with an ellipsis instead of widening the row
+    assert "text-overflow: ellipsis" in _rule(css, ".home-pv-title") and "min-width: 0" in _rule(css, ".home-pv-body")
     assert "minmax(min(300px, 100%), 1fr)" in re.search(r"^\.grid-2 \{([^}]*)\}", css, re.M).group(1)
 
 
@@ -1343,9 +1358,12 @@ def test_motif_detail_toggles_selection_in_place_and_follows_the_viewport():
     assert "lockedReason(" in js and 'href: "#/typify"' in js                          # m-003
 
 
-def test_motif_progress_has_a_hook_for_the_status_chip():
+def test_motif_running_state_is_the_status_chip():
     js = _js("pages/motif.js")
-    assert 'data-job-kind": "motif"' in js and "Phase 6" in js
+    # the header chip shows the running job; the page keeps failure / errors / the re-run question and a busy button
+    assert 'data-job-kind": "motif"' in js and "header status chip" in js
+    assert "STEP_TEXT" not in js and "motif-progress-line" not in js
+    assert '"카드 뽑는 중…"' in js
 
 
 def test_draft_save_lands_on_the_new_video_workspace():

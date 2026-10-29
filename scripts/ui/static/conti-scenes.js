@@ -3,7 +3,8 @@
 // POST /api/refs/describe (kind refs_describe), POST /api/conti/refs/pick (kind conti_refs), /api/jobs/<id>(/cancel).
 //
 // - 버튼은 작은 보조 버튼이다(화면의 주요 행동이 아니다). 작업 진행은 큰 배너 없이 한 줄(data-job-kind)로 보인다.
-//   Phase 6의 머리말 상태 칩이 같은 작업을 이어받는다.
+//   머리말 상태 칩(status-chip.js)도 같은 작업을 보여 주고, 이 줄은 이 화면에만 있는 것(걸리는 시간, 장 수·멈추기,
+//   묶음 진행)을 더한다. 끝난 알림은 이 화면이 직접 띄우고, 상태 칩은 다른 화면에 있을 때만 띄운다.
 // - 합치기 미리보기는 저장 전에는 파일을 바꾸지 않는다. 저장하면 편집기가 새 응답으로 다시 그린다(opts.onMerged).
 // - 화면에 보이는 글은 모두 h()의 글자 노드로 넣는다.
 // opts: { path, category, getData() -> GET /api/conti 응답, getHash(), isBusy() (컷 저장·편집 중),
