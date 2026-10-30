@@ -29,6 +29,7 @@
 """
 from __future__ import annotations
 
+import contextvars
 import copy
 import secrets
 import sys
@@ -435,8 +436,9 @@ class JobManager:
                 job.push_task(task)
             self._jobs[job.id] = job
             self._latest[kind] = job
-            job._thread = threading.Thread(target=job._run, args=(target,), name=f"job-{kind}-{job.id}",
-                                           daemon=True)
+            # 작업 스레드는 시작한 쪽의 실행 문맥(Ctx: 작업 폴더)을 이어받는다(ContextVar는 새 스레드로 저절로 넘어가지 않음)
+            job._thread = threading.Thread(target=contextvars.copy_context().run, args=(job._run, target),
+                                           name=f"job-{kind}-{job.id}", daemon=True)
             job._thread.start()
         return job
 

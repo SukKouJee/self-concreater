@@ -186,7 +186,7 @@ trash/{uid}/{date}/…                                           30일 뒤 삭�
 |---|---|---|
 | S0 준비 | `v1.0.0` 태그, `release/v1` 브랜치, 7절 결정, CLAUDE.md 범위 수정 | 결정 사항이 이 문서에 기록됨 |
 | S1 모노레포 재배치 | `core/ local/ web/ server/` 이동만(동작 변경 없음), import 경로 정리, `bin/ytc`·플러그인 경로 수정 | 플러그인 재설치 후 커맨드 12개·`ytc ui` 정상, pytest 통과 |
-| S2 Ctx 도입 | `Ctx`·contextvar, `work_root()`가 Ctx를 보게 변경, 로컬판 시작 지점에서 설정 | 동작 동일, `work_root()` 호출 수 측정 스크립트 추가 |
+| S2 Ctx 도입 | `Ctx`·contextvar, `work_root()`가 Ctx를 보게 변경, 로컬판 시작 지점에서 설정 | 동작 동일, `work_root()` 호출 수 측정 스크립트 추가. 측정(2026-10-31, `python -m scripts.count_work_root`): `work_root(` 100 · `workspace_dir(` 42 · `category_dir(` 4, 합계 146곳 / 36개 모듈(많은 순 conti 12, mission 12, videomd 10, common 8, ui/api_diagnose 8). 로컬판 시작 지점은 `common.run`과 UI 요청 스레드가 `ctx.use()`로 호출 동안만 설정하고, 작업 스레드는 `copy_context()`로 이어받는다 |
 | S3 저장소 인터페이스 | `DocStore`·`ObjectStore`·`SharedCache` 정의, `FileStore` 구현, 모듈별로 파일 입출력 이전(refstore → videomd → motif → draft → conti·conti_history → mission → similarity → report …) | `work_root()` 직접 호출 0, 경로 문자열은 FileStore 안에만, 테스트 통과 |
 | S4 콘티 그림 분리 | 콘티 HTML이 그림을 박지 않고 별도 파일을 참조(로컬판에도 적용, 인쇄용 단일 파일은 옵션) | 콘티 HTML 수백 KB 수준, 화면·인쇄 동일 |
 | S5 PG·S3 구현 | 스키마·마이그레이션(Alembic), RLS, `PgStore`, `S3ObjectStore`, `storage_objects`·`doc_versions`, docker-compose(PG + MinIO) | core 테스트를 FileStore·PgStore 두 구현으로 같이 돌려 통과 |

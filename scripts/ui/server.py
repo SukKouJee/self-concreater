@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qsl, unquote, urlsplit
 
-from scripts import refstore, status
+from scripts import ctx, refstore, status
 from scripts.common import PLUGIN_ROOT, ScriptError
 from scripts.ui.jobs import JobManager
 
@@ -484,6 +484,11 @@ class _Server(ThreadingHTTPServer):
     # so a restart can rebind a port still in TIME_WAIT.
     allow_reuse_address = sys.platform != "win32"
     app: App
+
+    def finish_request(self, request: Any, client_address: Any) -> None:
+        # 요청 스레드는 이 서버의 작업 폴더 문맥으로 돈다(여기서 시작한 작업 스레드도 이어받는다)
+        with ctx.use(ctx.Ctx(root=self.app.root)):
+            super().finish_request(request, client_address)
 
 
 def make_app(root: Path, port: int = 0) -> tuple[ThreadingHTTPServer, App]:

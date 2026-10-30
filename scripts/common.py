@@ -2,7 +2,7 @@
 
 - 성공: JSON 한 개를 stdout으로 출력, 종료 코드 0
 - 실패: {"error": "<code>", "message": "..."}를 stdout으로 출력, 0이 아닌 종료 코드
-- 작업 폴더: YT_COACH_HOME 환경변수, 없으면 현재 폴더
+- 작업 폴더: 실행 문맥(`scripts.ctx`)이 있으면 그 root, 없으면 YT_COACH_HOME 환경변수, 그것도 없으면 현재 폴더
 
 각 스크립트는 `main(argv) -> dict`를 정의하고 `run(main)`으로 실행한다.
 """
@@ -17,6 +17,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
+
+from scripts import ctx
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 TEMPLATES_DIR = PLUGIN_ROOT / "templates"
@@ -114,7 +116,9 @@ def emit(payload: Any) -> None:
 def run(main: Callable[[list[str]], Any], argv: list[str] | None = None) -> None:
     args = sys.argv[1:] if argv is None else argv
     try:
-        result = main(args)
+        # 이 호출 동안만 지금 작업 폴더를 문맥으로 잡는다(끝나면 되돌려 같은 프로세스의 다음 호출에 남기지 않음)
+        with ctx.use(ctx.current() or ctx.Ctx(root=work_root())):
+            result = main(args)
     except ScriptError as e:
         emit({"error": e.code, "message": e.message, **e.details})
         sys.exit(e.exit_code)
@@ -150,6 +154,9 @@ def safe_progress(progress: Progress | None) -> Progress | None:
 
 
 def work_root() -> Path:
+    c = ctx.current()
+    if c is not None:
+        return c.root
     home = os.environ.get("YT_COACH_HOME")
     return Path(home) if home else Path.cwd()
 

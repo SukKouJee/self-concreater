@@ -522,3 +522,22 @@ def test_files_serves_conti_art(client, tmp_path):
     assert headers["Content-Security-Policy"] == "default-src 'none'; style-src 'unsafe-inline'; img-src data:"
     status, headers, _ = client.call("GET", "/files/workspace/frames/none.jpg")
     assert "Content-Security-Policy" not in headers
+
+
+def test_request_and_job_threads_run_under_app_ctx(client, temp_routes, monkeypatch, tmp_path):
+    """요청 스레드는 서버의 Ctx로 돈다: 같은 프로세스에서 YT_COACH_HOME이 바뀌어도 이 서버의 작업 폴더를 본다."""
+    from scripts import common, ctx
+
+    seen = {}
+
+    @server.route("GET", "/api/test-root")
+    def where(req):
+        job = req.app.jobs.start("typify", lambda job: seen.setdefault("job", common.work_root()))
+        job.join(5)
+        return {"request": str(common.work_root()), "user": ctx.current().user_id}
+
+    monkeypatch.setenv("YT_COACH_HOME", str(tmp_path / "elsewhere"))
+    status, body = client.json("GET", "/api/test-root")
+    assert status == 200
+    assert body == {"request": str(client.app.root), "user": None}
+    assert seen["job"] == client.app.root
