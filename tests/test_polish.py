@@ -362,7 +362,7 @@ def test_speech_rate_default_is_shared(draft_md, home):
 
 def test_draft_path_rule_lives_in_conti(home):
     from scripts.ui import api_conti
-    assert api_conti._safe_path is conti.safe_draft_path and api_conti.CONTI_SUFFIX == conti.CONTI_SUFFIX == "-conti"
+    assert api_conti._safe_key is conti.safe_draft_key and api_conti.CONTI_SUFFIX == conti.CONTI_SUFFIX == "-conti"
     for bad, flag in (("profile.md", None), ("drafts/a-conti.md", False), ("drafts/a.md", True)):
         with pytest.raises(ScriptError) as e:
             conti.safe_draft_path(bad, conti_file=flag)

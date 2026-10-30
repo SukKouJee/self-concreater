@@ -195,7 +195,7 @@ def safe_draft_key(value: Any, *, conti_file: bool | None = None) -> str:
 
 
 def safe_draft_path(value: Any, *, conti_file: bool | None = None) -> Path:
-    """과도기(polish·footage_out·UI가 아직 Path를 쓴다): `safe_draft_key`와 같은 검사, resolve한 절대 경로를 돌려준다."""
+    """과도기(polish가 아직 Path를 쓴다): `safe_draft_key`와 같은 검사, resolve한 절대 경로를 돌려준다."""
     return ctx.here().scratch.arg_path(safe_draft_key(value, conti_file=conti_file)).resolve()
 
 

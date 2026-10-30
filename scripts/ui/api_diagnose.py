@@ -10,16 +10,15 @@
 from __future__ import annotations
 
 import json
-import os
-import re
-import tempfile
+import posixpath
+import secrets
 import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from scripts import claude_cli, conti, ctx, features, llm, refstore, similarity
-from scripts.common import ScriptError, work_root, workspace_dir
+from scripts import claude_cli, conti, ctx, features, keys, llm, refstore, similarity
+from scripts.common import ScriptError
 from scripts.ui.api_refs import _body_parts
 from scripts.ui.jobs import Job, new_item
 from scripts.ui.server import Request, route
@@ -50,7 +49,7 @@ def _rules() -> list[Path]:
 def _category(value: Any) -> str:
     if not isinstance(value, str) or not value:
         raise ScriptError("bad_request", "category가 필요합니다")
-    refstore.existing_category_dir(value)             # 없는 카테고리는 category_not_found
+    refstore.require_category(value)                  # 없는 카테고리는 category_not_found
     return value
 
 
@@ -58,21 +57,21 @@ def _bad_path() -> ScriptError:
     return ScriptError("bad_path", "진단할 수 있는 파일이 아닙니다(이 카테고리의 내 영상 또는 기획안만 가능)")
 
 
-def _target_path(category: str, value: Any) -> Path:
-    """작업 폴더 안 refs/ref_<cat>/videos/*.md 또는 drafts/*.md(콘티 제외)만 허용한다."""
+def _target_key(category: str, value: Any) -> str:
+    """작업 폴더 안 refs/ref_<cat>/videos/*.md 또는 drafts/*.md(콘티 제외)만 허용하고 그 문서 키를 돌려준다.
+    탈출 검사는 resolve 기준(`scratch.key_of`: `..`·심볼릭 링크·작업 폴더 밖 절대 경로·다른 드라이브). 풀린 키의
+    폴더가 두 허용 폴더 중 하나와 정확히 같아야 한다(하위 폴더·다른 카테고리 안 됨). 확장자는 `.md` 그대로(대소문자 구분)."""
     if not isinstance(value, str) or not value.strip():
         raise _bad_path()
-    root = work_root()
-    raw = Path(value)
-    candidate = (raw if raw.is_absolute() else root / raw).resolve()
-    allowed = {(refstore.category_dir(category) / "videos").resolve(), (root / "drafts").resolve()}
-    if candidate.suffix != ".md" or candidate.parent not in allowed or candidate.stem.endswith(conti.CONTI_SUFFIX):
-        raise _bad_path()
     try:
-        rel = candidate.relative_to(root.resolve())
-    except ValueError as e:
+        key = ctx.here().scratch.key_of(value)
+    except ScriptError as e:
         raise _bad_path() from e
-    return root / rel
+    folder = posixpath.dirname(key) + "/"
+    if (posixpath.splitext(key)[1] != ".md" or folder not in (keys.videos_dir(category), keys.DRAFTS)
+            or keys.stem(key).endswith(conti.CONTI_SUFFIX)):
+        raise _bad_path()
+    return key
 
 
 def _name(value: Any) -> str:
@@ -83,14 +82,14 @@ def _name(value: Any) -> str:
     return value
 
 
-def _compare(category: str, path: Path) -> dict:
-    return {**similarity.compare(category, path), "axis_ko": dict(AXIS_KO)}
+def _compare(category: str, key: str) -> dict:
+    return {**similarity.compare(category, key), "axis_ko": dict(AXIS_KO)}
 
 
-def _date(fm: dict, path: Path) -> str:
+def _date(fm: dict, key: str) -> str:
     if fm.get("date"):
         return str(fm["date"])
-    return datetime.fromtimestamp(path.stat().st_mtime).date().isoformat()
+    return datetime.fromtimestamp(ctx.here().store.stat(key).mtime).date().isoformat()
 
 
 def _diagnosed(category: str, name: str) -> dict | None:
@@ -106,14 +105,14 @@ def _diagnosed(category: str, name: str) -> dict | None:
     return {"date": str(fm.get("date") or ""), "nearest": fm.get("nearest")}
 
 
-def _entry(category: str, path: Path, fm: dict, name: str) -> dict:
-    return {"path": path.relative_to(work_root()).as_posix(), "name": name, "title": fm.get("title") or name,
-            "date": _date(fm, path), "diagnosed": _diagnosed(category, name)}
+def _entry(category: str, key: str, fm: dict, name: str) -> dict:
+    return {"path": key, "name": name, "title": fm.get("title") or name,
+            "date": _date(fm, key), "diagnosed": _diagnosed(category, name)}
 
 
-def _read(path: Path) -> dict | None:
+def _read(key: str) -> dict | None:
     try:
-        return refstore.read_md(path)[0]
+        return refstore.read(key)[0]
     except (ScriptError, OSError, UnicodeDecodeError):
         return None                       # 프런트매터가 깨진 파일은 목록에서만 뺀다(사용자가 고치는 중일 수 있다)
 
@@ -125,19 +124,18 @@ def _targets(req: Request) -> dict:
     category = _category(req.query.get("category"))
     gate = similarity.typify_gate(category)
     has_typify, preliminary = gate["available"], gate["preliminary"]
-    root = work_root()
+    store = ctx.here().store
     videos, drafts = [], []
-    folder = refstore.existing_category_dir(category) / "videos"
-    for path in sorted(folder.glob("*.md")) if folder.is_dir() else []:
-        fm = _read(path)
+    for meta in store.list(keys.videos_dir(category)):
+        fm = _read(meta.key)
         if fm is not None and fm.get("role") == "mine":
-            videos.append(_entry(category, path, fm, str(fm.get("id") or path.stem)))
-    folder = root / "drafts"
-    for path in sorted(folder.glob("*.md")) if folder.is_dir() else []:
-        fm = _read(path)
-        if path.stem.endswith(conti.CONTI_SUFFIX) or fm is None or fm.get("category") != category:
+            videos.append(_entry(category, meta.key, fm, str(fm.get("id") or keys.stem(meta.key))))
+    for meta in store.list(keys.DRAFTS):
+        stem = keys.stem(meta.key)
+        fm = _read(meta.key)
+        if stem.endswith(conti.CONTI_SUFFIX) or fm is None or fm.get("category") != category:
             continue
-        drafts.append(_entry(category, path, fm, path.stem))
+        drafts.append(_entry(category, meta.key, fm, stem))
     videos.sort(key=lambda v: (v["date"], v["path"]), reverse=True)
     drafts.sort(key=lambda d: (d["date"], d["path"]), reverse=True)
     return {"has_typify": has_typify, "preliminary": preliminary, "videos": videos, "drafts": drafts}
@@ -148,16 +146,16 @@ def _targets(req: Request) -> dict:
 @route("POST", "/api/diagnose/compare")
 def _compare_route(req: Request) -> dict:
     category = _category(req.json.get("category"))
-    return _compare(category, _target_path(category, req.json.get("target")))
+    return _compare(category, _target_key(category, req.json.get("target")))
 
 
 # ---- 설명(작업) -------------------------------------------------------------------------
 
-def run_target(category: str, path: Path) -> Any:
+def run_target(category: str, key: str) -> Any:
     def target(job: Job) -> None:
         job.update(0, state="running", step="compare")
         job.check_cancelled()
-        result = similarity.compare(category, path)
+        result = similarity.compare(category, key)
         job.update(0, step="claude")
         job.check_cancelled()
         _, notes = llm.ask_validated(
@@ -172,12 +170,11 @@ def run_target(category: str, path: Path) -> Any:
 @route("POST", "/api/diagnose/explain")
 def _explain(req: Request) -> dict:
     category = _category(req.json.get("category"))
-    path = _target_path(category, req.json.get("target"))
+    key = _target_key(category, req.json.get("target"))
     llm.check()                          # claude가 없으면 작업을 만들지 않는다
-    result = _compare(category, path)                 # no_typify_result·not_mine 등은 작업 전에 400으로 알린다
-    rel = path.relative_to(work_root()).as_posix()
-    items = [new_item(rel, title=result["target"]["title"] or result["target"]["name"], step="compare")]
-    job = req.app.jobs.start(KIND, run_target(category, path), items=items, category=category)
+    result = _compare(category, key)                  # no_typify_result·not_mine 등은 작업 전에 400으로 알린다
+    items = [new_item(key, title=result["target"]["title"] or result["target"]["name"], step="compare")]
+    job = req.app.jobs.start(KIND, run_target(category, key), items=items, category=category)
     return {"job": job.snapshot()}
 
 
@@ -215,27 +212,23 @@ def _record(category: str, name: str) -> dict:
 def _save(req: Request) -> dict:
     body = req.json
     category = _category(body.get("category"))
-    path = _target_path(category, body.get("target"))
+    key = _target_key(category, body.get("target"))
     # similarity.save도 compare를 한 번 더 한다. 여기서 먼저 비교하는 것은 저장 직전의 갭으로 notes를 검증해
     # 모양·누락 오류를 400으로 알리고 tmp 파일을 만들지 않기 위해서다(의도한 차이가 그 사이 바뀔 수 있다).
     with WRITE_LOCK:
-        return _save_locked(req, body, category, path)
+        return _save_locked(req, body, category, key)
 
 
-def _save_locked(req: Request, body: dict, category: str, path: Path) -> dict:
-    result = _compare(category, path)
+def _save_locked(req: Request, body: dict, category: str, key: str) -> dict:
+    result = _compare(category, key)
     notes = similarity.validate_notes(result, body.get("notes"))
-    tmp_dir = workspace_dir("tmp")
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(prefix="diag_notes_", suffix=".json", dir=tmp_dir)   # 요청마다 고유한 파일
-    tmp = Path(tmp_name)
+    tmp = ctx.here().scratch.tmp_path(f"diag_notes_{secrets.token_hex(8)}.json")   # 요청마다 고유한 파일
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(notes, f, ensure_ascii=False)
-        saved = similarity.save(category, path, tmp)
+        tmp.write_bytes(refstore.text_bytes(json.dumps(notes, ensure_ascii=False)))
+        saved = similarity.save(category, key, tmp)
     finally:
         tmp.unlink(missing_ok=True)
-    _mark_saved(req, body.get("job_id"), category, path.relative_to(work_root()).as_posix())
+    _mark_saved(req, body.get("job_id"), category, key)
     return {**saved, "record": _record(category, result["target"]["name"])}
 
 
@@ -257,7 +250,7 @@ def _intentional(req: Request) -> dict:
         previous = list(refstore.read(similarity._diag_key(name))[0].get("intentional") or [])
         result = similarity.intentional(category, name, key, off=not on)
         try:
-            compare = _compare(category, _target_path(category, target))
+            compare = _compare(category, _target_key(category, target))
         except ScriptError:
             refstore.update_frontmatter(similarity._diag_key(name), {"intentional": previous})   # 되돌린다
             raise

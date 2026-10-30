@@ -16,7 +16,6 @@ from typing import Any, Callable
 from scripts import conti, library, llm, refstore
 from scripts.common import ScriptError, scrub
 from scripts.ui import api_draft
-from scripts.ui.api_conti import rel_path
 from scripts.ui.jobs import Job, new_item
 from scripts.ui.server import Request, route
 
@@ -160,10 +159,10 @@ def _preview(req: Request) -> dict:
             created = library.preview_technique(category, technique_kind, name, desc)
             return _present(created["preview_id"])
     elif kind == "template":
-        path = conti.safe_draft_path(body.get("draft"), conti_file=False)
+        draft_key = conti.safe_draft_key(body.get("draft"), conti_file=False)
 
         def make() -> dict[str, Any]:
-            created = library.preview_template(rel_path(path))
+            created = library.preview_template(draft_key)
             return _present(created["preview_id"])
     else:
         raise ScriptError("bad_request", "kind는 technique 또는 template이어야 합니다")

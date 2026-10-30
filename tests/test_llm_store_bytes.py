@@ -37,7 +37,7 @@ def test_claude_cli_prompt_with_files_is_byte_exact_and_cwd_is_work_folder(home,
     calls = []
     monkeypatch.setattr(claude_cli.shutil, "which", lambda name: "C:/bin/claude.exe")
     monkeypatch.setattr(claude_cli.subprocess, "run", lambda cmd, **kw: calls.append((cmd, kw)) or _cli_ok({"ok": 1}))
-    files = [home / "workspace" / "frames" / "abc" / "0001.jpg", home / "refs" / "ref_a" / "videos" / "한글.md"]
+    files = ["workspace/frames/abc/0001.jpg", "refs/ref_a/videos/한글.md"]
 
     assert llm.ask([rule], PAYLOAD, "할일ABC", files=files) == {"ok": 1}
 
@@ -114,8 +114,8 @@ def test_anthropic_attachments_keep_names_order_and_newlines(home, monkeypatch):
         return _Resp({"content": [{"type": "text", "text": '{"a": 1}'}]})
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    files = [home / "workspace" / "frames" / "v" / "0001.JPG", home / "refs" / "ref_a" / "ex.md",
-             home / "n.txt", home / "z.bin"]
+    files = ["workspace/frames/v/0001.JPG", "refs/ref_a/ex.md",
+             "n.txt", "z.bin"]
 
     assert llm.ask([], {}, "t", files=files) == {"a": 1}
 
@@ -133,7 +133,7 @@ def test_anthropic_missing_file_is_llm_failed_with_name(home, monkeypatch):
     monkeypatch.setenv("YTC_LLM_ENGINE", "anthropic-api")
     monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: pytest.fail("네트워크를 부르면 안 됩니다"))
     with pytest.raises(ScriptError) as e:
-        llm.ask([], {}, "t", files=[home / "workspace" / "frames" / "x" / "0009.jpg"])
+        llm.ask([], {}, "t", files=["workspace/frames/x/0009.jpg"])
     assert e.value.code == "llm_failed" and "0009.jpg" in e.value.message and "FileNotFoundError" in e.value.message
 
 
@@ -222,7 +222,9 @@ def test_ask_rejects_files_outside_work_folder_before_any_engine_call(home, tmp_
     monkeypatch.setattr(claude_cli.shutil, "which", lambda name: pytest.fail("엔진을 부르면 안 됩니다"))
     monkeypatch.setattr(claude_cli.subprocess, "run", lambda *a, **k: pytest.fail("엔진을 부르면 안 됩니다"))
     outside = tmp_path_factory.mktemp("outside") / "a.jpg"
-    for bad in (outside, "../a.jpg", "a" + chr(92) + "b.jpg"):
+    for bad in (str(outside), outside.as_posix(), "../a.jpg", "a" + chr(92) + "b.jpg", "C:a.jpg"):
         with pytest.raises(ScriptError) as e:
             llm.ask([], {}, "t", files=[bad])
         assert e.value.code == "bad_path", bad
+    with pytest.raises(TypeError):                   # 키가 아닌 Path는 프로그램 오류(작업 폴더 안이어도)
+        llm.ask([], {}, "t", files=[home / "a.jpg"])

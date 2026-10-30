@@ -321,10 +321,10 @@ def test_context_whole_json(home):
 
 # --- 호출부 ---------------------------------------------------------------------
 
-def test_mission_path_helper_and_record(home):
-    assert mission._mission_path(DAY) == home / "missions" / f"{DAY}.md"
+def test_mission_key_helper_and_record(home):
+    assert mission._mission_key(DAY) == f"missions/{DAY}.md"
     put(home, f"missions/{DAY}.md", MISSION_MD)
-    record = mission._mission_record(mission._mission_path(DAY))
+    record = mission._mission_record(mission._mission_key(DAY))
     assert record["title"] == "탑뷰" and record == mission.context(DAY)["today"]
 
 

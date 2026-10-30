@@ -9,17 +9,17 @@
 from __future__ import annotations
 
 import json
-import os
+import posixpath
 import re
-import tempfile
+import secrets
 import threading
 from datetime import date as Date
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from scripts import claude_cli, llm, mission, motif, refstore, report
-from scripts.common import ScriptError, work_root, workspace_dir
+from scripts import claude_cli, ctx, keys, llm, mission, motif, refstore, report
+from scripts.common import ScriptError
 from scripts.ui.api_refs import _body_parts
 from scripts.ui.jobs import Job, mark_saved, new_item
 from scripts.ui.server import Request, route
@@ -51,7 +51,7 @@ WRITE_LOCK = threading.Lock()                     # reviews/*.md, profile.md의 
 def _category(value: Any) -> str:
     if not isinstance(value, str) or not value:
         raise ScriptError("bad_request", "category가 필요합니다")
-    refstore.existing_category_dir(value)             # 없는 카테고리는 category_not_found
+    refstore.require_category(value)                  # 없는 카테고리는 category_not_found
     return value
 
 
@@ -68,17 +68,10 @@ def _week(value: Any, *, required: bool = True) -> str:
     return value
 
 
-def _review_path(week: str) -> Path:
-    return work_root() / "reviews" / f"{week}.md"
-
-
 def _tmp_json(prefix: str, data: Any) -> Path:
-    tmp_dir = workspace_dir("tmp")
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(prefix=prefix, suffix=".json", dir=tmp_dir)       # 요청마다 고유한 파일
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
-    return Path(name)
+    tmp = ctx.here().scratch.tmp_path(f"{prefix}{secrets.token_hex(8)}.json")       # 요청마다 고유한 파일
+    tmp.write_bytes(refstore.text_bytes(json.dumps(data, ensure_ascii=False)))
+    return tmp
 
 
 # ---- 리포트 -----------------------------------------------------------------------------
@@ -91,12 +84,11 @@ def _file_url(rel: str) -> str:
 def _report_list(req: Request) -> dict:
     category = _category(req.query.get("category"))
     pattern = re.compile(re.escape(category) + "-" + REPORT_DATE + r"\.html")
-    folder = work_root() / "reports"
     found = []
-    for path in folder.glob("*.html") if folder.is_dir() else []:
-        m = pattern.fullmatch(path.name)
-        if m and path.is_file():
-            found.append((m.group(1), f"reports/{path.name}"))
+    for meta in ctx.here().objects.list(keys.REPORTS, "*.html"):              # 파일만
+        m = pattern.fullmatch(posixpath.basename(meta.key))
+        if m:
+            found.append((m.group(1), meta.key))
     reports = [{"path": rel, "date": day, "url": _file_url(rel)} for day, rel in sorted(found, reverse=True)]
     return {"category": category, "reports": reports, "has_typify": motif.has_typify(category)}
 
@@ -112,10 +104,10 @@ def _report_build(req: Request) -> dict:
 # ---- 회고 읽기 --------------------------------------------------------------------------
 
 def _saved_view(week: str) -> dict | None:
-    path = _review_path(week)
-    if not path.exists():
+    key = keys.review_md(week)
+    if not ctx.here().store.exists(key):
         return None
-    fm, body = refstore.read_md(path)
+    fm, body = refstore.read(key)
     return {"fm": fm, "body": _body_parts(body)}
 
 
@@ -129,8 +121,7 @@ def _profile_view() -> dict:
 @route("GET", "/api/review/weeks")
 def _weeks(req: Request) -> dict:
     current = mission._week_range(None)[0]
-    folder = work_root() / "reviews"
-    saved = {p.stem for p in folder.glob("*.md")} if folder.is_dir() else set()
+    saved = {keys.stem(meta.key) for meta in ctx.here().store.list(keys.REVIEWS)}
     names = {current}
     for stem in saved:
         try:
@@ -225,13 +216,13 @@ def _apply(req: Request) -> dict:
         finally:
             tmp.unlink(missing_ok=True)
         recorded = False
-        path = _review_path(week)
-        if path.exists():                             # 회고가 아직 저장 전이면 기록할 곳이 없다
+        key = keys.review_md(week)
+        if ctx.here().store.exists(key):              # 회고가 아직 저장 전이면 기록할 곳이 없다
             try:
-                previous = refstore.read_md(path)[0].get("approved")
+                previous = refstore.read(key)[0].get("approved")
                 done = list(previous) if isinstance(previous, list) else []
                 approved = done + [name for name in result["sections"] if name not in done]
-                refstore.update_frontmatter(path, {"approved": approved})
+                refstore.update_frontmatter(key, {"approved": approved})
                 recorded = True
             except ScriptError:
                 pass                                  # 프로필은 이미 바뀌었다: 기록 실패는 recorded=false로 알린다

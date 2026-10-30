@@ -80,11 +80,6 @@ def footage_key(fid: str) -> str:
     return keys.footage_dir(fid)
 
 
-def footage_dir(fid: str) -> Path:
-    """과도기(UI 사진 서빙·테스트가 아직 Path를 쓴다): footage_key의 실제 폴더 경로."""
-    return Path(ctx.here().objects.display_path(footage_key(fid)))
-
-
 def scan_folder(folder: str | Path) -> list[dict[str, Any]]:
     """폴더 바로 아래 영상 파일(확장자 대소문자 무시, 하위 폴더 제외)을 이름순으로."""
     root = Path(folder)

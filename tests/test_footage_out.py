@@ -16,6 +16,7 @@ from scripts import footage_out
 from scripts.common import ScriptError
 from tests.test_conti import conti_file, draft_md, home  # noqa: F401 - fixtures
 from tests.test_cuts import sample_video  # noqa: F401 - fixture
+from tests.helpers.paths import footage_base
 
 
 @pytest.fixture
@@ -67,7 +68,7 @@ def cut_ids(path):
 
 def cached(fid, name):
     """그 파일의 처리 캐시(원본이 사라져도 이름을 보여 줄 수 있게)."""
-    base = footage.footage_dir(fid)
+    base = footage_base(fid)
     base.mkdir(parents=True, exist_ok=True)
     (base / "scenes.json").write_text(
         '{"schema": 1, "fid": "%s", "name": "%s", "status": "done", "duration_sec": 6.0, "scenes": []}'

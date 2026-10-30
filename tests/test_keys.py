@@ -99,7 +99,7 @@ def test_html_of_replaces_md_suffix_like_with_suffix() -> None:
 def test_other_doc_keys_match_module_paths(home: Path) -> None:
     root = common.work_root()
     assert keys.mine_md("my-jeju-vlog") == similarity._diag_key("my-jeju-vlog")
-    assert keys.mission_md("2026-10-30") == rel(mission._mission_path("2026-10-30"))
+    assert keys.mission_md("2026-10-30") == mission._mission_key("2026-10-30") == "missions/2026-10-30.md"
     assert keys.review_md("2026-W44") == rel(root / "reviews" / "2026-W44.md")             # mission.py review_save
     assert keys.report_html("travel", "2026-10-30") == rel(root / "reports" / "travel-2026-10-30.html")  # report.py
     assert keys.PROFILE == rel(root / "profile.md")                                       # motif·mission
@@ -125,7 +125,7 @@ def test_workspace_keys_match_module_paths(home: Path) -> None:
         keys.typify("travel", "other")
     fid = "0123456789ab-10-20"
     assert footage.valid_fid(fid)
-    assert keys.footage_dir(fid) == rel(footage.footage_dir(fid)) + "/"
+    assert keys.footage_dir(fid) == footage.footage_key(fid) == f"workspace/footage/{fid}/"
     assert keys.TRASH == "workspace/trash/"
 
 

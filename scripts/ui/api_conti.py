@@ -30,12 +30,14 @@
 from __future__ import annotations
 
 import json
+import posixpath
 from urllib.parse import quote
 from pathlib import Path
 from typing import Any
 
-from scripts import captions, claude_cli, conti, conti_art, conti_history, conti_refs, llm, refstore, scene_merge
-from scripts.common import ScriptError, work_root, workspace_dir
+from scripts import captions, claude_cli, conti, conti_art, conti_history, conti_refs, keys, llm, refstore, scene_merge
+from scripts import ctx as run_ctx                 # 지역 변수 ctx(콘티 입력)와 겹치지 않게
+from scripts.common import ScriptError
 from scripts.ui.jobs import Job, JobCancelled, new_item
 from scripts.ui.server import Request, route
 
@@ -67,14 +69,7 @@ def _rules() -> list[Path]:
     return [claude_cli.SKILLS_DIR / "yt-conti" / "SKILL.md"]
 
 
-_safe_path = conti.safe_draft_path          # 경로 규칙은 conti에 있다(기존 이름 유지)
-
-
-def rel_path(path: Path) -> str:
-    return path.resolve().relative_to(work_root().resolve()).as_posix()
-
-
-_rel = rel_path                          # 기존 이름 유지
+_safe_key = conti.safe_draft_key            # 경로 규칙은 conti에 있다. 요청의 path → drafts/ 안 md 키(resolve 기준 탈출 검사)
 
 
 def _flag(body: dict, key: str) -> bool:
@@ -98,21 +93,22 @@ def _int(value: Any, name: str) -> int:
 @route("GET", "/api/drafts")
 def _drafts(req: Request) -> dict:
     out = []
-    folder = work_root() / "drafts"
-    for path in sorted(folder.glob("*.md")) if folder.is_dir() else []:
-        if path.stem.endswith(CONTI_SUFFIX):
+    c = run_ctx.here()
+    for meta in c.store.list(keys.DRAFTS):
+        stem = keys.stem(meta.key)
+        if stem.endswith(CONTI_SUFFIX):
             continue
         try:
-            fm, _ = refstore.read_md(path)
+            fm, _ = refstore.read(meta.key)
         except ScriptError:
             continue                      # 프런트매터가 깨진 파일은 목록에서만 뺀다(사용자가 고치는 중일 수 있다)
-        made = conti.conti_path(path)
-        html_path = made.with_suffix(".html")
+        made = keys.conti_md(meta.key)
+        html = keys.html_of(made)
         out.append({
-            "path": _rel(path), "title": fm.get("title") or path.stem, "category": fm.get("category"),
-            "date": str(fm.get("date") or path.stem[:10]),
-            "conti": _rel(made) if made.exists() else None,
-            "html": _rel(html_path) if html_path.exists() else None,
+            "path": meta.key, "title": fm.get("title") or stem, "category": fm.get("category"),
+            "date": str(fm.get("date") or stem[:10]),
+            "conti": made if c.store.exists(made) else None,
+            "html": html if c.objects.exists(html) else None,
         })
     out.sort(key=lambda d: (d["date"], d["path"]), reverse=True)
     return {"drafts": out}
@@ -181,13 +177,13 @@ def _with_picked(raw_cuts: list[dict], cuts: list[dict]) -> list[dict]:
 @route("POST", "/api/conti/create")
 def _create(req: Request) -> dict:
     body = req.json
-    draft = _safe_path(body.get("draft"), conti_file=False)
+    draft = _safe_key(body.get("draft"), conti_file=False)
     force = _flag(body, "force")
-    ctx = conti.context(_rel(draft))
+    ctx = conti.context(draft)
     if ctx["conti_exists"] and not force:
         raise ScriptError("conti_exists", f"이미 콘티가 있습니다: {ctx['conti']} (다시 만들려면 덮어쓰기를 고르세요)")
     llm.check()              # claude가 없으면 작업을 만들지 않는다
-    items = [new_item(_rel(draft), title=ctx["title"], step="claude")]
+    items = [new_item(draft, title=ctx["title"], step="claude")]
     job = req.app.jobs.start(KIND, create_target(ctx), items=items, category=ctx["category"])
     return {"job": job.snapshot()}
 
@@ -195,16 +191,15 @@ def _create(req: Request) -> dict:
 @route("POST", "/api/conti/save")
 def _save(req: Request) -> dict:
     body = req.json
-    draft = _safe_path(body.get("draft"), conti_file=False)
+    draft = _safe_key(body.get("draft"), conti_file=False)
     data = body.get("conti")
     if not isinstance(data, dict):
         raise ScriptError("bad_request", "conti는 JSON 객체여야 합니다")
     force = _flag(body, "force")
-    tmp = workspace_dir("tmp", "conti_ui.json")
-    tmp.parent.mkdir(parents=True, exist_ok=True)
-    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    tmp = run_ctx.here().scratch.tmp_path("conti_ui.json")
+    tmp.write_bytes(refstore.text_bytes(json.dumps(data, ensure_ascii=False)))
     try:
-        result = conti.save(_rel(draft), tmp, force)
+        result = conti.save(draft, tmp, force)
     finally:
         tmp.unlink(missing_ok=True)
     return {**result, "hash": conti.content_hash(result["path"])}
@@ -225,8 +220,7 @@ def job_running_on(app: Any, kinds: tuple[str, ...], item_id: str) -> bool:
 
 @route("POST", "/api/conti/trash")
 def _trash(req: Request) -> dict:
-    path = _safe_path(req.json.get("path"), conti_file=True)
-    rel = _rel(path)
+    rel = _safe_key(req.json.get("path"), conti_file=True)
     if job_running_on(req.app, FILE_JOB_KINDS, rel):
         raise ScriptError("conti_busy", "이 콘티로 작업하는 중입니다(자막·촬영 영상·컷 파일·합치기·사진 고르기·장면 그림). 끝나거나 멈춘 뒤에 삭제하세요")
     return conti.trash(rel)
@@ -234,19 +228,22 @@ def _trash(req: Request) -> dict:
 
 # ---- 불러오기 -------------------------------------------------------------------------
 
-def _stale(path: Path, outputs: list[Path]) -> bool:
-    """콘티가 산출물보다 나중에 바뀌었는지(산출물이 있을 때만)."""
-    mtime = path.stat().st_mtime
-    return any(out.is_file() and mtime > out.stat().st_mtime for out in outputs)
+def _stale(key: str, outputs: list[str]) -> bool:
+    """콘티 md가 산출물보다 나중에 바뀌었는지(산출물이 있을 때만). md mtime > 산출물 mtime."""
+    c = run_ctx.here()
+    mtime = c.store.stat(key).mtime
+    return any(c.objects.exists(out) and mtime > c.objects.stat(out).mtime for out in outputs)
 
 
-def conti_view(path: Path) -> dict:
-    """GET /api/conti 응답. 불러올 때 id를 붙이고 밖에서 고친 내용을 이력에 남긴다(편집과 겹치지 않게 잠금 안에서)."""
-    _, fm, digest = conti_history.baseline_state(path)
-    return view_of(path, fm, digest)
+def conti_view(path: str | Path) -> dict:
+    """GET /api/conti 응답. 불러올 때 id를 붙이고 밖에서 고친 내용을 이력에 남긴다(편집과 겹치지 않게 잠금 안에서).
+    path: 콘티 md 키(또는 작업 폴더 안 Path: resolve 검사를 거쳐 키로)."""
+    key = path if isinstance(path, str) else run_ctx.here().scratch.key_of(path)
+    _, fm, digest = conti_history.baseline_state(key)
+    return view_of(key, fm, digest)
 
 
-def view_of(path: Path, fm: dict, digest: str) -> dict:
+def view_of(key: str, fm: dict, digest: str) -> dict:
     """이미 읽은(또는 막 쓴) fm과 그 파일의 content hash로 화면 응답을 만든다. 콘티 md를 다시 읽지 않는다."""
     refs = conti.cut_refs(fm)                            # 컷마다 {frame, match(pinned/content/composition), title, desc}
     vertical = fm.get("format") == "shorts"
@@ -257,24 +254,23 @@ def view_of(path: Path, fm: dict, digest: str) -> dict:
         art = {"url": _file_url(shown["file"]), "state": shown["state"]} if shown else None
         cuts.append({**c, "art": art, "label": fm["script"][c["section"]]["label"], "sketch": conti.sketch(c["size"], vertical),
                      "ref": refs.get(c["n"]), "max_chars": int(fm["speech_cps"] * c["sec"])})
-    base = path.stem[: -len(CONTI_SUFFIX)]
-    srt_files = [path.with_name(f"{base}-{suffix}.srt") for _, suffix in conti.SRT_TRACKS.values()]
-    return {"path": _rel(path), "hash": digest, "fm": fm, "html": fm.get("html"),
+    srt_files = [keys.srt(key, suffix) for _, suffix in conti.SRT_TRACKS.values()]
+    return {"path": key, "hash": digest, "fm": fm, "html": fm.get("html"),
             "cuts": cuts, "art_counts": conti_art.counts(fm),
             "warnings": conti.warnings(fm["script"], fm["cuts"], fm["speech_cps"]),
             "total_sec": round(sum(float(c["sec"]) for c in fm["cuts"]), 2), "target_sec": fm.get("target_sec"),
-            "outputs_stale": {"srt": _stale(path, srt_files), "video": _stale(path, [path.with_name(f"{base}-captions.mp4")])}}
+            "outputs_stale": {"srt": _stale(key, srt_files), "video": _stale(key, [keys.captions_mp4(key)])}}
 
 
 @route("GET", "/api/conti")
 def _get(req: Request) -> dict:
-    return conti_view(_safe_path(req.query.get("path"), conti_file=True))
+    return conti_view(_safe_key(req.query.get("path"), conti_file=True))
 
 
 @route("GET", "/api/conti/scenes")
 def _scenes(req: Request) -> dict:
-    path = _safe_path(req.query.get("path"), conti_file=True)
-    return {"scenes": conti.scenes(path, _int(req.query.get("n"), "n"))}
+    key = _safe_key(req.query.get("path"), conti_file=True)
+    return {"scenes": conti.scenes(key, _int(req.query.get("n"), "n"))}
 
 
 # ---- 대안 · 컷 고치기 -------------------------------------------------------------------
@@ -282,7 +278,7 @@ def _scenes(req: Request) -> dict:
 @route("POST", "/api/conti/alternatives")
 def _alternatives(req: Request) -> dict:
     body = req.json
-    path = _safe_path(body.get("path"), conti_file=True)
+    key = _safe_key(body.get("path"), conti_file=True)
     n = _int(body.get("n"), "n")
     count = _int(body.get("count", 3), "count")
     if not 1 <= count <= MAX_ALTERNATIVES:
@@ -290,7 +286,7 @@ def _alternatives(req: Request) -> dict:
     exclude = body.get("exclude") or []
     if not isinstance(exclude, list) or not all(isinstance(x, str) for x in exclude):
         raise ScriptError("bad_request", "exclude는 문자열 목록이어야 합니다")
-    ctx = conti.cut_context(path, n)
+    ctx = conti.cut_context(key, n)
     llm.check()
     payload = {**ctx, "count": count, "exclude": exclude}
     answer = llm.ask(_rules(), payload, f"7절 규칙으로 컷 대사 대안을 {count}개 만드세요", schema=ALT_SCHEMA)
@@ -309,15 +305,15 @@ def _alternatives(req: Request) -> dict:
 @route("POST", "/api/conti/cut")
 def _cut(req: Request) -> dict:
     body = req.json
-    path = _safe_path(body.get("path"), conti_file=True)
+    key = _safe_key(body.get("path"), conti_file=True)
     fields = body.get("fields")
     if not isinstance(fields, dict):
         raise ScriptError("bad_request", "fields는 JSON 객체여야 합니다")
     expected = body.get("hash")
     if not isinstance(expected, str) or not expected:
         raise ScriptError("bad_request", "hash가 필요합니다. 콘티를 다시 불러오세요")
-    before = _art_states(conti.validated(conti.read_conti(path).stored))
-    result = conti.update_cut(path, _int(body.get("n"), "n"), fields, expected_hash=expected)
+    before = _art_states(conti.validated(conti.read_conti(key).stored))
+    result = conti.update_cut(key, _int(body.get("n"), "n"), fields, expected_hash=expected)
     return {**result, "art_stale": _art_stale(before, [result["cut"]], before["aspect"])}
 
 
@@ -350,7 +346,7 @@ OP_KEYS = {"insert": {"op", "at", "section", "cut"}, "delete": {"op", "id", "n"}
 @route("POST", "/api/conti/cuts")
 def _cuts(req: Request) -> dict:
     body = req.json
-    path = _safe_path(body.get("path"), conti_file=True)
+    key = _safe_key(body.get("path"), conti_file=True)
     expected = _hash(body)
     op = {k: v for k, v in body.items() if k not in ("path", "hash")}
     allowed = OP_KEYS.get(op["op"]) if isinstance(op.get("op"), str) else None
@@ -359,9 +355,9 @@ def _cuts(req: Request) -> dict:
     unknown = sorted(set(op) - allowed)
     if unknown:
         raise ScriptError("invalid_edit", f"{op['op']}에서 쓸 수 없는 항목입니다: {', '.join(unknown)}")
-    before = _art_states(conti.validated(conti.read_conti(path).stored))
-    result, fm = conti.edit_cuts_fm(path, op, expected)
-    return {**view_of(path, fm, result["hash"]), "cut_id": result["cut_id"],
+    before = _art_states(conti.validated(conti.read_conti(key).stored))
+    result, fm = conti.edit_cuts_fm(key, op, expected)
+    return {**view_of(key, fm, result["hash"]), "cut_id": result["cut_id"],
             "art_stale": _art_stale(before, fm["cuts"], conti_art.aspect(fm))}
 
 
@@ -387,13 +383,12 @@ def merge_target(plan: dict) -> Any:
 
 @route("POST", "/api/conti/merge/preview")
 def _merge_preview(req: Request) -> dict:
-    path = _safe_path(req.json.get("path"), conti_file=True)
-    rel = _rel(path)
-    if job_running_on(req.app, (MERGE_KIND,), rel):
+    key = _safe_key(req.json.get("path"), conti_file=True)
+    if job_running_on(req.app, (MERGE_KIND,), key):
         raise ScriptError("conti_busy", "이 콘티를 장면으로 합치는 중입니다. 끝난 뒤에 다시 눌러 주세요")
-    plan = scene_merge.plan(path)          # 반복이 없으면 작업을 만들지 않고 바로 nothing_to_merge
+    plan = scene_merge.plan(key)          # 반복이 없으면 작업을 만들지 않고 바로 nothing_to_merge
     llm.check()
-    items = [new_item(rel, title=path.name, step="claude")]
+    items = [new_item(key, title=posixpath.basename(key), step="claude")]
     job = req.app.jobs.start(MERGE_KIND, merge_target(plan), items=items)
     return {"job": job.snapshot()}
 
@@ -401,25 +396,23 @@ def _merge_preview(req: Request) -> dict:
 @route("POST", "/api/conti/merge/apply")
 def _merge_apply(req: Request) -> dict:
     body = req.json
-    path = _safe_path(body.get("path"), conti_file=True)
+    key = _safe_key(body.get("path"), conti_file=True)
     expected = _hash(body)
     cuts = body.get("cuts")
     if not isinstance(cuts, list):
         raise ScriptError("bad_request", "cuts는 컷 목록이어야 합니다")
-    rel = _rel(path)
-    if job_running_on(req.app, ("footage", "footage_clips"), rel):
+    if job_running_on(req.app, ("footage", "footage_clips"), key):
         raise ScriptError("conti_busy", "촬영 영상을 맞추는 중입니다. 끝나거나 멈춘 뒤에 합치세요")
-    result, fm = scene_merge.apply_fm(path, cuts, expected)
+    result, fm = scene_merge.apply_fm(key, cuts, expected)
     # 합치기 자체의 경고(촬영 영상 판정을 못 옮김)는 merged에. 응답 warnings는 다른 응답처럼 컷 경고만(머리말 경고 상자).
     merge_warnings = [w for w in result["warnings"] if w["kind"] in scene_merge.MERGE_WARNING_KINDS]
-    return {**view_of(path, fm, result["hash"]),
+    return {**view_of(key, fm, result["hash"]),
             "merged": {"before": result["before"], "after": result["after"], "warnings": merge_warnings}}
 
 
 # ---- 장면에 사진 다시 고르기(작업) ------------------------------------------------------------
 
-def refs_pick_target(path: Path, category: str | None, cuts: list[dict]) -> Any:
-    rel = _rel(path)
+def refs_pick_target(key: str, category: str | None, cuts: list[dict]) -> Any:
 
     def target(job: Job) -> None:
         job.update(0, state="running", step="claude")
@@ -432,7 +425,7 @@ def refs_pick_target(path: Path, category: str | None, cuts: list[dict]) -> Any:
         picked = conti_refs.pick(cuts, category, on_batch)
         job.check_cancelled()
         job.update(0, step="save", message=None)
-        result = conti_refs.save_picks(path, picked.picks, picked.basis)
+        result = conti_refs.save_picks(key, picked.picks, picked.basis)
         warnings = []
         if picked.error is not None:
             warnings.append(_partial_warning(picked, len(cuts)))
@@ -440,7 +433,7 @@ def refs_pick_target(path: Path, category: str | None, cuts: list[dict]) -> Any:
             warnings.append({"kind": "refs_pick_skipped",
                              "message": f"고르는 사이 바뀌거나 지워진 장면 {result['skipped']}개는 사진을 바꾸지 않았어요"})
         job.update(0, state="done", step="save", ask=None)
-        job.finish("done", {"path": rel, "hash": result["hash"], "picked": result["picked"], "scenes": result["scenes"],
+        job.finish("done", {"path": key, "hash": result["hash"], "picked": result["picked"], "scenes": result["scenes"],
                             "skipped": result["skipped"], "warnings": warnings})
 
     return target
@@ -449,13 +442,12 @@ def refs_pick_target(path: Path, category: str | None, cuts: list[dict]) -> Any:
 @route("POST", "/api/conti/refs/pick")
 def _refs_pick(req: Request) -> dict:
     body = req.json
-    path = _safe_path(body.get("path"), conti_file=True)
+    key = _safe_key(body.get("path"), conti_file=True)
     expected = _hash(body)
-    rel = _rel(path)
-    if job_running_on(req.app, (REFS_KIND,), rel):
+    if job_running_on(req.app, (REFS_KIND,), key):
         raise ScriptError("conti_busy", "이 콘티의 사진을 고르는 중입니다. 끝난 뒤에 다시 눌러 주세요")
     with conti.HISTORY_LOCK:
-        cf = conti.read_conti(path)
+        cf = conti.read_conti(key)
         if conti.bytes_hash(cf.raw) != expected:
             raise ScriptError("conti_changed", "파일이 밖에서 바뀌었습니다. 다시 불러오세요")
         _, fm, _ = conti.ensure_ids_file(cf)              # 옛 파일은 id를 먼저 붙여야 고른 사진을 같은 컷에 저장한다
@@ -463,22 +455,21 @@ def _refs_pick(req: Request) -> dict:
         raise ScriptError("no_ref_descs", "설명이 있는 레퍼런스 사진이 없어요. 레퍼런스 사진 설명을 먼저 만들어 주세요")
     conti_refs.check_merged(fm["cuts"])
     llm.check()
-    items = [new_item(rel, title=path.name, step="claude")]
-    target = refs_pick_target(path, fm.get("category"), fm["cuts"])
-    job = req.app.jobs.start(REFS_KIND, target, items=items, summary={"path": rel})
+    items = [new_item(key, title=posixpath.basename(key), step="claude")]
+    target = refs_pick_target(key, fm.get("category"), fm["cuts"])
+    job = req.app.jobs.start(REFS_KIND, target, items=items, summary={"path": key})
     return {"job": job.snapshot()}
 
 
 # ---- 장면 그림 그리기(작업) ------------------------------------------------------------------
 
-def art_target(path: Path, ids: list[str] | None, stale_only: bool) -> Any:
-    rel = _rel(path)
+def art_target(key: str, ids: list[str] | None, stale_only: bool) -> Any:
 
     def target(job: Job) -> None:
         job.update(0, state="running", step="claude")
-        result = conti_art.draw(path, ids, stale_only, job)
+        result = conti_art.draw(key, ids, stale_only, job)
         job.update(0, state="done", step="save", ask=None, message=None)
-        job.finish("done", {"path": rel, "hash": conti.content_hash(path), **result})
+        job.finish("done", {"path": key, "hash": conti.content_hash(key), **result})
 
     return target
 
@@ -486,29 +477,28 @@ def art_target(path: Path, ids: list[str] | None, stale_only: bool) -> Any:
 @route("POST", "/api/conti/art")
 def _art(req: Request) -> dict:
     body = req.json
-    path = _safe_path(body.get("path"), conti_file=True)
+    key = _safe_key(body.get("path"), conti_file=True)
     ids = body.get("ids")
     if ids is not None and not (isinstance(ids, list) and all(isinstance(i, str) for i in ids)):
         raise ScriptError("bad_request", "ids는 장면 id 문자열 목록이어야 합니다")
     stale_only = body.get("stale_only", False)
     if not isinstance(stale_only, bool):
         raise ScriptError("bad_request", "stale_only는 true 또는 false여야 합니다")
-    rel = _rel(path)
     expected = body.get("hash")
     if expected is not None:
         if not isinstance(expected, str) or not expected:
             raise ScriptError("bad_request", "hash는 문자열이어야 합니다")
-        if conti.content_hash(path) != expected:
+        if conti.content_hash(key) != expected:
             raise ScriptError("conti_changed", "파일이 밖에서 바뀌었습니다. 다시 불러오세요")
-    if job_running_on(req.app, (ART_KIND,), rel):
+    if job_running_on(req.app, (ART_KIND,), key):
         raise ScriptError("conti_busy", "이 콘티의 장면 그림을 그리는 중입니다. 끝난 뒤에 다시 눌러 주세요")
     with conti.HISTORY_LOCK:
-        _, fm, _ = conti.ensure_ids_file(conti.read_conti(path))
+        _, fm, _ = conti.ensure_ids_file(conti.read_conti(key))
     if scene_merge.has_repeats(fm["cuts"]):
         raise ScriptError("merge_first", conti_art.MERGE_FIRST_MESSAGE)
     llm.check()
-    items = [new_item(rel, title=path.name, step="claude")]
-    job = req.app.jobs.start(ART_KIND, art_target(path, ids, stale_only), items=items, summary={"path": rel})
+    items = [new_item(key, title=posixpath.basename(key), step="claude")]
+    job = req.app.jobs.start(ART_KIND, art_target(key, ids, stale_only), items=items, summary={"path": key})
     return {"job": job.snapshot()}
 
 
@@ -516,55 +506,55 @@ def _art(req: Request) -> dict:
 
 @route("GET", "/api/conti/history")
 def _history(req: Request) -> dict:
-    path = _safe_path(req.query.get("path"), conti_file=True)
+    key = _safe_key(req.query.get("path"), conti_file=True)
     with conti.HISTORY_LOCK:
-        conti_history.baseline(path)
-        return {"versions": conti_history.list_versions(path)}
+        conti_history.baseline(key)
+        return {"versions": conti_history.list_versions(key)}
 
 
 @route("GET", "/api/conti/history/version")
 def _history_version(req: Request) -> dict:
-    path = _safe_path(req.query.get("path"), conti_file=True)
+    key = _safe_key(req.query.get("path"), conti_file=True)
     n = _int(req.query.get("n"), "n")
     with conti.HISTORY_LOCK:
-        return {"version": conti_history.get_version(path, n)}
+        return {"version": conti_history.get_version(key, n)}
 
 
 @route("GET", "/api/conti/history/diff")
 def _history_diff(req: Request) -> dict:
-    path = _safe_path(req.query.get("path"), conti_file=True)
+    key = _safe_key(req.query.get("path"), conti_file=True)
     b = req.query.get("b")
     a_n, b_n = _int(req.query.get("a"), "a"), None if b in (None, "") else _int(b, "b")
     with conti.HISTORY_LOCK:                             # 편집이 파일을 쓰는 도중에 읽지 않도록
-        return conti_history.diff_versions(path, a_n, b_n)
+        return conti_history.diff_versions(key, a_n, b_n)
 
 
 @route("POST", "/api/conti/history/name")
 def _history_name(req: Request) -> dict:
     body = req.json
-    path = _safe_path(body.get("path"), conti_file=True)
+    key = _safe_key(body.get("path"), conti_file=True)
     label = body.get("name")
     if not isinstance(label, str):
         raise ScriptError("bad_request", "name은 문자열이어야 합니다")
-    version = conti_history.name(path, label, _hash(body))
-    return {"version": version, "hash": conti.content_hash(path)}
+    version = conti_history.name(key, label, _hash(body))
+    return {"version": version, "hash": conti.content_hash(key)}
 
 
 @route("POST", "/api/conti/history/restore")
 def _history_restore(req: Request) -> dict:
     body = req.json
-    path = _safe_path(body.get("path"), conti_file=True)
-    return conti_history.restore(path, _int(body.get("n"), "n"), _hash(body))
+    key = _safe_key(body.get("path"), conti_file=True)
+    return conti_history.restore(key, _int(body.get("n"), "n"), _hash(body))
 
 
 @route("POST", "/api/conti/srt")
 def _srt(req: Request) -> dict:
     body = req.json
-    path = _safe_path(body.get("path"), conti_file=True)
+    key = _safe_key(body.get("path"), conti_file=True)
     track = body.get("track", "caption")
     if not isinstance(track, str):
         raise ScriptError("bad_request", "track은 문자열이어야 합니다")
-    result = conti.export_srt(path, track)
+    result = conti.export_srt(key, track)
     if not result["path"]:
         return result
     return {**result, "url": "/files/" + "/".join(quote(part) for part in result["path"].split("/"))}
@@ -574,11 +564,11 @@ def _file_url(rel_path: str) -> str:
     return "/files/" + "/".join(quote(part) for part in rel_path.split("/"))
 
 
-def srt_fit_target(path: Path, track: str, video: Path) -> Any:
+def srt_fit_target(key: str, track: str, video: Path) -> Any:
     def target(job: Job) -> None:
         job.update(0, state="running", step="detect")
         job.check_cancelled()
-        result = conti.export_srt(path, track, video, progress=lambda step: job.update(0, step=step))
+        result = conti.export_srt(key, track, video, progress=lambda step: job.update(0, step=step))
         preview = {**result, "url": _file_url(result["path"]) if result["path"] else None}
         job.update(0, state="done", step="write", ask=None, preview=preview)
         job.finish("done", {"count": result["count"], "snapped": result["retime"]["snapped"]})
@@ -589,15 +579,15 @@ def srt_fit_target(path: Path, track: str, video: Path) -> Any:
 @route("POST", "/api/conti/srt-fit")
 def _srt_fit(req: Request) -> dict:
     body = req.json
-    path = _safe_path(body.get("path"), conti_file=True)
+    key = _safe_key(body.get("path"), conti_file=True)
     track = body.get("track", "caption")
     if not isinstance(track, str) or track not in conti.SRT_TRACKS:
         raise ScriptError("bad_request", "track은 caption 또는 line이어야 합니다")
-    if not conti._load_conti(path)["cuts"]:
+    if not conti._load_conti(key)["cuts"]:
         raise ScriptError("bad_request", "콘티에 컷이 없습니다")
     video = conti._clean_video_path(body.get("video"))       # 작업을 만들기 전에 영상 경로부터 확인
-    items = [new_item(_rel(path), title=path.name, step="detect")]
-    job = req.app.jobs.start("srtfit", srt_fit_target(path, track, video), items=items)
+    items = [new_item(key, title=posixpath.basename(key), step="detect")]
+    job = req.app.jobs.start("srtfit", srt_fit_target(key, track, video), items=items)
     return {"job": job.snapshot()}
 
 
@@ -612,7 +602,7 @@ def _captions_check(req: Request) -> dict:
     return {"ready": True}
 
 
-def caption_video_target(path: Path, track: str, video: Path | None) -> Any:
+def caption_video_target(key: str, track: str, video: Path | None) -> Any:
     def target(job: Job) -> None:
         job.update(0, state="running", step="render")
         job.check_cancelled()
@@ -621,7 +611,7 @@ def caption_video_target(path: Path, track: str, video: Path | None) -> Any:
             job.update(0, step="render", message=f"{done}/{total} 프레임")
 
         try:
-            result = captions.render(path, video, track, progress=on_progress, cancel=job.is_cancelled,
+            result = captions.render(key, video, track, progress=on_progress, cancel=job.is_cancelled,
                                      step=lambda name: job.update(0, step=name))
         except captions.RenderCancelled as e:
             raise JobCancelled from e
@@ -635,14 +625,14 @@ def caption_video_target(path: Path, track: str, video: Path | None) -> Any:
 @route("POST", "/api/conti/caption-video")
 def _caption_video(req: Request) -> dict:
     body = req.json
-    path = _safe_path(body.get("path"), conti_file=True)
+    key = _safe_key(body.get("path"), conti_file=True)
     track = body.get("track", "caption")
     if not isinstance(track, str) or track not in conti.SRT_TRACKS:
         raise ScriptError("bad_request", "track은 caption 또는 line이어야 합니다")
     video = None if body.get("video") is None else conti._clean_video_path(body.get("video"))
     captions.check_setup()                                   # 작업을 만들기 전에 설치부터 확인
-    if not conti.caption_blocks(path, track)["blocks"]:
+    if not conti.caption_blocks(key, track)["blocks"]:
         raise ScriptError("no_captions", "내보낼 자막이 없습니다")
-    items = [new_item(_rel(path), title=path.name, step="render")]
-    job = req.app.jobs.start("caption_video", caption_video_target(path, track, video), items=items)
+    items = [new_item(key, title=posixpath.basename(key), step="render")]
+    job = req.app.jobs.start("caption_video", caption_video_target(key, track, video), items=items)
     return {"job": job.snapshot()}

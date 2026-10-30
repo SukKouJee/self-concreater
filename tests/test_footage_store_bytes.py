@@ -78,9 +78,9 @@ def test_corrupt_cache_is_redone_and_cached_result_reads_it(home, sample_video):
 
 
 @pytest.mark.parametrize("fid", ["../x", "abc", "0123456789ab-1", "0123456789AB-1-2", 5, None])
-def test_footage_dir_validation_error(home, fid):
+def test_footage_key_validation_error(home, fid):
     with pytest.raises(ScriptError) as e:
-        footage.footage_dir(fid)
+        footage.footage_key(fid)
     assert e.value.code == "bad_fid" and e.value.message == "잘못된 파일 id입니다"
 
 

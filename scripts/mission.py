@@ -42,11 +42,6 @@ def _mission_key(day: str) -> str:
     return keys.mission_md(day)
 
 
-def _mission_path(day: str) -> Path:
-    """과도기(Task 12에서 api_mission과 함께 삭제): 아직 Path를 쓰는 호출부용."""
-    return ctx.here().scratch.arg_path(keys.mission_md(day))
-
-
 def _load_json(path: Path, code: str) -> Any:
     try:
         return json.loads(Path(path).read_text("utf-8"))
@@ -76,9 +71,8 @@ def recommend(recent: list[dict], base: int) -> dict:
 
 # --- context ----------------------------------------------------------------------
 
-def _mission_record(target: str | Path) -> dict:
-    """미션 md 한 건의 요약. `target`은 문서 키(str) 또는 작업 폴더 안 Path(과도기)."""
-    key = target if isinstance(target, str) else ctx.here().scratch.key_of(target)
+def _mission_record(key: str) -> dict:
+    """미션 md(문서 키) 한 건의 요약."""
     fm, body = refstore.read(key)
     title = re.search(r"^### (.+?) \(\d+분", body, re.M)
     return {"date": str(fm.get("date") or keys.stem(key)), "title": title.group(1) if title else None,

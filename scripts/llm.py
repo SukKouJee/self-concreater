@@ -78,12 +78,15 @@ def check() -> dict[str, Any]:
     return {"engine": cfg["engine"], "ready": True}
 
 
-def _file_keys(files: list[str | Path] | None) -> list[str] | None:
-    """첨부 목록을 키로. str은 키(keys.check로 검증), Path(과도기: api_add·api_mission이 아직 넘긴다)는 resolve 검사를 거쳐 키로 바꾼다."""
+def _file_keys(files: list[str] | None) -> list[str] | None:
+    """첨부 목록(저장소 키)을 검증한다(keys.check: 상대 POSIX 경로, `..`·역슬래시·드라이브 안 됨 → bad_path).
+    키가 아닌 값(Path 등)은 프로그램 오류(TypeError)."""
     if files is None:
         return None
-    scratch = ctx.here().scratch
-    return [keys.check(f) if isinstance(f, str) else scratch.key_of(f) for f in files]
+    for f in files:
+        if not isinstance(f, str):
+            raise TypeError(f"첨부 파일은 저장소 키(str)여야 합니다: {f!r}")
+    return [keys.check(f) for f in files]
 
 
 def ask(
@@ -92,11 +95,11 @@ def ask(
     task: str,
     *,
     schema: dict | None = None,
-    files: list[str | Path] | None = None,
+    files: list[str] | None = None,
     timeout: int = 600,
     max_tokens: int | None = None,
 ) -> dict:
-    """files: 첨부할 파일의 저장소 키(작업 폴더 기준 상대 경로). 과도기: 작업 폴더 안 Path도 받아 키로 바꾼다."""
+    """files: 첨부할 파일의 저장소 키(작업 폴더 기준 상대 경로)."""
     engine, cfg = _engine()
     options = {k: v for k, v in cfg.items() if k != "engine"}
     if max_tokens is not None:              # 호출 단위 덮어쓰기(config의 max_tokens보다 우선)

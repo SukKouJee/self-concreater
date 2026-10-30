@@ -24,8 +24,7 @@ from typing import Any
 import yaml
 
 from scripts import ctx, keys
-# category_dir는 api_add·api_diagnose가 refstore.category_dir로 부른다(과도기)
-from scripts.common import TEMPLATES_DIR, ArgParser, ScriptError, category_dir, run, work_root  # noqa: F401
+from scripts.common import TEMPLATES_DIR, ArgParser, ScriptError, run, work_root
 
 INDEX_LOCK = threading.RLock()        # index.md 읽기-고치기-쓰기를 한 번에 하나씩 (프로세스 안)
 PROTECTED_SECTIONS = {"## 내 메모"}
@@ -291,7 +290,7 @@ def require_category(category: str) -> str:
 
 
 def existing_category_dir(category: str) -> Path:
-    """과도기(Task 15에서 삭제): 아직 Path를 쓰는 호출부용. `category_dir`도 api_add·api_diagnose가 `refstore.`로 부른다."""
+    """과도기(Task 15에서 삭제): 아직 Path를 쓰는 호출부용."""
     return work_root() / require_category(category)
 
 

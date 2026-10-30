@@ -12,10 +12,9 @@
 from __future__ import annotations
 
 import json
-import os
 import re
+import secrets
 import shutil
-import tempfile
 import time
 import threading
 from datetime import date as Date
@@ -23,8 +22,8 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-from scripts import claude_cli, llm, mission, refstore
-from scripts.common import ScriptError, work_root, workspace_dir
+from scripts import claude_cli, ctx, keys, llm, mission, refstore
+from scripts.common import ScriptError
 from scripts.ui.api_refs import _body_parts
 from scripts.ui.jobs import Job, mark_saved, new_item
 from scripts.ui.server import Request, route
@@ -88,8 +87,8 @@ def _day(value: Any, *, required: bool = True) -> str:
 
 
 def _refuse_replacing_completed(day: str) -> None:
-    path = mission._mission_path(day)
-    if path.exists() and refstore.read_md(path)[0].get("status") == "submitted":
+    key = keys.mission_md(day)
+    if ctx.here().store.exists(key) and refstore.read(key)[0].get("status") == "submitted":
         raise ScriptError("already_submitted", "이미 완료한 미션은 바꿀 수 없습니다")
 
 
@@ -132,9 +131,7 @@ def _user_file(value: Any) -> tuple[Path, str] | None:
     if not text:
         return None
     try:
-        given = Path(text).expanduser()
-        if not given.is_absolute():
-            given = work_root() / given
+        given = ctx.here().scratch.arg_path(Path(text).expanduser())   # 상대 경로는 작업 폴더 기준
         path = given.resolve(strict=True)
         info = path.stat()
         is_file = path.is_file()
@@ -149,30 +146,30 @@ def _user_file(value: Any) -> tuple[Path, str] | None:
     return path, given.name
 
 
-def _require(day: str) -> Path:
-    path = mission._mission_path(day)
-    if not path.exists():
+def _require(day: str) -> str:
+    key = keys.mission_md(day)
+    if not ctx.here().store.exists(key):
         raise ScriptError("no_mission", f"{day} 미션이 없습니다. 먼저 오늘 미션을 받아 주세요")
-    return path
+    return key
 
 
 # ---- 읽기 -------------------------------------------------------------------------------
 
 def _today_view(day: str) -> dict | None:
-    path = mission._mission_path(day)
-    if not path.exists():
+    key = keys.mission_md(day)
+    if not ctx.here().store.exists(key):
         return None
-    record = mission._mission_record(path)
-    return {**record, "body": _body_parts(refstore.read_md(path)[1])}
+    record = mission._mission_record(key)
+    return {**record, "body": _body_parts(refstore.read(key)[1])}
 
 
 def _entry(day: str) -> dict:
     """그날의 한 줄 기록. 미션이 없거나 파일이 깨져 있으면 `{date, status: None}`."""
-    path = mission._mission_path(day)
-    if not path.exists():
+    key = keys.mission_md(day)
+    if not ctx.here().store.exists(key):
         return {"date": day, "status": None}
     try:
-        record = mission._mission_record(path)
+        record = mission._mission_record(key)
     except (ScriptError, OSError, UnicodeDecodeError):
         return {"date": day, "status": None}               # 사용자가 고치는 중일 수 있다
     return {"date": day, **{k: record[k] for k in HISTORY_FIELDS}}
@@ -190,11 +187,11 @@ def _week(today: Date) -> dict:
 def _status(req: Request) -> dict:
     day = _day(req.query.get("date"), required=False)
     today = Date.fromisoformat(day)
-    ctx = mission.context(day)
+    context = mission.context(day)
     history = [_entry((today - timedelta(days=n)).isoformat()) for n in range(HISTORY_DAYS, 0, -1)]
     return {
-        "date": day, "today": _today_view(day), "recommended": ctx["recommended"], "stage": ctx["stage"],
-        "has_profile": (work_root() / "profile.md").exists(), "history": history, "week": _week(today),
+        "date": day, "today": _today_view(day), "recommended": context["recommended"], "stage": context["stage"],
+        "has_profile": ctx.here().store.exists(keys.PROFILE), "history": history, "week": _week(today),
     }
 
 
@@ -230,7 +227,7 @@ def _draft(req: Request) -> dict:
     llm.check()                          # claude가 없으면 작업을 만들지 않는다
     if replace:
         _refuse_replacing_completed(day)
-    elif mission._mission_path(day).exists():
+    elif ctx.here().store.exists(keys.mission_md(day)):
         raise ScriptError("mission_exists", f"{day} 미션이 이미 있습니다. 저장된 미션을 다시 불러와 주세요")
     items = [new_item(day, title=day, step="context")]
     job = req.app.jobs.start(KIND, run_draft(day, replace), items=items)
@@ -245,16 +242,12 @@ def _save(req: Request) -> dict:
     day = _day(body.get("date"))
     replace = _flag(body.get("replace"), "replace")
     data = mission.validate_mission(body.get("mission"))
-    tmp_dir = workspace_dir("tmp")
-    tmp_dir.mkdir(parents=True, exist_ok=True)
     with WRITE_LOCK:
         if replace:
             _refuse_replacing_completed(day)
-        fd, name = tempfile.mkstemp(prefix="mission_", suffix=".json", dir=tmp_dir)   # 요청마다 고유한 파일
-        tmp = Path(name)
+        tmp = ctx.here().scratch.tmp_path(f"mission_{secrets.token_hex(8)}.json")   # 요청마다 고유한 파일
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False)
+            tmp.write_bytes(refstore.text_bytes(json.dumps(data, ensure_ascii=False)))
             saved = mission.save(tmp, day, replace)
         finally:
             tmp.unlink(missing_ok=True)
@@ -265,8 +258,8 @@ def _save(req: Request) -> dict:
 # ---- 제출 피드백(작업) ------------------------------------------------------------------
 
 def _remove_stale_copies() -> None:
-    """서버가 도중에 죽어 남은 임시 복사본(1시간 넘은 mission_submit_*)을 지운다."""
-    tmp_dir = workspace_dir("tmp")
+    """서버가 도중에 죽어 남은 임시 복사본(1시간 넘은 mission_submit_*)을 지운다(파일 mtime 기준, 폴더는 두고)."""
+    tmp_dir = ctx.here().scratch.local_path("tmp")
     if not tmp_dir.is_dir():
         return
     cutoff = time.time() - STALE_COPY_SECONDS
@@ -280,11 +273,7 @@ def _remove_stale_copies() -> None:
 
 def _copy_temp(src: Path) -> Path:
     """사용자 파일을 작업 폴더 임시 위치로 복사한다(원본은 읽기만). 실패하면 복사본을 지우고 bad_file."""
-    tmp_dir = workspace_dir("tmp")
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(prefix="mission_submit_", suffix=src.suffix.lower(), dir=tmp_dir)
-    os.close(fd)
-    tmp = Path(name)
+    tmp = ctx.here().scratch.tmp_path(f"mission_submit_{secrets.token_hex(8)}{src.suffix.lower()}")
     try:
         shutil.copyfile(src, tmp)
         too_big = tmp.stat().st_size > MAX_FILE_BYTES
@@ -307,6 +296,7 @@ def _validate_feedback(data: Any) -> str:
 def run_feedback(day: str, note: str, difficulty: str, picked: tuple[Path, str] | None) -> Any:
     def target(job: Job) -> None:
         tmp: Path | None = None
+        tmp_key: str | None = None
         try:
             job.update(0, state="running", step="copy" if picked else "claude")
             job.check_cancelled()
@@ -316,12 +306,13 @@ def run_feedback(day: str, note: str, difficulty: str, picked: tuple[Path, str] 
             payload: dict[str, Any] = {"mission": current, "note": note, "difficulty": difficulty}
             if picked is not None:
                 tmp = _copy_temp(picked[0])
-                payload["file"] = tmp.relative_to(work_root()).as_posix()
+                tmp_key = ctx.here().scratch.key_of(tmp)          # Claude가 읽을 키(작업 폴더 기준 상대 경로)
+                payload["file"] = tmp_key
                 job.update(0, step="claude")
                 job.check_cancelled()
             _, feedback = llm.ask_validated(
                 _rules(), payload, FEEDBACK_TASK, _validate_feedback,
-                schema=FEEDBACK_SCHEMA, files=[tmp] if tmp else None,
+                schema=FEEDBACK_SCHEMA, files=[tmp_key] if tmp_key else None,
             )
             job.update(0, state="awaiting", step="preview", ask="save", preview={
                 "feedback": feedback, "note": note, "difficulty": difficulty, "file_name": picked[1] if picked else None,
@@ -374,8 +365,8 @@ def _skip(req: Request) -> dict:
     day = _day(body.get("date"))
     reason = " ".join(_text(body.get("reason"), "사유", MAX_REASON).split())
     with WRITE_LOCK:
-        path = _require(day)
-        if refstore.read_md(path)[0].get("status") == "submitted":
+        key = _require(day)
+        if refstore.read(key)[0].get("status") == "submitted":
             raise ScriptError("already_submitted", "이미 완료한 미션은 건너뛸 수 없습니다")
         result = mission.skip(reason, day)
         return {**result, "today": _today_view(day)}

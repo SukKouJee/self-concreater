@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from scripts import cluster, conti, draft, mission, refstore, status
+from scripts import cluster, conti, draft, keys, mission, refstore, status
 from tests.test_draft import DRAFT
 from tests.test_cluster import NOTES, notes
 from tests.typify_fixtures import CAT, standard_set, write_video
@@ -110,7 +110,7 @@ def test_mission_card(home):
     day = mission._today(None)
     assert status.overview()["mission"]["exists"] is False
     assert status.overview()["mission"]["status"] is None
-    path = mission._mission_path(day)
+    path = home / keys.mission_md(day)
     path.write_bytes(refstore.join_frontmatter({"date": day, "kind": "촬영", "status": "open"}, "# m\n").encode("utf-8"))
     m = status.overview()["mission"]
     assert m["exists"] is True
@@ -174,7 +174,7 @@ def test_crlf_draft_does_not_break_overview(home):
 
 def test_broken_mission_md_does_not_break_overview(home):
     day = mission._today(None)
-    path = mission._mission_path(day)
+    path = home / keys.mission_md(day)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("프런트매터 없음\n", encoding="utf-8")
     card = status.overview()["mission"]

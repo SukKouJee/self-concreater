@@ -14,7 +14,7 @@
   실제 경로를 다시 풀어 폴더 밖(링크 탈출·하위 폴더)이면 거절하고, 지문을 다시 계산해 맞을 때만 내준다.
   폴더를 빼면 곧바로 404. Range(206, Content-Range, Accept-Ranges)를 지원하고 나눠 읽어 보낸다(수 GB 파일,
   server.range_response — /files의 컷 파일도 같은 방식).
-- 사진 서빙(`/api/footage/frame/<fid>/<rel>`): footage_dir(fid) 안의 .jpg만. 화면 응답의 후보·선택·새 컷 후보는
+- 사진 서빙(`/api/footage/frame/<fid>/<rel>`): 처리 캐시 폴더(`workspace/footage/<fid>/`) 안의 .jpg만. 화면 응답의 후보·선택·새 컷 후보는
   구간과 겹치는 장면의 대표 사진 경로(`frames`, CARD_FRAMES장까지)를 함께 싣는다(카드 사진·재생 못 할 때 대신 보임).
 - 결과물(footage_out): `remaining`(폰용 남은 컷 HTML)·`csv`(위치 목록)는 바로 쓰고 경로·/files 주소를 돌려준다.
   `clips`(컷 파일)는 작업 kind "footage_clips" — 진행 항목은 고른 구간이 있는 컷마다 하나, 취소는 컷 사이에서.
@@ -33,11 +33,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from scripts import conti, footage, footage_out, llm
+from scripts import conti, ctx, footage, footage_out, keys, llm
 from scripts import footage_match as fmatch
 from scripts.common import ScriptError
 from scripts.features import SHOT_SIZES
-from scripts.ui.api_conti import _file_url, rel_path, view_of
+from scripts.ui.api_conti import _file_url, view_of
 from scripts.ui.jobs import Job, new_item
 from scripts.ui.server import (  # noqa: F401 - byte_range·RangeNotSatisfiable: 예전 위치에서도 쓸 수 있게
     MAX_OPEN_RANGE,
@@ -46,7 +46,6 @@ from scripts.ui.server import (  # noqa: F401 - byte_range·RangeNotSatisfiable:
     RangeNotSatisfiable,
     Request,
     Response,
-    _contained,
     byte_range,
     range_response,
     route,
@@ -71,11 +70,12 @@ CARD_FRAMES = 4                   # 카드(후보·선택·새 컷 후보)에 �
 
 # ---- 입력 ----------------------------------------------------------------------------
 
-def _conti(value: Any) -> Path:
-    path = conti.safe_draft_path(value, conti_file=True)
-    if not path.is_file():
+def _conti(value: Any) -> str:
+    """요청의 콘티 경로 → 콘티 md 키(drafts/ 안, resolve 기준 탈출 검사). 파일이 없으면 conti_not_found."""
+    key = conti.safe_draft_key(value, conti_file=True)
+    if not ctx.here().store.exists(key):
         raise ScriptError("conti_not_found", f"콘티가 없습니다: {value}")
-    return path
+    return key
 
 
 def _text_arg(body: dict, key: str, message: str) -> str:
@@ -227,14 +227,12 @@ def _counts(cuts: list[dict]) -> dict:
             "missing": sum(k in REMAINING for k in kinds), "total": len(kinds)}
 
 
-def _outputs(path: Path) -> dict:
-    base = path.stem[: -len(conti.CONTI_SUFFIX)]
-    html = path.with_name(f"{base}-remaining.html")
-    csv = path.with_name(f"{base}-footage.csv")
-    clips = path.with_name(f"{base}-cuts")
-    return {"remaining_html": rel_path(html) if html.is_file() else None,
-            "csv": rel_path(csv) if csv.is_file() else None,
-            "clips_dir": rel_path(clips) if clips.is_dir() else None}
+def _outputs(key: str) -> dict:
+    objects = ctx.here().objects
+    html, csv, clips = keys.remaining_html(key), keys.footage_csv(key), keys.cut_files_dir(key)
+    return {"remaining_html": html if objects.exists(html) else None,
+            "csv": csv if objects.exists(csv) else None,
+            "clips_dir": clips.removesuffix("/") if objects.folder_exists(clips) else None}
 
 
 def _job_for(app: Any, rel: str, kind: str = KIND) -> dict | None:
@@ -242,13 +240,13 @@ def _job_for(app: Any, rel: str, kind: str = KIND) -> dict | None:
     return job.snapshot() if job is not None else None
 
 
-def footage_view(app: Any, path: Path) -> dict:
+def footage_view(app: Any, key: str) -> dict:
     """GET /api/footage 응답(지금 콘티의 컷만)."""
-    state = fmatch.load_state(path)
+    state = fmatch.load_state(key)
     linked = _scan_linked(state["folders"])
     sources = _Sources(linked)
     cuts = []
-    for c in fmatch.visible_cuts(path, state):
+    for c in fmatch.visible_cuts(key, state):
         verdict = c["match"]
         choice = verdict.get("choice")
         cuts.append({"id": c["id"], "n": c["n"], "kind": verdict["kind"],
@@ -257,11 +255,10 @@ def footage_view(app: Any, path: Path) -> dict:
                      "reason": verdict.get("reason"), "user": bool(verdict.get("user"))})
     suggestions = [sources.mark({**s, "key": s.get("key") or fmatch.suggestion_key(s)})
                    for s in state["suggestions"] if not s.get("hidden")]
-    rel = rel_path(path)
-    return {"path": rel, "folders": [_folder_view(item) for item in linked], "summary": _counts(cuts),
+    return {"path": key, "folders": [_folder_view(item) for item in linked], "summary": _counts(cuts),
             "cuts": cuts, "suggestions": suggestions, "stt_missing": bool(state.get("stt_missing")),
             "images_used": state.get("images_used", 0), "matched_at": state.get("matched_at"),
-            "outputs": _outputs(path), "job": _job_for(app, rel), "clips_job": _job_for(app, rel, CLIPS_KIND)}
+            "outputs": _outputs(key), "job": _job_for(app, key), "clips_job": _job_for(app, key, CLIPS_KIND)}
 
 
 @route("GET", "/api/footage")
@@ -273,7 +270,7 @@ def _get(req: Request) -> dict:
 
 @route("POST", "/api/footage/folders")
 def _add_folder(req: Request) -> dict:
-    path = _conti(req.json.get("path"))
+    key = _conti(req.json.get("path"))
     given = _folder_arg(req.json.get("folder"))
     if _is_network(given):
         raise ScriptError("bad_folder", MSG_NETWORK)
@@ -287,38 +284,38 @@ def _add_folder(req: Request) -> dict:
     if _is_network(folder):
         raise ScriptError("bad_folder", MSG_NETWORK)
     with fmatch.STATE_LOCK:
-        state = fmatch.load_state(path)
+        state = fmatch.load_state(key)
         if any(_key(f) == _key(folder) for f in state["folders"]):
             raise ScriptError("folder_exists", f"이미 연결된 폴더입니다: {folder}")
         state["folders"].append(str(folder))
-        fmatch.save_state(path, state)
-    return footage_view(req.app, path)
+        fmatch.save_state(key, state)
+    return footage_view(req.app, key)
 
 
 @route("POST", "/api/footage/folders/remove")
 def _remove_folder(req: Request) -> dict:
     """연결만 끊는다(처리 결과·판정은 남긴다). 그 폴더의 원본은 곧바로 내주지 않는다."""
-    path = _conti(req.json.get("path"))
+    key = _conti(req.json.get("path"))
     given = _key(_folder_arg(req.json.get("folder")))
     with fmatch.STATE_LOCK:
-        state = fmatch.load_state(path)
+        state = fmatch.load_state(key)
         kept = [f for f in state["folders"] if _key(f) != given]
         if len(kept) == len(state["folders"]):
             raise ScriptError("folder_not_linked", "연결된 폴더가 아닙니다")
         state["folders"] = kept
-        fmatch.save_state(path, state)
+        fmatch.save_state(key, state)
     with _MEDIA_CACHE_LOCK:
         _MEDIA_CACHE.clear()
-    return footage_view(req.app, path)
+    return footage_view(req.app, key)
 
 
 # ---- 처리 작업 ------------------------------------------------------------------------------
 
-def _set_stt_missing(path: Path, missing: bool) -> None:
+def _set_stt_missing(key: str, missing: bool) -> None:
     with fmatch.STATE_LOCK:
-        state = fmatch.load_state(path)
+        state = fmatch.load_state(key)
         state["stt_missing"] = missing
-        fmatch.save_state(path, state)
+        fmatch.save_state(key, state)
 
 
 def _reporter(job: Job, index: int) -> Callable[[str, float | None, str], None]:
@@ -353,11 +350,11 @@ def _process_one(job: Job, index: int, file: dict) -> dict | None:
     return result
 
 
-def _remember_folder_fids(path: Path, linked: list[_Linked]) -> list[str]:
+def _remember_folder_fids(key: str, linked: list[_Linked]) -> list[str]:
     """찾은 폴더의 파일 지문을 상태(folder_fids)에 남기고, 지금 없는(분리된) 폴더에서 지난번에 본 지문을 돌려준다.
     빠진 폴더의 파일도 맞추기에 캐시 결과로 넘겨야 그 파일로 정한 자동 판정이 지워지지 않는다(F7)."""
     with fmatch.STATE_LOCK:
-        state = fmatch.load_state(path)
+        state = fmatch.load_state(key)
         known: dict[str, list[str]] = dict(state.get("folder_fids") or {})
         away: list[str] = []
         for item in linked:
@@ -366,11 +363,11 @@ def _remember_folder_fids(path: Path, linked: list[_Linked]) -> list[str]:
             else:
                 known[item.folder] = [f["fid"] for f in item.files]
         state["folder_fids"] = {k: v for k, v in known.items() if k in state["folders"]}
-        fmatch.save_state(path, state)
+        fmatch.save_state(key, state)
     return away
 
 
-def process_target(path: Path, rel: str, files: list[dict], away: list[str] | None = None) -> Callable[[Job], None]:
+def process_target(key: str, files: list[dict], away: list[str] | None = None) -> Callable[[Job], None]:
     """away: 분리된 연결 폴더에 있던 지문. 처리하지 않고 끝난 캐시 결과만 맞추기에 넘긴다."""
     def target(job: Job) -> None:
         results: list[dict] = []
@@ -402,15 +399,15 @@ def process_target(path: Path, rel: str, files: list[dict], away: list[str] | No
         job.check_cancelled()
         last = len(files)
         job.update(last, state="running", started_at=time.time())
-        _set_stt_missing(path, stt_missing)
-        summary: dict[str, Any] = {"path": rel, "files": len(files), **tally, "stt_missing": stt_missing}
+        _set_stt_missing(key, stt_missing)
+        summary: dict[str, Any] = {"path": key, "files": len(files), **tally, "stt_missing": stt_missing}
         try:
-            state = fmatch.match(path, results)
+            state = fmatch.match(key, results)
         except ScriptError as e:
             job.update(last, state="failed", message=e.message, finished_at=time.time())
             job.finish("failed", summary, e.message)
             return
-        counts = _counts([{"kind": c["match"]["kind"]} for c in fmatch.visible_cuts(path, state)])
+        counts = _counts([{"kind": c["match"]["kind"]} for c in fmatch.visible_cuts(key, state)])
         job.update(last, state="done", message=None, finished_at=time.time())
         job.finish("done", {**summary, "counts": counts})
 
@@ -420,9 +417,8 @@ def process_target(path: Path, rel: str, files: list[dict], away: list[str] | No
 @route("POST", "/api/footage/process")
 def _process(req: Request) -> dict:
     """새 파일을 처리하고 맞춘다(작업). 진행 항목은 파일마다 하나 + 마지막 '맞추기'."""
-    path = _conti(req.json.get("path"))
-    rel = rel_path(path)
-    state = fmatch.load_state(path)
+    key = _conti(req.json.get("path"))
+    state = fmatch.load_state(key)
     if not state["folders"]:
         raise ScriptError("no_folders", MSG_NO_FOLDERS)
     linked = _scan_linked(state["folders"])
@@ -430,7 +426,7 @@ def _process(req: Request) -> dict:
     if not files:
         raise ScriptError("no_files", MSG_NO_FILES)
     llm.check()              # claude가 없으면 처리하기 전에 400으로 알린다
-    away = _remember_folder_fids(path, linked)
+    away = _remember_folder_fids(key, linked)
     items = []
     for f in files:
         item = new_item(f["fid"], title=f["name"], step="scenes")
@@ -438,7 +434,7 @@ def _process(req: Request) -> dict:
             item.update(state="done", step="done", message=MSG_CACHED)
         items.append(item)
     items.append(new_item(MATCH_ITEM, title="맞추기", step="match"))
-    job = req.app.jobs.start(KIND, process_target(path, rel, files, away), items=items, summary={"path": rel})
+    job = req.app.jobs.start(KIND, process_target(key, files, away), items=items, summary={"path": key})
     return {"job": job.snapshot()}
 
 
@@ -451,30 +447,30 @@ def _cut_arg(body: dict) -> str:
 @route("POST", "/api/footage/choose")
 def _choose(req: Request) -> dict:
     body = req.json
-    path = _conti(body.get("path"))
-    fmatch.choose(path, _cut_arg(body), body.get("fid"), body.get("start"), body.get("end"))
-    return footage_view(req.app, path)
+    key = _conti(body.get("path"))
+    fmatch.choose(key, _cut_arg(body), body.get("fid"), body.get("start"), body.get("end"))
+    return footage_view(req.app, key)
 
 
 @route("POST", "/api/footage/not-filmed")
 def _not_filmed(req: Request) -> dict:
-    path = _conti(req.json.get("path"))
-    fmatch.mark_not_filmed(path, _cut_arg(req.json))
-    return footage_view(req.app, path)
+    key = _conti(req.json.get("path"))
+    fmatch.mark_not_filmed(key, _cut_arg(req.json))
+    return footage_view(req.app, key)
 
 
 @route("POST", "/api/footage/reset")
 def _reset(req: Request) -> dict:
-    path = _conti(req.json.get("path"))
-    fmatch.reset(path, _cut_arg(req.json))
-    return footage_view(req.app, path)
+    key = _conti(req.json.get("path"))
+    fmatch.reset(key, _cut_arg(req.json))
+    return footage_view(req.app, key)
 
 
 @route("POST", "/api/footage/suggestions/hide")
 def _hide(req: Request) -> dict:
-    path = _conti(req.json.get("path"))
-    fmatch.hide_suggestion(path, req.json.get("key"))
-    return footage_view(req.app, path)
+    key = _conti(req.json.get("path"))
+    fmatch.hide_suggestion(key, req.json.get("key"))
+    return footage_view(req.app, key)
 
 
 def suggested_sec(start: float, end: float) -> float:
@@ -487,15 +483,15 @@ def suggested_sec(start: float, end: float) -> float:
 def _insert(req: Request) -> dict:
     """새 컷 후보를 after_cut 뒤에 컷으로 넣고(edit_cuts insert → 이력 auto) 그 컷을 이 구간으로 고정(pinned)한다."""
     body = req.json
-    path = _conti(body.get("path"))
+    conti_key = _conti(body.get("path"))
     expected = _text_arg(body, "hash", "hash가 필요합니다. 콘티를 다시 불러오세요")
     key = _text_arg(body, "key", "새 컷 후보 key가 필요합니다")
     after = _text_arg(body, "after_cut", "after_cut(이 컷 뒤에 넣을 컷 id)이 필요합니다")
-    found = next((s for s in fmatch.load_state(path)["suggestions"]
+    found = next((s for s in fmatch.load_state(conti_key)["suggestions"]
                   if not s.get("hidden") and fmatch.suggestion_key(s) == key), None)
     if found is None:
         raise ScriptError("suggestion_not_found", "새 컷 후보가 없습니다. 화면을 다시 불러오세요")
-    cut_ids = [c["id"] for c in conti._load_conti(path)["cuts"]]
+    cut_ids = [c["id"] for c in conti._load_conti(conti_key)["cuts"]]
     if after not in cut_ids:
         raise ScriptError("cut_not_found", f"컷 {after}이(가) 없습니다")
     start, end = float(found["start"]), float(found["end"])
@@ -504,12 +500,12 @@ def _insert(req: Request) -> dict:
               "guide": str(found.get("guide") or "").strip() or conti.CUT_DEFAULTS["guide"],
               "size": size if size in SHOT_SIZES else conti.CUT_DEFAULTS["size"], "sec": suggested_sec(start, end)}
     op = {"op": "insert", "at": cut_ids.index(after) + 1, "cut": fields}
-    result, written = conti.edit_cuts_fm(path, op, expected)
+    result, written = conti.edit_cuts_fm(conti_key, op, expected)
     try:
         with fmatch.STATE_LOCK:                # 고정과 숨기기를 한 덩어리로(맞추기 병합이 사이에 끼지 않게)
-            fmatch.choose(path, result["cut_id"], found["fid"], start, end)
+            fmatch.choose(conti_key, result["cut_id"], found["fid"], start, end)
             try:
-                fmatch.hide_suggestion(path, key)  # 넣은 후보는 다시 나오지 않게
+                fmatch.hide_suggestion(conti_key, key)  # 넣은 후보는 다시 나오지 않게
             except ScriptError as e:
                 if e.code != "suggestion_not_found":
                     raise
@@ -521,29 +517,29 @@ def _insert(req: Request) -> dict:
             f"화면을 다시 불러온 뒤 그 컷에서 구간을 골라 주세요: {e.message}",
             hash=result["hash"], cut_id=result["cut_id"],
         ) from e
-    return {"hash": result["hash"], "cut_id": result["cut_id"], "conti": view_of(path, written, result["hash"]),
-            "footage": footage_view(req.app, path)}
+    return {"hash": result["hash"], "cut_id": result["cut_id"], "conti": view_of(conti_key, written, result["hash"]),
+            "footage": footage_view(req.app, conti_key)}
 
 
 # ---- 결과물: 남은 컷 HTML, CSV, 컷 파일 --------------------------------------------------------
 
-def _written(app: Any, path: Path, rel: str) -> dict:
-    return {"path": rel, "url": _file_url(rel), "footage": footage_view(app, path)}
+def _written(app: Any, key: str, rel: str) -> dict:
+    return {"path": rel, "url": _file_url(rel), "footage": footage_view(app, key)}
 
 
 @route("POST", "/api/footage/remaining")
 def _remaining(req: Request) -> dict:
-    path = _conti(req.json.get("path"))
-    return _written(req.app, path, footage_out.remaining_html(path))
+    key = _conti(req.json.get("path"))
+    return _written(req.app, key, footage_out.remaining_html(key))
 
 
 @route("POST", "/api/footage/csv")
 def _csv(req: Request) -> dict:
-    path = _conti(req.json.get("path"))
-    return _written(req.app, path, footage_out.csv_export(path))
+    key = _conti(req.json.get("path"))
+    return _written(req.app, key, footage_out.csv_export(key))
 
 
-def clips_target(path: Path, rel: str, targets: list[dict]) -> Callable[[Job], None]:
+def clips_target(key: str, targets: list[dict]) -> Callable[[Job], None]:
     def target(job: Job) -> None:
         def progress(index: int, event: str, info: dict) -> None:
             now = time.time()
@@ -557,8 +553,8 @@ def clips_target(path: Path, rel: str, targets: list[dict]) -> Callable[[Job], N
             else:                                      # skipped(원본 없음) | failed
                 job.update(index, state=event, step="done", message=info["reason"], finished_at=now)
 
-        result = footage_out.export_clips(path, progress, targets)
-        job.finish("done", {"path": rel, "dir": result["dir"], "made": len(result["clips"]),
+        result = footage_out.export_clips(key, progress, targets)
+        job.finish("done", {"path": key, "dir": result["dir"], "made": len(result["clips"]),
                             "reencoded": sum(c["reencoded"] for c in result["clips"]),
                             "skipped": len(result["skipped"]), "failed": len(result["failed"])})
 
@@ -568,20 +564,19 @@ def clips_target(path: Path, rel: str, targets: list[dict]) -> Callable[[Job], N
 @route("POST", "/api/footage/clips")
 def _clips(req: Request) -> dict:
     """고른 구간이 있는 컷마다 컷 파일을 만든다(작업). 원본 없음은 그 컷만 건너뛴다."""
-    path = _conti(req.json.get("path"))
-    rel = rel_path(path)
+    key = _conti(req.json.get("path"))
     footage_out.check_ready()
-    targets = footage_out.clip_targets(path)
+    targets = footage_out.clip_targets(key)
     if not targets:
         raise ScriptError("no_clips", footage_out.MSG_NO_CLIPS)
     items = [new_item(t["cut"], title=f"#{t['n']} {t['name'] or '알 수 없는 파일'}", step="clip") for t in targets]
-    job = req.app.jobs.start(CLIPS_KIND, clips_target(path, rel, targets), items=items, summary={"path": rel})
+    job = req.app.jobs.start(CLIPS_KIND, clips_target(key, targets), items=items, summary={"path": key})
     return {"job": job.snapshot()}
 
 
 # ---- 원본·사진 서빙 ---------------------------------------------------------------------------
 
-# (콘티 경로, fid) → (연결 폴더, 파일 경로, 만료 시각). 폴더를 빼면 비운다. 꺼낼 때도 아래 확인을 모두 다시 한다.
+# (콘티 키, fid) → (연결 폴더, 파일 경로, 만료 시각). 폴더를 빼면 비운다. 꺼낼 때도 아래 확인을 모두 다시 한다.
 _MEDIA_CACHE: dict[tuple[str, str], tuple[str, str, float]] = {}
 _MEDIA_CACHE_LOCK = threading.Lock()
 
@@ -600,16 +595,16 @@ def _checked(folder: str, file: str, fid: str) -> Path | None:
     return real
 
 
-def media_file(path: Path, fid: str) -> Path | None:
+def media_file(key: str, fid: str) -> Path | None:
     """fid를 그 콘티의 연결 폴더 바로 아래 실제 파일로 푼다. 못 찾거나 폴더 밖이면 None.
     재생 중 잇단 Range 요청은 MEDIA_CACHE_SEC 동안 찾은 결과를 다시 쓴다(폴더가 아직 연결돼 있는지·실제 경로·지문은
     매번 확인한다)."""
     if not footage.valid_fid(fid):
         return None
-    folders = fmatch.load_state(path)["folders"]
-    key = (str(path), fid)
+    folders = fmatch.load_state(key)["folders"]
+    cache_key = (key, fid)
     with _MEDIA_CACHE_LOCK:
-        hit = _MEDIA_CACHE.get(key)
+        hit = _MEDIA_CACHE.get(cache_key)
     if hit is not None and hit[2] > time.monotonic() and hit[0] in folders:
         real = _checked(hit[0], hit[1], fid)
         if real is not None:
@@ -619,17 +614,17 @@ def media_file(path: Path, fid: str) -> Path | None:
         real = _checked(item.folder, entry["path"], fid) if entry is not None else None
         if real is not None:
             with _MEDIA_CACHE_LOCK:
-                _MEDIA_CACHE[key] = (item.folder, str(real), time.monotonic() + MEDIA_CACHE_SEC)
+                _MEDIA_CACHE[cache_key] = (item.folder, str(real), time.monotonic() + MEDIA_CACHE_SEC)
             return real
     with _MEDIA_CACHE_LOCK:
-        _MEDIA_CACHE.pop(key, None)
+        _MEDIA_CACHE.pop(cache_key, None)
     return None
 
 
 @route("GET", r"/api/footage/media/(?P<fid>[^/]+)")
 def _media(req: Request, fid: str) -> Response | tuple[int, dict]:
-    path = _conti(req.query.get("path"))
-    real = media_file(path, fid)
+    key = _conti(req.query.get("path"))
+    real = media_file(key, fid)
     if real is None:
         return NOT_FOUND
     try:
@@ -640,11 +635,29 @@ def _media(req: Request, fid: str) -> Response | tuple[int, dict]:
     return range_response(real, size, ctype, req.headers.get("range"), MAX_OPEN_RANGE, CHUNK)
 
 
+def _frame_key(fid: str, rel: str) -> str | None:
+    """처리 캐시 폴더(`workspace/footage/<fid>/`) 안 파일의 키. resolve 기준(`scratch.key_of`: `..`·심볼릭 링크·
+    절대 경로)으로 풀어 그 폴더 밖이면 None."""
+    if "\x00" in rel:
+        return None
+    prefix = footage.footage_key(fid)
+    try:
+        key = ctx.here().scratch.key_of(prefix + rel)
+    except ScriptError:
+        return None
+    return key if key.startswith(prefix) else None
+
+
 @route("GET", r"/api/footage/frame/(?P<fid>[^/]+)/(?P<rel>.+)")
 def _frame(req: Request, fid: str, rel: str) -> Response | tuple[int, dict]:
     if not footage.valid_fid(fid) or not rel.lower().endswith(".jpg"):
         return NOT_FOUND
-    found = _contained(footage.footage_dir(fid), rel)
-    if found is None:
+    key = _frame_key(fid, rel)
+    objects = ctx.here().objects
+    if key is None or not objects.exists(key):
         return NOT_FOUND
-    return Response(200, found.read_bytes(), "image/jpeg")
+    try:
+        data = objects.get(key)
+    except OSError:
+        return NOT_FOUND                       # 확인한 뒤 곧바로 지워졌다
+    return Response(200, data, "image/jpeg")

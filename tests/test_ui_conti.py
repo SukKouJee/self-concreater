@@ -328,7 +328,7 @@ def _fake_render(monkeypatch, **extra):
     calls = []
 
     def render(conti_path, video=None, track="caption", progress=None, cancel=None, timeout=900, step=None):
-        calls.append({"conti": str(conti_path), "video": video, "track": track})
+        calls.append({"conti": conti_path, "video": video, "track": track})
         if progress:
             progress(2, 4)
         if extra.get("wait"):
@@ -365,7 +365,7 @@ def test_caption_video_job_done_has_preview_url(client, home, draft_md, monkeypa
     item = job["items"][0]
     assert job["status"] == "done" and item["state"] == "done" and item["ask"] is None
     assert item["preview"]["url"] == "/files/drafts/x-captions.mp4" and item["preview"]["count"] == 3
-    assert calls == [{"conti": str(saved), "video": None, "track": "caption"}]
+    assert calls == [{"conti": rel(home, saved), "video": None, "track": "caption"}]    # 콘티 md 키
 
 
 def test_caption_video_progress_message_and_video_passed(client, home, draft_md, sample_video, monkeypatch):

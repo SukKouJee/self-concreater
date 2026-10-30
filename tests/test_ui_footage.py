@@ -16,6 +16,7 @@ from tests.test_conti import conti_file, draft_md, home  # noqa: F401 - fixtures
 from tests.test_footage_match import FakeLLM, answer, m
 from tests.test_ui_add import wait_for
 from tests.test_ui_server import Client, _start, _stop, no_browser  # noqa: F401 - fixture
+from tests.helpers.paths import footage_base
 
 VIDEO_BYTES = bytes(range(256)) * 40          # 10240 bytes
 
@@ -86,7 +87,7 @@ class FakeProcess:
         if self.gate is not None:
             assert self.gate.wait(5)
         fid = footage.fingerprint(path)
-        base = footage.footage_dir(fid)
+        base = footage_base(fid)
         (base / "frames").mkdir(parents=True, exist_ok=True)
         (base / "montage").mkdir(parents=True, exist_ok=True)
         if progress:
@@ -528,7 +529,7 @@ def test_media_404_when_file_changed(client, rel, tmp_path):
 
 
 def test_frame_serves_only_inside_footage_dir(client, home):  # noqa: F811
-    base = footage.footage_dir(FID)
+    base = footage_base(FID)
     (base / "frames").mkdir(parents=True)
     (base / "frames" / "s000_0.jpg").write_bytes(b"\xff\xd8x")
     (base / "scenes.json").write_text("{}", encoding="utf-8")
@@ -593,7 +594,7 @@ def test_failed_reprocess_keeps_cached_scenes_in_match(client, rel, tmp_path, fa
     link(client, rel, folder)
     proc = fake_process()
     proc(folder / "a.mp4")                                     # 장면 캐시는 있고
-    (footage.footage_dir(footage.fingerprint(folder / "a.mp4")) / "transcript.json").unlink()   # 받아쓰기는 남음
+    (footage_base(footage.fingerprint(folder / "a.mp4")) / "transcript.json").unlink()   # 받아쓰기는 남음
 
     def fail(path, progress=None, run_stt=True):
         raise ScriptError("stt_failed", "받아쓰기 실패")
@@ -743,7 +744,7 @@ def real_shoot(tmp_path, video, names=("a.mp4", "b.mp4")):
     for n in names:
         shutil.copy(video, folder / n)
         fids[n] = fid = footage.fingerprint(folder / n)
-        base = footage.footage_dir(fid)                           # 처리 캐시(원본이 사라져도 이름이 남는다)
+        base = footage_base(fid)                           # 처리 캐시(원본이 사라져도 이름이 남는다)
         base.mkdir(parents=True, exist_ok=True)
         (base / "scenes.json").write_text(json.dumps(
             {"schema": 1, "fid": fid, "name": n, "status": "done", "duration_sec": 6.0, "scenes": []}),
@@ -863,7 +864,7 @@ def test_trash_refused_while_footage_job_runs_on_that_conti(client, rel, saved, 
 # --- 카드 사진 (Task 5: 확인 필요·새 컷 후보 카드의 대표 사진) ----------------------------------
 
 def seed_scenes(fid, scenes):
-    base = footage.footage_dir(fid)
+    base = footage_base(fid)
     base.mkdir(parents=True, exist_ok=True)
     record = {"schema": 1, "fid": fid, "name": "a.mp4", "status": "done", "decoder": "pyav",
               "duration_sec": 30.0, "scenes": scenes}
@@ -980,7 +981,7 @@ def test_view_survives_corrupt_scene_cache(client, rel, saved):
     cid = conti._load_conti(saved)["cuts"][0]["id"]
     assert client.json("POST", "/api/footage/choose",
                        {"path": rel, "cut": cid, "fid": FID, "start": 1.0, "end": 2.0})[0] == 200
-    base = footage.footage_dir(FID)
+    base = footage_base(FID)
     base.mkdir(parents=True, exist_ok=True)
     (base / "scenes.json").write_text("{broken", encoding="utf-8")
     status, body = client.json("GET", f"/api/footage?path={q(rel)}")
@@ -991,7 +992,7 @@ def test_view_survives_corrupt_scene_cache(client, rel, saved):
 
 def test_complete_reprocesses_corrupt_transcript(home, saved):
     seed_scenes(FID, [])
-    (footage.footage_dir(FID) / "transcript.json").write_text("{half", encoding="utf-8")
+    (footage_base(FID) / "transcript.json").write_text("{half", encoding="utf-8")
     assert api_footage._complete(FID) is None
-    (footage.footage_dir(FID) / "transcript.json").write_text(json.dumps({"segments": []}), encoding="utf-8")
+    (footage_base(FID) / "transcript.json").write_text(json.dumps({"segments": []}), encoding="utf-8")
     assert api_footage._complete(FID) is not None

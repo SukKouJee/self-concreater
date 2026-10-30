@@ -9,17 +9,17 @@
 from __future__ import annotations
 
 import json
-import os
+import posixpath
+import secrets
 import sys
-import tempfile
 import threading
 from datetime import date
 from pathlib import Path
 from typing import Any
 
-from scripts import claude_cli, conti, draft, library, llm, refstore, status
-from scripts.common import ScriptError, work_root, workspace_dir
-from scripts.ui.api_conti import CONTI_SUFFIX, FILE_JOB_KINDS, _rel, _safe_path, job_running_on
+from scripts import claude_cli, conti, ctx, draft, keys, library, llm, refstore, status
+from scripts.common import ScriptError
+from scripts.ui.api_conti import CONTI_SUFFIX, FILE_JOB_KINDS, _safe_key, job_running_on
 from scripts.ui.api_refs import _body_parts
 from scripts.ui.jobs import Job, new_item
 from scripts.ui.server import Request, route
@@ -75,7 +75,7 @@ def _rules() -> list[Path]:
 def _category(value: Any) -> str:
     if not isinstance(value, str) or not value:
         raise ScriptError("bad_request", "category가 필요합니다")
-    refstore.existing_category_dir(value)             # 없는 카테고리는 category_not_found
+    refstore.require_category(value)                  # 없는 카테고리는 category_not_found
     return value
 
 
@@ -100,10 +100,12 @@ def _target_sec(value: Any) -> float | None:
     return float(value)
 
 
-def _conti_links(path: Path) -> tuple[str | None, str | None]:
-    made = conti.conti_path(path)
-    html_path = made.with_suffix(".html")
-    return (_rel(made) if made.exists() else None), (_rel(html_path) if html_path.exists() else None)
+def _conti_links(key: str) -> tuple[str | None, str | None]:
+    """기획안 키 → (콘티 md 키, 콘티 HTML 키). 없는 것은 None."""
+    c = ctx.here()
+    made = keys.conti_md(key)
+    html = keys.html_of(made)
+    return (made if c.store.exists(made) else None), (html if c.objects.exists(html) else None)
 
 
 # ---- 출처 -------------------------------------------------------------------------------
@@ -136,19 +138,19 @@ def _sources(req: Request) -> dict:
 def list_drafts(category: str) -> dict:
     """카테고리의 저장된 기획안 목록(경로는 작업 폴더 기준 상대 경로)."""
     out = []
-    folder = work_root() / "drafts"
-    for path in sorted(folder.glob("*.md")) if folder.is_dir() else []:
-        if path.stem.endswith(CONTI_SUFFIX):
+    for meta in ctx.here().store.list(keys.DRAFTS):
+        stem = keys.stem(meta.key)
+        if stem.endswith(CONTI_SUFFIX):
             continue
         try:
-            fm, _ = refstore.read_md(path)
+            fm, _ = refstore.read(meta.key)
         except (ScriptError, OSError, UnicodeDecodeError):
             continue                      # 프런트매터가 깨진 파일은 목록에서만 뺀다(사용자가 고치는 중일 수 있다)
         if fm.get("category") != category:
             continue
-        made, html_path = _conti_links(path)
+        made, html_path = _conti_links(meta.key)
         out.append({
-            "path": _rel(path), "title": fm.get("title") or path.stem, "date": str(fm.get("date") or path.stem[:10]),
+            "path": meta.key, "title": fm.get("title") or stem, "date": str(fm.get("date") or stem[:10]),
             "source": fm.get("source"), "archetype": fm.get("archetype"), "target_sec": fm.get("target_sec"),
             "sections": fm.get("sections") or [], "status": fm.get("status"), "conti": made, "html": html_path,
         })
@@ -161,10 +163,10 @@ def _list(req: Request) -> dict:
     return list_drafts(_category(req.query.get("category")))
 
 
-def _hook_of(path: Path) -> dict | None:
+def _hook_of(key: str) -> dict | None:
     """Hook section (same shape as polish.context) so the polish screen can refresh its comparison box."""
     try:
-        hook = next((x for x in conti.parse_draft(path)["sections"] if x["label"] == "hook"), None)
+        hook = next((x for x in conti.parse_draft(key)["sections"] if x["label"] == "hook"), None)
     except ScriptError:
         return None
     return {"start": hook["start"], "end": hook["end"], "script": hook["script"]} if hook else None
@@ -172,15 +174,16 @@ def _hook_of(path: Path) -> dict | None:
 
 @route("GET", "/api/draft")
 def _detail(req: Request) -> dict:
-    path = _safe_path(req.query.get("path"), conti_file=False)
-    if not path.is_file():
+    key = _safe_key(req.query.get("path"), conti_file=False)
+    if not ctx.here().store.exists(key):
         raise ScriptError("draft_not_found", f"기획안을 찾을 수 없습니다: {req.query.get('path')}")
-    fm, body = refstore.read_md(path)
-    made, html_path = _conti_links(path)
+    fm, body = refstore.read(key)
+    made, html_path = _conti_links(key)
+    stem = keys.stem(key)
     return {
-        "hash": conti.content_hash(path), "hook": _hook_of(path),
-        "path": _rel(path), "title": fm.get("title") or path.stem, "category": fm.get("category"),
-        "date": str(fm.get("date") or path.stem[:10]), "source": fm.get("source"), "archetype": fm.get("archetype"),
+        "hash": conti.content_hash(key), "hook": _hook_of(key),
+        "path": key, "title": fm.get("title") or stem, "category": fm.get("category"),
+        "date": str(fm.get("date") or stem[:10]), "source": fm.get("source"), "archetype": fm.get("archetype"),
         "target_sec": fm.get("target_sec"), "sections": fm.get("sections") or [], "pacing": fm.get("pacing"),
         "hook_type": fm.get("hook_type"), "narrative_type": fm.get("narrative_type"),
         "body": _body_parts(body), "conti": made, "html": html_path,
@@ -283,13 +286,9 @@ def _save(req: Request) -> dict:
         if isinstance(template, dict):
             raw["template"] = template                # 작업에 저장된 값만 되돌려 넣는다
     data = draft.validate(raw)
-    tmp_dir = workspace_dir("tmp")
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(prefix="draft_ui_", suffix=".json", dir=tmp_dir)   # 요청마다 고유한 파일
-    tmp = Path(name)
+    tmp = ctx.here().scratch.tmp_path(f"draft_ui_{secrets.token_hex(8)}.json")   # 요청마다 고유한 파일
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
+        tmp.write_bytes(refstore.text_bytes(json.dumps(data, ensure_ascii=False)))
         saved = draft.save(category, tmp)
     finally:
         tmp.unlink(missing_ok=True)
@@ -315,33 +314,32 @@ def _filmed(req: Request) -> dict:
     raw = body.get("path")
     if isinstance(raw, str) and (Path(raw).is_absolute() or "\\" in raw):
         raise ScriptError("bad_path", f"작업 폴더 기준 상대 경로만 쓸 수 있습니다: {raw}")
-    path = _safe_path(raw, conti_file=False)
-    if path.parent != (work_root() / "drafts").resolve():
+    key = _safe_key(raw, conti_file=False)
+    if posixpath.dirname(key) + "/" != keys.DRAFTS:
         raise ScriptError("bad_path", "drafts 폴더 바로 아래의 기획안만 체크할 수 있습니다")
     with _FILMED_LOCK:
-        if not path.is_file():
+        if not ctx.here().store.exists(key):
             raise ScriptError("draft_not_found", f"기획안을 찾을 수 없습니다: {body.get('path')}")
-        fm, _ = refstore.read_md(path)
+        fm, _ = refstore.read(key)
         if fm.get("category") != category:
             raise ScriptError("draft_not_found", f"기획안을 찾을 수 없습니다: {body.get('path')}")
-        if conti.content_hash(path) != expected:
+        if conti.content_hash(key) != expected:
             raise ScriptError("draft_changed", "화면을 연 뒤 기획안이 바뀌었습니다. 다시 불러와 주세요")
         if filmed:
-            fm = refstore.update_frontmatter(path, {"filmed_at": date.today().isoformat()})
+            fm = refstore.update_frontmatter(key, {"filmed_at": date.today().isoformat()})
         else:
-            fm = refstore.update_frontmatter(path, {}, remove=["filmed_at"])
-        return {"path": _rel(path), "filmed_at": status.filmed_date(fm.get("filmed_at")),
-                "hash": conti.content_hash(path)}
+            fm = refstore.update_frontmatter(key, {}, remove=["filmed_at"])
+        return {"path": key, "filmed_at": status.filmed_date(fm.get("filmed_at")),
+                "hash": conti.content_hash(key)}
 
 
 # ---- 삭제(휴지통) ------------------------------------------------------------------------
 
 @route("POST", "/api/draft/trash")
 def _trash(req: Request) -> dict:
-    path = _safe_path(req.json.get("path"), conti_file=False)
-    rel = _rel(path)
+    rel = _safe_key(req.json.get("path"), conti_file=False)
     # 다듬기·콘티 만들기는 기획안을, 자막 작업은 그 콘티를 읽는다.
-    conti_rel = _rel(conti.conti_path(path))
+    conti_rel = keys.conti_md(rel)
     if job_running_on(req.app, ("polish", "conti"), rel) or job_running_on(req.app, FILE_JOB_KINDS, conti_rel):
         raise ScriptError("draft_busy", "이 기획안으로 작업하는 중입니다(다듬기·콘티·자막·촬영 영상). 끝나거나 멈춘 뒤에 삭제하세요")
     with _FILMED_LOCK:                   # 촬영함 체크가 같은 파일을 쓰는 중이면 기다린다

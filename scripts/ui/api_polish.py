@@ -13,7 +13,7 @@ from typing import Any
 
 from scripts import claude_cli, llm, polish
 from scripts.common import ScriptError
-from scripts.ui.api_conti import _rel, _safe_path
+from scripts.ui.api_conti import _safe_key
 from scripts.ui.jobs import Job, new_item
 from scripts.ui.server import Request, route
 from scripts.videomd import HOOK_TYPES
@@ -93,8 +93,7 @@ def run_target(draft_rel: str) -> Any:
 
 @route("POST", "/api/polish/run")
 def _run(req: Request) -> dict:
-    path = _safe_path(req.json.get("draft"), conti_file=False)
-    ctx = polish.context(_rel(path))                  # 없는 기획안은 작업 전에 draft_not_found
+    ctx = polish.context(_safe_key(req.json.get("draft"), conti_file=False))   # 없는 기획안은 작업 전에 draft_not_found
     llm.check()                          # claude가 없으면 작업을 만들지 않는다
     items = [new_item(ctx["draft"], title=ctx["title"], step="context")]
     job = req.app.jobs.start(KIND, run_target(ctx["draft"]), items=items, category=ctx["category"])
@@ -122,11 +121,11 @@ def _mark_saved(req: Request, job_id: Any, draft_rel: str) -> None:
 @route("POST", "/api/polish/save")
 def _save(req: Request) -> dict:
     body = req.json
-    path = _safe_path(body.get("draft"), conti_file=False)
+    draft_key = _safe_key(body.get("draft"), conti_file=False)
     expected = body.get("hash")
     if not isinstance(expected, str) or not expected:
         raise ScriptError("bad_request", "hash가 필요합니다")
-    saved = polish.apply(_rel(path), body.get("choice"), expected)
+    saved = polish.apply(draft_key, body.get("choice"), expected)
     _mark_saved(req, body.get("job_id"), saved["path"])
     return saved
 
@@ -135,5 +134,5 @@ def _save(req: Request) -> dict:
 def _lint(req: Request) -> dict:
     """고친 훅·제목·썸네일 문구를 다시 점검한다. Claude를 부르지 않고 기획안도 바꾸지 않는다."""
     body = req.json
-    path = _safe_path(body.get("draft"), conti_file=False)
-    return polish.relint(_rel(path), body.get("hook_script"), body.get("title"), body.get("thumb_words"))
+    draft_key = _safe_key(body.get("draft"), conti_file=False)
+    return polish.relint(draft_key, body.get("hook_script"), body.get("title"), body.get("thumb_words"))

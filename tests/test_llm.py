@@ -108,7 +108,7 @@ def test_ask_delegates_to_claude_cli_and_files_enable_read_tool(home, monkeypatc
     monkeypatch.setattr(claude_cli.shutil, "which", lambda name: "C:/bin/claude.exe")
     monkeypatch.setattr(claude_cli.subprocess, "run", fake_run)
 
-    assert llm.ask([rule], {"k": 1}, "할일", files=[img]) == {"ok": 1}
+    assert llm.ask([rule], {"k": 1}, "할일", files=[img.relative_to(home).as_posix()]) == {"ok": 1}
 
     cmd, kw = calls[0]
     assert cmd[cmd.index("--tools") + 1] == "Read"
@@ -261,7 +261,7 @@ def test_anthropic_request_shape_with_schema_and_files(home, api):
     fake = api(_tool_reply({"answer": 7}))
     schema = {"type": "object", "properties": {"answer": {"type": "integer"}}}
 
-    out = llm.ask([rule], {"k": "값"}, "할일ABC", schema=schema, files=[img, note], timeout=33)
+    out = llm.ask([rule], {"k": "값"}, "할일ABC", schema=schema, files=["f.png", "ex.md"], timeout=33)
 
     assert out == {"answer": 7}
     req = fake.requests[0]
@@ -323,14 +323,14 @@ def test_anthropic_limits_images_to_20_and_skips_over_5mb(home, api, monkeypatch
     big.write_bytes(b"x")
     monkeypatch.setattr(llm_anthropic, "MAX_IMAGE_BYTES", 0)   # 모든 이미지가 한도 초과 -> 건너뜀
     fake = api(_text_reply("{}"))
-    llm.ask([], {}, "t", files=[big])
+    llm.ask([], {}, "t", files=["big.jpg"])
     content = fake.body["messages"][0]["content"]
     assert not [b for b in content if b["type"] == "image"]
     assert {"type": "text", "text": "[건너뜀: big.jpg — 크기/개수 한도 초과, 내용을 추측하지 마세요]"} in content
 
     monkeypatch.setattr(llm_anthropic, "MAX_IMAGE_BYTES", 5 * 1024 * 1024)
     fake = api(_text_reply("{}"))
-    llm.ask([], {}, "t", files=files)
+    llm.ask([], {}, "t", files=[p.name for p in files])
     images = [b for b in fake.body["messages"][0]["content"] if b["type"] == "image"]
     texts = [b["text"] for b in fake.body["messages"][0]["content"] if b["type"] == "text"]
     names = [t for t in texts if t.startswith("[이미지:")]

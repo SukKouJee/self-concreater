@@ -4,11 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from scripts import conti, ctx, footage, llm
+from scripts import conti, ctx, llm
 from scripts import conti_history as ch
 from scripts import footage_match as fm
 from scripts.common import ScriptError
 from tests.test_conti import conti_file, draft_md, home  # noqa: F401 - fixtures
+from tests.helpers.paths import footage_base
 
 FID_A = "0123456789ab-100-1"
 FID_B = "abcdef012345-200-2"
@@ -30,7 +31,7 @@ def seg(start, end, text):
 
 def scene(i, start, end, fid):
     rel = f"montage/{i:03d}.jpg"
-    path = footage.footage_dir(fid) / rel
+    path = footage_base(fid) / rel
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"\xff\xd8jpeg")
     return {"i": i, "start": start, "end": end, "frames": [], "montage": rel}

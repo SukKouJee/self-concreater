@@ -15,6 +15,7 @@ import pytest
 from scripts import footage
 from scripts.common import ScriptError
 from tests.test_cuts import sample_video  # noqa: F401 - fixture
+from tests.helpers.paths import footage_base
 
 
 @pytest.fixture
@@ -113,16 +114,17 @@ def test_footage_dir_is_under_workspace(home, tmp_path):
     clip.write_bytes(b"abc")
     fid = footage.fingerprint(clip)
     assert footage.valid_fid(fid)
-    assert footage.footage_dir(fid) == home / "workspace" / "footage" / fid
+    assert footage.footage_key(fid) == f"workspace/footage/{fid}/"
+    assert footage_base(fid) == home / "workspace" / "footage" / fid
 
 
 @pytest.mark.parametrize("fid", ["", "abc-1-2", "../etc", "0123456789ab-1", "0123456789AB-1-2",
                                  "0123456789ab-1-2/..", "0123456789ab-1-2\\x", "0123456789ab--1-2",
                                  "0123456789ab-1-2\n"])
-def test_footage_dir_rejects_invalid_fid(home, fid):
+def test_footage_key_rejects_invalid_fid(home, fid):
     assert not footage.valid_fid(fid)
     with pytest.raises(ScriptError) as exc:
-        footage.footage_dir(fid)
+        footage.footage_key(fid)
     assert exc.value.code == "bad_fid"
 
 
@@ -141,7 +143,7 @@ def test_process_extracts_scenes_frames_and_montages(home, sample_video):
     assert scenes[-1]["end"] == pytest.approx(out["duration_sec"], abs=0.25)
     assert [s["i"] for s in scenes] == [0, 1, 2]
 
-    base = footage.footage_dir(out["fid"])
+    base = footage_base(out["fid"])
     for scene in scenes:
         assert 4 <= len(scene["frames"]) <= 6
         for rel in scene["frames"]:
@@ -199,7 +201,7 @@ def test_cached_result_reads_cache_without_processing(home, sample_video, monkey
 
 
 def test_process_restarts_cleanly_after_interrupted_run(home, sample_video):
-    base = footage.footage_dir(footage.fingerprint(sample_video))
+    base = footage_base(footage.fingerprint(sample_video))
     (base / "frames").mkdir(parents=True)
     (base / "frames" / "leftover.jpg").write_bytes(b"half")
 
@@ -264,7 +266,7 @@ def test_decode_errors_mark_file_unreadable_and_folder_continues(home, tmp_path,
 
     assert [r["status"] for r in results] == ["unreadable", "done"]
     assert results[0]["reason"] and "A000.mov" not in results[0]["reason"]
-    assert not list(footage.footage_dir(results[0]["fid"]).glob("frames/*"))
+    assert not list(footage_base(results[0]["fid"]).glob("frames/*"))
 
 
 def test_locked_file_is_retried_not_cached(home, sample_video, monkeypatch):
@@ -275,7 +277,7 @@ def test_locked_file_is_retried_not_cached(home, sample_video, monkeypatch):
     out = footage.process_file(sample_video, run_stt=False)
     assert out["status"] == "retry" and out["reason"]
     assert out["scenes"] == [] and out["transcript"] is None
-    assert not (footage.footage_dir(out["fid"]) / "scenes.json").exists()
+    assert not (footage_base(out["fid"]) / "scenes.json").exists()
 
     monkeypatch.undo()
     monkeypatch.setenv("YT_COACH_HOME", str(home))
@@ -422,7 +424,7 @@ def test_stt_missing_keeps_scenes_and_retries_later(home, sample_video, no_whisp
     out = footage.process_file(sample_video)
     assert out["status"] == "done" and len(out["scenes"]) == 3
     assert out["transcript"] is None and out["stt_missing"] is True
-    base = footage.footage_dir(out["fid"])
+    base = footage_base(out["fid"])
     assert not (base / "transcript.json").exists()
 
 
@@ -503,7 +505,7 @@ def test_cli_process_missing_file(home, tmp_path):
 @pytest.mark.parametrize("name", ["scenes.json", "transcript.json"])
 def test_cached_result_treats_corrupt_cache_as_missing(home, name):
     fid = "0123456789ab-100-1"
-    base = footage.footage_dir(fid)
+    base = footage_base(fid)
     base.mkdir(parents=True, exist_ok=True)
     record = {"schema": 1, "fid": fid, "name": "a.mp4", "status": "done", "decoder": "pyav",
               "duration_sec": 3.0, "scenes": []}
@@ -519,7 +521,7 @@ def test_cached_result_treats_corrupt_cache_as_missing(home, name):
 
 def test_cached_result_none_when_record_has_no_status(home):
     fid = "0123456789ab-100-1"
-    base = footage.footage_dir(fid)
+    base = footage_base(fid)
     base.mkdir(parents=True, exist_ok=True)
     (base / "scenes.json").write_text(json.dumps({"schema": 1, "fid": fid}), encoding="utf-8")
     assert footage.cached_result(fid) is None
