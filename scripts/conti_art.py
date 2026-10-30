@@ -3,6 +3,7 @@
 Claude가 쓴 SVG는 저장·표시(<img>) 전에 반드시 sanitize_svg를 거친다. 이 모듈이 유일한 관문이다."""
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import re
 import threading
@@ -370,7 +371,7 @@ def draw(path: str | Path, ids: list[str] | None, stale_only: bool, job: Any = N
                     break
                 if job is not None:
                     job.check_cancelled()
-                pending.add(pool.submit(_draw_batch, p, nxt[0], nxt[1], tally))
+                pending.add(pool.submit(contextvars.copy_context().run, _draw_batch, p, nxt[0], nxt[1], tally))   # 묶음마다 새 복사본
             if not pending:
                 break
             finished, pending = wait(pending, return_when=FIRST_COMPLETED)

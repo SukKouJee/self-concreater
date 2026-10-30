@@ -1545,6 +1545,17 @@ def test_conti_html_all_continues_past_invalid_conti(saved, home):
         conti.main(["html", bad.relative_to(home).as_posix()])
 
 
+def test_conti_html_all_records_unreadable_conti_and_continues(saved, home):
+    bad = saved.parent / "a-conti.md"
+    bad.write_bytes(b"---\n\xff\xfe\x80\n---\n")           # not valid UTF-8
+    out = conti.main(["html", "--all"])
+    assert out["built"] == 1
+    assert [f["path"] for f in out["failed"]] == [bad.relative_to(home).as_posix()]
+    assert out["failed"][0]["error"] and out["failed"][0]["message"]
+    with pytest.raises(UnicodeDecodeError):
+        conti.main(["html", bad.relative_to(home).as_posix()])
+
+
 def test_render_html_missing_files_fall_back_to_sketch(saved, home):
     frames = _shots_for(home)
     attach_art(saved, home, 1)

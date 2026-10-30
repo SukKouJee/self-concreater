@@ -563,3 +563,16 @@ def test_counts(saved, home):
     conti.update_cut(saved, 4, {"ref_frame": pin_frame(home)})
     fm = conti.validated(conti.read_conti(saved).stored)
     assert conti_art.counts(fm) == {"total": 3, "missing": 1, "stale": 1, "fresh": 1}
+
+
+def test_draw_workers_inherit_the_ctx_root(saved, home, fake, monkeypatch, tmp_path):
+    from scripts import ctx
+    other = tmp_path / "A"
+    other.mkdir()
+    monkeypatch.setenv("YT_COACH_HOME", str(other))         # 환경 변수는 다른 폴더, 문맥은 콘티가 있는 폴더
+    with ctx.use(ctx.Ctx(root=home)):
+        ids = [c["id"] for c in cuts_of(saved)]
+        out = conti_art.draw(saved, ids, False)
+    assert out["drawn"] == len(ids)
+    assert list((home / "workspace" / "conti-art").rglob("*.svg"))
+    assert not (other / "workspace").exists()

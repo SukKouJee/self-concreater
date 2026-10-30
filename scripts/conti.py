@@ -702,6 +702,11 @@ def rebuild_html(conti: str | None, embed: bool = False, all_files: bool = False
                 raise
             failed.append({"path": _rel(path), "error": e.code, "message": e.message})   # --all은 깨진 콘티를 건너뛰고 계속한다
             continue
+        except (OSError, UnicodeDecodeError) as e:
+            if not all_files:
+                raise
+            failed.append({"path": _rel(path), "error": "unreadable", "message": f"콘티를 읽거나 쓸 수 없습니다: {e}"})
+            continue
         built.append({"path": _rel(out), "bytes": out.stat().st_size})
     if all_files:
         return {"status": "built", "built": len(built), "bytes": sum(b["bytes"] for b in built), "files": built,

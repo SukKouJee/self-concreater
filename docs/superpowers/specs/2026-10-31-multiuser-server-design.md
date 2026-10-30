@@ -15,7 +15,7 @@
 | 항목 | 현재 | 서버판에 주는 의미 |
 |---|---|---|
 | 규모 | Python `scripts/` 약 19,100줄, UI 정적 JS 약 7,400줄, 테스트 70여 개 | 테스트가 리팩터링 안전망이 된다 |
-| 작업 폴더 | `common.work_root()`가 `YT_COACH_HOME` 환경 변수 또는 현재 폴더를 돌려줌. `work_root/workspace_dir/category_dir` 호출 약 200곳 | **프로세스 전역 = 사용자 1명** 가정. 서버에서 가장 먼저 풀어야 함 |
+| 작업 폴더 | `common.work_root()`가 `YT_COACH_HOME` 환경 변수 또는 현재 폴더를 돌려줌. `work_root/workspace_dir/category_dir` 호출 약 150곳(6절 S2 측정) | **프로세스 전역 = 사용자 1명** 가정. 서버에서 가장 먼저 풀어야 함 |
 | 파일 입출력 | `read_text/write_text/open/glob/exists/shutil` 등 약 316곳. `"drafts"`, `"mine"`, `"refs"` 같은 경로 문자열이 코드 곳곳에 있음 | 저장소 인터페이스로 모아야 함 |
 | 원본 데이터 | md 프런트매터가 유일한 원본, 본문·`## 내 메모` 바이트 보존(`refstore`) | PG에 옮겨도 "프런트매터 JSON + 본문 원문" 의미는 그대로 유지 |
 | LLM | `llm.py` 엔진 계층 이미 있음: `claude-cli`(내 구독) / `anthropic-api`(키) | **잘 된 이음매.** 서버는 `anthropic-api`만 쓰고 사용자별 사용량 기록만 추가 |
@@ -73,7 +73,7 @@ class DocStore:                 # 경로 대신 "문서 키"
 
 200곳을 한 번에 고치지 않는다.
 
-1. `work_root()`가 환경 변수 대신 `contextvars.ContextVar[Ctx]`를 먼저 보게 바꾼다. 로컬판은 시작할 때 한 번 설정 → 동작 그대로.
+1. `work_root()`가 환경 변수 대신 `contextvars.ContextVar[Ctx]`를 먼저 보게 바꾼다. 로컬판은 호출마다(`common.run`)·요청마다(UI 서버) 문맥을 씌운다(시작 때 한 번 설정하지 않는다) → 동작 그대로.
 2. 파일 입출력을 모듈 단위로 `ctx.store`/`ctx.objects` 호출로 옮긴다. 모듈 하나 옮길 때마다 기존 테스트가 통과해야 한다.
 3. 다 옮긴 모듈은 `work_root()`를 더 부르지 않는다. 남은 호출 수를 CI에서 세어 0으로 줄인다.
 
