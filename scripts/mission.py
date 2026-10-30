@@ -193,11 +193,12 @@ def save(mission_path: Path, date: str | None = None, replace: bool = False) -> 
 
     store = ctx.here().store
     key = _mission_key(day)
-    swapped_from = None
+    swapped_from, memo = None, None
     if store.exists(key):
         if not replace:
             raise ScriptError("mission_exists", f"{day} 미션이 이미 있습니다. 바꾸려면 swap(--replace)")
         swapped_from = _mission_record(key)["title"]
+        memo = _memo_tail(refstore.read(key)[1])        # 사용자의 메모(와 그 뒤 내용)는 새 미션으로 옮긴다
 
     profile = motif._profile()
     fm = {"date": day, "stage": (profile or {}).get("성장 단계") or "관찰", "kind": data["kind"],
@@ -214,6 +215,8 @@ def save(mission_path: Path, date: str | None = None, replace: bool = False) -> 
         *([f"- 결과물: {data['deliverable']}"] if data["deliverable"] else []), "",
         "## 제출", "", "## 피드백", "",
     ])
+    if memo is not None:
+        body += "\n" + memo
     store.write(key, refstore.join_frontmatter(fm, body).encode("utf-8"))
     Path(mission_path).unlink(missing_ok=True)
     return {"status": "saved", "path": key, "swapped_from": swapped_from}

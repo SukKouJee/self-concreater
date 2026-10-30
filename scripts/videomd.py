@@ -270,12 +270,9 @@ def _existing_memo(key: str) -> str:
 
 
 def memo_from_body(body: str) -> str:
-    """본문의 '## 내 메모' 아래 내용(없으면 "")."""
-    marker = "## 내 메모"
-    idx = body.find(marker)
-    if idx < 0:
-        return ""
-    return body[idx + len(marker):].lstrip("\r\n")
+    """본문의 '## 내 메모' 아래 내용(없으면 ""). 제목은 메모 가드와 같은 판정(정확히 그 제목인 줄, `## 내 메모장`은 아님)."""
+    tail = refstore.memo_after(body)
+    return "" if tail is None else tail.lstrip("\r\n")
 
 
 # --- 기법 카탈로그 -------------------------------------------------------------------
@@ -286,9 +283,11 @@ def drop_video_techniques(category: str, video_id: str) -> None:
     key = keys.techniques_md(category)
     fm, body = refstore.read(key)
     link = f"[{video_id}](videos/{video_id}.md)"
+    lines = body.split("\n")
+    memo = refstore.memo_span(lines) or (0, 0)        # 내 메모 절은 카탈로그가 아니다: 기법 형식 줄이 있어도 그대로 둔다
     kept = []
-    for line in body.split("\n"):
-        if line.startswith("- **") and link in line:
+    for i, line in enumerate(lines):
+        if not memo[0] <= i < memo[1] and line.startswith("- **") and link in line:
             head, _, sources = line.partition(" — ")
             remaining = [s for s in sources.split(", ") if s and s != link]
             if not remaining:

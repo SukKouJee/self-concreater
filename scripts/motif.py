@@ -114,7 +114,8 @@ def parse_techniques(body: str) -> list[dict]:
     items, kind = [], None
     for line in body.split("\n"):
         if line.startswith("## "):
-            kind = line[3:].strip()
+            # 내 메모 절은 카탈로그가 아니다(기법 형식 줄이 있어도 기법으로 보지 않는다)
+            kind = None if line.rstrip() == refstore.MEMO_HEADING else line[3:].strip()
             continue
         m = _TECH_RE.match(line)
         if kind and m:

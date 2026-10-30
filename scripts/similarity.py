@@ -217,9 +217,8 @@ def _pct(x: float | None) -> str:
 def _memo(key: str) -> str:
     if not ctx.here().store.exists(key):
         return ""
-    body = refstore.read(key)[1].replace("\r\n", "\n")
-    idx = body.find("## 내 메모")
-    return body[idx + len("## 내 메모"):].lstrip("\n") if idx >= 0 else ""
+    tail = refstore.memo_after(refstore.read(key)[1].replace("\r\n", "\n"))   # 가드와 같은 제목 판정
+    return "" if tail is None else tail.lstrip("\n")
 
 
 def validate_notes(result: dict, notes: Any) -> dict:

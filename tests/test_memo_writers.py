@@ -31,6 +31,8 @@ MEMOS = {
     "spaced": (HEADING, "\n\n  들여 쓴 메모  \n둘째 줄\t\n\n\n"),
     "subsection": (HEADING, "메모 본문\n\n## 내가 붙인 절\n- 링크 메모\n"),
     "heading_spaces": (HEADING + "  ", "제목 줄 끝에 공백\n"),
+    # 정확히 같은 제목 줄만 메모다: 앞에 있는 `## 내 메모장` 절은 메모가 아니다(옮기지도 지키지도 않는다)
+    "notepad_first": (f"## 내 메모장\n장 메모는 메모가 아님\n\n{HEADING}", "진짜 메모\n"),
 }
 VARIANTS = [(name, crlf) for name in MEMOS for crlf in (False, True)]
 IDS = [f"{name}-{'crlf' if crlf else 'lf'}" for name, crlf in VARIANTS]
@@ -259,7 +261,9 @@ def test_write_that_loses_the_memo_fails_and_leaves_the_file(home, new_tail):
     before = sorted(p.name for p in (home / "mine").iterdir())
     with pytest.raises(ScriptError) as exc:
         store.write(key, f"---\nid: g\n---\n# 새 본문\n\n{new_tail}".encode())
-    assert exc.value.code == "memo_lost" and key in exc.value.message
+    assert exc.value.code == "memo_lost"
+    assert exc.value.message == (f"이 작업은 '{HEADING}' 내용을 지우거나 바꾸게 되어 저장하지 않았습니다: {key}. "
+                                 "문서와 메모는 그대로 남아 있습니다")
     assert (home / key).read_bytes() == raw
     assert sorted(p.name for p in (home / "mine").iterdir()) == before       # 임시 파일도 없다
 
@@ -312,30 +316,67 @@ def test_create_never_replaces_a_doc_with_a_memo(home):
     assert (home / key).read_bytes() == raw
 
 
-def test_mission_swap_over_a_user_memo_is_refused(home):
-    """미션 바꾸기(swap)는 미션 md를 새로 쓴다. 사용자가 메모를 적어 둔 미션이면 memo_lost로 막고 아무것도 바꾸지 않는다."""
+def test_mission_swap_carries_the_user_memo(home):
+    """미션 바꾸기(swap)는 기존 `## 내 메모`(와 그 뒤)를 회고 다시 저장처럼 새 미션 md 끝에 그대로 옮긴다."""
     (home / "profile.md").write_text(PROFILE, encoding="utf-8")
     mission.save(mission_json(home), DAY)
     day = home / "missions" / f"{DAY}.md"
-    set_memo(day, "plain", False)
+    expected = set_memo(day, "subsection", True)
+    out = mission.save(mission_json(home, title="다른 미션"), DAY, replace=True)
+    assert out["swapped_from"] == "탑뷰 손 클로즈업 15초 찍기"
     raw = day.read_bytes()
-    src = mission_json(home, title="다른 미션")
-    with pytest.raises(ScriptError) as exc:
-        mission.save(src, DAY, replace=True)
-    assert exc.value.code == "memo_lost"
-    assert day.read_bytes() == raw and src.exists()
+    assert "다른 미션".encode() in raw and b"\r" not in raw            # 새 미션은 지금처럼 LF
+    assert raw.endswith(f"## 피드백\n\n{HEADING}\n메모 본문\n\n## 내가 붙인 절\n- 링크 메모\n".encode())
+    kept(day, expected)
 
 
-def test_reanalysis_refuses_to_edit_a_technique_line_inside_the_techniques_memo(home):
-    """techniques.md 메모에 기법 항목 형식 줄이 있으면 다시 분석이 그 줄을 고치려다 memo_lost로 멈춘다(영상 md는 이미 다시 쓴 뒤)."""
+def test_mission_swap_without_memo_keeps_todays_bytes(home):
+    (home / "profile.md").write_text(PROFILE, encoding="utf-8")
+    mission.save(mission_json(home), DAY)
+    day = home / "missions" / f"{DAY}.md"
+    mission.save(mission_json(home, title="다른 미션"), DAY, replace=True)
+    raw = day.read_bytes()
+    assert raw.endswith("## 제출\n\n## 피드백\n".encode()) and HEADING.encode() not in raw
+
+
+def _analysed(home: Path) -> Path:
     fetch.save_raw(RAW)
     (home / "workspace" / "cuts").mkdir(parents=True, exist_ok=True)
     (home / "workspace" / "cuts" / f"{VID}.json").write_text(json.dumps(CUTS), encoding="utf-8")
     videomd.write(VID, CAT, "ref", tmp_json(home, "analysis.json", ANALYSIS))
-    tech = home / "refs" / f"ref_{CAT}" / "techniques.md"
-    tech.write_bytes(tech.read_bytes() + f"\n{HEADING}\n- **내가 본 기법**: 메모 — [{VID}](videos/{VID}.md)\n".encode())
-    raw = tech.read_bytes()
-    with pytest.raises(ScriptError) as exc:
-        videomd.write(VID, CAT, "ref", tmp_json(home, "analysis.json", ANALYSIS), force=True)
-    assert exc.value.code == "memo_lost"
-    assert tech.read_bytes() == raw
+    return home / "refs" / f"ref_{CAT}" / "techniques.md"
+
+
+LINK = f"[{VID}](videos/{VID}.md)"
+TECH_MEMO = f"{HEADING}\n- **내가 본 기법**: 메모 — {LINK}\n"
+
+
+def test_reanalysis_leaves_technique_lines_inside_the_memo_alone(home):
+    """techniques.md 메모 안의 기법 형식 줄은 카탈로그가 아니다: 다시 분석해도 메모는 바이트 그대로, 진짜 항목만 갱신한다."""
+    tech = _analysed(home)
+    tech.write_bytes(tech.read_bytes() + f"\n{TECH_MEMO}".encode())
+    catalog = tech.read_bytes().decode().split(HEADING)[0].count(LINK)
+    assert catalog == 2
+    out = videomd.write(VID, CAT, "ref", tmp_json(home, "analysis.json", ANALYSIS), force=True)
+    assert out["status"] == "written"
+    text = tech.read_bytes().decode()
+    assert text.endswith(f"\n{TECH_MEMO}")
+    assert text.split(HEADING)[0].count(LINK) == catalog                 # 뺐다가 다시 붙임(중복 없음)
+    assert not (home / "workspace" / "tmp" / "analysis.json").exists()  # 정리까지 끝났다
+
+
+def test_trash_video_leaves_technique_lines_inside_the_memo_alone(home):
+    tech = _analysed(home)
+    tech.write_bytes(tech.read_bytes() + f"\n{TECH_MEMO}".encode())
+    out = videomd.trash_video(VID, CAT)
+    assert out["techniques_stale"] is False
+    text = tech.read_bytes().decode()
+    assert text.endswith(f"\n{TECH_MEMO}") and text.split(HEADING)[0].count(LINK) == 0
+
+
+def test_technique_catalog_ignores_the_memo_section():
+    body = (f"# t\n\n## 훅\n- **결과 선공개**: 완성품 — [a00](videos/a00.md)\n\n{HEADING}\n"
+            f"- **메모 기법**: 내 생각 — [a01](videos/a01.md)\n\n## 촬영\n- **탑뷰**: 위 — [a02](videos/a02.md)\n")
+    want = [("훅", "결과 선공개"), ("촬영", "탑뷰")]
+    assert [(t["kind"], t["name"]) for t in motif.parse_techniques(body)] == want
+    assert [(t["kind"], t["name"]) for t in motif.parse_techniques(body.replace("\n", "\r\n"))] == want

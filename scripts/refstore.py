@@ -170,19 +170,37 @@ def memo_text(raw: bytes) -> str | None:
     text = raw.decode("utf-8-sig", errors="replace").replace("\r\n", "\n")
     m = _FRONTMATTER_RE.match(text)
     lines = (m.group(3) if m else text).split("\n")
+    span = memo_span(lines)
+    if span is None:
+        return None
+    return "\n".join(line.rstrip() for line in lines[span[0] + 1:span[1]]).strip("\n")
+
+
+def memo_span(lines: list[str]) -> tuple[int, int] | None:
+    """본문 줄 목록에서 메모 절의 (제목 줄 번호, 끝 번호(다음 `## ` 줄 또는 줄 수)). 없으면 None.
+    제목은 줄 끝 공백만 무시하고 정확히 `## 내 메모`인 첫 줄(`## 내 메모장`·`### 내 메모`는 아니다). 줄 끝 `\\r`도 공백으로 본다."""
     start = next((i for i, line in enumerate(lines) if line.rstrip() == MEMO_HEADING), None)
     if start is None:
         return None
     end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
-    return "\n".join(line.rstrip() for line in lines[start + 1:end]).strip("\n")
+    return start, end
+
+
+_MEMO_LINE_RE = re.compile(r"^" + re.escape(MEMO_HEADING) + r"[^\S\n]*$", re.MULTILINE)
+
+
+def memo_after(body: str) -> str | None:
+    """본문에서 메모 제목 줄(`memo_span`과 같은 판정) 바로 뒤부터 끝까지(제목 줄의 줄바꿈부터). 제목이 없으면 None."""
+    m = _MEMO_LINE_RE.search(body)
+    return None if m is None else body[m.end():]
 
 
 def check_memo(key: str, old: bytes, new: bytes) -> None:
     """기존 문서(old)에 내용 있는 '## 내 메모'가 있으면 새 바이트(new)에도 같은 메모가 있어야 한다. 아니면 memo_lost."""
     before = memo_text(old)
     if before and memo_text(new) != before:
-        raise ScriptError("memo_lost", f"'{MEMO_HEADING}' 내용이 빠지거나 바뀌는 쓰기라 저장하지 않았습니다: {key} "
-                                       "(메모는 그대로 두고 다시 시도해 주세요)")
+        raise ScriptError("memo_lost", f"이 작업은 '{MEMO_HEADING}' 내용을 지우거나 바꾸게 되어 저장하지 않았습니다: {key}. "
+                                       "문서와 메모는 그대로 남아 있습니다")
 
 
 # --- 본문 섹션 ----------------------------------------------------------------
