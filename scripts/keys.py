@@ -31,6 +31,7 @@ TRASH = "workspace/trash/"
 
 WORKSPACE = "workspace/"
 FRAMES = "workspace/frames/"
+TMP = "workspace/tmp/"                   # Scratch 임시 핸드오프 파일
 CATEGORY_GLOB = "ref_*"                  # refs/ 아래 카테고리 폴더(`ref_<카테고리>`)를 고르는 패턴
 CONTI_SUFFIX = "-conti"
 CONTI_MD_GLOB = "*-conti.md"
@@ -38,7 +39,7 @@ CONTI_HTML_GLOB = "*-conti.html"
 SHARED_PREFIXES = ("workspace/raw/", "workspace/cuts/", "workspace/frames/", "workspace/shots/")
 TYPIFY_VARIANTS = (None, "applied", "preview")
 
-Kind = Literal["doc", "shared", "object"]
+Kind = Literal["doc", "shared", "object", "scratch"]
 
 
 # --- 검사 ---------------------------------------------------------------------------------
@@ -64,7 +65,10 @@ def is_doc(key: str) -> bool:
 
 
 def kind(key: str) -> Kind:
-    """키가 속한 저장소: md는 문서(DocStore), 영상 ID 기준 캐시는 shared, 나머지는 object."""
+    """키가 속한 저장소: `workspace/tmp/` 아래는 scratch(확장자 무관), md는 문서(DocStore), 영상 ID 기준 캐시는 shared,
+    나머지는 object."""
+    if key.startswith(TMP):
+        return "scratch"
     if is_doc(key):
         return "doc"
     if key.startswith(SHARED_PREFIXES):
@@ -190,6 +194,13 @@ def report_html(cat: str, day: str) -> str:
 
 
 # --- workspace ------------------------------------------------------------------------------
+
+def tmp(name: str) -> str:
+    """임시 핸드오프 파일 `workspace/tmp/<name>`(`scratch.tmp_path(name)`의 키). 파일 키만(빈 이름·끝 `/`는 bad_path)."""
+    if not name or name.endswith("/"):
+        raise ScriptError("bad_path", f"잘못된 임시 파일 이름입니다: {name!r}")
+    return check(f"{TMP}{name}")
+
 
 def raw(vid: str) -> str:
     return f"workspace/raw/{vid}.json"

@@ -1,6 +1,7 @@
 """실행 문맥(Ctx): work_root()가 문맥을 먼저 보고, 없으면 YT_COACH_HOME·현재 폴더를 본다."""
 from __future__ import annotations
 
+import contextlib
 import json
 import threading
 from pathlib import Path
@@ -8,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from scripts import common, count_work_root, ctx, filestore, keys
+from scripts.common import ScriptError
 from scripts.ui.jobs import Job, JobManager
 
 
@@ -237,3 +239,44 @@ def test_local_file_picks_store_by_key_kind(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         with filestore.FileSharedCache(tmp_path).local_path("drafts/a-conti.html"):
             pass
+
+
+def test_local_file_routes_scratch_keys_to_scratch(tmp_path: Path) -> None:
+    c = ctx.Ctx(root=tmp_path)
+    tmp = c.scratch.tmp_path("mission_submit_ab.png")
+    with c.local_file(keys.tmp("mission_submit_ab.png")) as p:
+        assert p == tmp
+
+    class Scratch:
+        def tmp_file(self, key: str):
+            return contextlib.nullcontext(Path("/proc-tmp") / key)
+
+    class Backend:
+        def scratch(self, user_id: str | None):
+            return Scratch()
+
+        def objects(self, user_id: str | None):
+            raise AssertionError("임시 키를 객체 저장소에서 찾으면 안 된다")
+
+    served = ctx.Ctx(user_id="u1", backend=Backend())
+    with served.local_file(keys.tmp("a.png")) as p:
+        assert p == Path("/proc-tmp") / "workspace/tmp/a.png"
+
+
+def test_for_key_picks_store_by_kind(tmp_path: Path) -> None:
+    c = ctx.Ctx(root=tmp_path)
+    assert c.for_key(keys.video_md("travel", "abc")) is c.store
+    assert c.for_key(keys.raw("abc")) is c.shared
+    assert c.for_key(keys.conti_html("drafts/a-conti.md")) is c.objects
+    with pytest.raises(ValueError):
+        c.for_key(keys.tmp("a.json"))
+
+
+def test_file_scratch_tmp_file_maps_only_tmp_keys(tmp_path: Path) -> None:
+    s = filestore.FileScratch(tmp_path)
+    with s.tmp_file(keys.tmp("a.json")) as p:
+        assert p == s.tmp_path("a.json")
+    for bad in ["workspace/raw/a.json", "drafts/a.md", "workspace/tmp/../x"]:
+        with pytest.raises((ValueError, ScriptError)):
+            with s.tmp_file(bad):
+                pass

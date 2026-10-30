@@ -657,3 +657,28 @@ def test_cancelled_feedback_job_leaves_no_temp_copy(client, home, fake_ask):
     fake_ask.gate.set()
     job.join(5)
     assert _tmp(home, "mission_submit_*") == [] and src.exists()
+
+
+def test_feedback_attachment_key_does_not_depend_on_key_of(client, home, fake_ask, monkeypatch):
+    # 서버판(S5) Scratch는 작업 폴더 밖 임시 폴더라 key_of로 키를 만들 수 없다: 키는 keys.tmp로 만든다
+    from scripts import ctx, filestore
+
+    def no_key_of(self, value):
+        raise AssertionError("key_of를 쓰면 안 된다")
+
+    monkeypatch.setattr(filestore.FileScratch, "key_of", no_key_of)
+    seen = {}
+    real = fake_ask.__call__
+
+    def ask(rules, payload, task, **kw):
+        with ctx.here().local_file(kw["files"][0]) as path:
+            seen["bytes"] = path.read_bytes()
+        return real(rules, payload, task, **kw)
+
+    monkeypatch.setattr(llm, "ask", ask)
+    _put(home)
+    src = _user_file(home, data=b"PNG-original")
+    job = _feedback(client, file=str(src))
+    assert job["status"] == "done", job
+    assert seen == {"bytes": b"PNG-original"}
+    assert _tmp(home, "mission_submit_*") == []

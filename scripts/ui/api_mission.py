@@ -271,9 +271,11 @@ def _remove_stale_copies() -> None:
             continue                                 # 다른 프로그램이 잡고 있으면 다음 기회에
 
 
-def _copy_temp(src: Path) -> Path:
-    """사용자 파일을 작업 폴더 임시 위치로 복사한다(원본은 읽기만). 실패하면 복사본을 지우고 bad_file."""
-    tmp = ctx.here().scratch.tmp_path(f"mission_submit_{secrets.token_hex(8)}{src.suffix.lower()}")
+def _copy_temp(src: Path) -> tuple[Path, str]:
+    """사용자 파일을 임시 위치(`scratch.tmp_path`)로 복사한다(원본은 읽기만). -> (복사본 경로, 그 키 `keys.tmp`).
+    실패하면 복사본을 지우고 bad_file."""
+    name = f"mission_submit_{secrets.token_hex(8)}{src.suffix.lower()}"
+    tmp = ctx.here().scratch.tmp_path(name)
     try:
         shutil.copyfile(src, tmp)
         too_big = tmp.stat().st_size > MAX_FILE_BYTES
@@ -283,7 +285,7 @@ def _copy_temp(src: Path) -> Path:
     if too_big:
         tmp.unlink(missing_ok=True)
         raise _bad_file("파일이 너무 큽니다(10MB까지)")
-    return tmp
+    return tmp, keys.tmp(name)
 
 
 def _validate_feedback(data: Any) -> str:
@@ -305,8 +307,7 @@ def run_feedback(day: str, note: str, difficulty: str, picked: tuple[Path, str] 
                 raise ScriptError("no_mission", f"{day} 미션이 없습니다")
             payload: dict[str, Any] = {"mission": current, "note": note, "difficulty": difficulty}
             if picked is not None:
-                tmp = _copy_temp(picked[0])
-                tmp_key = ctx.here().scratch.key_of(tmp)          # Claude가 읽을 키(작업 폴더 기준 상대 경로)
+                tmp, tmp_key = _copy_temp(picked[0])               # Claude가 읽을 키(`ctx.local_file`이 scratch로 푼다)
                 payload["file"] = tmp_key
                 job.update(0, step="claude")
                 job.check_cancelled()

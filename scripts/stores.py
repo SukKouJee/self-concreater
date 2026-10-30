@@ -92,6 +92,7 @@ class Scratch(Protocol):
     """로컬 실행 보조. 서버판은 프로세스 임시 폴더, local_path·workdir는 NotImplementedError."""
 
     def tmp_path(self, name: str) -> Path: ...          # workspace/tmp/<name>, 부모 생성
+    def tmp_file(self, key: str) -> AbstractContextManager[Path]: ...  # keys.tmp(name) 키 → tmp_path(name)
     def local_path(self, *parts: str) -> Path: ...      # workspace/<parts>
     def arg_path(self, value: str | Path) -> Path: ...  # CLI 인자: 절대면 그대로, 상대면 root 기준
     def key_of(self, value: str | Path) -> str: ...     # 경로 → 키. root 밖이면 ScriptError("bad_path")

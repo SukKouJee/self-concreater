@@ -213,9 +213,16 @@ class FileScratch:
         self.root = Path(root)
 
     def tmp_path(self, name: str) -> Path:
-        path = self.root / _keys.check(f"workspace/tmp/{name}")
+        path = self.root / _keys.tmp(name)
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
+
+    @contextmanager
+    def tmp_file(self, key: str) -> Iterator[Path]:
+        """임시 키(`keys.tmp(name)`)의 실제 경로(`tmp_path(name)`). 다른 키는 ValueError."""
+        if _keys.kind(_keys.check(key)) != "scratch":
+            raise ValueError(f"임시 파일 키가 아닙니다: {key!r}")
+        yield self.tmp_path(key.removeprefix(_keys.TMP))
 
     def local_path(self, *parts: str) -> Path:
         return self.root / _keys.check("/".join(("workspace", *parts)))

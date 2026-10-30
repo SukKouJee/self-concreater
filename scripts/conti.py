@@ -78,19 +78,17 @@ def key_exists(key: str) -> bool:
         if e.code != "bad_path":
             raise
         return False
-    c = ctx.here()
-    if kind == "doc":
-        return c.store.exists(key)
-    return (c.shared if kind == "shared" else c.objects).exists(key)
+    if kind == "scratch":                              # 임시 핸드오프 파일은 콘티가 가리킬 자료가 아니다
+        return False
+    return ctx.here().for_key(key).exists(key)
 
 
 def _get(key: str) -> bytes:
-    """키의 바이트(md·영상 캐시·그 밖 객체 중 맞는 저장소). 없으면 FileNotFoundError."""
-    c = ctx.here()
-    kind = keys.kind(key)
-    if kind == "doc":
-        return c.store.read(key).raw
-    return (c.shared if kind == "shared" else c.objects).get(key)
+    """키의 바이트(md·영상 캐시·그 밖 객체 중 맞는 저장소, `Ctx.for_key`). 없으면 FileNotFoundError."""
+    store = ctx.here().for_key(key)
+    if keys.is_doc(key):
+        return store.read(key).raw                     # type: ignore[union-attr]
+    return store.get(key)                              # type: ignore[union-attr]
 
 
 def abs_path(key: str) -> str:

@@ -159,6 +159,8 @@ def test_check_rejects_bad_keys(key: str) -> None:
     (f"drafts/{STEM}-conti.html", "object"), ("workspace/typify/travel.json", "object"), ("yt-coach.json", "object"),
     ("workspace/rawx/a.json", "object"), ("reports/a-b.html", "object"), ("drafts/Idea.MD", "doc"),
     ("refs/ref_travel/videos/X.Md", "doc"), ("drafts/a.mdx", "object"),
+    ("workspace/tmp/mission_submit_ab.png", "scratch"), ("workspace/tmp/a.md", "scratch"),
+    ("workspace/tmpx/a.json", "object"),
 ])
 def test_kind_picks_store(key: str, kind: str) -> None:
     assert keys.kind(key) == kind
@@ -181,3 +183,10 @@ def test_every_fixture_key_passes_check() -> None:
     from tests.helpers.tree_snapshot import FIXTURE
     rels = [p.relative_to(FIXTURE).as_posix() for p in FIXTURE.rglob("*")]
     assert rels and all(keys.check(r) == r for r in rels)
+
+
+def test_tmp_key_is_under_workspace_tmp() -> None:
+    assert keys.tmp("mission_submit_ab.png") == "workspace/tmp/mission_submit_ab.png" == keys.TMP + "mission_submit_ab.png"
+    for bad in ["../x.json", "a/../../x", "a\\b", "", "sub/"]:
+        with pytest.raises(ScriptError):
+            keys.tmp(bad)

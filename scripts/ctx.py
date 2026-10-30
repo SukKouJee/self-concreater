@@ -75,15 +75,23 @@ class Ctx:
         from scripts import filestore
         return filestore.FileTrash(self._root())
 
-    def local_file(self, key: str) -> AbstractContextManager[Path]:
-        """키의 실제 파일 경로(읽기용). `keys.kind`로 store·shared·objects 중 골라 그 `local_path`를 쓴다."""
+    def for_key(self, key: str) -> DocStore | ObjectStore:
+        """키를 다루는 저장소(`keys.kind`): md는 store, 영상 캐시는 shared, 나머지는 objects.
+        임시 키(`workspace/tmp/`)는 저장소가 아니라 scratch라서 ValueError(`local_file`은 scratch로 푼다)."""
         from scripts import keys
         kind = keys.kind(key)
+        if kind == "scratch":
+            raise ValueError(f"임시 파일 키는 저장소에 없습니다: {key!r}")
         if kind == "doc":
-            return self.store.local_path(key)
-        if kind == "shared":
-            return self.shared.local_path(key)
-        return self.objects.local_path(key)
+            return self.store
+        return self.shared if kind == "shared" else self.objects
+
+    def local_file(self, key: str) -> AbstractContextManager[Path]:
+        """키의 실제 파일 경로(읽기용). 임시 키는 `scratch.tmp_file`, 나머지는 `for_key(key).local_path`."""
+        from scripts import keys
+        if keys.kind(key) == "scratch":
+            return self.scratch.tmp_file(key)
+        return self.for_key(key).local_path(key)
 
 
 _current: ContextVar[Ctx | None] = ContextVar("yt_coach_ctx", default=None)

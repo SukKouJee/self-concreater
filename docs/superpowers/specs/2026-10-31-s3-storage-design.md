@@ -127,9 +127,11 @@ class SharedCache(ObjectStore, Protocol):  # 키는 workspace/{raw,cuts,frames,s
 
 class Scratch(Protocol):                 # 로컬 실행 보조. 서버판은 프로세스 임시 폴더, local_path·workdir는 NotImplementedError
     def tmp_path(self, name: str) -> Path: ...        # workspace/tmp/<name>, 부모 생성
+    def tmp_file(self, key: str) -> ContextManager[Path]: ...  # keys.tmp(name) 키 → tmp_path(name)(서버판도 동작)
     def local_path(self, *parts: str) -> Path: ...    # workspace/<parts> (library clone·lock, timings, .last_fetch)
     def arg_path(self, value: str | Path) -> Path: ...  # CLI 인자: 절대면 그대로, 상대면 root 기준
     def key_of(self, value: str | Path) -> str: ...   # 절대/상대 경로 → 키. root 밖이면 ScriptError("bad_path")
+                                                      # 단, 링크로 옮긴 workspace/·workspace/<이름>/ 아래 작업 폴더 안 경로는 받는다
     def workdir(self) -> Path: ...                    # claude CLI cwd (claude-cli 엔진 전용)
 
 class Trash(Protocol):
@@ -144,7 +146,8 @@ class Backend(Protocol):                 # 서버판(S5)이 Ctx(backend=...)로 
 ```
 
 - 문서 키 판정은 `keys.is_doc(key)` = `key.lower().endswith(".md")`: Windows glob(`*.md`)이 대소문자를 무시하므로 `Idea.MD`도 문서다.
-  `keys.kind`·DocStore/ObjectStore의 키 종류 검사가 모두 이것을 쓴다. 종류가 맞지 않는 키(DocStore에 비 md, ObjectStore에 md,
+  `keys.kind`·DocStore/ObjectStore의 키 종류 검사가 모두 이것을 쓴다. `keys.kind`는 `workspace/tmp/`(`keys.TMP`) 아래를
+  확장자와 상관없이 `"scratch"`로 본다(임시 키는 `keys.tmp(name)`이 만든다). 종류가 맞지 않는 키(DocStore에 비 md, ObjectStore에 md,
   SharedCache에 공유 접두사 밖)는 `ValueError`(프로그램 오류).
 
 텍스트 쓰기 도우미(`refstore.text_bytes(text, newline=None) -> bytes`): `Path.write_text(text, encoding="utf-8", newline=newline)`과
@@ -166,7 +169,8 @@ class Ctx:
     @cached_property
     def store(self) -> DocStore: ...      # backend 없으면 filestore.FileDocStore(root)
     objects: ObjectStore / shared: SharedCache / scratch: Scratch / trash: Trash   # 같은 방식
-    def local_file(self, key) -> ContextManager[Path]: ...   # keys.kind(key)로 store/shared/objects 중 골라 local_path
+    def for_key(self, key) -> DocStore | ObjectStore: ...    # keys.kind 한 곳: doc→store, shared→shared, object→objects(scratch는 ValueError)
+    def local_file(self, key) -> ContextManager[Path]: ...   # scratch 키는 scratch.tmp_file, 나머지는 for_key(key).local_path
 
 def here() -> Ctx: ...    # current() or Ctx(root=Path(YT_COACH_HOME or cwd))  ← common.work_root의 대체 로직을 이리로 옮김
 ```
