@@ -1,0 +1,25 @@
+{
+ "status": 200,
+ "body": {
+  "has_typify": false,
+  "preliminary": null,
+  "videos": [
+   {
+    "path": "refs/ref_travel/videos/aBcD_123xyz.md",
+    "name": "aBcD_123xyz",
+    "title": "내 강릉 브이로그",
+    "date": "2023-11-15",
+    "diagnosed": null
+   }
+  ],
+  "drafts": [
+   {
+    "path": "drafts/2026-10-30-제주-한달살기.md",
+    "name": "2026-10-30-제주-한달살기",
+    "title": "제주 한 달 살기 비용 공개",
+    "date": "2026-10-30",
+    "diagnosed": null
+   }
+  ]
+ }
+}

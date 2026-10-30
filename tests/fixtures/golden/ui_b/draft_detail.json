@@ -1,0 +1,36 @@
+{
+ "status": 200,
+ "body": {
+  "hash": "3d475fe171cea7848d4efd5a06654683ae1f31675436676b2d779a7e49127019",
+  "hook": null,
+  "path": "drafts/2026-10-30-제주-한달살기.md",
+  "title": "제주 한 달 살기 비용 공개",
+  "category": "travel",
+  "date": "2026-10-30",
+  "source": "M-travel-001",
+  "archetype": null,
+  "target_sec": null,
+  "sections": [],
+  "pacing": {
+   "target_sec": 40
+  },
+  "hook_type": null,
+  "narrative_type": null,
+  "body": [
+   {
+    "heading": "",
+    "text": "# 제주 한 달 살기 비용 공개"
+   },
+   {
+    "heading": "hook (0~3초)",
+    "text": "자막: 한 달에 180만 원?\n\n| 샷 | 앵글 | 초 | 행동 |\n|---|---|---|---|\n| 클로즈업 | 정면 | 3 | 영수증 펼치기 |"
+   },
+   {
+    "heading": "내 메모",
+    "text": "숙소 비용은 다시 확인"
+   }
+  ],
+  "conti": "drafts/2026-10-30-제주-한달살기-conti.md",
+  "html": "drafts/2026-10-30-제주-한달살기-conti.html"
+ }
+}

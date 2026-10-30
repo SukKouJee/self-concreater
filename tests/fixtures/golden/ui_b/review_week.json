@@ -1,0 +1,63 @@
+{
+ "status": 200,
+ "body": {
+  "week": "2026-W44",
+  "range": [
+   "2026-10-26",
+   "2026-11-01"
+  ],
+  "stats": {
+   "missions": {
+    "total": 1,
+    "submitted": 0,
+    "skipped": 0,
+    "open": 0,
+    "completion": 0.0
+   },
+   "difficulty": {},
+   "skip_reasons": [],
+   "kinds": {
+    "null": 1
+   },
+   "cards_created": 0,
+   "diagnosis_gap_count": 0,
+   "diagnosis_gaps": [],
+   "refs": [
+    {
+     "category": "food",
+     "ref": 1,
+     "mine": 0,
+     "stage": 1
+    },
+    {
+     "category": "travel",
+     "ref": 2,
+     "mine": 1,
+     "stage": 1
+    }
+   ]
+  },
+  "saved": {
+   "fm": {
+    "week": "2026-W44",
+    "schema_version": 1
+   },
+   "body": [
+    {
+     "heading": "",
+     "text": "# 2026-W44 회고"
+    },
+    {
+     "heading": "내 메모",
+     "text": ""
+    }
+   ]
+  },
+  "profile": {
+   "exists": true,
+   "sections": {
+    "관심 주제": "제주, 한 달 살기, 혼자 여행 🌊"
+   }
+  }
+ }
+}

@@ -1,0 +1,59 @@
+{
+ "path": "drafts/2026-10-31-컵라면-4단계-도전-conti.md",
+ "folders": [],
+ "summary": {
+  "filmed": 0,
+  "review": 0,
+  "missing": 4,
+  "total": 4
+ },
+ "cuts": [
+  {
+   "id": "id000000",
+   "n": 1,
+   "kind": "missing",
+   "choice": null,
+   "candidates": [],
+   "reason": null,
+   "user": false
+  },
+  {
+   "id": "id000001",
+   "n": 2,
+   "kind": "missing",
+   "choice": null,
+   "candidates": [],
+   "reason": null,
+   "user": false
+  },
+  {
+   "id": "id000002",
+   "n": 3,
+   "kind": "missing",
+   "choice": null,
+   "candidates": [],
+   "reason": null,
+   "user": false
+  },
+  {
+   "id": "id000003",
+   "n": 4,
+   "kind": "missing",
+   "choice": null,
+   "candidates": [],
+   "reason": null,
+   "user": false
+  }
+ ],
+ "suggestions": [],
+ "stt_missing": false,
+ "images_used": 0,
+ "matched_at": null,
+ "outputs": {
+  "remaining_html": "drafts/2026-10-31-컵라면-4단계-도전-remaining.html",
+  "csv": "drafts/2026-10-31-컵라면-4단계-도전-footage.csv",
+  "clips_dir": "drafts/2026-10-31-컵라면-4단계-도전-cuts"
+ },
+ "job": null,
+ "clips_job": null
+}

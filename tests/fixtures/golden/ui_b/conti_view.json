@@ -1,0 +1,193 @@
+{
+ "path": "drafts/2026-10-31-컵라면-4단계-도전-conti.md",
+ "hash": "938592048813455f28684100d39d237df1ac14092104a285d8132435879cfac8",
+ "fm": {
+  "date": "2026-10-31",
+  "draft": "drafts/2026-10-31-컵라면-4단계-도전.md",
+  "html": "drafts/2026-10-31-컵라면-4단계-도전-conti.html",
+  "category": "mukbang",
+  "title": "컵라면 4단계 | 도전",
+  "format": "shorts",
+  "target_sec": 8.0,
+  "speech_cps": 4.5,
+  "script": [
+   {
+    "label": "hook",
+    "start": 0.0,
+    "end": 2.0,
+    "text": "4단계 다 먹을 수 있을까?"
+   },
+   {
+    "label": "body",
+    "start": 2.0,
+    "end": 6.0,
+    "text": "1단계부터 갑니다. 와 순하다"
+   },
+   {
+    "label": "outro",
+    "start": 6.0,
+    "end": 8.0,
+    "text": ""
+   }
+  ],
+  "cuts": [
+   {
+    "n": 1,
+    "id": "id000000",
+    "section": 0,
+    "size": "탑뷰",
+    "angle": "탑뷰",
+    "sec": 2.0,
+    "action": "컵라면 4개",
+    "line": "4단계 다 먹을 수 있을까?",
+    "caption": "4단계 도전",
+    "sfx": "띵",
+    "guide": "카메라 고정, 컵 순서대로 놓기",
+    "start": 0.0,
+    "end": 2.0
+   },
+   {
+    "n": 2,
+    "id": "id000001",
+    "section": 1,
+    "size": "클로즈업",
+    "angle": "45도",
+    "sec": 2.0,
+    "action": "뚜껑 뜯기",
+    "line": "1단계부터 갑니다.",
+    "caption": "",
+    "sfx": "뜯는 소리",
+    "guide": "소리 크게 천천히",
+    "start": 2.0,
+    "end": 4.0
+   },
+   {
+    "n": 3,
+    "id": "id000002",
+    "section": 1,
+    "size": "익스트림 클로즈업",
+    "angle": null,
+    "sec": 2.0,
+    "action": "면발",
+    "line": "와 순하다",
+    "caption": "순한맛",
+    "sfx": "후루룩",
+    "guide": "입은 프레임 밖",
+    "start": 4.0,
+    "end": 6.0
+   },
+   {
+    "n": 4,
+    "id": "id000003",
+    "section": 2,
+    "size": "인서트",
+    "angle": "탑뷰",
+    "sec": 2.0,
+    "action": "빈 컵",
+    "line": "",
+    "caption": "다음은 불닭",
+    "sfx": "",
+    "guide": "3초 정지",
+    "start": 6.0,
+    "end": 8.0
+   }
+  ],
+  "schema_version": 3
+ },
+ "html": "drafts/2026-10-31-컵라면-4단계-도전-conti.html",
+ "cuts": [
+  {
+   "n": 1,
+   "id": "id000000",
+   "section": 0,
+   "size": "탑뷰",
+   "angle": "탑뷰",
+   "sec": 2.0,
+   "action": "컵라면 4개",
+   "line": "4단계 다 먹을 수 있을까?",
+   "caption": "4단계 도전",
+   "sfx": "띵",
+   "guide": "카메라 고정, 컵 순서대로 놓기",
+   "start": 0.0,
+   "end": 2.0,
+   "art": null,
+   "label": "hook",
+   "sketch": "<svg class=\"sk\" viewBox=\"0 0 90 160\" role=\"img\" aria-label=\"탑뷰 도식\"><rect x=\".5\" y=\".5\" width=\"89\" height=\"159\" rx=\"4\" fill=\"var(--surface)\" stroke=\"var(--axis)\"/><circle cx=\"25.9\" cy=\"55.5\" r=\"15.3\" fill=\"var(--grid)\" stroke=\"var(--ink2)\" stroke-width=\"1.6\"/><circle cx=\"25.9\" cy=\"55.5\" r=\"8.4\" fill=\"none\" stroke=\"var(--ink2)\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/><circle cx=\"64.1\" cy=\"55.5\" r=\"15.3\" fill=\"var(--grid)\" stroke=\"var(--ink2)\" stroke-width=\"1.6\"/><circle cx=\"64.1\" cy=\"55.5\" r=\"8.4\" fill=\"none\" stroke=\"var(--ink2)\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/><circle cx=\"25.9\" cy=\"104.5\" r=\"15.3\" fill=\"var(--grid)\" stroke=\"var(--ink2)\" stroke-width=\"1.6\"/><circle cx=\"25.9\" cy=\"104.5\" r=\"8.4\" fill=\"none\" stroke=\"var(--ink2)\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/><circle cx=\"64.1\" cy=\"104.5\" r=\"15.3\" fill=\"var(--grid)\" stroke=\"var(--ink2)\" stroke-width=\"1.6\"/><circle cx=\"64.1\" cy=\"104.5\" r=\"8.4\" fill=\"none\" stroke=\"var(--ink2)\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>",
+   "ref": null,
+   "max_chars": 9
+  },
+  {
+   "n": 2,
+   "id": "id000001",
+   "section": 1,
+   "size": "클로즈업",
+   "angle": "45도",
+   "sec": 2.0,
+   "action": "뚜껑 뜯기",
+   "line": "1단계부터 갑니다.",
+   "caption": "",
+   "sfx": "뜯는 소리",
+   "guide": "소리 크게 천천히",
+   "start": 2.0,
+   "end": 4.0,
+   "art": null,
+   "label": "body",
+   "sketch": "<svg class=\"sk\" viewBox=\"0 0 90 160\" role=\"img\" aria-label=\"클로즈업 도식\"><rect x=\".5\" y=\".5\" width=\"89\" height=\"159\" rx=\"4\" fill=\"var(--surface)\" stroke=\"var(--axis)\"/><ellipse cx=\"45.0\" cy=\"89.5\" rx=\"37.8\" ry=\"23.4\" fill=\"var(--grid)\" stroke=\"var(--ink2)\" stroke-width=\"1.6\"/><ellipse cx=\"45.0\" cy=\"81.9\" rx=\"30.2\" ry=\"15.1\" fill=\"none\" stroke=\"var(--ink2)\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/><path d=\"M52.6 30.9 L46.9 83.8 M62.0 32.8 L52.6 83.8\" fill=\"none\" stroke=\"var(--ink2)\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>",
+   "ref": null,
+   "max_chars": 9
+  },
+  {
+   "n": 3,
+   "id": "id000002",
+   "section": 1,
+   "size": "익스트림 클로즈업",
+   "angle": null,
+   "sec": 2.0,
+   "action": "면발",
+   "line": "와 순하다",
+   "caption": "순한맛",
+   "sfx": "후루룩",
+   "guide": "입은 프레임 밖",
+   "start": 4.0,
+   "end": 6.0,
+   "art": null,
+   "label": "body",
+   "sketch": "<svg class=\"sk\" viewBox=\"0 0 90 160\" role=\"img\" aria-label=\"익스트림 클로즈업 도식\"><rect x=\".5\" y=\".5\" width=\"89\" height=\"159\" rx=\"4\" fill=\"var(--surface)\" stroke=\"var(--axis)\"/><path d=\"M16.2 0 C5.4 56.0 27.0 104.0 16.2 160\" fill=\"none\" stroke=\"var(--ink2)\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/><path d=\"M30.6 0 C19.8 56.0 41.4 104.0 30.6 160\" fill=\"none\" stroke=\"var(--ink2)\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/><path d=\"M45.0 0 C34.2 56.0 55.8 104.0 45.0 160\" fill=\"none\" stroke=\"var(--ink2)\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/><path d=\"M59.4 0 C48.6 56.0 70.2 104.0 59.4 160\" fill=\"none\" stroke=\"var(--ink2)\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/><path d=\"M73.8 0 C63.0 56.0 84.6 104.0 73.8 160\" fill=\"none\" stroke=\"var(--ink2)\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>",
+   "ref": null,
+   "max_chars": 9
+  },
+  {
+   "n": 4,
+   "id": "id000003",
+   "section": 2,
+   "size": "인서트",
+   "angle": "탑뷰",
+   "sec": 2.0,
+   "action": "빈 컵",
+   "line": "",
+   "caption": "다음은 불닭",
+   "sfx": "",
+   "guide": "3초 정지",
+   "start": 6.0,
+   "end": 8.0,
+   "art": null,
+   "label": "outro",
+   "sketch": "<svg class=\"sk\" viewBox=\"0 0 90 160\" role=\"img\" aria-label=\"인서트 도식\"><rect x=\".5\" y=\".5\" width=\"89\" height=\"159\" rx=\"4\" fill=\"var(--surface)\" stroke=\"var(--axis)\"/><rect x=\"17.1\" y=\"61.1\" width=\"55.8\" height=\"37.8\" rx=\"3\" fill=\"var(--grid)\" stroke=\"var(--ink2)\" stroke-width=\"1.6\"/><path d=\"M25.5 74.3 H64.5\" fill=\"none\" stroke=\"var(--ink2)\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/><path d=\"M25.5 81.9 H64.5\" fill=\"none\" stroke=\"var(--ink2)\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/><path d=\"M25.5 89.5 H47.8\" fill=\"none\" stroke=\"var(--ink2)\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/></svg>",
+   "ref": null,
+   "max_chars": 9
+  }
+ ],
+ "art_counts": {
+  "total": 4,
+  "missing": 4,
+  "stale": 0,
+  "fresh": 0
+ },
+ "warnings": [],
+ "total_sec": 8.0,
+ "target_sec": 8.0,
+ "outputs_stale": {
+  "srt": false,
+  "video": false
+ }
+}

@@ -1,0 +1,7 @@
+{
+ "status": 400,
+ "body": {
+  "error": "section_not_found",
+  "message": "'## 모티브 카드' 섹션이 없습니다"
+ }
+}

@@ -1,0 +1,19 @@
+{
+ "status": 200,
+ "body": {
+  "drafts": [
+   {
+    "path": "drafts/2026-10-30-제주-한달살기.md",
+    "title": "제주 한 달 살기 비용 공개",
+    "date": "2026-10-30",
+    "source": "M-travel-001",
+    "archetype": null,
+    "target_sec": null,
+    "sections": [],
+    "status": null,
+    "conti": "drafts/2026-10-30-제주-한달살기-conti.md",
+    "html": "drafts/2026-10-30-제주-한달살기-conti.html"
+   }
+  ]
+ }
+}

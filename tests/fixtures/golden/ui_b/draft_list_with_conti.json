@@ -1,0 +1,33 @@
+{
+ "drafts": [
+  {
+   "path": "drafts/2026-10-31-컵라면-4단계-도전.md",
+   "title": "컵라면 4단계 | 도전",
+   "date": "2026-10-31",
+   "source": "직접",
+   "archetype": null,
+   "target_sec": 8.0,
+   "sections": [
+    {
+     "label": "hook",
+     "start": 0.0,
+     "end": 2.0
+    },
+    {
+     "label": "body",
+     "sub": "list_item",
+     "start": 2.0,
+     "end": 6.0
+    },
+    {
+     "label": "outro",
+     "start": 6.0,
+     "end": 8.0
+    }
+   ],
+   "status": "draft",
+   "conti": "drafts/2026-10-31-컵라면-4단계-도전-conti.md",
+   "html": "drafts/2026-10-31-컵라면-4단계-도전-conti.html"
+  }
+ ]
+}

@@ -1,0 +1,106 @@
+{
+ "date": "2026-10-30",
+ "today": {
+  "date": "2026-10-30",
+  "title": "오늘 미션",
+  "kind": "촬영",
+  "status": "open",
+  "difficulty": null,
+  "minutes": 20,
+  "skip_reason": null,
+  "source": "M-mukbang-001",
+  "body": [
+   {
+    "heading": "",
+    "text": "# 2026-10-30 미션"
+   },
+   {
+    "heading": "미션",
+    "text": "### 오늘 미션 (20분 · 촬영)\n- 왜: ★카드의 탑뷰 기법을 연습\n- 재료: M-mukbang-001\n\n1. 폰을 탑뷰로 고정\n2. 면 들기 15초 촬영\n\n- 결과물: 15초 클립 1개"
+   },
+   {
+    "heading": "제출",
+    "text": ""
+   },
+   {
+    "heading": "피드백",
+    "text": ""
+   }
+  ]
+ },
+ "recommended": {
+  "minutes": 20,
+  "adjust": "same"
+ },
+ "stage": "관찰",
+ "has_profile": true,
+ "history": [
+  {
+   "date": "2026-10-16",
+   "status": null
+  },
+  {
+   "date": "2026-10-17",
+   "status": null
+  },
+  {
+   "date": "2026-10-18",
+   "status": null
+  },
+  {
+   "date": "2026-10-19",
+   "status": null
+  },
+  {
+   "date": "2026-10-20",
+   "status": null
+  },
+  {
+   "date": "2026-10-21",
+   "status": null
+  },
+  {
+   "date": "2026-10-22",
+   "status": null
+  },
+  {
+   "date": "2026-10-23",
+   "status": null
+  },
+  {
+   "date": "2026-10-24",
+   "status": null
+  },
+  {
+   "date": "2026-10-25",
+   "status": null
+  },
+  {
+   "date": "2026-10-26",
+   "status": null
+  },
+  {
+   "date": "2026-10-27",
+   "status": null
+  },
+  {
+   "date": "2026-10-28",
+   "title": "탑뷰 손 클로즈업 15초 찍기",
+   "kind": "촬영",
+   "status": "skipped",
+   "difficulty": null,
+   "skip_reason": "바빠서",
+   "minutes": 20
+  },
+  {
+   "date": "2026-10-29",
+   "status": null
+  }
+ ],
+ "week": {
+  "done": 0,
+  "skipped": 1,
+  "total": 2,
+  "rate": 0.0
+ }
+}

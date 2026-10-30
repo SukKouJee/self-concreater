@@ -352,7 +352,7 @@ def test_feedback_with_image_copies_temp_then_deletes_and_keeps_original(client,
     src = _user_file(home, data=b"PNG-original")
     job = _feedback(client, file=str(src))
     [call] = fake_ask.calls
-    assert [p.name for p in call["files"]] == [Path(call["payload"]["file"]).name]
+    assert [Path(p).name for p in call["files"]] == [Path(call["payload"]["file"]).name]
     assert call["payload"]["file"].startswith("workspace/tmp/mission_submit_") and call["payload"]["file"].endswith(".png")
     assert fake_ask.file_seen == {"exists": True, "bytes": b"PNG-original"}      # 복사본이 Claude 호출 중 존재
     assert _tmp(home, "mission_submit_*") == []                                   # 끝난 뒤 삭제
