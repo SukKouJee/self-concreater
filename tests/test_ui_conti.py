@@ -1217,3 +1217,107 @@ def test_cuts_edit_reports_art_stale(client, home, draft_md):
     status, resp = client.json("POST", "/api/conti/cuts", {"path": path, "op": "update", "id": cid,
                                                            "fields": {"line": "대사"}, "hash": resp["hash"]})
     assert resp["art_stale"] == []
+
+
+# ---- 장면 그림 그리기(작업) ------------------------------------------------------------------------
+
+ART_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900"><rect x="1" y="1" width="9" height="9"/></svg>'
+
+
+def _art_answer(payload):
+    return {"scenes": [{"id": s["id"], "svg": ART_SVG} for s in payload["scenes"]]}
+
+
+def test_art_job_draws_and_finishes(client, home, draft_md, fakes):
+    src = saved_conti(home, draft_md)
+    fakes.answer = _art_answer
+    view = _view(client, home, src)
+    status, body = client.json("POST", "/api/conti/art", {"path": rel(home, src), "hash": view["hash"]})
+    assert status == 200 and body["job"]["kind"] == "conti_art", body
+    job = wait_for(client, body["job"]["id"], lambda j: j["status"] == "done")
+    summary = job["summary"]
+    assert summary["path"] == rel(home, src) and summary["drawn"] == 4 and summary["failed"] == 0
+    assert summary["skipped"] == 0 and summary["warnings"] == []
+    assert summary["hash"] == conti.content_hash(src)
+    stored, _ = refstore.read_md(src)
+    assert all(c["art"]["file"] for c in stored["cuts"])
+
+
+def test_art_ids_and_stale_only_are_validated_and_passed(client, home, draft_md, fakes):
+    src = saved_conti(home, draft_md)
+    fakes.answer = _art_answer
+    for bad in ("c1", [1], {"a": 1}):
+        status, resp = client.json("POST", "/api/conti/art", {"path": rel(home, src), "ids": bad})
+        assert status == 400 and resp["error"] == "bad_request"
+    status, resp = client.json("POST", "/api/conti/art", {"path": rel(home, src), "stale_only": "yes"})
+    assert status == 400 and resp["error"] == "bad_request"
+    cut_id = _view(client, home, src)["cuts"][0]["id"]
+    status, body = client.json("POST", "/api/conti/art", {"path": rel(home, src), "ids": [cut_id], "stale_only": True})
+    assert status == 200, body
+    job = wait_for(client, body["job"]["id"], lambda j: j["status"] == "done")
+    assert job["summary"]["drawn"] == 1
+    assert [s["id"] for s in fakes.asks[0][1]["scenes"]] == [cut_id]
+
+
+def test_art_hash_mismatch_is_conti_changed(client, home, draft_md, fakes):
+    src = saved_conti(home, draft_md)
+    status, resp = client.json("POST", "/api/conti/art", {"path": rel(home, src), "hash": "0" * 64})
+    assert status == 400 and resp["error"] == "conti_changed"
+    assert not fakes.asks and client.app.jobs.current("conti_art") is None
+
+
+def test_art_busy_same_conti(client, home, draft_md, fakes):
+    import threading
+    src = saved_conti(home, draft_md)
+    started, gate = threading.Event(), threading.Event()
+
+    def answer(payload):
+        started.set()
+        gate.wait(5)
+        return _art_answer(payload)
+
+    fakes.answer = answer
+    body = client.json("POST", "/api/conti/art", {"path": rel(home, src)})[1]
+    assert started.wait(5)
+    try:
+        status, resp = client.json("POST", "/api/conti/art", {"path": rel(home, src)})
+        assert status == 400 and resp["error"] == "conti_busy"
+    finally:
+        gate.set()
+    wait_for(client, body["job"]["id"], lambda j: j["status"] == "done")
+
+
+def test_art_merge_first(client, home, draft_md, fakes):
+    src = _repeat_conti(home, draft_md)
+    status, resp = client.json("POST", "/api/conti/art", {"path": rel(home, src)})
+    assert status == 400 and resp["error"] == "merge_first"
+    assert not fakes.asks and client.app.jobs.current("conti_art") is None
+
+
+def test_art_claude_missing(client, home, draft_md, fakes, monkeypatch):
+    src = saved_conti(home, draft_md)
+    _no_claude(monkeypatch)
+    status, resp = client.json("POST", "/api/conti/art", {"path": rel(home, src)})
+    assert status == 400 and resp["error"] == "claude_missing"
+    assert client.app.jobs.current("conti_art") is None
+
+
+def test_trash_refused_while_art_job(client, home, draft_md, fakes):
+    import threading
+    src = saved_conti(home, draft_md)
+    started, gate = threading.Event(), threading.Event()
+
+    def answer(payload):
+        started.set()
+        gate.wait(5)
+        return _art_answer(payload)
+
+    fakes.answer = answer
+    body = client.json("POST", "/api/conti/art", {"path": rel(home, src)})[1]
+    assert started.wait(5)
+    try:
+        status, resp = client.json("POST", "/api/conti/trash", {"path": rel(home, src)})
+        assert status == 400 and resp["error"] == "conti_busy" and "장면 그림" in resp["message"] and src.exists()
+    finally:
+        gate.set()
+    wait_for(client, body["job"]["id"], lambda j: j["status"] == "done")

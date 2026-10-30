@@ -19,6 +19,11 @@
   `merge_first`. 미리보기 없이 컷의 `ref_auto`만 저장하고(콘티 내용이 아니라 표시용) 이력 auto를 남긴다. 고르는 사이
   콘티가 바뀌어도 저장하되, 지워졌거나 action·guide·size가 바뀐 장면은 건너뛴다(`skipped`, 경고 `refs_pick_skipped`).
   끝나면 summary `{path, hash, picked, scenes, skipped, warnings}`.
+
+장면 그림 그리기(kind "conti_art"): `POST /api/conti/art {path, ids?, stale_only?, hash?}`. hash가 있고 다르면 `conti_changed`
+(저장 직후 자동으로 다시 그릴 때 최신 hash를 넘긴다). 같은 콘티에 그리는 작업이 돌면 `conti_busy`(다른 콘티끼리는 동시에 가능),
+반복 컷이 남아 있으면 작업 없이 `merge_first`. 묶음마다 저장하므로 멈춰도 그린 그림은 남는다.
+끝나면 summary `{path, hash, drawn, skipped, failed, warnings}`.
 """
 from __future__ import annotations
 
@@ -35,6 +40,7 @@ from scripts.ui.server import Request, route
 KIND = "conti"
 MERGE_KIND = "conti_merge"
 REFS_KIND = "conti_refs"
+ART_KIND = "conti_art"
 CONTI_SUFFIX = conti.CONTI_SUFFIX
 MAX_ALTERNATIVES = 10
 CREATE_TASK = "yt-conti 규칙대로 입력 draft의 콘티 JSON을 만드세요."
@@ -205,7 +211,7 @@ def _save(req: Request) -> dict:
 # ---- 삭제(휴지통) ------------------------------------------------------------------------
 
 # 콘티 파일을 읽어 산출물을 쓰는 작업(촬영 영상 처리·컷 파일은 summary의 path로 콘티를 가리킨다)
-FILE_JOB_KINDS = ("srtfit", "caption_video", "footage", "footage_clips", MERGE_KIND, REFS_KIND)
+FILE_JOB_KINDS = ("srtfit", "caption_video", "footage", "footage_clips", MERGE_KIND, REFS_KIND, ART_KIND)
 
 
 def job_running_on(app: Any, kinds: tuple[str, ...], item_id: str) -> bool:
@@ -220,7 +226,7 @@ def _trash(req: Request) -> dict:
     path = _safe_path(req.json.get("path"), conti_file=True)
     rel = _rel(path)
     if job_running_on(req.app, FILE_JOB_KINDS, rel):
-        raise ScriptError("conti_busy", "이 콘티로 작업하는 중입니다(자막·촬영 영상·컷 파일·합치기·사진 고르기). 끝나거나 멈춘 뒤에 삭제하세요")
+        raise ScriptError("conti_busy", "이 콘티로 작업하는 중입니다(자막·촬영 영상·컷 파일·합치기·사진 고르기·장면 그림). 끝나거나 멈춘 뒤에 삭제하세요")
     return conti.trash(rel)
 
 
@@ -455,6 +461,49 @@ def _refs_pick(req: Request) -> dict:
     items = [new_item(rel, title=path.name, step="claude")]
     target = refs_pick_target(path, fm.get("category"), fm["cuts"])
     job = req.app.jobs.start(REFS_KIND, target, items=items, summary={"path": rel})
+    return {"job": job.snapshot()}
+
+
+# ---- 장면 그림 그리기(작업) ------------------------------------------------------------------
+
+def art_target(path: Path, ids: list[str] | None, stale_only: bool) -> Any:
+    rel = _rel(path)
+
+    def target(job: Job) -> None:
+        job.update(0, state="running", step="claude")
+        result = conti_art.draw(path, ids, stale_only, job)
+        job.update(0, state="done", step="save", ask=None, message=None)
+        job.finish("done", {"path": rel, "hash": conti.content_hash(path), **result})
+
+    return target
+
+
+@route("POST", "/api/conti/art")
+def _art(req: Request) -> dict:
+    body = req.json
+    path = _safe_path(body.get("path"), conti_file=True)
+    ids = body.get("ids")
+    if ids is not None and not (isinstance(ids, list) and all(isinstance(i, str) for i in ids)):
+        raise ScriptError("bad_request", "ids는 장면 id 문자열 목록이어야 합니다")
+    stale_only = body.get("stale_only", False)
+    if not isinstance(stale_only, bool):
+        raise ScriptError("bad_request", "stale_only는 true 또는 false여야 합니다")
+    rel = _rel(path)
+    expected = body.get("hash")
+    if expected is not None:
+        if not isinstance(expected, str) or not expected:
+            raise ScriptError("bad_request", "hash는 문자열이어야 합니다")
+        if conti.content_hash(path) != expected:
+            raise ScriptError("conti_changed", "파일이 밖에서 바뀌었습니다. 다시 불러오세요")
+    if job_running_on(req.app, (ART_KIND,), rel):
+        raise ScriptError("conti_busy", "이 콘티의 장면 그림을 그리는 중입니다. 끝난 뒤에 다시 눌러 주세요")
+    with conti.HISTORY_LOCK:
+        _, fm, _ = conti.ensure_ids_file(conti.read_conti(path))
+    if scene_merge.has_repeats(fm["cuts"]):
+        raise ScriptError("merge_first", conti_art.MERGE_FIRST_MESSAGE)
+    llm.check()
+    items = [new_item(rel, title=path.name, step="claude")]
+    job = req.app.jobs.start(ART_KIND, art_target(path, ids, stale_only), items=items, summary={"path": rel})
     return {"job": job.snapshot()}
 
 
