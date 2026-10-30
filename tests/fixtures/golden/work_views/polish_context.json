@@ -1,0 +1,42 @@
+{
+ "draft": "drafts/2026-10-31-편의점-라면-3단계-맵기-도전.md",
+ "category": "mukbang",
+ "title": "편의점 라면 3단계 맵기 도전!",
+ "hook": {
+  "label": "hook",
+  "start": 0.0,
+  "end": 3.0,
+  "script": "자막: 3단계 다 먹을 수 있을까?"
+ },
+ "sections": [
+  "hook",
+  "body",
+  "cta"
+ ],
+ "profile": null,
+ "refs": {
+  "ref": 10,
+  "hook_type": {
+   "result_first": 8,
+   "question": 1,
+   "situation": 1
+  },
+  "title_pattern": {
+   "number+exclaim": 7,
+   "question+bracket": 3
+  },
+  "examples": [
+   "라면 5봉지 먹방!",
+   "라면 5봉지 먹방!",
+   "라면 5봉지 먹방!",
+   "라면 5봉지 먹방!",
+   "라면 5봉지 먹방!",
+   "라면 5봉지 먹방!",
+   "라면 5봉지 먹방!",
+   "[ASMR] 버블티 사이즈별 비교?"
+  ]
+ },
+ "cps": 4.5,
+ "hash": "6f9bbc98adc14bbbb3adf9b9bb65ea9a1659e2de7adcb8821f478114a3cb7037",
+ "conti_exists": false
+}

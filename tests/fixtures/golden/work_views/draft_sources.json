@@ -1,0 +1,29 @@
+{
+ "stars": [],
+ "cards": [
+  {
+   "id": "M-mukbang-001",
+   "title": "편의점 라면 3단계 맵기",
+   "type": "flow",
+   "type_ko": "흐름",
+   "idea": "단계 아이콘을 띄우고 순한맛부터 먹는다."
+  }
+ ],
+ "archetypes": [
+  {
+   "id": "A1",
+   "name": "결과 먼저 몰아먹기",
+   "size": 7,
+   "skeleton": "hook → body/story → cta",
+   "mean_duration": 60.0
+  },
+  {
+   "id": "A2",
+   "name": "사이즈별 리스트 비교",
+   "size": 3,
+   "skeleton": "hook → intro → body/list_item → outro",
+   "mean_duration": 60.0
+  }
+ ],
+ "has_typify": true
+}

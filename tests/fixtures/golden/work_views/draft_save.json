@@ -1,0 +1,110 @@
+{
+ "outs": [
+  {
+   "status": "saved",
+   "path": "drafts/2026-10-31-편의점-라면-3단계-맵기-도전.md",
+   "pacing": {
+    "avg_cut_sec": null,
+    "by_section": {},
+    "basis": "scenes"
+   },
+   "compare": {
+    "archetype": "A1",
+    "name": "결과 먼저 몰아먹기",
+    "ratio": [
+     {
+      "label": "hook",
+      "draft": 0.05,
+      "archetype": 0.06,
+      "gap": -0.01
+     },
+     {
+      "label": "body",
+      "draft": 0.82,
+      "archetype": 0.82,
+      "gap": 0.0
+     },
+     {
+      "label": "cta",
+      "draft": 0.13,
+      "archetype": 0.13,
+      "gap": 0.0
+     }
+    ],
+    "max_gap": 0.01,
+    "archetype_avg_cut": 1.35
+   }
+  },
+  {
+   "status": "saved",
+   "path": "drafts/2026-10-31-편의점-라면-3단계-맵기-도전-2.md",
+   "pacing": {
+    "avg_cut_sec": null,
+    "by_section": {},
+    "basis": "scenes"
+   },
+   "compare": {
+    "archetype": "A1",
+    "name": "결과 먼저 몰아먹기",
+    "ratio": [
+     {
+      "label": "hook",
+      "draft": 0.05,
+      "archetype": 0.06,
+      "gap": -0.01
+     },
+     {
+      "label": "body",
+      "draft": 0.82,
+      "archetype": 0.82,
+      "gap": 0.0
+     },
+     {
+      "label": "cta",
+      "draft": 0.13,
+      "archetype": 0.13,
+      "gap": 0.0
+     }
+    ],
+    "max_gap": 0.01,
+    "archetype_avg_cut": 1.35
+   }
+  },
+  {
+   "status": "saved",
+   "path": "drafts/2026-10-31-편의점-라면-3단계-맵기-도전-3.md",
+   "pacing": {
+    "avg_cut_sec": null,
+    "by_section": {},
+    "basis": "scenes"
+   },
+   "compare": {
+    "archetype": "A1",
+    "name": "결과 먼저 몰아먹기",
+    "ratio": [
+     {
+      "label": "hook",
+      "draft": 0.05,
+      "archetype": 0.06,
+      "gap": -0.01
+     },
+     {
+      "label": "body",
+      "draft": 0.82,
+      "archetype": 0.82,
+      "gap": 0.0
+     },
+     {
+      "label": "cta",
+      "draft": 0.13,
+      "archetype": 0.13,
+      "gap": 0.0
+     }
+    ],
+    "max_gap": 0.01,
+    "archetype_avg_cut": 1.35
+   }
+  }
+ ],
+ "sha": "6f9bbc98adc14bbbb3adf9b9bb65ea9a1659e2de7adcb8821f478114a3cb7037"
+}

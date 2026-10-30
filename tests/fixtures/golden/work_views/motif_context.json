@@ -1,0 +1,395 @@
+{
+ "category": "mukbang",
+ "topic": null,
+ "ref": 10,
+ "stage": 3,
+ "allowed_types": [
+  "flow",
+  "technique",
+  "angle",
+  "combo"
+ ],
+ "profile": null,
+ "techniques": [],
+ "library_techniques": [],
+ "typify": {
+  "status": "formal",
+  "axes": {
+   "structure": {
+    "verdict": "typable",
+    "max_share": 0.7,
+    "k": 2,
+    "clusters": [
+     {
+      "size": 7,
+      "summary": {
+       "skeleton": "hook → body/story → cta",
+       "mean_ratio": {
+        "hook": 0.06,
+        "body": 0.82,
+        "cta": 0.13
+       },
+       "mean_duration": 60.0
+      }
+     },
+     {
+      "size": 3,
+      "summary": {
+       "skeleton": "hook → intro → body/list_item → outro",
+       "mean_ratio": {
+        "hook": 0.09,
+        "intro": 0.17,
+        "body": 0.58,
+        "outro": 0.16
+       },
+       "mean_duration": 60.0
+      }
+     }
+    ]
+   },
+   "hook": {
+    "verdict": "typable",
+    "max_share": 0.8,
+    "k": 3,
+    "clusters": [
+     {
+      "size": 8,
+      "summary": {
+       "hook_type": {
+        "result_first": 8
+       },
+       "hook_sec": 3.7
+      }
+     },
+     {
+      "size": 1,
+      "summary": {
+       "hook_type": {
+        "question": 1
+       },
+       "hook_sec": 3.6
+      }
+     },
+     {
+      "size": 1,
+      "summary": {
+       "hook_type": {
+        "situation": 1
+       },
+       "hook_sec": 5.2
+      }
+     }
+    ]
+   },
+   "narrative": {
+    "verdict": "untypable",
+    "max_share": 0.2,
+    "k": 5,
+    "clusters": [
+     {
+      "size": 2,
+      "summary": {
+       "narrative_type": {
+        "problem_solution": 2
+       }
+      }
+     },
+     {
+      "size": 2,
+      "summary": {
+       "narrative_type": {
+        "list": 2
+       }
+      }
+     },
+     {
+      "size": 2,
+      "summary": {
+       "narrative_type": {
+        "journey": 2
+       }
+      }
+     },
+     {
+      "size": 2,
+      "summary": {
+       "narrative_type": {
+        "compare": 2
+       }
+      }
+     },
+     {
+      "size": 2,
+      "summary": {
+       "narrative_type": {
+        "reaction": 2
+       }
+      }
+     }
+    ]
+   },
+   "title": {
+    "verdict": "typable",
+    "max_share": 0.7,
+    "k": 2,
+    "clusters": [
+     {
+      "size": 7,
+      "summary": {
+       "pattern": "number+exclaim",
+       "examples": [
+        "라면 5봉지 먹방!",
+        "라면 5봉지 먹방!"
+       ]
+      }
+     },
+     {
+      "size": 3,
+      "summary": {
+       "pattern": "question+bracket",
+       "examples": [
+        "[ASMR] 버블티 사이즈별 비교?",
+        "[ASMR] 버블티 사이즈별 비교?"
+       ]
+      }
+     }
+    ]
+   },
+   "pacing": {
+    "verdict": "typable",
+    "max_share": 0.7,
+    "k": 2,
+    "clusters": [
+     {
+      "size": 7,
+      "summary": {
+       "avg_cut_sec": 1.35,
+       "by_section": {
+        "hook": 0.67,
+        "body": 1.35
+       }
+      }
+     },
+     {
+      "size": 3,
+      "summary": {
+       "avg_cut_sec": 4.1,
+       "by_section": {
+        "hook": 2.05,
+        "body": 4.1
+       }
+      }
+     }
+    ]
+   },
+   "shots": {
+    "verdict": "insufficient",
+    "max_share": null,
+    "k": 0,
+    "clusters": []
+   }
+  },
+  "archetypes": [
+   {
+    "id": "A1",
+    "size": 7,
+    "skeleton": "hook → body/story → cta",
+    "mean_ratio": {
+     "hook": 0.06,
+     "body": 0.82,
+     "cta": 0.13
+    },
+    "mean_duration": 60.0,
+    "hook_type": {
+     "result_first": 6,
+     "question": 1
+    },
+    "narrative_type": {
+     "problem_solution": 2,
+     "list": 2,
+     "journey": 1,
+     "compare": 1,
+     "reaction": 1
+    },
+    "pacing": {
+     "avg_cut_sec": 1.35,
+     "by_section": {
+      "hook": 0.67,
+      "body": 1.35
+     }
+    },
+    "camera": {
+     "static": 0.9,
+     "pan": 0.1,
+     "zoom": 0.0
+    },
+    "shots": null,
+    "representative": {
+     "id": "a03",
+     "title": "라면 5봉지 먹방!"
+    },
+    "members": [
+     "a00",
+     "a01",
+     "a02",
+     "a03",
+     "a04",
+     "a05",
+     "a06"
+    ],
+    "name": "결과 먼저 몰아먹기"
+   },
+   {
+    "id": "A2",
+    "size": 3,
+    "skeleton": "hook → intro → body/list_item → outro",
+    "mean_ratio": {
+     "hook": 0.09,
+     "intro": 0.17,
+     "body": 0.58,
+     "outro": 0.16
+    },
+    "mean_duration": 60.0,
+    "hook_type": {
+     "result_first": 2,
+     "situation": 1
+    },
+    "narrative_type": {
+     "journey": 1,
+     "compare": 1,
+     "reaction": 1
+    },
+    "pacing": {
+     "avg_cut_sec": 4.1,
+     "by_section": {
+      "hook": 2.05,
+      "body": 4.1
+     }
+    },
+    "camera": {
+     "static": 0.9,
+     "pan": 0.1,
+     "zoom": 0.0
+    },
+    "shots": null,
+    "representative": {
+     "id": "b01",
+     "title": "[ASMR] 버블티 사이즈별 비교?"
+    },
+    "members": [
+     "b00",
+     "b01",
+     "b02"
+    ],
+    "name": "사이즈별 리스트 비교"
+   }
+  ],
+  "outliers": [
+   {
+    "id": "a06",
+    "title": "라면 5봉지 먹방!",
+    "axes": [
+     "hook"
+    ]
+   },
+   {
+    "id": "b02",
+    "title": "[ASMR] 버블티 사이즈별 비교?",
+    "axes": [
+     "hook"
+    ]
+   }
+  ]
+ },
+ "videos": [
+  {
+   "id": "a00",
+   "title": "라면 5봉지 먹방!",
+   "summary": "요약",
+   "hook_type": "result_first",
+   "narrative_type": "problem_solution",
+   "skeleton": "hook → body/story → cta"
+  },
+  {
+   "id": "a01",
+   "title": "라면 5봉지 먹방!",
+   "summary": "요약",
+   "hook_type": "result_first",
+   "narrative_type": "list",
+   "skeleton": "hook → body/story → cta"
+  },
+  {
+   "id": "a02",
+   "title": "라면 5봉지 먹방!",
+   "summary": "요약",
+   "hook_type": "result_first",
+   "narrative_type": "journey",
+   "skeleton": "hook → body/story → cta"
+  },
+  {
+   "id": "a03",
+   "title": "라면 5봉지 먹방!",
+   "summary": "요약",
+   "hook_type": "result_first",
+   "narrative_type": "compare",
+   "skeleton": "hook → body/story → cta"
+  },
+  {
+   "id": "a04",
+   "title": "라면 5봉지 먹방!",
+   "summary": "요약",
+   "hook_type": "result_first",
+   "narrative_type": "reaction",
+   "skeleton": "hook → body/story → cta"
+  },
+  {
+   "id": "a05",
+   "title": "라면 5봉지 먹방!",
+   "summary": "요약",
+   "hook_type": "result_first",
+   "narrative_type": "problem_solution",
+   "skeleton": "hook → body/story → cta"
+  },
+  {
+   "id": "a06",
+   "title": "라면 5봉지 먹방!",
+   "summary": "요약",
+   "hook_type": "question",
+   "narrative_type": "list",
+   "skeleton": "hook → body/story → cta"
+  },
+  {
+   "id": "b00",
+   "title": "[ASMR] 버블티 사이즈별 비교?",
+   "summary": "요약",
+   "hook_type": "result_first",
+   "narrative_type": "journey",
+   "skeleton": "hook → intro → body/list_item → outro"
+  },
+  {
+   "id": "b01",
+   "title": "[ASMR] 버블티 사이즈별 비교?",
+   "summary": "요약",
+   "hook_type": "result_first",
+   "narrative_type": "compare",
+   "skeleton": "hook → intro → body/list_item → outro"
+  },
+  {
+   "id": "b02",
+   "title": "[ASMR] 버블티 사이즈별 비교?",
+   "summary": "요약",
+   "hook_type": "situation",
+   "narrative_type": "reaction",
+   "skeleton": "hook → intro → body/list_item → outro"
+  }
+ ],
+ "cards": [
+  {
+   "id": "M-mukbang-001",
+   "starred": false,
+   "type": "흐름",
+   "title": "편의점 라면 3단계 맵기"
+  }
+ ],
+ "next_id": "M-mukbang-002"
+}

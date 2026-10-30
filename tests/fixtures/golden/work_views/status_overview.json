@@ -1,0 +1,184 @@
+{
+ "initialized": true,
+ "work_root": "<ROOT>",
+ "categories": [
+  {
+   "category": "food",
+   "ref": 1,
+   "mine": 0,
+   "stage": 1,
+   "stage_text": "- ref: 1개 / mine: 0개\n- 현재 단계: 1 (0~4개) — 영상별 분석, 기법 카탈로그, 기법 모티브\n- 다음 단계까지: ref 4개 더 (5개부터 예비 관찰)",
+   "steps": [
+    {
+     "key": "collect",
+     "label": "레퍼런스 수집",
+     "done": false,
+     "detail": "ref 1개 / mine 0개",
+     "count": 1
+    },
+    {
+     "key": "typify",
+     "label": "유형화",
+     "done": false,
+     "detail": "아직 없음",
+     "count": null
+    },
+    {
+     "key": "draft",
+     "label": "기획",
+     "done": false,
+     "detail": "기획안 0개",
+     "count": 0
+    },
+    {
+     "key": "conti",
+     "label": "콘티",
+     "done": false,
+     "detail": "콘티 0개",
+     "count": 0
+    },
+    {
+     "key": "diagnose",
+     "label": "진단",
+     "done": false,
+     "detail": "내 영상 0개",
+     "count": 0
+    }
+   ],
+   "current": "collect",
+   "next": {
+    "text": "레퍼런스 4개 더 모으면 유형화를 할 수 있어요",
+    "menu": "add"
+   },
+   "videos": [],
+   "next_action": {
+    "kind": "category",
+    "text": "레퍼런스 4개 더 모으면 유형화를 할 수 있어요",
+    "menu": "add"
+   }
+  },
+  {
+   "category": "travel",
+   "ref": 2,
+   "mine": 1,
+   "stage": 1,
+   "stage_text": "- ref: 2개 / mine: 1개\n- 현재 단계: 1 (0~4개) — 영상별 분석, 기법 카탈로그, 기법 모티브\n- 다음 단계까지: ref 3개 더 (5개부터 예비 관찰)",
+   "steps": [
+    {
+     "key": "collect",
+     "label": "레퍼런스 수집",
+     "done": false,
+     "detail": "ref 2개 / mine 1개",
+     "count": 2
+    },
+    {
+     "key": "typify",
+     "label": "유형화",
+     "done": false,
+     "detail": "아직 없음",
+     "count": null
+    },
+    {
+     "key": "draft",
+     "label": "기획",
+     "done": true,
+     "detail": "기획안 1개",
+     "count": 1
+    },
+    {
+     "key": "conti",
+     "label": "콘티",
+     "done": true,
+     "detail": "콘티 1개",
+     "count": 1
+    },
+    {
+     "key": "diagnose",
+     "label": "진단",
+     "done": true,
+     "detail": "내 영상 1개",
+     "count": 1
+    }
+   ],
+   "current": "collect",
+   "next": {
+    "text": "레퍼런스 3개 더 모으면 유형화를 할 수 있어요",
+    "menu": "add"
+   },
+   "videos": [
+    {
+     "path": "drafts/2026-10-30-제주-한달살기.md",
+     "title": "제주 한 달 살기 비용 공개",
+     "date": "2026-10-30",
+     "target_sec": null,
+     "steps": [
+      {
+       "key": "draft",
+       "done": true,
+       "optional": false
+      },
+      {
+       "key": "polish",
+       "done": false,
+       "optional": true
+      },
+      {
+       "key": "conti",
+       "done": true,
+       "optional": false
+      },
+      {
+       "key": "filmed",
+       "done": false,
+       "optional": false
+      },
+      {
+       "key": "captions",
+       "done": true,
+       "optional": true
+      },
+      {
+       "key": "diagnose",
+       "done": false,
+       "optional": false
+      }
+     ],
+     "next": "filmed",
+     "progress": 2,
+     "filmed_at": null,
+     "hash": "3d475fe171cea7848d4efd5a06654683ae1f31675436676b2d779a7e49127019"
+    }
+   ],
+   "next_action": {
+    "kind": "video",
+    "path": "drafts/2026-10-30-제주-한달살기.md",
+    "step": "filmed",
+    "title": "제주 한 달 살기 비용 공개"
+   }
+  }
+ ],
+ "mission": {
+  "date": "2026-10-31",
+  "exists": false,
+  "status": null,
+  "kind": null,
+  "path": null
+ },
+ "recent": [
+  {
+   "path": "reports/travel-2026-10-30.html",
+   "kind": "report",
+   "mtime": 1700000220.0
+  },
+  {
+   "path": "drafts/2026-10-30-제주-한달살기.md",
+   "kind": "draft",
+   "mtime": 1700000090.0
+  },
+  {
+   "path": "drafts/2026-10-30-제주-한달살기-conti.html",
+   "kind": "conti",
+   "mtime": 1700000030.0
+  }
+ ]
+}
