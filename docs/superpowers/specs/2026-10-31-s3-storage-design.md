@@ -48,7 +48,8 @@
 | `reviews/<YYYY-Www>.md` | Doc | `review_md(week)` | mission, api_report | |
 | `reports/<cat>-<day>.html` | Obj | `report_html(cat, day)` | report, api_report, status | `/files` 대상 |
 | `profile.md` | Doc | `PROFILE` | motif, mission, api_help/motif/mission | |
-| `yt-coach.json` | Obj | `CONFIG` | llm, library | library는 `indent=2 + "\n"` |
+| `yt-coach.json` | Obj | `CONFIG` | llm | |
+| `library.json` | Obj | `LIBRARY_CONFIG` | library | 공용 라이브러리 설정·원장. `indent=2 + "\n"` |
 | `.gitignore`, `.git/`(존재만) | Obj / 폴더 확인 | `GITIGNORE`, `GIT_DIR` | refstore.scaffold | 로컬 전용 의미 |
 | `workspace/raw/<vid>.json` | Shared | `raw(vid)` | fetch, videomd, conti(speech_rate) | CRLF(Windows), indent=2 |
 | `workspace/cuts/<vid>.json` | Shared | `cuts(vid)` | cuts, videomd, conti | |
@@ -103,6 +104,7 @@ class DocStore(Protocol):                # 키는 반드시 ".md"로 끝난다
     def folder_exists(self, prefix: str) -> bool: ...
     def ensure_folder(self, prefix: str) -> None: ...                      # init_category의 빈 videos/, scaffold
     def label(self) -> str: ...                                            # 화면·status의 "work_root" 표시. File = str(root)
+    def local_path(self, key: str) -> ContextManager[Path]: ...            # ctx.local_file이 md 키에 쓴다(claude CLI Read). File = 진짜 경로
 
 class ObjectStore(Protocol):             # 키는 ".md"로 끝나지 않는다
     def get(self, key: str) -> bytes: ...                                  # 없으면 FileNotFoundError
@@ -129,7 +131,18 @@ class Scratch(Protocol):                 # 로컬 실행 보조. 서버판은 �
 
 class Trash(Protocol):
     def move(self, keys: list[str], last: str) -> dict: ...  # {"trash": "workspace/trash/<stamp>", "moved": [...]}
+
+class Backend(Protocol):                 # 서버판(S5)이 Ctx(backend=...)로 주입. 사용자별 저장소를 만든다(S5에서 바뀔 수 있음)
+    def store(self, user_id: str | None) -> DocStore: ...
+    def objects(self, user_id: str | None) -> ObjectStore: ...
+    def shared(self, user_id: str | None) -> SharedCache: ...
+    def scratch(self, user_id: str | None) -> Scratch: ...
+    def trash(self, user_id: str | None) -> Trash: ...
 ```
+
+- 문서 키 판정은 `keys.is_doc(key)` = `key.lower().endswith(".md")`: Windows glob(`*.md`)이 대소문자를 무시하므로 `Idea.MD`도 문서다.
+  `keys.kind`·DocStore/ObjectStore의 키 종류 검사가 모두 이것을 쓴다. 종류가 맞지 않는 키(DocStore에 비 md, ObjectStore에 md,
+  SharedCache에 공유 접두사 밖)는 `ValueError`(프로그램 오류).
 
 텍스트 쓰기 도우미(`refstore.text_bytes(text, newline=None) -> bytes`): `Path.write_text(text, encoding="utf-8", newline=newline)`과
 **같은 바이트**를 만든다(newline None이면 `"\n"` → `os.linesep`). 지금 `write_text`를 쓰는 곳은 모두 이걸 거쳐 `put`한다.
@@ -160,12 +173,13 @@ def here() -> Ctx: ...    # current() or Ctx(root=Path(YT_COACH_HOME or cwd))  �
 ## 4. 파일 구현 (`scripts/filestore.py`)
 
 - `FileDocStore/FileObjectStore/FileSharedCache/FileScratch/FileTrash(root: Path)`. 모두 `root / key`(키 검증 후)로만 경로를 만든다.
-- 키 검증(`keys.check`): 상대, `/` 구분, 빈 조각·`.`·`..`·`\`·`:`·NUL 금지. 위반은 `ScriptError("bad_path")`.
+- 키 검증(`keys.check`): 상대, `/` 구분, 빈 조각·`.`·`..`·`\`·`:`·NUL 금지, 점·공백으로 끝나는 조각과 Windows 예약 이름
+  (CON·PRN·AUX·NUL·COM1~9·LPT1~9, 확장자·대소문자 무관) 금지. 위반은 `ScriptError("bad_path")`. 폴더 키의 끝 `/` 하나는 허용.
 - 읽기: `path.read_bytes()`(지금 `refstore.read_md`와 동일. BOM은 `parse_md`의 `utf-8-sig`가 처리).
 - 쓰기: `refstore.write_atomic(path, data)` 재사용(임시 이름 `<name>.tmp`, Windows 재시도). `conti_history`는 지금 임시 이름
   `.<name>.<pid>.<tid>.tmp`를 쓴다 → 동시 쓰기 안전을 위해 `write_atomic`의 임시 이름에 pid·tid를 붙이도록 함께 바꾼다
   (최종 바이트 무관, `glob("*.md")`·`_VERSION_RE`에 걸리지 않음을 테스트).
-- `expect_version`: 키별 `threading.Lock` 안에서 현재 바이트 sha256 비교 → 다르면 `VersionConflict` → 쓰기.
+- `expect_version`: 키별 잠금(파일 절대 경로 해시로 고르는 고정 64개 줄무늬 `threading.Lock`) 안에서 현재 바이트 sha256 비교 → 다르면 `VersionConflict` → 쓰기.
 - `local_path`/`write_path`: `root / key`를 그대로 yield(`write_path`는 부모 폴더 생성). 복사·임시 파일 없음.
 - `FileTrash.move`: 지금 `common.move_to_trash` 본문을 그대로 옮긴다(키 → `root/key`). 반환 문자열·오류 코드(`bad_path`, `trash_failed`)·
   되돌리기 동작 동일. 폴더 키(`workspace/frames/<vid>`, history 폴더, `-cuts` 폴더)는 끝 `/` 없이 받는다(지금 `moved` 형식).
@@ -190,7 +204,7 @@ def here() -> Ctx: ...    # current() or Ctx(root=Path(YT_COACH_HOME or cwd))  �
 1. `work_root(`, `workspace_dir(`, `category_dir(`, `existing_category_dir(`, `move_to_trash(` 호출 0
    (지금 `count_work_root` 정규식은 `refstore.existing_category_dir(`를 **세지 못한다** → 이름 목록에 추가).
 2. AST 문자열 상수(독스트링 제외) 중 작업 폴더 최상위 이름 `refs`, `drafts`, `mine`, `missions`, `reviews`, `reports`,
-   `workspace`, `profile.md`, `yt-coach.json`으로 시작하거나 `ref_`/`-conti`로 경로를 조립하는 상수 0 (`keys.py`만 허용).
+   `workspace`, `profile.md`, `yt-coach.json`, `library.json`으로 시작하거나 `ref_`/`-conti`로 경로를 조립하는 상수 0 (`keys.py`만 허용).
 3. `ctx.root`·`.here().root` 속성 접근 0.
 `count_work_root`는 출력에 `"allowed"`(허용 목록 모듈)와 `"outside"`(그 밖 합계)를 나누어 내고, 테스트는 `outside == 0`을 단언한다.
 
