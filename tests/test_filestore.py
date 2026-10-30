@@ -1,16 +1,22 @@
 """파일 저장소(S3 §4)와 그 기준이 되는 지금 동작(휴지통·픽스처 바이트)."""
 from __future__ import annotations
 
+import fnmatch
+import hashlib
+import os
 import re
 import shutil
+import threading
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from scripts import common
+from scripts import common, conti_history, keys, refstore
 from scripts.common import ScriptError
+from scripts.filestore import FileDocStore, FileObjectStore, FileScratch, FileSharedCache, FileTrash
+from scripts.stores import Meta, VersionConflict
 from tests.helpers.tree_snapshot import FIXTURE, changes, copy_workfolder, tree
 
 STEM = "2026-10-30-제주-한달살기"
@@ -31,7 +37,11 @@ def _common_move(root: Path, rels: list[str], last: str) -> dict:
     return common.move_to_trash([root / r for r in rels], root / last)
 
 
-MOVERS: dict[str, Mover] = {"common": _common_move}
+def _file_trash_move(root: Path, rels: list[str], last: str) -> dict:
+    return FileTrash(root).move(rels, last)
+
+
+MOVERS: dict[str, Mover] = {"common": _common_move, "filestore": _file_trash_move}
 
 
 @pytest.fixture(params=sorted(MOVERS))
@@ -148,3 +158,329 @@ def test_trash_reports_files_it_could_not_restore(home: Path, monkeypatch, mover
     first = [r for r in rels if r != last][0]
     assert stuck and re.fullmatch(_STAMP + "/" + re.escape(first), stuck.group(1))
     assert (home / stuck.group(1)).is_file()
+
+
+# --- FileTrash ---------------------------------------------------------------------
+
+def test_file_trash_accepts_folder_keys_with_trailing_slash(home: Path) -> None:
+    out = FileTrash(home).move([keys.frames_dir(VID), keys.raw(VID)], keys.raw(VID))
+
+    assert out["moved"] == [f"workspace/frames/{VID}", keys.raw(VID)]
+    assert (home / out["trash"] / "workspace" / "frames" / VID / "0001.jpg").is_file()
+
+
+def test_file_trash_rejects_bad_keys(home: Path) -> None:
+    with pytest.raises(ScriptError) as e:
+        FileTrash(home).move(["C:/x.md"], CONTI)
+    assert e.value.code == "bad_path"
+
+
+# --- FileDocStore --------------------------------------------------------------------
+
+MD_KEYS = [f"refs/ref_travel/videos/{VID}.md", "refs/ref_travel/videos/-C8U1fizcms.md",
+           "refs/ref_travel/videos/aBcD_123xyz.md", f"drafts/{STEM}.md", "profile.md"]
+
+
+@pytest.mark.parametrize("key", MD_KEYS)
+def test_doc_round_trip_keeps_bytes(home: Path, key: str) -> None:
+    store = FileDocStore(home)
+    raw = (home / key).read_bytes()
+
+    doc = store.read(key)
+    version = store.write(key, doc.raw)
+
+    assert doc.raw == raw and (home / key).read_bytes() == raw
+    assert doc.key == key
+    assert doc.version == version == hashlib.sha256(raw).hexdigest()
+    assert doc.label == str(home / key)
+    assert doc.parsed == refstore.read_md(home / key)
+
+
+def test_doc_nl_follows_frontmatter_line_ending(home: Path) -> None:
+    store = FileDocStore(home)
+    assert store.read(f"refs/ref_travel/videos/{VID}.md").nl == "\n"
+    assert store.read("refs/ref_travel/videos/-C8U1fizcms.md").nl == "\r\n"
+    assert store.read("refs/ref_travel/videos/aBcD_123xyz.md").nl == "\n"          # BOM은 떼고 본다
+    (home / "drafts" / "bom-crlf.md").write_bytes(b"\xef\xbb\xbf---\r\na: 1\r\n---\r\nx")
+    assert store.read("drafts/bom-crlf.md").nl == "\r\n"
+
+
+def test_doc_parse_error_message_matches_read_md(home: Path) -> None:
+    (home / "drafts" / "broken.md").write_bytes("제목만 있음\n".encode())
+    with pytest.raises(ScriptError) as want:
+        refstore.read_md(home / "drafts" / "broken.md")
+    doc = FileDocStore(home).read("drafts/broken.md")          # 읽기는 되고, 파싱할 때 같은 오류
+    with pytest.raises(ScriptError) as got:
+        doc.parsed
+    assert (got.value.code, got.value.message) == (want.value.code, want.value.message)
+
+
+def test_missing_keys_raise_file_not_found(home: Path) -> None:
+    docs, objs = FileDocStore(home), FileObjectStore(home)
+    with pytest.raises(FileNotFoundError):
+        docs.read("drafts/none.md")
+    with pytest.raises(FileNotFoundError):
+        docs.stat("drafts/none.md")
+    with pytest.raises(FileNotFoundError):
+        objs.get("drafts/none.html")
+    with pytest.raises(FileNotFoundError):
+        objs.stat("drafts/none.html")
+    assert not docs.exists("drafts/none.md") and not objs.exists("drafts/none.html")
+    assert docs.exists(CONTI) and objs.exists(keys.conti_html(CONTI))
+
+
+def test_stat_matches_os_stat(home: Path) -> None:
+    key = f"refs/ref_travel/videos/{VID}.md"
+    st = (home / key).stat()
+    meta = FileDocStore(home).stat(key)
+    assert meta == Meta(key=key, size=st.st_size, mtime=st.st_mtime, mtime_ns=st.st_mtime_ns)
+    assert FileObjectStore(home).stat(keys.conti_html(CONTI)).mtime == (home / keys.conti_html(CONTI)).stat().st_mtime
+
+
+def test_list_order_matches_sorted_glob(home: Path) -> None:
+    videos = home / "refs" / "ref_travel" / "videos"
+    for name in ["b.md", "A.md", "a2.md", "C.md", "_z.md", "Z9.md", "note.txt"]:
+        (videos / name).write_bytes(b"---\na: 1\n---\n")
+    (videos / "dir.md").mkdir()
+
+    metas = FileDocStore(home).list("refs/ref_travel/videos/")
+
+    want = [p.relative_to(home).as_posix() for p in sorted(videos.glob("*.md")) if p.is_file()]
+    assert [m.key for m in metas] == want
+    assert "refs/ref_travel/videos/dir.md" not in want
+    assert all(m.mtime == (home / m.key).stat().st_mtime for m in metas)
+    objs = FileObjectStore(home).list("drafts/", "*.srt")
+    assert [m.key for m in objs] == [p.relative_to(home).as_posix() for p in sorted((home / "drafts").glob("*.srt"))]
+    assert FileDocStore(home).list("refs/ref_none/videos/") == []
+
+
+def test_folders_and_folder_checks(home: Path) -> None:
+    store = FileDocStore(home)
+    (home / "refs" / "ref_Zeta").mkdir()
+    (home / "refs" / "ref_file.md").write_bytes(b"x")
+
+    got = store.folders("refs/", "ref_*")
+
+    want = [p.relative_to(home).as_posix() + "/" for p in sorted((home / "refs").glob("ref_*")) if p.is_dir()]
+    assert got == want and "refs/ref_food/" in got and "refs/ref_file.md/" not in got
+    assert store.folder_exists("refs/ref_travel/") and not store.folder_exists("refs/ref_none/")
+    store.ensure_folder("refs/ref_new/videos/")
+    assert (home / "refs" / "ref_new" / "videos").is_dir()
+    store.ensure_folder("refs/ref_new/videos/")                # 이미 있어도 된다
+    assert store.label() == str(home)
+    with pytest.raises(ValueError):
+        store.list("refs/ref_travel/videos")                   # 접두사는 '/'로 끝난다
+
+
+def test_write_creates_parent_and_returns_version(home: Path) -> None:
+    store = FileDocStore(home)
+    version = store.write("missions/2026-11-01.md", "---\na: 1\n---\n본문\r\n".encode())
+    assert (home / "missions" / "2026-11-01.md").read_bytes() == "---\na: 1\n---\n본문\r\n".encode()
+    assert version == store.read("missions/2026-11-01.md").version
+    store.write("reviews/new/2026-W45.md", b"x")
+    assert (home / "reviews" / "new" / "2026-W45.md").read_bytes() == b"x"
+
+
+def test_expect_version_conflict_keeps_file(home: Path) -> None:
+    store = FileDocStore(home)
+    key = f"drafts/{STEM}.md"
+    doc = store.read(key)
+    (home / key).write_bytes(doc.raw + b"\nedited elsewhere")
+    edited = (home / key).read_bytes()
+
+    with pytest.raises(VersionConflict):
+        store.write(key, b"mine", expect_version=doc.version)
+    assert (home / key).read_bytes() == edited
+
+    new = store.write(key, b"mine", expect_version=hashlib.sha256(edited).hexdigest())
+    assert (home / key).read_bytes() == b"mine" and new == hashlib.sha256(b"mine").hexdigest()
+    with pytest.raises(VersionConflict):
+        store.write("drafts/none.md", b"x", expect_version=new)
+    assert not (home / "drafts" / "none.md").exists()
+
+
+def test_expect_version_lets_only_one_concurrent_writer_win(home: Path) -> None:
+    key = f"drafts/{STEM}.md"
+    base = FileDocStore(home).read(key).version
+    barrier = threading.Barrier(8, timeout=5)
+    results: list[str] = []
+
+    def work(i: int) -> None:
+        store = FileDocStore(home)                             # 저장소는 호출마다 새로 만든다(ADR-7)
+        barrier.wait()
+        try:
+            store.write(key, f"writer {i}".encode(), expect_version=base)
+            results.append("ok")
+        except VersionConflict:
+            results.append("conflict")
+
+    threads = [threading.Thread(target=work, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert sorted(results) == ["conflict"] * 7 + ["ok"]
+
+
+@pytest.mark.parametrize("key", ["drafts/a.html", "refs/ref_travel/", "yt-coach.json"])
+def test_doc_store_rejects_non_md_keys(home: Path, key: str) -> None:
+    with pytest.raises(ValueError):
+        FileDocStore(home).read(key)
+    with pytest.raises(ValueError):
+        FileDocStore(home).write(key, b"x")
+
+
+@pytest.mark.parametrize("key", ["../outside.md", "/abs.md", "a\\b.md", "C:/x.md"])
+def test_stores_reject_bad_keys(home: Path, key: str) -> None:
+    with pytest.raises(ScriptError) as e:
+        FileDocStore(home).read(key)
+    assert e.value.code == "bad_path"
+    with pytest.raises(ScriptError) as e:
+        FileObjectStore(home).put(key.replace(".md", ".json"), b"x")
+    assert e.value.code == "bad_path"
+
+
+# --- FileObjectStore · FileSharedCache --------------------------------------------------
+
+@pytest.mark.parametrize("key", [keys.conti_html(CONTI), keys.srt(CONTI, "captions"), keys.footage_csv(CONTI),
+                                 "workspace/typify/travel.json", "yt-coach.json", keys.captions_mp4(CONTI)])
+def test_object_round_trip_keeps_bytes(home: Path, key: str) -> None:
+    store = FileObjectStore(home)
+    raw = (home / key).read_bytes()
+    store.put(key, store.get(key))
+    assert store.get(key) == raw == (home / key).read_bytes()
+
+
+def test_object_put_creates_parent_and_delete(home: Path) -> None:
+    store = FileObjectStore(home)
+    key = f"workspace/conti-art/{STEM}-conti/c2-89abcdef-000000.svg"
+    store.put(key, b"<svg/>")
+    assert (home / key).read_bytes() == b"<svg/>" and store.exists(key)
+    store.delete(key)
+    store.delete(key)                                          # 없어도 된다
+    assert not (home / key).exists()
+    assert store.folder_exists(keys.history_dir(CONTI))
+    store.delete_prefix(keys.history_dir(CONTI))
+    store.delete_prefix(keys.history_dir(CONTI))
+    assert not store.folder_exists(keys.history_dir(CONTI))
+    assert store.list(keys.history_dir(CONTI)) == []
+
+
+def test_object_list_returns_files_only(home: Path) -> None:
+    metas = FileObjectStore(home).list(f"workspace/conti-art/{STEM}-conti/")
+    assert [m.key for m in metas] == [f"workspace/conti-art/{STEM}-conti/c1-0123abcd-a1b2c3.svg"]
+    assert FileObjectStore(home).list("drafts/", "*-cuts") == []
+
+
+def test_local_and_write_path_are_real_paths(home: Path) -> None:
+    store = FileObjectStore(home)
+    with store.local_path(keys.conti_html(CONTI)) as p:
+        assert p == home / keys.conti_html(CONTI) and p.is_file()
+    key = "workspace/footage/0123456789ab-10-20/frames/0001.jpg"
+    with store.write_path(key) as p:
+        assert p == home / key and p.parent.is_dir()
+        p.write_bytes(b"jpg")
+    assert store.get(key) == b"jpg"
+    with store.write_path("workspace/footage/0123456789ab-10-20/montage/") as p:
+        assert p == home / "workspace" / "footage" / "0123456789ab-10-20" / "montage" and p.is_dir()
+    assert store.display_path(keys.conti_html(CONTI)) == str(home / keys.conti_html(CONTI))
+    with FileDocStore(home).local_path(CONTI) as p:
+        assert p == home / CONTI
+
+
+def test_object_store_rejects_md_keys(home: Path) -> None:
+    with pytest.raises(ValueError):
+        FileObjectStore(home).get(CONTI)
+    with pytest.raises(ValueError):
+        FileObjectStore(home).put(CONTI, b"x")
+
+
+def test_shared_cache_only_takes_shared_prefixes(home: Path) -> None:
+    shared = FileSharedCache(home)
+    assert shared.get(keys.raw(VID)) == (home / keys.raw(VID)).read_bytes()
+    assert [m.key for m in shared.list(keys.frames_dir(VID), "*.jpg")] == [
+        f"workspace/frames/{VID}/0001.jpg", f"workspace/frames/{VID}/0002.jpg"]
+    for key in ["workspace/typify/travel.json", keys.conti_html(CONTI), "workspace/rawx/a.json"]:
+        with pytest.raises(ValueError):
+            shared.get(key)
+    with pytest.raises(ValueError):
+        shared.list("workspace/")
+
+
+# --- FileScratch -----------------------------------------------------------------------
+
+def test_scratch_paths(home: Path, tmp_path: Path) -> None:
+    s = FileScratch(home)
+    tmp = s.tmp_path("cuts_abc.json")
+    assert tmp == home / "workspace" / "tmp" / "cuts_abc.json" and tmp.parent.is_dir()
+    assert s.local_path("timings.json") == home / "workspace" / "timings.json"
+    assert s.local_path("library") == home / "workspace" / "library"
+    assert s.arg_path("drafts/a.json") == home / "drafts" / "a.json"
+    assert s.arg_path(tmp_path / "x.json") == tmp_path / "x.json"
+    assert s.arg_path(str(tmp_path / "x.json")) == tmp_path / "x.json"
+    assert s.workdir() == home
+    with pytest.raises(ScriptError):
+        s.tmp_path("../x.json")
+    with pytest.raises(ScriptError):
+        s.local_path("..", "x")
+
+
+def test_scratch_key_of(home: Path, tmp_path: Path) -> None:
+    s = FileScratch(home)
+    assert s.key_of(home / CONTI) == CONTI
+    assert s.key_of(CONTI) == CONTI
+    assert s.key_of(str(home / "refs" / "ref_travel" / "videos" / f"{VID}.md")) == keys.video_md("travel", VID)
+    assert s.key_of("drafts/../profile.md") == "profile.md"
+    for bad in [tmp_path / "outside.md", "../outside.md", "drafts/../../x.md", home]:
+        with pytest.raises(ScriptError) as e:
+            s.key_of(bad)
+        assert e.value.code == "bad_path"
+
+
+# --- refstore 도우미 -----------------------------------------------------------------
+
+@pytest.mark.parametrize("newline", [None, "", "\n", "\r\n", "\r"])
+@pytest.mark.parametrize("text", ["", "a\nb\n", "a\r\nb", "한글 🏆\n\n끝", "{\n \"a\": 1\n}"])
+def test_text_bytes_equals_write_text(tmp_path: Path, text: str, newline: str | None) -> None:
+    p = tmp_path / "t.txt"
+    p.write_text(text, encoding="utf-8", newline=newline)
+    assert refstore.text_bytes(text, newline) == p.read_bytes()
+    if newline is None:
+        assert refstore.text_bytes(text) == p.read_bytes()
+
+
+def test_write_atomic_temp_name_has_pid_and_thread(tmp_path: Path, monkeypatch) -> None:
+    seen: list[str] = []
+    real = os.replace
+    monkeypatch.setattr(refstore.os, "replace", lambda a, b: (seen.append(Path(a).name), real(a, b))[1])
+
+    refstore.write_atomic(tmp_path / "0001.json", b"{}")
+    refstore.write_atomic(tmp_path / "a.md", b"x")
+
+    assert seen == [f".0001.json.{os.getpid()}.{threading.get_ident()}.tmp",
+                    f".a.md.{os.getpid()}.{threading.get_ident()}.tmp"]
+    assert not any(fnmatch.fnmatch(n, "*.md") or conti_history._VERSION_RE.match(n) for n in seen)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["0001.json", "a.md"]
+
+
+def test_write_atomic_survives_concurrent_writers(tmp_path: Path) -> None:
+    target = tmp_path / "same.md"
+    barrier = threading.Barrier(6, timeout=5)
+    errors: list[BaseException] = []
+
+    def work(i: int) -> None:
+        barrier.wait()
+        try:
+            for _ in range(20):
+                refstore.write_atomic(target, f"writer {i}".encode() * 100)
+        except OSError as e:                                # 교체 재시도가 끝까지 막힌 경우만 남긴다
+            errors.append(e)
+
+    threads = [threading.Thread(target=work, args=(i,)) for i in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(20)
+    assert [p.name for p in tmp_path.iterdir()] == ["same.md"]
+    assert target.read_bytes() in {f"writer {i}".encode() * 100 for i in range(6)}
+    assert all(isinstance(e, PermissionError) for e in errors)

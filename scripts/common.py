@@ -10,11 +10,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
-import shutil
+import shutil  # noqa: F401 - 테스트가 common.shutil.move를 바꿔 휴지통 실패를 만든다
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -117,7 +115,7 @@ def run(main: Callable[[list[str]], Any], argv: list[str] | None = None) -> None
     args = sys.argv[1:] if argv is None else argv
     try:
         # 이 호출 동안만 지금 작업 폴더를 문맥으로 잡는다(끝나면 되돌려 같은 프로세스의 다음 호출에 남기지 않음)
-        with ctx.use(ctx.current() or ctx.Ctx(root=work_root())):
+        with ctx.use(ctx.here()):
             result = main(args)
     except ScriptError as e:
         emit({"error": e.code, "message": e.message, **e.details})
@@ -154,11 +152,10 @@ def safe_progress(progress: Progress | None) -> Progress | None:
 
 
 def work_root() -> Path:
-    c = ctx.current()
-    if c is not None:
-        return c.root
-    home = os.environ.get("YT_COACH_HOME")
-    return Path(home) if home else Path.cwd()
+    root = ctx.here().root
+    if root is None:
+        raise RuntimeError("작업 폴더(root)가 없는 실행 문맥입니다(서버판은 저장소로만 접근)")
+    return root
 
 
 def workspace_dir(*parts: str) -> Path:
@@ -168,44 +165,11 @@ def workspace_dir(*parts: str) -> Path:
 def move_to_trash(files: list[Path], last: Path) -> dict:
     """files(파일이나 폴더, 작업 폴더 안)를 `workspace/trash/<시각>/` 아래 같은 상대 경로로 옮긴다.
     되돌릴 때는 그 경로 그대로 작업 폴더에 다시 놓으면 된다. last(지울 대상의 md)는 마지막에 옮겨서,
-    중간에 실패하면 옮긴 것을 되돌리고 md가 남아 화면에서 다시 지울 수 있게 한다. -> {"trash", "moved"}"""
-    root = work_root().resolve()
-    try:
-        rels = [Path(f).resolve().relative_to(root) for f in files]
-        last_rel = Path(last).resolve().relative_to(root)
-    except ValueError as e:
-        raise ScriptError("bad_path", f"작업 폴더 밖의 파일은 옮길 수 없습니다: {e}") from e
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    n = 1
-    while True:                                  # 같은 초에 두 번 지워도 서로 덮지 않는다
-        folder = workspace_dir("trash", stamp if n == 1 else f"{stamp}-{n}")
-        try:
-            folder.mkdir(parents=True)
-            break
-        except FileExistsError:
-            n += 1
-    rels.sort(key=lambda r: r == last_rel)
-    done: list[tuple[Path, Path]] = []
-    try:
-        for rel in rels:
-            src, dst = root / rel, folder / rel
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(src), str(dst))
-            done.append((src, dst))
-    except OSError as e:
-        stuck = []
-        for src, dst in reversed(done):
-            try:
-                shutil.move(str(dst), str(src))
-            except OSError:
-                stuck.append(dst.relative_to(work_root()).as_posix())
-        if not stuck:
-            shutil.rmtree(folder, ignore_errors=True)  # 되돌리기가 다 끝났으면 남은 것은 빈 폴더뿐이다
-        more = f" 되돌리지 못한 파일은 휴지통에 남아 있습니다: {', '.join(stuck)}" if stuck else ""
-        raise ScriptError("trash_failed",
-                          f"파일을 옮기지 못했습니다(다른 프로그램이 열어 두었는지 확인하세요): {e}.{more}") from e
-    return {"trash": folder.relative_to(work_root()).as_posix(),
-            "moved": [rel.as_posix() for rel in rels[: len(done)]]}
+    중간에 실패하면 옮긴 것을 되돌리고 md가 남아 화면에서 다시 지울 수 있게 한다. -> {"trash", "moved"}
+
+    본문은 `filestore.move_paths`(= `FileTrash.move`)에 있다. S3 이전이 끝나면 이 함수는 없어진다."""
+    from scripts import filestore
+    return filestore.move_paths(work_root(), files, last)
 
 
 def category_dir(category: str) -> Path:

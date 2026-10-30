@@ -1,0 +1,152 @@
+"""키 함수(S3 §2·ADR-1): 키 = 지금 모듈이 만드는 경로의 `relative_to(root).as_posix()`."""
+from __future__ import annotations
+
+import hashlib
+from pathlib import Path
+
+import pytest
+
+from scripts import (
+    cluster, common, conti, conti_history, fetch, footage, footage_match, footage_out, keys, library, llm, mission,
+    refstore, shots, similarity, videomd,
+)
+from scripts.common import ScriptError
+from tests.helpers.tree_snapshot import copy_workfolder
+
+STEM = "2026-10-30-제주-한달살기"
+VID = "Q8PSsikq8PA"
+DRAFT = f"drafts/{STEM}.md"
+CONTI = f"drafts/{STEM}-conti.md"
+
+
+@pytest.fixture
+def home(monkeypatch, tmp_path: Path) -> Path:
+    root = copy_workfolder(tmp_path / "work")
+    monkeypatch.setenv("YT_COACH_HOME", str(root))
+    return root
+
+
+def rel(path: Path) -> str:
+    return path.relative_to(common.work_root()).as_posix()
+
+
+# --- 모듈 함수와 대조 ------------------------------------------------------------------
+
+def test_category_keys_match_module_paths(home: Path) -> None:
+    assert keys.category("travel") == rel(common.category_dir("travel")) + "/"
+    assert keys.video_md("travel", VID) == rel(videomd.video_md_path(VID, "travel"))
+    assert keys.video_md("travel", "-C8U1fizcms") == rel(videomd.video_md_path("-C8U1fizcms", "travel"))
+    assert keys.index_md("travel") == rel(refstore.existing_category_dir("travel") / "index.md")
+    assert keys.techniques_md("travel") == rel(refstore.existing_category_dir("travel") / "techniques.md")
+    assert keys.REFS == "refs/"
+    assert keys.category_name(keys.category("travel")) == "travel"
+
+
+@pytest.mark.parametrize("bad", ["Travel", "-x", "", "a/b", "../x", "여행"])
+def test_invalid_category_raises_same_error_as_common(bad: str) -> None:
+    with pytest.raises(ScriptError) as want:
+        common.category_dir(bad)
+    with pytest.raises(ScriptError) as got:
+        keys.category(bad)
+    assert (got.value.code, got.value.message) == (want.value.code, want.value.message) == (
+        "invalid_category", want.value.message)
+    with pytest.raises(ScriptError, match="카테고리 이름"):
+        keys.video_md(bad, VID)
+    with pytest.raises(ScriptError, match="카테고리 이름"):
+        keys.typify(bad)
+
+
+def test_conti_keys_match_module_paths(home: Path) -> None:
+    root = common.work_root()
+    draft_path, conti_path = root / DRAFT, root / CONTI
+    assert keys.draft_md(STEM) == DRAFT
+    assert keys.conti_md(DRAFT) == rel(conti.conti_path(draft_path)) == CONTI
+    outputs = [rel(p) for p in conti.conti_outputs(conti_path)]      # 픽스처에 산출물이 모두 있다
+    assert outputs == [CONTI, keys.conti_html(CONTI), keys.srt(CONTI, "captions"), keys.srt(CONTI, "lines"),
+                       keys.captions_mp4(CONTI), keys.remaining_html(CONTI), keys.footage_csv(CONTI)]
+    assert [s for _, s in conti.SRT_TRACKS.values()] == ["captions", "lines"]
+    assert keys.cut_files_dir(CONTI) == rel(footage_out.clips_dir(conti_path)) + "/"
+    assert keys.history_dir(CONTI) == rel(conti_history.history_dir(conti_path)) + "/"
+    assert keys.history_dir(CONTI) == rel(conti_history.history_dir(CONTI)) + "/"     # str 인자도 stem만
+    assert keys.history_version(CONTI, 1) == rel(conti_history.history_dir(conti_path) / f"{1:04d}.json")
+    assert keys.history_version(CONTI, 12345) == rel(conti_history.history_dir(conti_path) / "12345.json")
+    assert keys.footage_match(CONTI) == rel(footage_match.state_path(conti_path))
+    data = b"<svg/>"
+    sha6 = hashlib.sha1(data).hexdigest()[:6]
+    art = Path(*conti.ART_DIR, conti_path.stem, f"c1-0123abcd-{sha6}.svg")              # conti_art.py 그대로
+    assert keys.art(CONTI, "c1", "0123abcd", sha6) == art.as_posix()
+    assert conti.art_of({"file": keys.art(CONTI, "c1", "0123abcd", sha6), "basis": "0123abcd"}) is not None
+
+
+def test_conti_output_keys_reject_non_conti_key() -> None:
+    for fn in (keys.conti_html, keys.captions_mp4, keys.remaining_html, keys.footage_csv, keys.cut_files_dir):
+        with pytest.raises(ValueError):
+            fn(DRAFT)
+    with pytest.raises(ValueError):
+        keys.srt(DRAFT, "captions")
+    with pytest.raises(ValueError):
+        keys.conti_md("drafts/a.html")
+
+
+def test_other_doc_keys_match_module_paths(home: Path) -> None:
+    root = common.work_root()
+    assert keys.mine_md("my-jeju-vlog") == rel(similarity._diag_path("my-jeju-vlog"))
+    assert keys.mission_md("2026-10-30") == rel(mission._mission_path("2026-10-30"))
+    assert keys.review_md("2026-W44") == rel(root / "reviews" / "2026-W44.md")             # mission.py review_save
+    assert keys.report_html("travel", "2026-10-30") == rel(root / "reports" / "travel-2026-10-30.html")  # report.py
+    assert keys.PROFILE == rel(root / "profile.md")                                       # motif·mission
+    assert keys.CONFIG == rel(root / llm.CONFIG_FILE)
+    assert keys.LIBRARY_CONFIG == rel(library.config_path())
+    assert (keys.GITIGNORE, keys.GIT_DIR) == (".gitignore", ".git/")                      # refstore.scaffold
+    assert (keys.DRAFTS, keys.MINE, keys.MISSIONS, keys.REVIEWS, keys.REPORTS) == (
+        "drafts/", "mine/", "missions/", "reviews/", "reports/")
+    for k in (keys.mine_md("x"), keys.mission_md("2026-10-30"), keys.review_md("2026-W44"), keys.report_html("a", "b"),
+              keys.PROFILE, keys.CONFIG, keys.LIBRARY_CONFIG, keys.GITIGNORE, DRAFT):
+        assert (root / k).exists() or k.endswith(("x.md", "a-b.html")), k
+
+
+def test_workspace_keys_match_module_paths(home: Path) -> None:
+    assert keys.raw(VID) == rel(fetch.raw_path(VID))
+    assert keys.cuts(VID) == rel(common.workspace_dir("cuts", f"{VID}.json"))           # cuts.py·videomd.load_cuts
+    assert keys.frames_dir(VID) == rel(common.workspace_dir("frames", VID)) + "/"         # cuts.py
+    assert keys.shots(VID) == rel(shots._labels_file(VID))
+    assert keys.typify("travel") == rel(cluster.result_path("travel"))
+    assert keys.typify("travel", "applied") == rel(cluster.applied_path("travel"))
+    assert keys.typify("travel", "preview") == rel(cluster.preview_path("travel"))
+    with pytest.raises(ValueError):
+        keys.typify("travel", "other")
+    fid = "0123456789ab-10-20"
+    assert footage.valid_fid(fid)
+    assert keys.footage_dir(fid) == rel(footage.footage_dir(fid)) + "/"
+    assert keys.TRASH == "workspace/trash/"
+
+
+# --- check · kind ------------------------------------------------------------------------
+
+@pytest.mark.parametrize("key", [
+    "refs/ref_travel/videos/Q8PSsikq8PA.md", "refs/ref_travel/", f"workspace/frames/{VID}/0001.jpg", "profile.md",
+    ".git/", f"drafts/{STEM}-conti.md", "workspace/footage/0123456789ab-10-20/frames/0001.jpg",
+])
+def test_check_accepts_relative_posix_keys(key: str) -> None:
+    assert keys.check(key) == key
+
+
+@pytest.mark.parametrize("key", [
+    "", "/", "/abs.md", "C:/x.md", "c:x.md", "a\\b.md", "a//b.md", "./a.md", "a/./b.md", "a/../b.md", "../a.md",
+    "a/..", "a\x00b.md", "a//",
+])
+def test_check_rejects_bad_keys(key: str) -> None:
+    with pytest.raises(ScriptError) as e:
+        keys.check(key)
+    assert e.value.code == "bad_path"
+
+
+@pytest.mark.parametrize(("key", "kind"), [
+    ("refs/ref_travel/videos/x.md", "doc"), (DRAFT, "doc"), ("profile.md", "doc"), ("mine/a.md", "doc"),
+    (f"workspace/raw/{VID}.json", "shared"), (f"workspace/cuts/{VID}.json", "shared"),
+    (f"workspace/frames/{VID}/0001.jpg", "shared"), (f"workspace/shots/{VID}.json", "shared"),
+    (f"drafts/{STEM}-conti.html", "object"), ("workspace/typify/travel.json", "object"), ("yt-coach.json", "object"),
+    ("workspace/rawx/a.json", "object"), ("reports/a-b.html", "object"),
+])
+def test_kind_picks_store(key: str, kind: str) -> None:
+    assert keys.kind(key) == kind

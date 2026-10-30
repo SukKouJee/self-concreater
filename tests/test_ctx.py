@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts import common, count_work_root, ctx
+from scripts import common, count_work_root, ctx, filestore, keys
 from scripts.ui.jobs import Job, JobManager
 
 
@@ -145,3 +145,91 @@ def test_count_calls_skips_definitions_and_lookalikes() -> None:
             "    x = work_root() / common.workspace_dir('a')\n"
             "    y = category_dir(c), my_work_root(), self.workspace_dir_x()\n")
     assert count_work_root.count_calls(text) == {"work_root": 1, "workspace_dir": 1, "category_dir": 1, "all": 3}
+
+
+# --- 저장소 속성 · here() (S3 §3.2, ADR-7) ---------------------------------------------
+
+def test_here_returns_current_ctx_or_a_fresh_one_from_env(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("YT_COACH_HOME", str(tmp_path / "one"))
+    first = ctx.here()
+    assert first.root == tmp_path / "one" and ctx.current() is None      # 문맥을 설정하지 않는다
+    monkeypatch.setenv("YT_COACH_HOME", str(tmp_path / "two"))
+    assert ctx.here().root == tmp_path / "two"                           # 캐시하지 않는다: 바뀐 환경 변수를 본다
+    assert ctx.here().store.label() == str(tmp_path / "two")
+    monkeypatch.delenv("YT_COACH_HOME")
+    monkeypatch.chdir(tmp_path)
+    assert ctx.here().root == Path.cwd()
+    c = ctx.Ctx(root=tmp_path / "a")
+    with ctx.use(c):
+        assert ctx.here() is c
+    ctx.set_default(ctx.Ctx(root=tmp_path / "d"))
+    assert ctx.here().root == tmp_path / "d"
+
+
+def test_work_root_is_here_root(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("YT_COACH_HOME", str(tmp_path))
+    assert common.work_root() == ctx.here().root == tmp_path
+
+
+def test_store_properties_are_file_stores_built_once(tmp_path: Path) -> None:
+    c = ctx.Ctx(root=tmp_path)
+    assert isinstance(c.store, filestore.FileDocStore)
+    assert isinstance(c.objects, filestore.FileObjectStore)
+    assert isinstance(c.shared, filestore.FileSharedCache)
+    assert isinstance(c.scratch, filestore.FileScratch)
+    assert isinstance(c.trash, filestore.FileTrash)
+    assert c.store is c.store and c.objects is c.objects and c.trash is c.trash
+    assert c.store.label() == str(tmp_path)
+    assert c == ctx.Ctx(root=tmp_path)                                   # 저장소는 비교·해시에 들어가지 않는다
+    assert hash(c) == hash(ctx.Ctx(root=tmp_path))
+    with pytest.raises(AttributeError):
+        c.root = tmp_path / "x"  # type: ignore[misc]
+
+
+def test_ctx_without_root_or_backend_has_no_stores() -> None:
+    c = ctx.Ctx(user_id="u1")
+    assert c.root is None
+    with pytest.raises(RuntimeError):
+        c.store
+    with ctx.use(c), pytest.raises(RuntimeError):
+        common.work_root()
+
+
+def test_backend_supplies_stores(tmp_path: Path) -> None:
+    calls: list[tuple[str, str | None]] = []
+
+    class Backend:
+        def _make(self, name: str, user_id: str | None) -> object:
+            calls.append((name, user_id))
+            return f"{name}:{user_id}"
+
+        def store(self, user_id: str | None):
+            return self._make("store", user_id)
+
+        def objects(self, user_id: str | None):
+            return self._make("objects", user_id)
+
+        def shared(self, user_id: str | None):
+            return self._make("shared", user_id)
+
+        def scratch(self, user_id: str | None):
+            return self._make("scratch", user_id)
+
+        def trash(self, user_id: str | None):
+            return self._make("trash", user_id)
+
+    c = ctx.Ctx(user_id="u1", backend=Backend())
+    assert (c.store, c.objects, c.shared, c.scratch, c.trash) == (
+        "store:u1", "objects:u1", "shared:u1", "scratch:u1", "trash:u1")
+    assert c.store == "store:u1" and len(calls) == 5
+    assert c == ctx.Ctx(user_id="u1")
+
+
+def test_local_file_picks_store_by_key_kind(tmp_path: Path) -> None:
+    c = ctx.Ctx(root=tmp_path)
+    for key in [keys.video_md("travel", "abc"), keys.raw("abc"), keys.conti_html("drafts/a-conti.md")]:
+        with c.local_file(key) as p:
+            assert p == tmp_path / key
+    with pytest.raises(ValueError):
+        with filestore.FileSharedCache(tmp_path).local_path("drafts/a-conti.html"):
+            pass

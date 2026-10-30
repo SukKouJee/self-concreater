@@ -90,12 +90,23 @@ def escape_headings(text: str) -> str:
     return re.sub(r"^([ \t]*)(#{1,6}(?=\s|$)|\|)", r"\1\\\2", text, flags=re.MULTILINE)
 
 
+def text_bytes(text: str, newline: str | None = None) -> bytes:
+    """`Path.write_text(text, encoding="utf-8", newline=newline)`이 쓰는 것과 같은 바이트.
+    newline이 None이면 "\n"을 os.linesep으로(Windows CRLF), ""·"\n"이면 그대로, 그 밖이면 "\n"을 그 값으로 바꾼다."""
+    nl = os.linesep if newline is None else newline
+    if nl not in ("", "\n"):
+        text = text.replace("\n", nl)
+    return text.encode("utf-8")
+
+
 def write_atomic(path: Path, data: bytes) -> None:
     """같은 폴더의 임시 파일에 쓴 뒤 교체한다. 읽는 쪽이 반쯤 쓴 파일을 보지 않는다.
 
     Windows에서는 다른 프로그램(읽는 쪽, 백신, 동기화)이 잠깐 열고 있으면 교체가 거부되므로 짧게 다시 시도한다.
     """
-    tmp = path.with_name(path.name + ".tmp")
+    # 같은 파일을 두 스레드·프로세스가 동시에 써도 서로의 임시 파일을 덮지 않게 pid·tid를 붙인다.
+    # 점으로 시작하고 .tmp로 끝나서 `*.md`·`NNNN.json` 목록에 걸리지 않는다.
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
         tmp.write_bytes(data)
         for attempt in range(REPLACE_RETRIES):
@@ -111,8 +122,8 @@ def write_atomic(path: Path, data: bytes) -> None:
         raise
 
 
-def parse_md(raw: bytes, path: Path) -> tuple[dict, str]:
-    """이미 읽은 md 바이트 → (프런트매터, 본문). 오류 메시지에 경로를 붙인다."""
+def parse_md(raw: bytes, path: Path | str) -> tuple[dict, str]:
+    """이미 읽은 md 바이트 → (프런트매터, 본문). 오류 메시지에 경로(또는 저장소의 `Doc.label`)를 붙인다."""
     try:
         return split_frontmatter(raw.decode("utf-8-sig"))
     except ScriptError as e:
