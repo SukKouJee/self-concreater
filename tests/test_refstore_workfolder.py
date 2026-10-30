@@ -381,3 +381,26 @@ def test_follows_ctx_when_environment_changes(monkeypatch, tmp_path):
     assert [c["category"] for c in refstore.list_categories()] == ["one"]
     monkeypatch.setenv("YT_COACH_HOME", str(b))
     assert [c["category"] for c in refstore.list_categories()] == ["two"]
+
+
+def test_scaffold_refs_as_file_raises_and_creates_nothing(home):
+    home.mkdir()
+    (home / "refs").write_bytes(b"not a folder")
+    before = snap.tree(home)
+    with pytest.raises(FileExistsError):
+        refstore.scaffold()
+    assert snap.tree(home) == before and sorted(p.name for p in home.iterdir()) == ["refs"]
+
+
+def test_update_frontmatter_by_key_through_in_root_symlink_replaces_the_link(work):
+    """키로 고칠 때 심볼릭 링크는 따라가지 않는다: 링크 자리에 새 파일을 쓰고 대상은 그대로 둔다."""
+    target = work / "mine/my-jeju-vlog.md"
+    link = work / "mine/link.md"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("symlink를 만들 수 없는 환경")
+    before = target.read_bytes()
+    refstore.update_frontmatter("mine/link.md", {"zz": 1})
+    assert target.read_bytes() == before
+    assert not link.is_symlink() and b"zz: 1" in link.read_bytes()
