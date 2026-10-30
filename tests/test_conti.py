@@ -1435,3 +1435,19 @@ def test_pinned_photo_beats_art_in_html(saved, home):
     fm["cuts"][0]["ref_frame"] = pin_frame(home)
     html = conti.render_html(fm)
     assert "장면 그림" not in html and "image/svg+xml" not in html
+
+
+def test_render_html_art_on_white_paper(saved, home):
+    # 그림은 두 테마 모두 흰 종이 위 검은 선: 어두운 스토리보드에서도 흰 바탕을 깐다
+    attach_art(saved, home, 1)
+    html = conti.render_html(conti.validated(conti.read_conti(saved).stored))
+    assert '<img class="ref art"' in html and ".ref.art{background:#fff;object-fit:contain}" in html
+
+
+def test_duplicate_drops_art(saved, home):
+    # 새 id로 생긴 장면은 그림이 없다(결정 3). 원래 장면의 그림은 그대로
+    art = attach_art(saved, home, 2)
+    ids = _ids(saved)
+    out = _edit(saved, {"op": "duplicate", "id": ids[1]})
+    cuts = _cuts(saved)
+    assert cuts[1]["art"] == art and cuts[2]["id"] == out["cut_id"] and "art" not in cuts[2]

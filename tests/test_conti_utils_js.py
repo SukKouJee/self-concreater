@@ -404,3 +404,27 @@ def test_art_redraw_followed_job_not_found_waits_instead_of_looping():
     r = art_js("return run([{type:'stale',ids:['a']},{type:'timer'},{type:'requeue',ids:['a']},{type:'fail_ready'},"
                "{type:'missed'}]);")
     assert r["out"][4] == {"start": None, "delayMs": None}
+
+
+def test_art_redraw_scene_edited_again_while_its_job_runs_is_drawn_again():
+    # the server reports an already-stale scene again (I-001): each report restarts the wait, and a scene edited while
+    # its own job runs stays pending and goes right after that job ends
+    r = art_js("return run([{type:'stale',ids:['a']},{type:'stale',ids:['a']},{type:'timer'},{type:'stale',ids:['a']},"
+               "{type:'timer'},{type:'done'},{type:'timer'}]);")
+    assert [o["delayMs"] for o in r["out"][:2]] == [4000, 4000]
+    assert r["out"][2]["start"] == ["a"]
+    assert r["out"][3] == {"start": None, "delayMs": 4000}
+    assert r["out"][4] == {"start": None, "delayMs": None}          # its job still runs: pending kept
+    assert r["out"][5] == {"start": None, "delayMs": 0}
+    assert r["out"][6]["start"] == ["a"]
+
+
+def test_art_busy_only_for_the_job_scenes_or_pending():
+    st = "{active:true, ids:['a'], pending:['c']}"
+    assert run_js(f"m.artBusy({st}, 'a')") is True
+    assert run_js(f"m.artBusy({st}, 'b')") is False                  # another stale scene: not being drawn
+    assert run_js(f"m.artBusy({st}, 'c')") is True                   # waits to be drawn again
+    # a whole / stale-only job (ids null) may draw any scene
+    assert run_js("m.artBusy({active:true, ids:null, pending:[]}, 'b')") is True
+    assert run_js("m.artBusy({active:false, ids:null, pending:[]}, 'b')") is False
+    assert run_js("m.artBusy({active:false, ids:['a'], pending:['b']}, 'b')") is True

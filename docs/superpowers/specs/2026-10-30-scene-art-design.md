@@ -43,7 +43,7 @@
   - `basis` = 그릴 때의 `action`·`guide`·`size`(+ 콘티 `format`)를 정규화해 만든 sha1 앞 8자.
   - 지금 값으로 다시 계산한 basis와 다르면 **옛 그림(stale)**. 편집 때 필드를 지우지 않는다(계산으로 판단).
   - `schema_version`은 올리지 않는다(선택 필드 추가, 없는 파일은 그대로 읽힌다). 설계서(`yt-coach-plugin-design.md`) 콘티 절에 필드를 적는다.
-- 파일: `workspace/conti-art/<콘티 파일 stem>/<cut id>-<basis>.svg`. 옛 파일은 지우지 않는다(아래 결정 3).
+- 파일: `workspace/conti-art/<콘티 파일 stem>/<cut id>-<basis>-<svg 해시 6자>.svg`. 옛 파일은 지우지 않는다(아래 결정 3).
   `server.py FILE_DIRS`에 `("workspace", "conti-art")`를 더한다. `frame_pool`은 `workspace/frames`만 보므로 섞이지 않는다.
 - 장면 합치기(`scene_merge`): 합쳐진 장면은 첫 컷의 `art`를 이어받는다(사진과 같은 규칙, 기준이 달라지면 stale로 다시 그려진다).
 - 이력(`conti_history` CUT_FIELDS)에 `art`를 더한다. 복원으로 돌아온 `art`의 파일이 없으면 그림 없음으로 본다.

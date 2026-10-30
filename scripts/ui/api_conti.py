@@ -252,7 +252,7 @@ def view_of(path: Path, fm: dict, digest: str) -> dict:
     ratio = conti_art.aspect(fm)
     for c in fm["cuts"]:
         shown = conti_art.display_art(c, ratio)
-        art = {"url": "/files/" + shown["file"], "state": shown["state"]} if shown else None
+        art = {"url": _file_url(shown["file"]), "state": shown["state"]} if shown else None
         cuts.append({**c, "art": art, "label": fm["script"][c["section"]]["label"], "sketch": conti.sketch(c["size"], vertical),
                      "ref": refs.get(c["n"]), "max_chars": int(fm["speech_cps"] * c["sec"])})
     base = path.stem[: -len(CONTI_SUFFIX)]
@@ -319,15 +319,17 @@ def _cut(req: Request) -> dict:
 
 
 def _art_states(fm: dict) -> dict:
-    """편집 전 컷별 그림 상태 {"aspect", id: "fresh"|"stale"|None}. 편집 응답의 art_stale 계산용."""
+    """편집 전 컷별 그림 근거 {"aspect", "bases": {id: basis}}. 편집 응답의 art_stale 계산용."""
     ratio = conti_art.aspect(fm)
-    return {"aspect": ratio, **{c["id"]: conti_art.art_state(c, ratio) for c in fm["cuts"] if c.get("id")}}
+    return {"aspect": ratio, "bases": {c["id"]: conti_art.basis(c, ratio) for c in fm["cuts"] if c.get("id")}}
 
 
 def _art_stale(before: dict, after_cuts: list[dict], ratio: str) -> list[str]:
-    """이번 편집으로 fresh에서 stale이 된 컷 id(이미 stale이던 그림은 다시 알리지 않는다)."""
+    """그림이 있고 이번 편집으로 근거(basis)가 바뀌어 옛 그림인 컷 id. 이미 옛 그림이던 장면도 다시 고치면 넣는다
+    (기다리는 중·그리는 중에 또 고쳐도 다시 그려지게, 설계 결정 4). 같은 값으로 저장하면 넣지 않는다."""
     return [c["id"] for c in after_cuts
-            if c.get("id") and before.get(c["id"]) == "fresh" and conti_art.art_state(c, ratio) == "stale"]
+            if c.get("id") in before["bases"] and conti_art.basis(c, ratio) != before["bases"][c["id"]]
+            and conti_art.art_state(c, ratio) == "stale"]
 
 
 def _hash(body: dict) -> str:

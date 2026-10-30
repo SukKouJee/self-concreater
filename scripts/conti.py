@@ -490,6 +490,7 @@ border-top:4px solid var(--sc)}
 .pics figure{margin:0;flex:1;min-width:0}.pics figcaption{font-size:11px;color:var(--muted);line-height:1.3;margin-top:2px;
 overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sk,.ref{width:100%%;display:block;border-radius:4px}.ref{aspect-ratio:var(--ar);object-fit:cover;border:1px solid var(--axis)}
+.ref.art{background:#fff;object-fit:contain}
 .noref{aspect-ratio:var(--ar);border:1px dashed var(--axis);border-radius:4px;display:flex;align-items:center;
 justify-content:center;font-size:11px;color:var(--muted);text-align:center;padding:4px}
 dl{margin:0;display:grid;grid-template-columns:44px 1fr;gap:2px 8px;font-size:13px}dt{color:var(--muted)}dd{margin:0}
@@ -574,6 +575,7 @@ ART_CAPTION = "장면 그림"
 ART_STALE_CAPTION = "장면 그림 · 설명이 바뀌어 다시 그려야 해요"
 
 
+# 장면 그림은 두 테마 모두 흰 종이 위 검은 선이다(화면 CSS와 같음). 어두운 테마에서도 .ref.art가 흰 바탕을 깐다.
 def art_figure(shown: dict | None) -> str:
     """장면 그림 한 칸(SVG를 base64 data URI <img>로 넣는다). 그릴 그림이 없으면 빈 문자열."""
     if not shown:
@@ -583,7 +585,7 @@ def art_figure(shown: dict | None) -> str:
         return ""
     uri = "data:image/svg+xml;base64," + base64.b64encode(path.read_bytes()).decode("ascii")
     caption = ART_STALE_CAPTION if shown["state"] == "stale" else ART_CAPTION
-    return f'<figure><img class="ref" src="{uri}" alt="{ART_CAPTION}"><figcaption>{caption}</figcaption></figure>'
+    return f'<figure><img class="ref art" src="{uri}" alt="{ART_CAPTION}"><figcaption>{caption}</figcaption></figure>'
 
 
 def _about(sec: float) -> str:
@@ -1017,7 +1019,8 @@ def _apply_op(fm: dict, op: dict) -> tuple[dict, str | None]:
         cut_id = cut["id"]
     elif kind == "duplicate":
         pos = _cut_ref(cuts, op)
-        copy = {**cuts[pos], "id": _unused_id(cuts)}
+        copy = {k: v for k, v in cuts[pos].items() if k != "art"}       # 새 id 장면은 그림이 없다(그림은 id를 따라감)
+        copy["id"] = _unused_id(cuts)
         cuts.insert(pos + 1, copy)
         cut_id = copy["id"]
     elif kind == "update":

@@ -369,6 +369,12 @@ export function artRedrawPlan(state, event) {
   return { state: st, start: null, delayMs: null };
 }
 
+// Is this scene being drawn again ("다시 그리는 중…")? active: a drawing job runs (or starts) on this conti; ids: the
+// scenes it was started with (null: whole / stale-only job, or one followed from another tab); pending: ids waiting.
+export function artBusy({ active, ids, pending }, id) {
+  return (!!active && (ids == null || ids.includes(id))) || (pending || []).includes(id);
+}
+
 // What a scene shows: the photo the user pinned > the drawing > a matched photo > the shot sketch.
 export function sceneVisual(cut) {
   const ref = cut && cut.ref;

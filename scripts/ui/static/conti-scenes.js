@@ -21,7 +21,7 @@ import { h, fill } from "/static/dom.js";
 import { tag } from "/static/ui.js";
 import { sectionLabelName } from "/static/labels.js";
 import {
-  aboutSec, artRedrawPlan, artToolLabel, describeHint, hasRepeats, mergeApplyCuts, mergeView, tagKind,
+  aboutSec, artBusy as artBusyOf, artRedrawPlan, artToolLabel, describeHint, hasRepeats, mergeApplyCuts, mergeView, tagKind,
 } from "/static/conti-utils.js";
 
 const POLL_MS = 1000;
@@ -424,6 +424,7 @@ function adoptArt(job) {
   }
   run.job = null;
   run.seen = null;
+  run.ids = null;
   run.stopping = false;
   const s = job.summary || {};
   if (job.status === "done") {
@@ -457,6 +458,7 @@ async function followArt() {
   if (job && isActive(job) && job.items && job.items[0] && job.items[0].id === mine.opts.path) {
     run.job = job;
     run.seen = artDone(job);
+    run.ids = null;                     // its scenes are not known here: any stale scene may be in it
     run.auto = true;                    // not started here: it ends without the 그렸어요 toast
     poll("art", adoptArt);
     paint();
@@ -480,6 +482,7 @@ async function startArt({ ids = null, staleOnly = false, auto = false } = {}) {
     run.note = "";
   }
   run.starting = true;
+  run.ids = ids;                        // the scenes this job draws (null: whole / stale-only): only they show 다시 그리는 중
   paint();
   artChanged();
   const body = { path: mine.opts.path, hash: mine.opts.getHash() };
@@ -640,6 +643,7 @@ async function resume() {
   if (mineItem(art) && isActive(art) && !isActive(mine.runs.art.job)) {
     mine.runs.art.job = art;
     mine.runs.art.seen = artDone(art);
+    mine.runs.art.ids = null;
     mine.runs.art.auto = true;          // picked up on return: it ends without the 그렸어요 toast
     poll("art", adoptArt);
   }
@@ -648,7 +652,7 @@ async function resume() {
 }
 
 const freshRun = () => ({ job: null, timer: null, errors: 0, starting: false, stopping: false, saving: false, error: "", note: "", warnings: [],
-  focus: false, auto: false, seen: null });
+  focus: false, auto: false, seen: null, ids: null });
 
 export function mountSceneActions(ctx, opts) {
   stopTimers();
@@ -672,9 +676,11 @@ export function mountSceneActions(ctx, opts) {
     refresh: () => { if (alive(mine)) paint(); },
     // A save made these scenes' drawings old (the answer's art_stale): redraw them after the wait.
     artStale: (ids) => { if (alive(mine) && Array.isArray(ids) && ids.length) feedArt({ type: "stale", ids }); },
-    // A drawing job runs on this conti, or the scene waits to be drawn again ("다시 그리는 중…").
-    artBusy: (id) => alive(mine) && (mine.runs.art.starting || isActive(mine.runs.art.job) || mine.art.plan.running
-      || mine.art.plan.pending.includes(id)),
+    // "다시 그리는 중…": the running job draws this scene (any scene for a whole / stale-only job), or it waits.
+    artBusy: (id) => alive(mine) && artBusyOf({
+      active: mine.runs.art.starting || isActive(mine.runs.art.job) || mine.art.plan.running,
+      ids: mine.runs.art.ids, pending: mine.art.plan.pending,
+    }, id),
     // A drawing job runs on this conti or just ended (its saves change the file hash).
     artRunning: () => alive(mine) && (mine.runs.art.starting || isActive(mine.runs.art.job) || Date.now() - mine.art.lastEnd < 5000),
     // 다시 그리기 in the scene panel: these scenes now.

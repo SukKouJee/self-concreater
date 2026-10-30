@@ -168,6 +168,7 @@ def test_sanitize_misc_vectors():
 # --- Task 3: 그리기와 저장 ---------------------------------------------------------------------
 
 import json  # noqa: E402
+import re  # noqa: E402
 
 from scripts import conti_history, llm, refstore  # noqa: E402
 from tests.test_conti import conti_file, draft_md, home, saved  # noqa: E402,F401 - fixtures
@@ -229,7 +230,8 @@ def test_draw_saves_files_and_art(saved, home, fake):
     asp = conti_art.aspect(refstore.read_md(saved)[0])
     for c in cuts[:3]:
         assert c["art"]["basis"] == conti_art.basis(c, asp)
-        assert c["art"]["file"] == f"workspace/conti-art/{saved.stem}/{c['id']}-{c['art']['basis']}.svg"
+        assert re.fullmatch(rf"workspace/conti-art/{re.escape(saved.stem)}/{c['id']}-{c['art']['basis']}-[0-9a-f]{{6}}\.svg",
+                            c["art"]["file"])
         assert (home / c["art"]["file"]).read_bytes().startswith(b"<svg") and b"\r" not in (home / c["art"]["file"]).read_bytes()
     assert "art" not in cuts[3]
     assert [v["kind"] for v in conti_history.list_versions(saved)].count("auto") == 1
@@ -329,6 +331,53 @@ def test_save_art_skips_pinned_and_stale(saved, home):
              cuts[1]["id"]: (GOOD_SVG, "deadbeef")}
     out = conti_art.save_art(saved, drawn)
     assert out["saved"] == [] and sorted(out["skipped"]) == sorted(drawn)
+
+
+def test_save_art_same_basis_redraw_keeps_both_files(saved, home):
+    # 같은 근거로 다시 그려도 새 파일: 이력 복원이 앞 그림을 되살리고, 브라우저가 옛 그림을 캐시로 보이지 않는다
+    cut = cuts_of(saved)[0]
+    b = conti_art.basis(cut, conti_art.aspect(refstore.read_md(saved)[0]))
+    other = GOOD_SVG.replace('width="9"', 'width="8"')
+    conti_art.save_art(saved, {cut["id"]: (GOOD_SVG, b)})
+    first = cuts_of(saved)[0]["art"]["file"]
+    conti_art.save_art(saved, {cut["id"]: (other, b)})
+    second = cuts_of(saved)[0]["art"]["file"]
+    assert first != second and conti.art_of({"file": second, "basis": b}) is not None
+    assert (home / first).read_text(encoding="utf-8") == GOOD_SVG
+    assert 'width="8"' in (home / second).read_text(encoding="utf-8")
+
+
+def test_draw_uses_current_text_for_later_batches(saved, home, monkeypatch):
+    ids = [c["id"] for c in cuts_of(saved)]
+
+    def hook(payload, call_no, data):
+        if call_no == 1:                                # 1번 묶음을 그리는 사이 2번 묶음 장면(3번째)을 고친다
+            conti.update_cut(saved, 3, {"action": "새로 고친 행동"})
+
+    f = FakeDraw(hook)
+    monkeypatch.setattr(llm, "ask_validated", f)
+    out = conti_art.draw(saved, ids, False)
+    assert out["drawn"] == 4 and out["skipped"] == 0
+    second = {s["id"]: s for s in f.calls[1]["payload"]["scenes"]}
+    assert second[ids[2]]["action"] == "새로 고친 행동"
+    cut = cuts_of(saved)[2]
+    assert cut["art"]["basis"] == conti_art.basis(cut, conti_art.aspect(refstore.read_md(saved)[0]))
+
+
+def test_draw_skips_scenes_deleted_or_pinned_before_their_batch(saved, home, monkeypatch):
+    from tests.test_conti import pin_frame
+    ids = [c["id"] for c in cuts_of(saved)]
+    frame = pin_frame(home)
+
+    def hook(payload, call_no, data):
+        if call_no == 1:                                # 1번 묶음을 그리는 사이 4번째 장면에 사진을 고정한다
+            conti.update_cut(saved, 4, {"ref_frame": frame})
+
+    f = FakeDraw(hook)
+    monkeypatch.setattr(llm, "ask_validated", f)
+    out = conti_art.draw(saved, ids, False)
+    assert [s["id"] for s in f.calls[1]["payload"]["scenes"]] == [ids[2]]
+    assert out["drawn"] == 3 and out["skipped"] == 1
 
 
 def test_memo_and_body_untouched(saved, home, fake):

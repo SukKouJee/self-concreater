@@ -220,7 +220,8 @@ def _payload(fm: dict, batch: list[dict]) -> dict:
 def save_art(path: str | Path, drawn: dict[str, tuple[str, str]]) -> dict:
     """그린 그림을 파일로 쓰고 컷의 art를 갱신한다. drawn: 컷 id → (sanitize한 svg, 그릴 때 basis).
     다시 읽은 콘티에서 그 장면이 지금도 같은 basis이고 고정되지 않았을 때만 저장한다(고치는 사이 끝난 옛 그림 방지).
-    옛 svg 파일은 지우지 않는다."""
+    파일 이름은 `<id>-<basis>-<svg 해시 6자>.svg`: 같은 근거로 다시 그려도 앞 그림을 덮어쓰지 않는다(이력 복원이 앞 그림을
+    되살리고, 브라우저가 같은 주소의 옛 그림을 캐시로 보여 주지 않게). 옛 svg 파일은 지우지 않는다."""
     from scripts import conti_history                  # conti_history가 conti를 쓰므로 함수 안에서 불러온다
 
     p = conti._resolve(path)
@@ -240,10 +241,11 @@ def save_art(path: str | Path, drawn: dict[str, tuple[str, str]]) -> dict:
                 skipped.append(cut["id"])
                 new_cuts.append(cut)
                 continue
-            rel = Path(*conti.ART_DIR, p.stem, f"{cut['id']}-{drawn_basis}.svg")
+            data = "\n".join(svg.splitlines()).encode("utf-8")                              # LF로 통일
+            rel = Path(*conti.ART_DIR, p.stem, f"{cut['id']}-{drawn_basis}-{hashlib.sha1(data).hexdigest()[:6]}.svg")
             target = work_root() / rel
             target.parent.mkdir(parents=True, exist_ok=True)
-            refstore.write_atomic(target, "\n".join(svg.splitlines()).encode("utf-8"))      # LF로 통일
+            refstore.write_atomic(target, data)
             new_cuts.append({**cut, "art": {"file": rel.as_posix(), "basis": drawn_basis}})
             saved.append(cut["id"])
         skipped += [i for i in drawn if i not in saved and i not in skipped]        # 지워진 장면
@@ -267,16 +269,25 @@ def draw(path: str | Path, ids: list[str] | None, stale_only: bool, job: Any = N
         _, fm, _ = conti.ensure_ids_file(conti.read_conti(p))      # id가 없던 옛 파일은 먼저 저장해 둔다
     if scene_merge.has_repeats(fm["cuts"]):
         raise ScriptError("merge_first", MERGE_FIRST_MESSAGE)
-    asp = aspect(fm)
-    todo = targets(fm, ids, stale_only)
+    todo = [c["id"] for c in targets(fm, ids, stale_only)]
     batches = [todo[i:i + BATCH] for i in range(0, len(todo), BATCH)]
     drawn_n = skipped = failed = lost = 0
     warnings: list[str] = []
     if job is not None:
         _progress(job, 0, len(todo))
-    for number, batch in enumerate(batches, 1):
+    for number, batch_ids in enumerate(batches, 1):
         if job is not None:
             job.check_cancelled()
+        # 묶음마다 콘티를 다시 읽는다: 작업 중에 고친 장면은 고친 글로 그리고, 지워졌거나 사진을 고정한 장면은 건너뛴다
+        fm = conti.validated(conti.read_conti(p).stored)
+        asp = aspect(fm)
+        now = {c.get("id"): c for c in fm["cuts"]}
+        batch = [now[i] for i in batch_ids if i in now and not now[i].get("ref_frame")]
+        skipped += len(batch_ids) - len(batch)
+        if not batch:
+            if job is not None:
+                _progress(job, min(number * BATCH, len(todo)), len(todo))
+            continue
         bases = {c["id"]: basis(c, asp) for c in batch}
         scene_ids = set(bases)
         got: dict[str, str | None] = {}

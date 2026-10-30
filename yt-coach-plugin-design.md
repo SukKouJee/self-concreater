@@ -341,7 +341,7 @@ AI 출력은 제안. 파일 저장 전 사용자 확인.
 - **컷의 `art`**: 컷의 선택 필드 `{file, basis}`. Claude가 장면의 `action`·`guide`·`size`(+ 화면 비율)로 그린 SVG 일러스트 한 장이다(`skills/yt-conti/draw-scenes.md`, `scripts/conti_art.py`, 호출당 2장면, 한 번에 최대 80장면). `basis`는 그릴 때 입력의 해시이고, 지금 값으로 다시 계산해 다르면 옛 그림(stale)이다. 옛 그림은 새 그림이 올 때까지 계속 보이고, 화면이 고친 지 4초 뒤 옛 그림 장면만 다시 그린다. 반복 컷이 남은 콘티는 `merge_first`로 거절한다. 화면 전용이라 CLI 명령은 없다(`POST /api/conti/art`, job `conti_art`).
 - **표시 순서**: 고정 사진(`ref_frame`) → 장면 그림(`art`) → 내용 맞춤 사진(`ref_auto`) → 구도 맞춤 사진 → 도식. 고정된 장면의 `art`는 지우지 않고 숨긴다. 레퍼런스 사진은 장면 상세에서 계속 본다.
 - **표시용 캐시 예외**: `art`는 `ref_auto`처럼 md 본문과 계산 입력을 바꾸지 않고 언제든 다시 그릴 수 있어, 저장 전 사용자 확인 없이 저장한다(핵심 원칙 "AI 출력은 확인 후 저장"의 예외). 저장하면 이력에 auto 버전으로 남는다.
-- **파일**: `workspace/conti-art/<콘티 이름>/<컷 id>-<basis>.svg`(gitignore). 저장 전 서버가 SVG를 검사해 허용 요소만 남기고, 화면은 `<img>`로만 보여 준다. 옛 파일은 이력 복원을 위해 지우지 않는다.
+- **파일**: `workspace/conti-art/<콘티 이름>/<컷 id>-<basis>-<SVG 해시 6자>.svg`(gitignore). 저장 전 서버가 SVG를 검사해 허용 요소만 남기고, 화면은 `<img>`로만 보여 준다. 옛 파일은 이력 복원을 위해 지우지 않는다.
 - 스키마: `art`는 선택 필드라 `schema_version`은 3 그대로다.
 
 ## 8. 비용·운영

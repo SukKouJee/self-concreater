@@ -1200,10 +1200,42 @@ def test_update_cut_reports_art_stale(client, home, draft_md):
     status, resp = client.json("POST", "/api/conti/cut", {"path": path, "n": 1, "fields": {"action": "다른 행동"},
                                                           "hash": resp["hash"]})
     assert status == 200 and resp["art_stale"] == [cid]
-    # 이미 stale인 그림은 다시 알리지 않는다
+    # 이미 stale인 그림도 근거가 또 바뀌면 다시 알린다(대기 중·그리는 중에 고쳐도 다시 그려지게, 결정 4)
     status, resp = client.json("POST", "/api/conti/cut", {"path": path, "n": 1, "fields": {"action": "또 다른 행동"},
                                                           "hash": resp["hash"]})
+    assert resp["art_stale"] == [cid]
+
+
+def test_update_cut_art_stale_only_when_basis_changes(client, home, draft_md):
+    src, _ = _art_cut(home, draft_md)
+    path = rel(home, src)
+    first = client.json("GET", f"/api/conti?path={q(path)}")[1]
+    cid = first["cuts"][0]["id"]
+    resp = client.json("POST", "/api/conti/cut", {"path": path, "n": 1, "fields": {"action": "다른 행동"},
+                                                  "hash": first["hash"]})[1]
+    assert resp["art_stale"] == [cid]
+    # 같은 값으로 저장 → 근거 그대로 → []
+    resp = client.json("POST", "/api/conti/cut", {"path": path, "n": 1, "fields": {"action": "다른 행동"},
+                                                  "hash": resp["hash"]})[1]
     assert resp["art_stale"] == []
+    # 이미 stale인 장면의 대사만 고침 → []
+    resp = client.json("POST", "/api/conti/cut", {"path": path, "n": 1, "fields": {"line": "대사만"},
+                                                  "hash": resp["hash"]})[1]
+    assert resp["art_stale"] == []
+    # 이미 stale인 장면을 또 고침(/api/conti/cuts) → [id]
+    status, resp = client.json("POST", "/api/conti/cuts", {"path": path, "op": "update", "id": cid,
+                                                           "fields": {"guide": "또 새 가이드"}, "hash": resp["hash"]})
+    assert status == 200 and resp["art_stale"] == [cid]
+
+
+def test_view_art_url_is_quoted(client, home, draft_md):
+    from tests.test_conti import attach_art
+    src = saved_conti(home, draft_md)
+    attach_art(src, home, 1, name="a b#1.svg")
+    cuts = client.json("GET", f"/api/conti?path={q(rel(home, src))}")[1]["cuts"]
+    assert cuts[0]["art"]["url"] == "/files/workspace/conti-art/test/a%20b%231.svg"
+    status, _, raw = client.call("GET", cuts[0]["art"]["url"])          # 인코딩된 주소로 실제 파일이 열린다
+    assert status == 200 and raw.startswith(b"<svg")
 
 
 def test_cuts_edit_reports_art_stale(client, home, draft_md):
