@@ -31,10 +31,12 @@ import hashlib
 import html
 import json
 import math
+import posixpath
 import re
 import secrets
 import statistics
 import threading
+import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
@@ -507,11 +509,26 @@ def _esc(x: Any) -> str:
     return html.escape("" if x is None else str(x))
 
 
+_MIME = {".svg": "image/svg+xml", ".png": "image/png", ".webp": "image/webp"}
+
+
 def _data_uri(rel: str) -> str | None:
     path = work_root() / rel
-    if not path.exists():
+    if not path.is_file():
         return None
-    return "data:image/jpeg;base64," + base64.b64encode(path.read_bytes()).decode("ascii")
+    mime = _MIME.get(path.suffix.lower(), "image/jpeg")
+    return f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode("ascii")
+
+
+def asset_url(rel: str, html_dir_rel: str = "drafts", embed: bool = False) -> str | None:
+    """작업 폴더 상대 경로 rel을 HTML(html_dir_rel 폴더에 놓임) 기준 상대 URL로. 파일이 없으면 None. embed면 data URI."""
+    if embed:
+        return _data_uri(rel)
+    if not (work_root() / rel).is_file():
+        return None
+    start = html_dir_rel.strip("/") or "."
+    rel_path = posixpath.relpath(rel, start)
+    return "/".join(urllib.parse.quote(part, safe="") for part in rel_path.split("/"))
 
 
 REF_TAGS = {"pinned": "참고(고정)", "content": "참고", "composition": "구도만 참고"}
@@ -561,9 +578,9 @@ def ref_caption(ref: dict) -> str:
     return f"{ref_tag(ref['match'])} · {what}" if what else ref_tag(ref["match"])
 
 
-def ref_figure(ref: dict | None) -> str:
-    """장면 사진 한 칸(이미지는 base64로 넣는다). 사진 파일이 없으면 빈 문자열(그때만 도식을 그린다)."""
-    uri = _data_uri(ref["frame"]) if ref else None
+def ref_figure(ref: dict | None, embed: bool = False, html_dir_rel: str = "drafts") -> str:
+    """장면 사진 한 칸(기본은 상대 URL 링크, embed면 base64). 사진 파일이 없으면 빈 문자열(그때만 도식을 그린다)."""
+    uri = asset_url(ref["frame"], html_dir_rel, embed) if ref else None
     if not uri or not ref:
         return ""
     alt = _esc(ref.get("desc") or ("" if ref["match"] == "pinned" else ref.get("title") or ""))
@@ -576,14 +593,11 @@ ART_STALE_CAPTION = "장면 그림 · 설명이 바뀌어 다시 그려야 해�
 
 
 # 장면 그림은 두 테마 모두 흰 종이 위 검은 선이다(화면 CSS와 같음). 어두운 테마에서도 .ref.art가 흰 바탕을 깐다.
-def art_figure(shown: dict | None) -> str:
-    """장면 그림 한 칸(SVG를 base64 data URI <img>로 넣는다). 그릴 그림이 없으면 빈 문자열."""
-    if not shown:
+def art_figure(shown: dict | None, embed: bool = False, html_dir_rel: str = "drafts") -> str:
+    """장면 그림 한 칸(SVG <img>, 기본은 상대 URL 링크, embed면 base64). 그릴 그림이 없으면 빈 문자열."""
+    uri = asset_url(shown["file"], html_dir_rel, embed) if shown else None
+    if not uri or not shown:
         return ""
-    path = work_root() / shown["file"]
-    if not path.is_file():
-        return ""
-    uri = "data:image/svg+xml;base64," + base64.b64encode(path.read_bytes()).decode("ascii")
     caption = ART_STALE_CAPTION if shown["state"] == "stale" else ART_CAPTION
     return f'<figure><img class="ref art" src="{uri}" alt="{ART_CAPTION}"><figcaption>{caption}</figcaption></figure>'
 
@@ -595,7 +609,7 @@ def _about(sec: float) -> str:
     return f"약 {shown:g}초"
 
 
-def render_html(fm: dict) -> str:
+def render_html(fm: dict, *, embed: bool = False, html_dir_rel: str = "drafts") -> str:
     from scripts import conti_art           # conti_art가 conti를 가져오므로 순환을 피해 늦게 가져온다
     script, cuts = fm["script"], fm["cuts"]
     vertical = fm["format"] == "shorts"
@@ -619,7 +633,7 @@ def render_html(fm: dict) -> str:
         label = script[c["section"]]["label"]
         shot = _esc(c["size"]) + (" · " + _esc(c["angle"]) if c.get("angle") else "")
         # 그림 순서: 고정 사진 없이 장면 그림이 있으면 그림 → 장면 사진 → 샷 크기 도식(display_art가 고정 사진을 먼저 가린다)
-        picture = art_figure(conti_art.display_art(c, ratio)) or ref_figure(refs.get(c["n"])) or f'<figure>{sketch(c["size"], vertical)}<figcaption>{shot}</figcaption></figure>'
+        picture = art_figure(conti_art.display_art(c, ratio), embed, html_dir_rel) or ref_figure(refs.get(c["n"]), embed, html_dir_rel) or f'<figure>{sketch(c["size"], vertical)}<figcaption>{shot}</figcaption></figure>'
         rows = [("화면", _esc(c["action"]), ""), ("샷", shot, ""), ("대사", _esc(c["line"]) or "—", "line"),
                 ("자막", _esc(c["caption"]) or "—", ""), ("효과음", _esc(c["sfx"]) or "—", ""), ("가이드", _esc(c["guide"]), "")]
         w = warn.get(c["n"])
@@ -655,10 +669,35 @@ def render_html(fm: dict) -> str:
             f"<body><main>{head}{full}{board}{table}{note}</main></body></html>")
 
 
-def _write_html(md_path: Path, fm: dict) -> Path:
+def html_dir_of(md_path: Path) -> str:
+    """HTML이 놓이는 폴더(콘티 md와 같은 폴더)의 작업 폴더 기준 상대 경로."""
+    return _rel(md_path.parent)
+
+
+def _write_html(md_path: Path, fm: dict, embed: bool = False) -> Path:
     out = md_path.with_suffix(".html")
-    out.write_text(render_html(fm), encoding="utf-8")
+    out.write_text(render_html(fm, embed=embed, html_dir_rel=html_dir_of(md_path)), encoding="utf-8")
     return out
+
+
+def rebuild_html(conti: str | None, embed: bool = False, all_files: bool = False) -> dict:
+    """콘티 HTML만 다시 쓴다(콘티 md는 건드리지 않는다). all_files면 drafts/*-conti.md 전부."""
+    if all_files:
+        paths = sorted((work_root() / "drafts").glob("*-conti.md"))
+    elif conti:
+        paths = [_resolve(conti)]
+    else:
+        raise ScriptError("bad_args", "콘티 파일이나 --all이 필요합니다.")
+    built = []
+    for path in paths:
+        if not path.exists():
+            raise ScriptError("conti_not_found", f"콘티가 없습니다: {_rel(path)}")
+        fm = validated(read_conti(path).stored)
+        out = _write_html(path, fm, embed)
+        built.append({"path": _rel(out), "bytes": out.stat().st_size})
+    if all_files:
+        return {"status": "built", "built": len(built), "bytes": sum(b["bytes"] for b in built), "files": built}
+    return {"status": "built", **built[0]}
 
 
 def save(draft: str | Path, conti_json: Path, force: bool = False, now: float | None = None) -> dict:
@@ -1319,6 +1358,10 @@ def main(argv: list[str]) -> Any:
     s.add_argument("--conti", required=True)
     s.add_argument("--force", action="store_true")
     sub.add_parser("render").add_argument("conti")
+    hb = sub.add_parser("html")
+    hb.add_argument("conti", nargs="?")
+    hb.add_argument("--all", action="store_true")
+    hb.add_argument("--embed", action="store_true")
     u = sub.add_parser("update")
     u.add_argument("conti")
     u.add_argument("--cut", type=int, required=True)
@@ -1378,6 +1421,8 @@ def main(argv: list[str]) -> Any:
         return context(args.draft)
     if args.cmd == "render":
         return render(args.conti)
+    if args.cmd == "html":
+        return rebuild_html(args.conti, args.embed, args.all)
     if args.cmd == "update":
         fields = {f: getattr(args, f) for f in EDITABLE_FIELDS if getattr(args, f) is not None}
         return update_cut(args.conti, args.cut, fields, args.expect_hash)

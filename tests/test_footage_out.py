@@ -135,7 +135,8 @@ def test_remaining_html_has_no_external_resources(scene_setup, home):
     text = (home / footage_out.remaining_html(path)).read_text("utf-8")
     assert not re.search(r"https?://", text)
     assert "<link" not in text and "<script" not in text
-    assert all(src.startswith("data:") for src in re.findall(r'src="([^"]*)"', text))
+    assert not re.findall(r'src="([^"]*)"', text)         # 그림은 img src가 아니라 CSS 배경으로만 싣는다
+    assert "data:image" not in text
     assert 'name="viewport"' in text
 
 
@@ -297,7 +298,7 @@ def test_rotate_keeps_upright_frame():
     assert footage_out._rotate(frame, av) is frame
 
 
-def test_remaining_html_embeds_each_reference_image_once(scene_setup, home, monkeypatch):
+def test_remaining_html_links_each_reference_image_once(scene_setup, home, monkeypatch):
     path, _, _ = scene_setup
     frame = home / "workspace" / "frames" / "same.jpg"
     frame.parent.mkdir(parents=True, exist_ok=True)
@@ -305,7 +306,8 @@ def test_remaining_html_embeds_each_reference_image_once(scene_setup, home, monk
     ref = {"frame": "workspace/frames/same.jpg", "title": "같은 장면", "match": "content"}
     monkeypatch.setattr(conti, "cut_refs", lambda fm: {c["n"]: ref for c in fm["cuts"]})
     text = (home / footage_out.remaining_html(path)).read_text("utf-8")
-    assert text.count("data:image/jpeg;base64,") == 1            # 컷 3개가 같은 사진: 한 번만 싣는다
+    assert text.count("url(../workspace/frames/same.jpg)") == 1  # 컷 3개가 같은 사진: 규칙 하나만
+    assert "data:image" not in text
     assert text.count('class="ref img0"') == 3 and "참고 · 같은 장면" in text
 
 
@@ -436,4 +438,16 @@ def test_remaining_html_pinned_caption_has_no_file_name(scene_setup, home, monke
     ref = {"frame": "workspace/frames/pin.jpg", "title": "pin.jpg", "match": "pinned", "desc": None}
     monkeypatch.setattr(conti, "cut_refs", lambda fm: {c["n"]: ref for c in fm["cuts"]})
     text = (home / footage_out.remaining_html(path)).read_text("utf-8")
-    assert "참고(고정)</figcaption>" in text and "pin.jpg" not in text
+    assert "참고(고정)</figcaption>" in text
+    assert "pin.jpg" not in re.sub(r"url\([^)]*\)", "", text)       # 파일 이름은 이미지 링크에만 있고 글에는 없다
+
+
+def test_remaining_html_embed_option_keeps_one_file(scene_setup, home, monkeypatch):
+    path, _, _ = scene_setup
+    frame = home / "workspace" / "frames" / "same.jpg"
+    frame.parent.mkdir(parents=True, exist_ok=True)
+    frame.write_bytes(b"\xff\xd8same-image-bytes")
+    ref = {"frame": "workspace/frames/same.jpg", "title": "같은 장면", "match": "content"}
+    monkeypatch.setattr(conti, "cut_refs", lambda fm: {c["n"]: ref for c in fm["cuts"]})
+    text = (home / footage_out.remaining_html(path, embed=True)).read_text("utf-8")
+    assert text.count("data:image/jpeg;base64,") == 1 and "../workspace/" not in text

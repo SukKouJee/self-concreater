@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -241,17 +242,18 @@ def test_match_frames_prefers_section_then_spreads(home):
     assert 4 not in got                     # 같은 크기 프레임이 없으면 없음
 
 
-def test_html_embeds_reference_frames(draft_md, home):
+def test_html_links_reference_frames(draft_md, home):
     frames = make_frames(home, "a00")
     shots = home / "workspace" / "shots" / "a00.json"
     shots.parent.mkdir(parents=True, exist_ok=True)
     shots.write_text(json.dumps({"labels": [{"frame": frames[0], "size": "탑뷰", "section": "hook"}]}), encoding="utf-8")
     page = (home / conti.save(draft_md, conti_file(home))["html"]).read_text("utf-8")
-    assert page.count("data:image/jpeg;base64,") == 1      # 탑뷰 컷 #1만 같은 크기 프레임이 있다
+    assert page.count('src="../workspace/frames/a00/scene001.jpg"') == 1      # 탑뷰 컷 #1만 같은 크기 프레임이 있다
+    assert "data:image" not in page
     # 사진이 주 그림: 사진이 있는 컷엔 도식이 없고, 사진이 없는 3컷만 도식을 보인다
     assert page.count('class="sk"') == 3 and "같은 샷의 레퍼런스 프레임 없음" not in page
     first = page.split('<article class="cut"')[1]
-    assert "data:image/jpeg;base64," in first and 'class="sk"' not in first
+    assert "../workspace/frames/a00/scene001.jpg" in first and 'class="sk"' not in first
 
 
 # --- render ------------------------------------------------------------------------
@@ -1264,7 +1266,8 @@ def test_html_scene_header_length_and_pinned_caption(draft_md, home):
     assert "장면 4개" in page and "컷 4개" not in page and "평균" not in page.split("</p>")[0]
     assert "약 2초" in page
     pinned = page.split('<article class="cut"')[2]
-    assert "<figcaption" in pinned and "참고(고정)</figcaption>" in pinned and "pin.jpg" not in pinned
+    assert "<figcaption" in pinned and "참고(고정)</figcaption>" in pinned
+    assert "pin.jpg" not in re.sub(r'src="[^"]*"', "", pinned)      # 파일 이름은 링크에만, 글(캡션·alt)에는 없다
     assert 'class="sk"' not in pinned and 'class="len"' in pinned
     assert page.count('class="len"') == 4
 
@@ -1418,7 +1421,8 @@ def test_render_html_prefers_art_over_photo(saved, home):
     attach_art(saved, home, 1)
     fm = conti.validated(conti.read_conti(saved).stored)
     html = conti.render_html(fm)
-    assert html.count("<figcaption>장면 그림</figcaption>") == 1 and "data:image/svg+xml;base64," in html
+    assert html.count("<figcaption>장면 그림</figcaption>") == 1
+    assert 'src="../workspace/conti-art/test/a.svg"' in html and "data:image" not in html
     assert "설명이 바뀌어" not in html
 
 
@@ -1451,3 +1455,72 @@ def test_duplicate_drops_art(saved, home):
     out = _edit(saved, {"op": "duplicate", "id": ids[1]})
     cuts = _cuts(saved)
     assert cuts[1]["art"] == art and cuts[2]["id"] == out["cut_id"] and "art" not in cuts[2]
+
+
+# --- HTML은 사진·그림을 링크한다(--embed면 한 파일) ---------------------------------------------
+
+def _shots_for(home, vid="a00"):
+    frames = make_frames(home, vid)
+    shots = home / "workspace" / "shots" / f"{vid}.json"
+    shots.parent.mkdir(parents=True, exist_ok=True)
+    shots.write_text(json.dumps({"labels": [{"frame": frames[0], "size": "탑뷰", "section": "hook"}]}), encoding="utf-8")
+    return frames
+
+
+def test_render_html_links_images_by_default(saved, home):
+    _shots_for(home)
+    fm = conti.validated(conti.read_conti(saved).stored)
+    html = conti.render_html(fm)
+    assert re.search(r'<img class="ref" src="\.\./workspace/frames/', html)
+    assert "data:image" not in html
+
+
+def test_render_html_embed_option(saved, home):
+    _shots_for(home)
+    attach_art(saved, home, 2)
+    fm = conti.validated(conti.read_conti(saved).stored)
+    html = conti.render_html(fm, embed=True)
+    assert "data:image/jpeg;base64," in html and "data:image/svg+xml;base64," in html
+    assert "../workspace/" not in html
+
+
+def test_asset_url_quotes_korean_and_special(home):
+    for rel in ("workspace/frames/영상 1/a#b%c.jpg", "workspace/frames/x/plain.jpg"):
+        (home / rel).parent.mkdir(parents=True, exist_ok=True)
+        (home / rel).write_bytes(b"x")
+    assert conti.asset_url("workspace/frames/x/plain.jpg") == "../workspace/frames/x/plain.jpg"
+    url = conti.asset_url("workspace/frames/영상 1/a#b%c.jpg")
+    assert url == "../workspace/frames/%EC%98%81%EC%83%81%201/a%23b%25c.jpg"
+    assert conti.asset_url("workspace/frames/none.jpg") is None
+    assert conti.asset_url("workspace/frames/x/plain.jpg", html_dir_rel=".") == "workspace/frames/x/plain.jpg"
+    assert conti.asset_url("workspace/frames/x/plain.jpg", embed=True).startswith("data:image/jpeg;base64,")
+
+
+def test_html_size_small_for_many_cuts(saved, home):
+    rel = "workspace/frames/big/s.jpg"
+    (home / rel).parent.mkdir(parents=True, exist_ok=True)
+    (home / rel).write_bytes(b"\xff\xd8" + b"0" * 200_000)
+    fm = conti.validated(conti.read_conti(saved).stored)
+    cut = fm["cuts"][0]
+    fm["cuts"] = [{**cut, "n": i, "ref_frame": rel} for i in range(1, 301)]
+    for c in fm["cuts"]:
+        c["section"] = 0
+    assert len(conti.render_html(fm).encode("utf-8")) < 1_000_000
+    assert len(conti.render_html(fm, embed=True).encode("utf-8")) > 10_000_000
+
+
+def test_conti_html_cli_all_rewrites_html_only(saved, home):
+    _shots_for(home)
+    conti.render(saved)
+    html = saved.with_suffix(".html")
+    html.write_text("old " + "x" * 5000, encoding="utf-8")
+    md_before = saved.read_bytes()
+    one = conti.main(["html", saved.relative_to(home).as_posix()])
+    assert one["status"] == "built" and one["bytes"] == html.stat().st_size and "old" not in html.read_text("utf-8")[:10]
+    html.write_text("old", encoding="utf-8")
+    out = conti.main(["html", "--all"])
+    assert out["status"] == "built" and out["built"] == 1 and html.read_text("utf-8").startswith("<!doctype html>")
+    assert saved.read_bytes() == md_before
+    embedded = conti.main(["html", saved.relative_to(home).as_posix(), "--embed"])
+    assert embedded["bytes"] > one["bytes"] and "data:image/jpeg;base64," in html.read_text("utf-8")
+    assert saved.read_bytes() == md_before

@@ -174,12 +174,14 @@ class _Images:
     """참고 사진을 한 번씩만 싣는다: 같은 사진은 CSS 클래스(배경 이미지) 하나를 함께 쓴다
     (긴 콘티는 같은 레퍼런스 프레임을 여러 컷이 써서, 컷마다 base64를 넣으면 수십 MB가 된다)."""
 
-    def __init__(self) -> None:
+    def __init__(self, embed: bool = False, html_dir_rel: str = "drafts") -> None:
+        self.embed = embed
+        self.html_dir_rel = html_dir_rel
         self.classes: dict[str, str] = {}
         self.rules: list[str] = []
 
     def figure(self, ref: dict | None) -> str:
-        uri = conti._data_uri(ref["frame"]) if ref else None
+        uri = conti.asset_url(ref["frame"], self.html_dir_rel, self.embed) if ref else None
         if not uri or not ref:
             return NO_REF
         cls = self.classes.get(ref["frame"])
@@ -192,12 +194,13 @@ class _Images:
                 f'<figcaption>{caption}</figcaption></figure>')
 
 
-def render_remaining(fm: dict, cuts: list[dict], present: dict[str, Path], now: float | None = None) -> str:
+def render_remaining(fm: dict, cuts: list[dict], present: dict[str, Path], now: float | None = None,
+                     embed: bool = False, html_dir_rel: str = "drafts") -> str:
     script = fm["script"]
     vertical = fm["format"] == "shorts"
     refs = conti.cut_refs(fm)
     names = _Names(present)
-    images = _Images()
+    images = _Images(embed, html_dir_rel)
     filmed = sum(c["match"]["kind"] in FILMED for c in cuts)
     made = datetime.fromtimestamp(now if now is not None else time.time()).strftime("%Y-%m-%d %H:%M")
     head = (f'<div class="top"><h1>{conti._esc(fm["title"])}</h1>'
@@ -238,12 +241,12 @@ def _write_text(path: Path, text: str, encoding: str = "utf-8") -> None:
     os.replace(tmp, path)
 
 
-def remaining_html(conti_file: str | Path, now: float | None = None) -> str:
+def remaining_html(conti_file: str | Path, now: float | None = None, embed: bool = False) -> str:
     """drafts/<기획안>-remaining.html을 쓰고 작업 폴더 기준 상대 경로를 돌려준다."""
     path = _conti_path(conti_file)
     fm, cuts, present = _load(path)
     out = path.with_name(f"{_base(path)}-remaining.html")
-    _write_text(out, render_remaining(fm, cuts, present, now))
+    _write_text(out, render_remaining(fm, cuts, present, now, embed, conti.html_dir_of(out)))
     return _rel(out)
 
 
@@ -602,10 +605,13 @@ def main(argv: list[str]) -> Any:
     parser = ArgParser(prog="python -m scripts.footage_out")
     sub = parser.add_subparsers(dest="cmd", required=True)
     for name in ("remaining", "csv", "clips"):
-        sub.add_parser(name).add_argument("conti")
+        p = sub.add_parser(name)
+        p.add_argument("conti")
+        if name == "remaining":
+            p.add_argument("--embed", action="store_true")
     args = parser.parse_args(argv)
     if args.cmd == "remaining":
-        return {"path": remaining_html(args.conti)}
+        return {"path": remaining_html(args.conti, embed=args.embed)}
     if args.cmd == "csv":
         return {"path": csv_export(args.conti)}
     return export_clips(args.conti)
