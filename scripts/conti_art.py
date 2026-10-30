@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import hashlib
 import re
+import threading
 import xml.etree.ElementTree as ET
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 
@@ -33,7 +35,8 @@ ALLOWED_FUNCS = frozenset({
 _DOCTYPE_RE = re.compile(r"<!\s*(DOCTYPE|ENTITY)", re.IGNORECASE)
 
 BATCH = 2                                       # Claude 한 번에 그리는 장면 수(출력 한도 때문)
-MAX_SCENES = 80                                 # 한 번에 그리는 최대 장면 수
+MAX_SCENES = 300                                # 한 번에 그리는 최대 장면 수(안전 상한: 누르면 남은 장면을 끝까지)
+CONCURRENCY = 3                                 # 동시에 Claude에 보내는 묶음 수
 MAX_TOKENS = 16000
 DRAW_TASK = "draw-scenes 규칙대로 장면마다 SVG 그림 하나를 그린 JSON을 만드세요."
 MERGE_FIRST_MESSAGE = "반복 컷을 먼저 장면으로 합쳐 주세요"
@@ -165,7 +168,7 @@ def rules() -> list[Path]:
 
 def targets(fm: dict, ids: list[str] | None, stale_only: bool) -> list[dict]:
     """그릴 장면. 고정한 사진(ref_frame)이 있는 장면은 뺀다. ids가 있으면 그 장면만, stale_only면 그림이 없거나
-    옛 그림인 장면만. 앞에서부터 MAX_SCENES개."""
+    옛 그림인 장면만. 앞에서부터 MAX_SCENES개(안전 상한일 뿐, 보통 콘티는 한 번에 끝까지 그린다)."""
     asp = aspect(fm)
     wanted = set(ids) if ids is not None else None
     out: list[dict] = []
@@ -257,37 +260,41 @@ def save_art(path: str | Path, drawn: dict[str, tuple[str, str]]) -> dict:
     return {"saved": saved, "skipped": skipped}
 
 
+class _Tally:
+    """여러 스레드에서 끝나는 묶음의 결과를 모은다. 진행 알림도 잠금 안에서 보내 done이 줄지 않게 한다."""
+
+    def __init__(self, job: Any, total: int) -> None:
+        self.lock = threading.Lock()
+        self.job = job
+        self.total = total
+        self.done = self.drawn = self.skipped = self.failed = self.lost = 0
+        self.warnings: list[str] = []
+        if job is not None:
+            _progress(job, 0, total)
+
+    def batch_done(self, size: int) -> None:
+        with self.lock:
+            self.done = min(self.done + size, self.total)
+            if self.job is not None:
+                _progress(self.job, self.done, self.total)
+
+
 def _progress(job: Any, done: int, total: int) -> None:
     job.update(0, message=f"{done} / {total}장면", done=done, total=total)
 
 
-def draw(path: str | Path, ids: list[str] | None, stale_only: bool, job: Any = None) -> dict:
-    """장면 그림을 2장면씩 그려 묶음마다 저장한다. 묶음이 실패하면 경고로 남기고 다음 묶음을 계속한다.
-    반환 {"drawn", "skipped", "failed", "warnings"}. job: update(index, **fields)·check_cancelled()."""
-    p = conti._resolve(path)
-    with conti.HISTORY_LOCK:
-        _, fm, _ = conti.ensure_ids_file(conti.read_conti(p))      # id가 없던 옛 파일은 먼저 저장해 둔다
-    if scene_merge.has_repeats(fm["cuts"]):
-        raise ScriptError("merge_first", MERGE_FIRST_MESSAGE)
-    todo = [c["id"] for c in targets(fm, ids, stale_only)]
-    batches = [todo[i:i + BATCH] for i in range(0, len(todo), BATCH)]
-    drawn_n = skipped = failed = lost = 0
-    warnings: list[str] = []
-    if job is not None:
-        _progress(job, 0, len(todo))
-    for number, batch_ids in enumerate(batches, 1):
-        if job is not None:
-            job.check_cancelled()
+def _draw_batch(p: Path, number: int, batch_ids: list[str], tally: _Tally) -> None:
+    """묶음 하나: 콘티를 다시 읽어 지금 값으로 그리고 저장한다. Claude 실패는 경고로 남긴다."""
+    try:
         # 묶음마다 콘티를 다시 읽는다: 작업 중에 고친 장면은 고친 글로 그리고, 지워졌거나 사진을 고정한 장면은 건너뛴다
         fm = conti.validated(conti.read_conti(p).stored)
         asp = aspect(fm)
         now = {c.get("id"): c for c in fm["cuts"]}
         batch = [now[i] for i in batch_ids if i in now and not now[i].get("ref_frame")]
-        skipped += len(batch_ids) - len(batch)
+        with tally.lock:
+            tally.skipped += len(batch_ids) - len(batch)
         if not batch:
-            if job is not None:
-                _progress(job, min(number * BATCH, len(todo)), len(todo))
-            continue
+            return
         bases = {c["id"]: basis(c, asp) for c in batch}
         scene_ids = set(bases)
         got: dict[str, str | None] = {}
@@ -296,28 +303,87 @@ def draw(path: str | Path, ids: list[str] | None, stale_only: bool, job: Any = N
             _, got = llm.ask_validated(rules(), _payload(fm, batch), DRAW_TASK,
                                        lambda d, s=scene_ids: _validated(d, s), max_tokens=MAX_TOKENS)
         except ScriptError as e:
-            warnings.append(f"{number}번째 묶음({len(batch)}장면)을 그리지 못했어요: {e.message}")
-            failed += len(batch)
+            with tally.lock:
+                tally.warnings.append(f"{number}번째 묶음({len(batch)}장면)을 그리지 못했어요: {e.message}")
+                tally.failed += len(batch)
             asked = False
         results: dict[str, tuple[str, str]] = {}
+        lost = 0
         for cut_id in bases:
             svg = got.get(cut_id)
             if svg is None:
                 if asked:                                  # 묶음 호출은 됐는데 이 장면만 못 그림(null·빠짐)
-                    failed += 1
                     lost += 1
                 continue
             try:
                 results[cut_id] = (sanitize_svg(svg, asp), bases[cut_id])
             except ScriptError:
-                failed += 1
                 lost += 1
+        with tally.lock:
+            tally.failed += lost
+            tally.lost += lost
         if results:
-            out = save_art(p, results)
-            drawn_n += len(out["saved"])
-            skipped += len(out["skipped"])
-        if job is not None:
-            _progress(job, min(number * BATCH, len(todo)), len(todo))
-    if lost:
-        warnings.append(f"{lost}장면은 그림을 받지 못했어요")
-    return {"drawn": drawn_n, "skipped": skipped, "failed": failed, "warnings": warnings}
+            out = save_art(p, results)                     # 저장은 HISTORY_LOCK이 차례로 세운다
+            with tally.lock:
+                tally.drawn += len(out["saved"])
+                tally.skipped += len(out["skipped"])
+    finally:
+        tally.batch_done(len(batch_ids))
+
+
+def counts(fm: dict) -> dict[str, int]:
+    """고정 안 된 장면의 그림 상태 수 {"total", "missing"(없음), "stale"(옛 그림), "fresh"(최신)}."""
+    asp = aspect(fm)
+    out = {"total": 0, "missing": 0, "stale": 0, "fresh": 0}
+    for cut in fm["cuts"]:
+        if cut.get("ref_frame"):
+            continue
+        out["total"] += 1
+        out[art_state(cut, asp) or "missing"] += 1
+    return out
+
+
+def draw(path: str | Path, ids: list[str] | None, stale_only: bool, job: Any = None) -> dict:
+    """장면 그림을 2장면씩 묶어 CONCURRENCY개까지 동시에 Claude에 보내고 묶음마다 저장한다. 묶음이 실패하면 경고로
+    남기고 다른 묶음을 계속한다. 새 묶음을 보내기 전에 job.check_cancelled(): 취소되면 새 묶음은 보내지 않고 이미 보낸
+    묶음은 끝나 저장된 뒤 JobCancelled가 그대로 올라간다. 묶음 안에서 뜻밖의 오류가 나도 다른 묶음은 끝까지 가고, 새 묶음은
+    보내지 않은 채 그 오류를 올린다.
+    반환 {"drawn", "skipped", "failed", "warnings", "remaining"}(remaining: 끝난 뒤 고정 안 된 장면 중 그림이 없거나 옛
+    그림인 수). job: update(index, **fields)·check_cancelled()."""
+    p = conti._resolve(path)
+    with conti.HISTORY_LOCK:
+        _, fm, _ = conti.ensure_ids_file(conti.read_conti(p))      # id가 없던 옛 파일은 먼저 저장해 둔다
+    if scene_merge.has_repeats(fm["cuts"]):
+        raise ScriptError("merge_first", MERGE_FIRST_MESSAGE)
+    todo = [c["id"] for c in targets(fm, ids, stale_only)]
+    batches = list(enumerate((todo[i:i + BATCH] for i in range(0, len(todo), BATCH)), 1))
+    tally = _Tally(job, len(todo))
+    pending: set[Future[None]] = set()
+    error: BaseException | None = None
+    pool = ThreadPoolExecutor(max_workers=CONCURRENCY, thread_name_prefix="conti-art")
+    try:
+        queue = iter(batches)
+        while True:
+            while error is None and len(pending) < CONCURRENCY:
+                nxt = next(queue, None)
+                if nxt is None:
+                    break
+                if job is not None:
+                    job.check_cancelled()
+                pending.add(pool.submit(_draw_batch, p, nxt[0], nxt[1], tally))
+            if not pending:
+                break
+            finished, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for fut in finished:
+                exc = fut.exception()
+                if exc is not None and error is None:
+                    error = exc                            # 다른 묶음은 끝까지 두고 새 묶음은 보내지 않는다
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)      # 취소돼도 이미 보낸 묶음은 끝나 저장된다
+    if error is not None:
+        raise error
+    if tally.lost:
+        tally.warnings.append(f"{tally.lost}장면은 그림을 받지 못했어요")
+    left = counts(conti.validated(conti.read_conti(p).stored))
+    return {"drawn": tally.drawn, "skipped": tally.skipped, "failed": tally.failed, "warnings": tally.warnings,
+            "remaining": left["missing"] + left["stale"]}

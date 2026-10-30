@@ -169,6 +169,7 @@ def test_sanitize_misc_vectors():
 
 import json  # noqa: E402
 import re  # noqa: E402
+import threading  # noqa: E402
 
 from scripts import conti_history, llm, refstore  # noqa: E402
 from tests.test_conti import conti_file, draft_md, home, saved  # noqa: E402,F401 - fixtures
@@ -182,12 +183,15 @@ class FakeDraw:
     def __init__(self, hook=None):
         self.calls = []
         self.hook = hook
+        self.lock = threading.Lock()                    # 묶음이 여러 스레드에서 동시에 불린다
 
     def __call__(self, rules, payload, task, validate, **kw):
-        self.calls.append({"rules": rules, "payload": payload, "task": task, "kw": kw})
+        with self.lock:
+            self.calls.append({"rules": rules, "payload": payload, "task": task, "kw": kw})
+            call_no = len(self.calls)
         data = {"scenes": [{"id": s["id"], "svg": GOOD_SVG} for s in payload["scenes"]]}
         if self.hook:
-            data = self.hook(payload, len(self.calls), data) or data
+            data = self.hook(payload, call_no, data) or data
         return data, validate(data)
 
 
@@ -202,13 +206,28 @@ def cuts_of(path):
     return conti.validated(refstore.read_md(path)[0])["cuts"]
 
 
+def grow(path, extra):
+    """콘티 끝 섹션에 장면 extra개를 더한다(2초씩, 섹션 길이도 늘림). 장면 id 목록을 돌려준다."""
+    fm = refstore.read_md(path)[0]
+    base = fm["cuts"][-1]
+    added = [{**base, "id": f"new{i}", "action": f"추가 장면 {i}", "guide": f"가이드 {i}"} for i in range(extra)]
+    fm["script"][-1]["end"] += 2 * extra
+    refstore.update_frontmatter(path, {"cuts": fm["cuts"] + added, "script": fm["script"]})
+    conti.ensure_ids_file(conti.read_conti(path))       # 새 장면 id를 파일에 남긴다(읽을 때마다 바뀌지 않게)
+    return [c["id"] for c in cuts_of(path)]
+
+
+def scene_ids(payload):
+    return [s["id"] for s in payload["scenes"]]
+
+
 def pin(cuts, i):
     return [{**c, "ref_frame": "workspace/frames/p.jpg"} if k == i else c for k, c in enumerate(cuts)]
 
 
 def test_targets_skip_pinned_and_cap(home):
-    fm = {"cuts": [{"id": f"c{i}", "action": f"a{i}", "guide": "g", "size": "미디엄"} for i in range(81)]}
-    assert len(conti_art.targets(fm, None, False)) == conti_art.MAX_SCENES == 80
+    fm = {"cuts": [{"id": f"c{i}", "action": f"a{i}", "guide": "g", "size": "미디엄"} for i in range(301)]}
+    assert len(conti_art.targets(fm, None, False)) == conti_art.MAX_SCENES == 300
     fm["cuts"][0]["ref_frame"] = "x.jpg"
     assert [c["id"] for c in conti_art.targets(fm, None, False)][:2] == ["c1", "c2"]
     assert [c["id"] for c in conti_art.targets(fm, ["c2", "c0"], False)] == ["c2"]
@@ -224,7 +243,7 @@ def test_targets_skip_pinned_and_cap(home):
 def test_draw_saves_files_and_art(saved, home, fake):
     ids = [c["id"] for c in cuts_of(saved)][:3]
     out = conti_art.draw(saved, ids, False)
-    assert out == {"drawn": 3, "skipped": 0, "failed": 0, "warnings": []}
+    assert out == {"drawn": 3, "skipped": 0, "failed": 0, "warnings": [], "remaining": 1}
     assert len(fake.calls) == 2 and fake.calls[0]["kw"]["max_tokens"] == 16000
     cuts = cuts_of(saved)
     asp = conti_art.aspect(refstore.read_md(saved)[0])
@@ -258,13 +277,15 @@ def test_draw_skips_scene_edited_during_draw(saved, home, monkeypatch):
 
 
 def test_draw_batch_failure_keeps_earlier(saved, monkeypatch):
+    ids = [c["id"] for c in cuts_of(saved)]
+
     def hook(payload, call_no, data):
-        if call_no == 2:
+        if ids[2] in scene_ids(payload):                # 두 번째 묶음만 실패
             raise ScriptError("llm_failed", "boom")
 
     monkeypatch.setattr(llm, "ask_validated", FakeDraw(hook))
     out = conti_art.draw(saved, None, False)
-    assert out["drawn"] == 2 and out["failed"] == 2 and len(out["warnings"]) == 1
+    assert out["drawn"] == 2 and out["failed"] == 2 and len(out["warnings"]) == 1 and out["remaining"] == 2
     cuts = cuts_of(saved)
     assert "art" in cuts[0] and "art" in cuts[1] and "art" not in cuts[2]
 
@@ -348,36 +369,45 @@ def test_save_art_same_basis_redraw_keeps_both_files(saved, home):
 
 
 def test_draw_uses_current_text_for_later_batches(saved, home, monkeypatch):
-    ids = [c["id"] for c in cuts_of(saved)]
+    # 8장면 = 묶음 4개: 동시 3개가 도는 사이 4번 묶음 장면(7번째)을 고치면 4번 묶음은 고친 글로 그린다
+    ids = grow(saved, 4)
+    edited = threading.Event()
 
     def hook(payload, call_no, data):
-        if call_no == 1:                                # 1번 묶음을 그리는 사이 2번 묶음 장면(3번째)을 고친다
-            conti.update_cut(saved, 3, {"action": "새로 고친 행동"})
+        if ids[0] in scene_ids(payload):
+            conti.update_cut(saved, 7, {"action": "새로 고친 행동"})
+            edited.set()
+        else:                                           # 다른 묶음은 고친 뒤에 끝난다: 4번 묶음은 고친 뒤에야 시작
+            assert edited.wait(5)
 
     f = FakeDraw(hook)
     monkeypatch.setattr(llm, "ask_validated", f)
     out = conti_art.draw(saved, ids, False)
-    assert out["drawn"] == 4 and out["skipped"] == 0
-    second = {s["id"]: s for s in f.calls[1]["payload"]["scenes"]}
-    assert second[ids[2]]["action"] == "새로 고친 행동"
-    cut = cuts_of(saved)[2]
+    assert out["drawn"] == 8 and out["skipped"] == 0
+    [last] = [c["payload"] for c in f.calls if ids[6] in scene_ids(c["payload"])]
+    assert {s["id"]: s for s in last["scenes"]}[ids[6]]["action"] == "새로 고친 행동"
+    cut = cuts_of(saved)[6]
     assert cut["art"]["basis"] == conti_art.basis(cut, conti_art.aspect(refstore.read_md(saved)[0]))
 
 
 def test_draw_skips_scenes_deleted_or_pinned_before_their_batch(saved, home, monkeypatch):
     from tests.test_conti import pin_frame
-    ids = [c["id"] for c in cuts_of(saved)]
+    ids = grow(saved, 4)
     frame = pin_frame(home)
+    pinned = threading.Event()
 
     def hook(payload, call_no, data):
-        if call_no == 1:                                # 1번 묶음을 그리는 사이 4번째 장면에 사진을 고정한다
-            conti.update_cut(saved, 4, {"ref_frame": frame})
+        if ids[0] in scene_ids(payload):                # 1번 묶음을 그리는 사이 8번째 장면(4번 묶음)에 사진을 고정한다
+            conti.update_cut(saved, 8, {"ref_frame": frame})
+            pinned.set()
+        else:
+            assert pinned.wait(5)
 
     f = FakeDraw(hook)
     monkeypatch.setattr(llm, "ask_validated", f)
     out = conti_art.draw(saved, ids, False)
-    assert [s["id"] for s in f.calls[1]["payload"]["scenes"]] == [ids[2]]
-    assert out["drawn"] == 3 and out["skipped"] == 1
+    assert [scene_ids(c["payload"]) for c in f.calls if ids[6] in scene_ids(c["payload"])] == [[ids[6]]]
+    assert out["drawn"] == 7 and out["skipped"] == 1 and out["remaining"] == 0
 
 
 def test_memo_and_body_untouched(saved, home, fake):
@@ -418,11 +448,118 @@ def test_draw_progress_reports_zero_first_and_message(saved, fake):
 
 
 def test_draw_warns_once_for_scenes_without_art(saved, monkeypatch):
+    first = cuts_of(saved)[0]["id"]
+
     def hook(payload, call_no, data):
         a, b = payload["scenes"]
-        return {"scenes": [{"id": a["id"], "svg": "<html/>"}, {"id": b["id"], "svg": None}]} if call_no == 1 else None
+        return {"scenes": [{"id": a["id"], "svg": "<html/>"}, {"id": b["id"], "svg": None}]} if a["id"] == first else None
 
     monkeypatch.setattr(llm, "ask_validated", FakeDraw(hook))
     out = conti_art.draw(saved, None, False)
     assert out["failed"] == 2 and out["drawn"] == 2
     assert out["warnings"] == ["2장면은 그림을 받지 못했어요"]
+
+
+# --- 동시 3개 · 남은 장면 --------------------------------------------------------------------------
+
+from scripts.ui.jobs import JobCancelled  # noqa: E402
+
+
+class Recorder:
+    """job 대역: update를 모으고, check_cancelled가 cancel_at번째 부름부터 JobCancelled를 낸다."""
+
+    def __init__(self, cancel_at=None):
+        self.updates, self.checks, self.cancel_at = [], 0, cancel_at
+        self.lock = threading.Lock()
+
+    def update(self, index, **fields):
+        with self.lock:
+            self.updates.append(fields)
+
+    def check_cancelled(self):
+        self.checks += 1
+        if self.cancel_at is not None and self.checks >= self.cancel_at:
+            raise JobCancelled
+
+
+def test_draw_sends_three_batches_at_once(saved, home, monkeypatch):
+    ids = grow(saved, 2)                                # 6장면 = 묶음 3개
+    gate = threading.Barrier(3, timeout=5)              # 셋이 동시에 들어와야 지나간다(차례로면 시간 초과)
+
+    def hook(payload, call_no, data):
+        gate.wait()
+
+    f = FakeDraw(hook)
+    monkeypatch.setattr(llm, "ask_validated", f)
+    job = Recorder()
+    out = conti_art.draw(saved, None, False, job)
+    assert out == {"drawn": 6, "skipped": 0, "failed": 0, "warnings": [], "remaining": 0}
+    assert sorted(i for c in f.calls for i in scene_ids(c["payload"])) == sorted(ids)
+    assert all(c.get("art") for c in cuts_of(saved))
+    assert job.updates[0]["message"] == "0 / 6장면" and job.updates[-1] == {"message": "6 / 6장면", "done": 6, "total": 6}
+    assert [u["done"] for u in job.updates] == sorted(u["done"] for u in job.updates)
+
+
+def test_draw_one_failed_batch_does_not_stop_the_others(saved, home, monkeypatch):
+    ids = grow(saved, 2)
+    gate = threading.Barrier(3, timeout=5)
+
+    def hook(payload, call_no, data):
+        gate.wait()                                     # 셋이 다 보내진 뒤에 하나가 실패한다
+        if ids[2] in scene_ids(payload):
+            raise ScriptError("llm_failed", "boom")
+
+    monkeypatch.setattr(llm, "ask_validated", FakeDraw(hook))
+    out = conti_art.draw(saved, None, False)
+    assert out["drawn"] == 4 and out["failed"] == 2 and out["remaining"] == 2
+    assert len(out["warnings"]) == 1 and "boom" in out["warnings"][0]
+    assert [bool(c.get("art")) for c in cuts_of(saved)] == [True, True, False, False, True, True]
+
+
+def test_draw_unexpected_error_lets_the_others_finish_then_raises(saved, home, monkeypatch):
+    ids = grow(saved, 2)
+    gate = threading.Barrier(3, timeout=5)
+
+    def hook(payload, call_no, data):
+        gate.wait()
+        if ids[0] in scene_ids(payload):
+            raise RuntimeError("bug")
+
+    f = FakeDraw(hook)
+    monkeypatch.setattr(llm, "ask_validated", f)
+    with pytest.raises(RuntimeError, match="bug"):
+        conti_art.draw(saved, None, False)
+    assert len(f.calls) == 3
+    assert [bool(c.get("art")) for c in cuts_of(saved)] == [False, False, True, True, True, True]
+
+
+def test_draw_cancel_sends_no_new_batch_and_keeps_the_sent_ones(saved, home, monkeypatch):
+    grow(saved, 6)                                      # 10장면 = 묶음 5개
+    f = FakeDraw()
+    monkeypatch.setattr(llm, "ask_validated", f)
+    job = Recorder(cancel_at=4)                         # 묶음 셋을 보낸 뒤 취소
+    with pytest.raises(JobCancelled):
+        conti_art.draw(saved, None, False, job)
+    assert len(f.calls) == 3
+    assert sum(bool(c.get("art")) for c in cuts_of(saved)) == 6
+
+
+def test_draw_remaining_counts_unpinned_missing_and_stale(saved, home, fake):
+    from tests.test_conti import attach_art, pin_frame
+    ids = [c["id"] for c in cuts_of(saved)]
+    attach_art(saved, home, 3)
+    conti.update_cut(saved, 3, {"action": "바뀐 행동"})        # 3번째: 옛 그림(stale)
+    out = conti_art.draw(saved, ids[:2], False)
+    assert out["drawn"] == 2 and out["remaining"] == 2          # 3번째(옛 그림) + 4번째(그림 없음)
+    conti.update_cut(saved, 4, {"ref_frame": pin_frame(home)})
+    assert conti_art.draw(saved, ids[:1], False)["remaining"] == 1
+
+
+def test_counts(saved, home):
+    from tests.test_conti import attach_art, pin_frame
+    attach_art(saved, home, 1)
+    attach_art(saved, home, 2, name="b.svg")
+    conti.update_cut(saved, 2, {"action": "바뀐 행동"})
+    conti.update_cut(saved, 4, {"ref_frame": pin_frame(home)})
+    fm = conti.validated(conti.read_conti(saved).stored)
+    assert conti_art.counts(fm) == {"total": 3, "missing": 1, "stale": 1, "fresh": 1}

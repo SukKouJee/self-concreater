@@ -1182,6 +1182,17 @@ def test_view_art_url_and_state(client, home, draft_md):
     assert cuts[0]["art"]["state"] == "stale"
 
 
+def test_view_art_counts(client, home, draft_md):
+    from tests.test_conti import attach_art, pin_frame
+    src = saved_conti(home, draft_md)
+    assert _view(client, home, src)["art_counts"] == {"total": 4, "missing": 4, "stale": 0, "fresh": 0}
+    attach_art(src, home, 1)
+    attach_art(src, home, 2, name="b.svg")
+    conti.update_cut(src, 2, {"action": "바뀐 행동"})
+    conti.update_cut(src, 4, {"ref_frame": pin_frame(home)})        # 고정한 장면은 세지 않는다
+    assert _view(client, home, src)["art_counts"] == {"total": 3, "missing": 1, "stale": 1, "fresh": 1}
+
+
 def test_pinned_photo_beats_art(client, home, draft_md):
     src, _ = _art_cut(home, draft_md)
     conti.update_cut(src, 1, {"ref_frame": pin_frame(home)})
@@ -1269,7 +1280,7 @@ def test_art_job_draws_and_finishes(client, home, draft_md, fakes):
     job = wait_for(client, body["job"]["id"], lambda j: j["status"] == "done")
     summary = job["summary"]
     assert summary["path"] == rel(home, src) and summary["drawn"] == 4 and summary["failed"] == 0
-    assert summary["skipped"] == 0 and summary["warnings"] == []
+    assert summary["skipped"] == 0 and summary["warnings"] == [] and summary["remaining"] == 0
     assert summary["hash"] == conti.content_hash(src)
     stored, _ = refstore.read_md(src)
     assert all(c["art"]["file"] for c in stored["cuts"])

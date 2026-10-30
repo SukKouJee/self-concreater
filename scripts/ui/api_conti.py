@@ -22,8 +22,10 @@
 
 장면 그림 그리기(kind "conti_art"): `POST /api/conti/art {path, ids?, stale_only?, hash?}`. hash가 있고 다르면 `conti_changed`
 (저장 직후 자동으로 다시 그릴 때 최신 hash를 넘긴다). 같은 콘티에 그리는 작업이 돌면 `conti_busy`(다른 콘티끼리는 동시에 가능),
-반복 컷이 남아 있으면 작업 없이 `merge_first`. 묶음마다 저장하므로 멈춰도 그린 그림은 남는다.
-끝나면 summary `{path, hash, drawn, skipped, failed, warnings}`.
+반복 컷이 남아 있으면 작업 없이 `merge_first`. 묶음(2장면) 3개를 동시에 그리고 묶음마다 저장하므로 멈춰도 그린 그림은 남는다.
+끝나면 summary `{path, hash, drawn, skipped, failed, warnings, remaining}`(remaining: 고정 안 된 장면 중 아직 그림이 없거나
+옛 그림인 수, 화면의 "N장면을 못 그렸어요"). 콘티 보기 응답의 `art_counts {total, missing, stale, fresh}`는 고정 안 된
+장면의 그림 상태 수다(도구 줄 버튼 문구).
 """
 from __future__ import annotations
 
@@ -258,7 +260,8 @@ def view_of(path: Path, fm: dict, digest: str) -> dict:
     base = path.stem[: -len(CONTI_SUFFIX)]
     srt_files = [path.with_name(f"{base}-{suffix}.srt") for _, suffix in conti.SRT_TRACKS.values()]
     return {"path": _rel(path), "hash": digest, "fm": fm, "html": fm.get("html"),
-            "cuts": cuts, "warnings": conti.warnings(fm["script"], fm["cuts"], fm["speech_cps"]),
+            "cuts": cuts, "art_counts": conti_art.counts(fm),
+            "warnings": conti.warnings(fm["script"], fm["cuts"], fm["speech_cps"]),
             "total_sec": round(sum(float(c["sec"]) for c in fm["cuts"]), 2), "target_sec": fm.get("target_sec"),
             "outputs_stale": {"srt": _stale(path, srt_files), "video": _stale(path, [path.with_name(f"{base}-captions.mp4")])}}
 
