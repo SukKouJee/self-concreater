@@ -69,9 +69,14 @@ def _state_of(art: dict | None, cut: dict, aspect: str) -> str | None:
     return "fresh" if art["basis"] == basis(cut, aspect) else "stale"
 
 
+def _pinned(cut: dict) -> bool:
+    """사용자가 사진을 고정한 장면인가. `conti.ref_frame_key`로 판정해 사진 쪽(`conti.cut_refs`)과 표기 규칙을 맞춘다."""
+    return conti.ref_frame_key(cut.get("ref_frame")) is not None
+
+
 def display_art(cut: dict, aspect: str) -> dict | None:
     """보여줄 그림. 사용자가 고정한 참고 프레임(ref_frame)이 있으면 그림은 숨긴다."""
-    if cut.get("ref_frame"):
+    if _pinned(cut):
         return None
     art = conti.art_of(cut.get("art"))
     state = _state_of(art, cut, aspect)
@@ -174,7 +179,7 @@ def targets(fm: dict, ids: list[str] | None, stale_only: bool) -> list[dict]:
     wanted = set(ids) if ids is not None else None
     out: list[dict] = []
     for cut in fm["cuts"]:
-        if cut.get("ref_frame") or (wanted is not None and cut.get("id") not in wanted):
+        if _pinned(cut) or (wanted is not None and cut.get("id") not in wanted):
             continue
         if stale_only and art_state(cut, asp) == "fresh":
             continue
@@ -242,7 +247,7 @@ def save_art(path: str | Path, drawn: dict[str, tuple[str, str]]) -> dict:
                 new_cuts.append(cut)
                 continue
             svg, drawn_basis = hit
-            if cut.get("ref_frame") or basis(cut, asp) != drawn_basis:
+            if _pinned(cut) or basis(cut, asp) != drawn_basis:
                 skipped.append(cut["id"])
                 new_cuts.append(cut)
                 continue
@@ -290,7 +295,7 @@ def _draw_batch(key: str, number: int, batch_ids: list[str], tally: _Tally) -> N
         fm = conti.validated(conti.read_conti(key).stored)
         asp = aspect(fm)
         now = {c.get("id"): c for c in fm["cuts"]}
-        batch = [now[i] for i in batch_ids if i in now and not now[i].get("ref_frame")]
+        batch = [now[i] for i in batch_ids if i in now and not _pinned(now[i])]
         with tally.lock:
             tally.skipped += len(batch_ids) - len(batch)
         if not batch:
@@ -336,7 +341,7 @@ def counts(fm: dict) -> dict[str, int]:
     asp = aspect(fm)
     out = {"total": 0, "missing": 0, "stale": 0, "fresh": 0}
     for cut in fm["cuts"]:
-        if cut.get("ref_frame"):
+        if _pinned(cut):
             continue
         out["total"] += 1
         out[art_state(cut, asp) or "missing"] += 1

@@ -1576,7 +1576,40 @@ def test_asset_url_and_refs_ignore_values_that_are_not_keys(saved, home, tmp_pat
     up = f"../{outside.name}"
     assert conti.asset_url(up) is None and conti.asset_url(up, embed=True) is None
     assert conti.asset_url(str(outside)) is None
-    assert conti.key_exists(up) is False and conti.key_exists("workspace\frames\a.jpg") is False
+    back = r"workspace\frames\a.jpg"
+    (home / "workspace" / "frames").mkdir(parents=True, exist_ok=True)
+    (home / "workspace" / "frames" / "a.jpg").write_bytes(b"\xff\xd8")
+    assert conti.key_exists(up) is False and conti.key_exists(back) is False      # 저장 키 검사는 그대로 엄격하다
+    assert conti.key_exists("workspace/frames/a.jpg") is True
     fm = conti._load_conti(saved)
     fm["cuts"][0]["ref_frame"] = up
-    assert conti.cut_refs(fm).get(1, {}).get("frame") != up
+    assert conti.cut_refs(fm).get(1, {}).get("match") != "pinned"               # 밖을 가리키는 고정은 고정이 아니다
+    fm["cuts"][0]["ref_frame"] = back                                          # 역슬래시로 손으로 적은 고정은 화면에서 고정
+    ref = conti.cut_refs(fm)[1]
+    assert (ref["match"], ref["frame"], ref["title"]) == ("pinned", "workspace/frames/a.jpg", "a.jpg")
+
+
+@pytest.mark.parametrize("spelling", ["./{rel}", "././{rel}", "{back}", ".\\{back}", " ./{rel} "])
+def test_hand_edited_ref_frame_spellings_count_as_pinned(saved, home, spelling):
+    """손으로 고친 ref_frame(`./`·역슬래시)은 찾을 때만 키로 맞춘다: 사진은 고정으로 보이고 그림은 숨는다. 저장 값은 그대로."""
+    from scripts import conti_art
+    rel = pin_frame(home)
+    attach_art(saved, home, 1)
+    value = spelling.format(rel=rel, back=rel.replace("/", "\\"))
+    stored = conti.read_conti(saved).stored
+    stored["cuts"][0]["ref_frame"] = value
+    refstore.update_frontmatter(saved, {"cuts": stored["cuts"]})
+    fm = conti._load_conti(saved)
+    refs = conti.cut_refs(fm)
+    assert (refs[1]["match"], refs[1]["frame"], refs[1]["title"]) == ("pinned", rel, "pin.jpg")
+    assert conti_art.display_art(fm["cuts"][0], conti_art.aspect(fm)) is None
+    page = (home / conti.render(saved)["html"]).read_text("utf-8")
+    assert "참고(고정)" in page and "장면 그림" not in page
+    assert refstore.read_md(saved)[0]["cuts"][0]["ref_frame"] == value
+
+
+def test_ref_frame_lookup_key_normalizes_only_spelling():
+    assert conti.ref_frame_key(" .\\./workspace\\frames\\a.jpg ") == "workspace/frames/a.jpg"
+    assert conti.ref_frame_key("../x.jpg") == "../x.jpg"            # 탈출은 그대로 남아 key_exists가 거절한다
+    for empty in (None, "", "  ", "./", 3):
+        assert conti.ref_frame_key(empty) is None

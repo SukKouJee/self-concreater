@@ -588,6 +588,18 @@ def asset_url(rel: str, html_dir_rel: str = "drafts", embed: bool = False) -> st
     return "/".join(urllib.parse.quote(part, safe="") for part in rel_path.split("/"))
 
 
+def ref_frame_key(value: Any) -> str | None:
+    """고정 사진(ref_frame)을 찾을 때 쓸 키. 손으로 고친 값의 표기만 맞춘다(앞뒤 공백, 역슬래시→`/`, 앞의 `./` 반복 제거).
+    저장된 값은 바꾸지 않고, 탈출(`..`·드라이브)은 그대로 남겨 `key_exists`가 거절한다. 비었으면 None(고정 아님).
+    `cut_refs`(사진)와 `conti_art`(그림 숨김·그리기 제외)가 같은 판정을 쓴다."""
+    if not isinstance(value, str):
+        return None
+    key = value.strip().replace("\\", "/")
+    while key.startswith("./"):
+        key = key[2:]
+    return key or None
+
+
 REF_TAGS = {"pinned": "참고(고정)", "content": "참고", "composition": "구도만 참고"}
 
 
@@ -606,7 +618,7 @@ def cut_refs(fm: dict) -> dict[int, dict]:
     refs: dict[int, dict] = {}
     rest = []
     for c in fm["cuts"]:
-        pinned = c.get("ref_frame")
+        pinned = ref_frame_key(c.get("ref_frame"))
         auto = (ref_auto_of(c.get("ref_auto")) or {}).get("frame")
         if pinned and key_exists(pinned):
             refs[c["n"]] = {**ref(pinned, "pinned"), "title": posixpath.basename(pinned)}
