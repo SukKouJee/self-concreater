@@ -19,7 +19,7 @@ from typing import Any
 
 from scripts import features, refstore
 from scripts.common import ArgParser, run, work_root, workspace_dir
-from scripts.videomd import LABELS
+from scripts.videomd import CAMERA_KO, LABELS, humanize_sections, section_name
 
 # dataviz 기준 팔레트 categorical 슬롯 (light, dark)
 SLOTS = [("#2a78d6", "#3987e5"), ("#eb6834", "#d95926"), ("#1baf7a", "#199e70"), ("#eda100", "#c98500"),
@@ -102,10 +102,10 @@ def skeleton_chart(archetypes: list[dict], names: dict) -> str:
             w = max(plot * v / total - 2, 1)
             slot = LABELS.index(label) + 1
             rows.append(f'<rect x="{x:.1f}" y="{y}" width="{w:.1f}" height="{bar_h}" rx="4" fill="var(--s{slot})">'
-                        f'<title>{_esc(a["id"])} · {label} {_pct(v)}</title></rect>')
+                        f'<title>{_esc(a["id"])} · {section_name(label)} {_pct(v)}</title></rect>')
             x += w + 2
     used = sorted({l for a in archetypes for l in a["mean_ratio"] if a["mean_ratio"][l] > 0}, key=LABELS.index)
-    return (_legend([(l, f"--s{LABELS.index(l) + 1}") for l in used])
+    return (_legend([(section_name(l), f"--s{LABELS.index(l) + 1}") for l in used])
             + f'<svg viewBox="0 0 {width} {height}" width="100%" role="img" aria-label="아키타입별 섹션 비율">'
             + "".join(rows) + "</svg>")
 
@@ -159,21 +159,21 @@ def build(category: str, date: str | None = None) -> dict:
     refs = features.load_videos(category)
 
     out = [f"<h1>{_esc(category)} 레퍼런스 리포트</h1>",
-           f'<p class="sub">{day} · ref {counts["ref"]}개 · mine {counts["mine"]}개 · {counts["stage"]}단계'
+           f'<p class="sub">{day} · 레퍼런스 {counts["ref"]}개 · 내 영상 {counts["mine"]}개 · {counts["stage"]}단계'
            + (f' · 유형화 {"정식" if typify["status"] == "formal" else "예비"} ({_esc(typify["run_at"][:10])})' if typify else "")
            + "</p>"]
 
     out.append("<h2>축별 판정</h2>")
     if not typify:
-        out.append('<div class="card"><p class="empty">아직 유형화 결과가 없습니다. ref를 5개 이상 모아 '
-                   "/yt-coach:yt-typify를 실행하세요.</p></div>")
+        out.append('<div class="card"><p class="empty">아직 유형화 결과가 없습니다. 레퍼런스를 5개 이상 모아 '
+                   "유형 화면에서 유형화를 실행하세요.</p></div>")
         archetypes = []
     else:
         notes = _axis_notes(index_body)
         rows = "".join(
-            f'<tr><td>{axis}</td><td class="badge">{VERDICT_ICON[r["verdict"]]} {VERDICT_KO[r["verdict"]]}</td>'
+            f'<tr><td>{_esc(features.AXIS_KO.get(axis, axis))}</td><td class="badge">{VERDICT_ICON[r["verdict"]]} {VERDICT_KO[r["verdict"]]}</td>'
             f'<td class="num">{r["silhouette"] if r["silhouette"] is not None else "-"}</td>'
-            f'<td class="num">{_pct(r["max_share"])}</td><td>{_esc(notes.get(axis, ""))}</td></tr>'
+            f'<td class="num">{_pct(r["max_share"])}</td><td>{_esc(humanize_sections(notes.get(axis, "")))}</td></tr>'
             for axis, r in typify["axes"].items())
         out.append('<div class="card"><table><thead><tr><th>축</th><th>판정</th><th>실루엣</th><th>최대 군집</th>'
                    f"<th>근거</th></tr></thead><tbody>{rows}</tbody></table></div>")
@@ -183,9 +183,9 @@ def build(category: str, date: str | None = None) -> dict:
     if archetypes:
         table = "".join(
             f'<tr><td>{_esc(a["id"])} {_esc(names.get(a["id"]))}</td>'
-            f'<td class="num">{a["size"]}개</td><td>{_esc(a["skeleton"])}</td>'
+            f'<td class="num">{a["size"]}개</td><td>{_esc(humanize_sections(a["skeleton"]))}</td>'
             f'<td class="num">{a["pacing"]["avg_cut_sec"] or "-"}초</td>'
-            f'<td>{_esc(" · ".join(f"{k} {_pct(v)}" for k, v in (a.get("camera") or {}).items()))}</td>'
+            f'<td>{_esc(" · ".join(f"{CAMERA_KO.get(k, k)} {_pct(v)}" for k, v in (a.get("camera") or {}).items()))}</td>'
             f'<td>{_esc(" · ".join(f"{s} {_pct(v)}" for s, v in ((a.get("shots") or {}).get("top_sizes") or [])))}</td></tr>'
             for i, a in enumerate(archetypes))
         out.append('<div class="card">' + skeleton_chart(archetypes, names)
@@ -217,7 +217,7 @@ def build(category: str, date: str | None = None) -> dict:
         out.append('<div class="card"><table><thead><tr><th>대상</th><th>가까운 아키타입</th><th>진단</th>'
                    f"<th>구조 근접도 추이</th><th></th></tr></thead><tbody>{''.join(rows)}</tbody></table></div>")
     else:
-        out.append('<div class="card"><p class="empty">아직 진단 기록이 없습니다. /yt-coach:yt-diagnose로 내 영상이나 기획안을 비교해 보세요.</p></div>')
+        out.append('<div class="card"><p class="empty">아직 진단 기록이 없습니다. 내 영상의 진단 탭에서 기획안이나 올린 영상을 비교해 보세요.</p></div>')
 
     page = ('<!doctype html><html lang="ko"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'

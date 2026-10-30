@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from scripts import claude_cli, conti, llm, refstore, similarity
+from scripts import claude_cli, conti, features, llm, refstore, similarity
 from scripts.common import ScriptError, work_root, workspace_dir
 from scripts.ui.api_refs import _body_parts
 from scripts.ui.jobs import Job, new_item
@@ -35,7 +35,7 @@ NOTES_SCHEMA: dict = {
     },
     "required": ["summary", "gaps", "actions"],
 }
-AXIS_KO = {"structure": "구조", "hook": "훅", "narrative": "서사", "title": "제목", "pacing": "컷 속도", "shots": "샷"}
+AXIS_KO = features.AXIS_KO
 UNSAFE_NAME_CHARS = frozenset('<>:"/|?*' + chr(92))      # Windows 파일 이름에 못 쓰는 문자(+ 제어 문자는 따로 본다)
 MAX_NAME = 120
 WRITE_LOCK = threading.Lock()                     # 진단 기록(mine/*.md)의 읽고-고쳐-쓰기를 한 번에 하나씩

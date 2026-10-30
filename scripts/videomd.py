@@ -43,6 +43,12 @@ SCHEMA_VERSION = 1
 SNAP_SEC = 0.7          # 섹션 경계에서 이 거리 안에 컷이 있으면 컷에 맞춘다
 MAX_EXAMPLES = 3
 CAMERA_KO = {"static": "고정", "pan": "패닝", "zoom": "줌"}
+# 화면·리포트 표시 이름(scripts/ui/static/labels.js SECTION_KO, BODY_SUB_KO와 같게). 파일은 코드 그대로 둔다
+SECTION_KO = {"hook": "훅", "intro": "인트로", "body": "본문", "demo": "시연", "transition": "전환",
+              "cta": "행동 유도(CTA)", "outro": "아웃트로"}
+BODY_SUB_KO = {"list_item": "목록 항목", "story": "이야기", "explain": "설명", "compare": "비교"}
+_SECTION_CODE_RE = re.compile(r"(?<![A-Za-z0-9_])(" + "|".join(SECTION_KO) + r")(?:/("
+                              + "|".join(BODY_SUB_KO) + r"))?(?![A-Za-z0-9_])")
 CAMERA_SHARE = 0.25     # 섹션 안에서 이 비중 이상인 카메라 판정만 표에 적는다
 
 
@@ -592,3 +598,16 @@ def main(argv: list[str]) -> Any:
 
 if __name__ == "__main__":
     run(main)
+
+
+def section_name(label: str, sub: str | None = None) -> str:
+    """"body", "story" → "본문(이야기)". 모르는 코드는 그대로."""
+    name = SECTION_KO.get(label, label)
+    return f"{name}({BODY_SUB_KO.get(sub, sub)})" if sub else name
+
+
+def humanize_sections(text: str | None) -> str:
+    """표시용: 글 안의 섹션 코드("hook → body/story")를 이름으로. 낱말 단위만 바꾼다."""
+    if not isinstance(text, str):
+        return ""
+    return _SECTION_CODE_RE.sub(lambda m: section_name(m.group(1), m.group(2)), text)

@@ -34,7 +34,7 @@ def test_report_writes_self_contained_html(home):
     assert "<script src" not in html and "<link" not in html          # 외부 자원 없음
     assert "prefers-color-scheme: dark" in html
     for text in ["축별 판정", "아키타입 비교", "컷 길이 분포", "내 콘텐츠 근접도",
-                 "structure 근거 문장", "결과 먼저 몰아먹기", "hook → body/story → cta"]:
+                 "structure 근거 문장", "결과 먼저 몰아먹기", "훅 → 본문(이야기) → 행동 유도(CTA)"]:
         assert text in html, text
 
 
@@ -102,3 +102,23 @@ def test_report_written_through_write_atomic(home, monkeypatch):
     monkeypatch.setattr(refstore, "write_atomic", lambda p, d: (calls.append(p.name), real(p, d))[1])
     report.build(CAT, date="2026-10-20")
     assert calls == [f"{CAT}-2026-10-20.html"]
+
+
+def test_report_shows_korean_names_not_codes(home):
+    html = (home / report.build(CAT, date="2026-10-20")["path"]).read_text("utf-8")
+    assert "레퍼런스 " in html and "내 영상 " in html
+    assert " ref " not in html and "mine " not in html
+    for axis in ["구조", "서사", "제목", "컷 속도"]:
+        assert f"<td>{axis}</td>" in html, axis
+    assert "<td>structure</td>" not in html and "<td>pacing</td>" not in html
+    legend = html.split('class="legend"', 1)[1].split("</div>", 1)[0]
+    assert "훅" in legend and ">hook<" not in legend
+    assert "hook → " not in html and "/story" not in html
+    assert "/yt-coach:" not in html
+
+
+def test_humanize_sections():
+    from scripts.videomd import humanize_sections
+    assert humanize_sections("hook → body/story → cta") == "훅 → 본문(이야기) → 행동 유도(CTA)"
+    assert humanize_sections("hooky outro2 intro") == "hooky outro2 인트로"
+    assert humanize_sections(None) == ""

@@ -17,6 +17,7 @@ from scripts import refstore
 from scripts.videomd import BODY_SUBS, HOOK_TYPES, LABELS, NARRATIVE_TYPES, title_patterns
 
 AXES = ["structure", "hook", "narrative", "title", "pacing", "shots"]
+AXIS_KO = {"structure": "구조", "hook": "훅", "narrative": "서사", "title": "제목", "pacing": "컷 속도", "shots": "샷"}
 SHOT_SIZES = ["익스트림 클로즈업", "클로즈업", "바스트", "미디엄", "와이드", "탑뷰", "POV", "인서트"]
 SHOT_ANGLES = ["정면", "측면", "탑뷰", "하이앵글", "로우앵글", "POV"]
 SHOT_FLAGS = ["face", "hands_only", "broll", "text_overlay"]
