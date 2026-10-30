@@ -23,9 +23,9 @@ from typing import Any
 
 import yaml
 
-from scripts.common import (
-    TEMPLATES_DIR, ArgParser, ScriptError, category_dir, run, work_root,
-)
+from scripts import ctx, keys
+# category_dir는 api_add·api_diagnose가 refstore.category_dir로 부른다(과도기)
+from scripts.common import TEMPLATES_DIR, ArgParser, ScriptError, category_dir, run, work_root  # noqa: F401
 
 INDEX_LOCK = threading.RLock()        # index.md 읽기-고치기-쓰기를 한 번에 하나씩 (프로세스 안)
 PROTECTED_SECTIONS = {"## 내 메모"}
@@ -71,13 +71,9 @@ def join_frontmatter(fm: dict, body: str, nl: str = "\n") -> str:
     return f"---{nl}{dumped}{nl}---{nl}{body}"
 
 
-def _read_text(path: Path) -> str:
+def _decode(raw: bytes) -> str:
     # utf-8-sig: PowerShell 등이 붙인 BOM을 허용
-    return path.read_bytes().decode("utf-8-sig")
-
-
-def _write_text(path: Path, text: str) -> None:
-    path.write_bytes(text.encode("utf-8"))
+    return raw.decode("utf-8-sig")
 
 
 REPLACE_RETRIES = 5
@@ -130,19 +126,55 @@ def parse_md(raw: bytes, path: Path | str) -> tuple[dict, str]:
         raise ScriptError(e.code, f"{path}: {e.message}") from e
 
 
-def read_md(path: Path) -> tuple[dict, str]:
+def read(key: str) -> tuple[dict, str]:
+    """문서 키 → (프런트매터, 본문). 없으면 FileNotFoundError, 파싱 오류는 `<label>: ...` ScriptError."""
+    return ctx.here().store.read(key).parsed
+
+
+def _key_of(target: str | Path) -> str | None:
+    """과도기 래퍼용: 문서 키(상대 str)나 작업 폴더 안 md 경로 → 키. 작업 폴더 밖이거나 md가 아니면 None(Path 그대로 읽는다).
+    상대 Path는 지금처럼 현재 폴더 기준이다. 탈출 검사는 `scratch.key_of`의 resolve 기준(`..`·심볼릭 링크 포함)."""
+    if isinstance(target, str) and not Path(target).is_absolute():
+        return target
+    path = Path(target)
+    try:
+        key = ctx.here().scratch.key_of(path if path.is_absolute() else Path.cwd() / path)
+    except ScriptError:
+        return None
+    return key if keys.is_doc(key) else None
+
+
+def read_md(target: str | Path) -> tuple[dict, str]:
+    """과도기: 키(str) 또는 Path. Path가 작업 폴더 안 md면 저장소로, 아니면 그 경로를 그대로 읽는다."""
+    key = _key_of(target)
+    if key is not None:
+        return read(key)
+    path = Path(target)
     return parse_md(path.read_bytes(), path)
 
 
-def update_frontmatter(path: Path, updates: dict[str, Any], remove: Iterable[str] = ()) -> dict:
-    """`updates`를 적용한 뒤 `remove`의 키를 지운다(없는 키는 무시). 본문은 그대로 둔다."""
-    text = _read_text(path)
+def _updated(raw: bytes, updates: dict[str, Any], remove: Iterable[str]) -> tuple[dict, bytes]:
+    text = _decode(raw)
     nl = "\r\n" if text.startswith("---\r\n") else "\n"
     fm, body = split_frontmatter(text)
     fm.update(updates)
-    for key in remove:
-        fm.pop(key, None)
-    write_atomic(path, join_frontmatter(fm, body, nl).encode("utf-8"))
+    for name in remove:
+        fm.pop(name, None)
+    return fm, join_frontmatter(fm, body, nl).encode("utf-8")
+
+
+def update_frontmatter(target: str | Path, updates: dict[str, Any], remove: Iterable[str] = ()) -> dict:
+    """`updates`를 적용한 뒤 `remove`의 키를 지운다(없는 키는 무시). 본문은 그대로 둔다.
+    `target`은 문서 키(str) 또는 Path(과도기: 작업 폴더 밖이면 그 경로를 그대로 고친다)."""
+    key = _key_of(target)
+    if key is not None:
+        store = ctx.here().store
+        fm, data = _updated(store.read(key).raw, updates, remove)
+        store.write(key, data)
+        return fm
+    path = Path(target)
+    fm, data = _updated(path.read_bytes(), updates, remove)
+    write_atomic(path, data)
     return fm
 
 
@@ -196,30 +228,28 @@ def stage_text(ref_count: int, mine_count: int) -> str:
 
 # --- 작업 폴더 / 카테고리 ------------------------------------------------------
 
-def _rel(path: Path) -> str:
-    return path.relative_to(work_root()).as_posix()
-
-
 def scaffold() -> dict:
-    root = work_root()
+    store, objects = ctx.here().store, ctx.here().objects
     created = []
     for name in WORK_DIRS:
-        d = root / name
-        if not d.exists():
-            d.mkdir(parents=True)
+        if not store.folder_exists(name + "/"):
+            store.ensure_folder(name + "/")
             created.append(name + "/")
 
-    gitignore = root / ".gitignore"
-    lines = _read_text(gitignore).splitlines() if gitignore.exists() else []
+    try:
+        lines = _decode(objects.get(keys.GITIGNORE)).splitlines()
+    except FileNotFoundError:
+        lines = []
     if "workspace/" not in lines:
-        _write_text(gitignore, "\n".join(lines + ["workspace/"]) + "\n")
+        objects.put(keys.GITIGNORE, ("\n".join(lines + ["workspace/"]) + "\n").encode("utf-8"))
         created.append(".gitignore")
 
     return {
-        "root": str(root),
+        "root": store.label(),
         "created": created,
-        "profile_exists": (root / "profile.md").exists(),
-        "git": (root / ".git").exists(),
+        "profile_exists": store.exists(keys.PROFILE),
+        # worktree·submodule에서는 .git이 파일이다
+        "git": objects.folder_exists(keys.GIT_DIR) or objects.exists(keys.GIT_DIR.rstrip("/")),
         "categories": [c["category"] for c in list_categories()],
     }
 
@@ -232,34 +262,41 @@ def _fill_template(name: str, category: str) -> str:
 
 
 def init_category(category: str) -> dict:
-    cat = category_dir(category)
-    (cat / "videos").mkdir(parents=True, exist_ok=True)
+    store = ctx.here().store
+    prefix = keys.category(category)                  # 이름 검사가 폴더 만들기보다 먼저
+    store.ensure_folder(keys.videos_dir(category))
     created, skipped = [], []
     for name in ["index.md", "techniques.md"]:
-        path = cat / name
-        if path.exists():
-            skipped.append(_rel(path))
+        key = prefix + name
+        if store.exists(key):
+            skipped.append(key)
             continue
         text = _fill_template(name, category)
         if name == "index.md":
             fm, body = split_frontmatter(text)
             text = join_frontmatter(fm, replace_section(body, "## 단계", stage_text(0, 0)))
-        _write_text(path, text)
-        created.append(_rel(path))
-    return {"category": category, "path": _rel(cat), "created": created, "skipped": skipped}
+        store.write(key, text.encode("utf-8"))
+        created.append(key)
+    return {"category": category, "path": prefix.rstrip("/"), "created": created, "skipped": skipped}
+
+
+def require_category(category: str) -> str:
+    """카테고리 폴더 키(`refs/ref_<cat>/`). 이름이 틀리면 invalid_category, 폴더가 없으면 category_not_found."""
+    prefix = keys.category(category)
+    if not ctx.here().store.folder_exists(prefix):
+        raise ScriptError("category_not_found", f"카테고리가 없습니다: {category} (먼저 init)")
+    return prefix
 
 
 def existing_category_dir(category: str) -> Path:
-    cat = category_dir(category)
-    if not cat.is_dir():
-        raise ScriptError("category_not_found", f"카테고리가 없습니다: {category} (먼저 init)")
-    return cat
+    """과도기(Task 15에서 삭제): 아직 Path를 쓰는 호출부용. `category_dir`도 api_add·api_diagnose가 `refstore.`로 부른다."""
+    return work_root() / require_category(category)
 
 
-def _role_counts(cat: Path) -> tuple[int, int]:
+def _role_counts(prefix: str) -> tuple[int, int]:
     ref = mine = 0
-    for path in sorted((cat / "videos").glob("*.md")):
-        role = read_md(path)[0].get("role")
+    for meta in ctx.here().store.list(prefix + "videos/", "*.md"):
+        role = read(meta.key)[0].get("role")
         if role == "ref":
             ref += 1
         elif role == "mine":
@@ -268,42 +305,42 @@ def _role_counts(cat: Path) -> tuple[int, int]:
 
 
 def count(category: str) -> dict:
-    ref, mine = _role_counts(existing_category_dir(category))
+    ref, mine = _role_counts(require_category(category))
     return {"ref": ref, "mine": mine, "stage": stage_for(ref)}
 
 
 def find_video(video_id: str) -> list[dict]:
     """모든 카테고리에서 videos/{video_id}.md를 찾는다."""
+    store = ctx.here().store
     found = []
-    for path in sorted((work_root() / "refs").glob(f"ref_*/videos/{video_id}.md")):
-        found.append({
-            "category": path.parent.parent.name.removeprefix("ref_"),
-            "role": read_md(path)[0].get("role"),
-            "md": _rel(path),
-        })
+    for folder in store.folders(keys.REFS, "ref_*"):
+        for meta in store.list(f"{folder}videos/", f"{video_id}.md"):
+            found.append({
+                "category": keys.category_name(folder),
+                "role": read(meta.key)[0].get("role"),
+                "md": meta.key,
+            })
     return found
 
 
 def list_categories() -> list[dict]:
-    refs = work_root() / "refs"
-    if not refs.is_dir():
-        return []
     return [
-        {"category": d.name.removeprefix("ref_"), **count(d.name.removeprefix("ref_"))}
-        for d in sorted(refs.glob("ref_*")) if d.is_dir()
+        {"category": name, **count(name)}
+        for name in (keys.category_name(f) for f in ctx.here().store.folders(keys.REFS, "ref_*"))
     ]
 
 
 def update_stage(category: str) -> dict:
-    cat = existing_category_dir(category)
-    index = cat / "index.md"
+    store = ctx.here().store
+    prefix = require_category(category)
+    index = prefix + "index.md"
     with INDEX_LOCK:
-        ref, mine = _role_counts(cat)          # 락 안에서 세야 늦게 쓰는 쪽이 낡은 단계를 덮어쓰지 않는다
+        ref, mine = _role_counts(prefix)       # 락 안에서 세야 늦게 쓰는 쪽이 낡은 단계를 덮어쓰지 않는다
         section = stage_text(ref, mine)
-        text = _read_text(index)
+        text = _decode(store.read(index).raw)
         nl = "\r\n" if text.startswith("---\r\n") else "\n"
         fm, body = split_frontmatter(text)
-        write_atomic(index, join_frontmatter(fm, replace_section(body, "## 단계", section), nl).encode("utf-8"))
+        store.write(index, join_frontmatter(fm, replace_section(body, "## 단계", section), nl).encode("utf-8"))
     return {"ref": ref, "mine": mine, "stage": stage_for(ref), "text": section}
 
 

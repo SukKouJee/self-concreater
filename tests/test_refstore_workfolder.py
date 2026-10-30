@@ -303,3 +303,81 @@ def test_update_frontmatter_changes_only_that_file(work):
 
 def test_main_categories_json(work):
     assert refstore.main(["categories"])["categories"][0]["category"] == "food"
+
+
+# --- 키 기반 API (S3 단계 3) -------------------------------------------------------
+
+def test_read_by_key(work):
+    fm, body = refstore.read("refs/ref_travel/videos/Q8PSsikq8PA.md")
+    assert (fm, body) == refstore.read_md(work / "refs/ref_travel/videos/Q8PSsikq8PA.md")
+
+
+def test_read_by_key_missing_and_bad(work):
+    with pytest.raises(FileNotFoundError):
+        refstore.read("refs/ref_travel/videos/none.md")
+    with pytest.raises(ScriptError) as exc:
+        refstore.read("refs/../profile.md")
+    assert exc.value.code == "bad_path"
+
+
+def test_update_frontmatter_by_key_matches_path_form(work, tmp_path):
+    key = "mine/my-jeju-vlog.md"
+    other = snap.copy_workfolder(tmp_path / "other")
+    before = snap.tree(work)
+
+    refstore.update_frontmatter(key, {"zz": 1})
+    refstore.update_frontmatter(other / key, {"zz": 1})
+
+    assert snap.tree(work)[key] == snap.tree(other)[key]
+    assert snap.changes(before, snap.tree(work)) == {"added": [], "removed": [], "modified": [key]}
+
+
+def test_read_md_accepts_key_string(work):
+    assert refstore.read_md("profile.md") == refstore.read_md(work / "profile.md")
+
+
+def test_require_category(work):
+    assert refstore.require_category("travel") == "refs/ref_travel/"
+    with pytest.raises(ScriptError) as exc:
+        refstore.require_category("nope")
+    assert exc.value.code == "category_not_found"
+    with pytest.raises(ScriptError) as exc:
+        refstore.require_category("../x")
+    assert exc.value.code == "invalid_category"
+
+
+def test_existing_category_dir_still_returns_path(work):
+    assert refstore.existing_category_dir("travel") == work / "refs" / "ref_travel"
+
+
+def test_dotdot_path_that_leaves_root_is_read_as_plain_path(work, tmp_path):
+    outside = tmp_path / "secret.md"
+    outside.write_bytes(b"---\nid: s\n---\nx\n")
+    sneaky = work / "mine" / ".." / ".." / "secret.md"
+    assert refstore.read_md(sneaky)[0] == {"id": "s"}
+    refstore.update_frontmatter(sneaky, {"k": 1})
+    assert outside.read_bytes() == b"---\nid: s\nk: 1\n---\nx\n"
+    assert not (work / "workspace/tmp").exists()
+
+
+def test_symlink_inside_root_pointing_outside_is_plain_path(work, tmp_path):
+    outside = tmp_path / "target.md"
+    outside.write_bytes(b"---\nid: t\n---\nx\n")
+    link = work / "mine" / "link.md"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink를 만들 수 없는 환경")
+    assert refstore.read_md(link)[0] == {"id": "t"}
+
+
+def test_follows_ctx_when_environment_changes(monkeypatch, tmp_path):
+    a, b = tmp_path / "a", tmp_path / "b"
+    for root, cat in ((a, "one"), (b, "two")):
+        monkeypatch.setenv("YT_COACH_HOME", str(root))
+        root.mkdir()
+        refstore.init_category(cat)
+    monkeypatch.setenv("YT_COACH_HOME", str(a))
+    assert [c["category"] for c in refstore.list_categories()] == ["one"]
+    monkeypatch.setenv("YT_COACH_HOME", str(b))
+    assert [c["category"] for c in refstore.list_categories()] == ["two"]
