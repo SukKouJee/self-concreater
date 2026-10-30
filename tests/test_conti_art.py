@@ -114,3 +114,52 @@ def test_sanitize_drops_obfuscated_urls():
         f'<a href="javascript:alert(1)"/></svg>', "16:9")
     body = out.replace(SVG_NS, "")
     assert "http" not in body and "javascript" not in body
+
+
+def _svg(inner: str, attrs: str = "") -> str:
+    return f'<svg xmlns="{SVG_NS}" xmlns:xlink="http://www.w3.org/1999/xlink"{attrs}>{inner}</svg>'
+
+
+def test_sanitize_css_function_allowlist():
+    out = conti_art.sanitize_svg(_svg(
+        "<rect style=\"mask-image:image-set('http://x' 1x)\" width=\"1\"/>"
+        "<rect style=\"background:-webkit-image-set('http://y' 1x)\"/>"
+        "<rect style=\"x:cross-fade(url(#a), red)\"/>"
+        '<g transform="translate(10 20) rotate(5)"><rect fill="rgb(1,2,3)" stroke="URL(#g)"/></g>',
+        ' style="background:image-set(\'http://z\' 1x)"'), "16:9")
+    assert "image-set" not in out and "cross-fade" not in out and "http" not in out.replace(SVG_NS, "")
+    assert 'transform="translate(10 20) rotate(5)"' in out
+    assert 'fill="rgb(1,2,3)"' in out and 'stroke="URL(#g)"' in out
+
+
+def test_sanitize_keeps_tail_text_of_removed_element():
+    out = conti_art.sanitize_svg(_svg("<text>A<script/>B<rect/>C<set attributeName='x'/>D</text>"), "16:9")
+    assert "AB" in out and "CD" in out
+    out = conti_art.sanitize_svg(_svg("<text>A<script>x</script>B</text>"), "16:9")
+    assert "AB" in out
+
+
+def test_sanitize_output_has_no_prefixes_and_global_state_untouched():
+    import xml.etree.ElementTree as ET
+    out = conti_art.sanitize_svg(_svg('<g id="a"/><use xlink:href="#a"/><use href="#a"/>'), "16:9")
+    assert "ns0:" not in out and "ns1:" not in out and "xlink" not in out
+    assert out.count('href="#a"') == 2
+    assert ET.tostring(ET.Element(f"{{{SVG_NS}}}svg"), encoding="unicode").startswith("<ns0:svg")
+
+
+def test_sanitize_checks_size_after_serialization():
+    text = _svg("<text><![CDATA[" + "<" * 30000 + "]]></text>")
+    assert len(text.encode()) < conti_art.MAX_SVG_BYTES
+    with pytest.raises(ScriptError) as exc:
+        conti_art.sanitize_svg(text, "16:9")
+    assert exc.value.code == "invalid_svg"
+
+
+def test_sanitize_misc_vectors():
+    out = conti_art.sanitize_svg(
+        '<?xml-stylesheet href="http://x"?>' + _svg(
+            '<use href="javascript:alert(1)"/><set attributeName="href" to="x"/><animate attributeName="x"/>'
+            '<rect xml:base="http://x/" width="1"/>'), "16:9")
+    for bad in ("javascript", "<set", "<animate", "stylesheet", "xml:base", "base="):
+        assert bad not in out
+    assert "http" not in out.replace(SVG_NS, "")
