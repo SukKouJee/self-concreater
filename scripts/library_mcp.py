@@ -296,7 +296,8 @@ def main() -> int:
     os.dup2(2, 1)
     sys.stdout = sys.stderr
     stdin = open(0, "rb", closefd=False)
-    log(f"시작: 작업 폴더 {os.environ.get('YT_COACH_HOME') or Path.cwd()}")
+    from scripts import ctx                                          # sys.path를 맞춘 뒤에 가져온다
+    log(f"시작: 작업 폴더 {ctx.here().store.label()}")
     serve(stdin, out)
     return 0
 

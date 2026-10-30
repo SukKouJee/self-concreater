@@ -307,3 +307,15 @@ def test_reexec_guard_stops_the_loop_with_a_clear_exit(tmp_path):
     done = subprocess.run([_base_python(), "-I", "-S", str(SERVER)], input=b"", capture_output=True, env=env,
                           timeout=30)
     assert done.returncode == 1 and done.stdout == b""
+
+
+@pytest.mark.parametrize("set_home_env", [True, False])
+def test_startup_log_names_the_work_folder_from_env_or_cwd(tmp_path, set_home_env):
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    env.pop("YT_COACH_HOME", None)
+    if set_home_env:
+        env["YT_COACH_HOME"] = str(tmp_path)
+    done = subprocess.run([sys.executable, str(SERVER)], input=b"", capture_output=True, env=env, cwd=str(tmp_path),
+                          timeout=30)
+    assert done.returncode == 0
+    assert f"시작: 작업 폴더 {tmp_path}" in done.stderr.decode("utf-8")

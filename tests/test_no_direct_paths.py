@@ -1,8 +1,11 @@
 """S3 게이트(설계 §5 "0"의 기계적 정의): 허용 목록 밖 `scripts/**/*.py`는 작업 폴더 경로를 직접 다루지 않는다.
 
-1. `work_root(`·`workspace_dir(`·`category_dir(`·`existing_category_dir(`·`move_to_trash(` 호출 0
-2. 작업 폴더 최상위 이름으로 시작하는 경로형 문자열 상수, `ref_`/`-conti`로 경로를 조립하는 상수 0 (독스트링 제외)
-3. `ctx.root`·`here().root` 속성 접근 0
+1. `work_root(`·`workspace_dir(`·`category_dir(`·`existing_category_dir(`·`move_to_trash(` 호출 0.
+   그 이름의 `from … import`(별칭 포함)·`getattr(x, "<이름>")`도 같은 위반이다
+2. 작업 폴더 최상위 이름으로 시작하는 경로형 문자열 상수, `ref_`/`-conti`로 경로를 조립하는 상수 0 (독스트링 제외).
+   경로를 만드는 자리는 `/`·`joinpath`·`Path(…)`·`os.path.join(…)`. f-문자열 조각은 `/refs/`처럼 중간에 든 최상위 이름도 센다
+3. `ctx.root`·`here().root`, `here()`·`current()`·`use()`로 받은 변수의 `.root` 속성 접근 0
+4. 작업 폴더를 스스로 정하는 것 0: 문자열 상수 `"YT_COACH_HOME"`, `Path.cwd()`·`os.getcwd()` 호출
 키 문자열은 `scripts/keys.py`에서만 만든다. 예외는 아래 `EXEMPT_*`에 이유와 함께 적는다.
 """
 from __future__ import annotations
@@ -29,6 +32,12 @@ _BARE_TOP_RE = re.compile(r"^(?:refs|drafts|mine|missions|reviews|reports|worksp
 # 카테고리 폴더(`ref_<카테고리>`)·콘티 파일(`<stem>-conti.html`)을 조립하는 조각. `ref_frame` 같은 필드 이름은 아니다
 _COMPOSE_RE = re.compile(r"(?<![-A-Za-z0-9])(?:ref_(?:$|\*|\{)|-conti)")
 # (CLI 플래그 `--conti`와 `yt-conti` 같은 이름은 앞 글자 검사로 제외한다)
+# f-문자열 조각 안의 최상위 이름: `f"{root}/refs/{c}"`의 `/refs/`, `f"{root}/profile.md"`의 `/profile.md`
+_FSTR_TOP_RE = re.compile(r"(?:^|[/\\])(?:(?:refs|drafts|mine|missions|reviews|reports|workspace)[/\\]|"
+                          r"(?:profile\.md|yt-coach\.json|library\.json)$)")
+HOME_ENV = "YT_COACH_HOME"
+CWD_CALLS = {"cwd", "getcwd"}
+_CTX_CALLS = {"here", "current", "use"}
 
 # 규칙 2 예외: (scripts 기준 상대 경로, 상수 값) -> 이유. 새 예외를 늘리지 말고 먼저 keys.* 로 옮긴다.
 EXEMPT_CONSTANTS: dict[tuple[str, str], str] = {
@@ -58,9 +67,35 @@ def _path_operand_nodes(tree: ast.AST) -> set[int]:
     for node in ast.walk(tree):
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
             ids.update(id(o) for o in (node.left, node.right))
-        elif isinstance(node, ast.Call) and _call_name(node.func) in {"joinpath", "Path", "PurePosixPath"}:
+        elif isinstance(node, ast.Call) and (_call_name(node.func) in {"joinpath", "Path", "PurePosixPath"}
+                                             or _is_path_join(node.func)):
             ids.update(id(a) for a in node.args)
     return ids
+
+
+def _is_path_join(func: ast.expr) -> bool:
+    """`os.path.join`·`posixpath.join`·`ntpath.join`(문자열의 `", ".join`은 아니다)."""
+    return isinstance(func, ast.Attribute) and func.attr == "join" and not isinstance(func.value, ast.Constant) \
+        and ast.unparse(func.value) in {"os.path", "posixpath", "ntpath", "path"}
+
+
+def _fstring_parts(tree: ast.AST) -> set[int]:
+    return {id(v) for node in ast.walk(tree) if isinstance(node, ast.JoinedStr)
+            for v in node.values if isinstance(v, ast.Constant)}
+
+
+def _ctx_names(tree: ast.AST) -> set[str]:
+    """`x = ctx.here()`, `x = current()`, `with ctx.use(...) as x`처럼 실행 문맥을 받은 변수 이름(모듈 전체 기준)."""
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)) and node.value is not None \
+                and isinstance(node.value, ast.Call) and _call_name(node.value.func) in _CTX_CALLS:
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names.update(t.id for t in targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.withitem) and isinstance(node.context_expr, ast.Call) \
+                and _call_name(node.context_expr.func) in _CTX_CALLS and isinstance(node.optional_vars, ast.Name):
+            names.add(node.optional_vars.id)
+    return names
 
 
 def _call_name(func: ast.expr) -> str | None:
@@ -71,12 +106,12 @@ def _call_name(func: ast.expr) -> str | None:
     return None
 
 
-def _is_ctx_expr(node: ast.expr) -> bool:
-    """`ctx.root`, `c.root`(Ctx 변수), `here().root`, `ctx.here().root`, `ctx.current().root`."""
+def _is_ctx_expr(node: ast.expr, bound: set[str]) -> bool:
+    """`ctx.root`, `c.root`(Ctx 변수), `here().root`, `ctx.here().root`, `ctx.current().root`, 문맥을 받은 변수의 `.root`."""
     if isinstance(node, ast.Call):
-        return _call_name(node.func) in {"here", "current"}
+        return _call_name(node.func) in _CTX_CALLS
     if isinstance(node, ast.Name):
-        return node.id in {"ctx", "c", "cx"}
+        return node.id in {"ctx", "c", "cx"} or node.id in bound
     if isinstance(node, ast.Attribute):
         return node.attr == "ctx"
     return False
@@ -87,17 +122,28 @@ def violations(path: Path, source: str | None = None) -> list[str]:
     tree = ast.parse(source if source is not None else path.read_text(encoding="utf-8"))
     docs = _docstring_nodes(tree)
     joined = _path_operand_nodes(tree)
+    fparts = _fstring_parts(tree)
+    bound = _ctx_names(tree)
     found: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and _call_name(node.func) in FORBIDDEN_CALLS:
             found.append(f"{rel}:{node.lineno} call {_call_name(node.func)}(")
+        elif isinstance(node, ast.Call) and _call_name(node.func) == "getattr" and len(node.args) >= 2 \
+                and isinstance(node.args[1], ast.Constant) and node.args[1].value in FORBIDDEN_CALLS:
+            found.append(f"{rel}:{node.lineno} getattr {node.args[1].value}")
+        elif isinstance(node, ast.Call) and _call_name(node.func) in CWD_CALLS:
+            found.append(f"{rel}:{node.lineno} call {_call_name(node.func)}(")
+        elif isinstance(node, ast.ImportFrom):
+            found.extend(f"{rel}:{node.lineno} import {a.name}" for a in node.names if a.name in FORBIDDEN_CALLS)
         elif isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docs:
             value = node.value
-            pathy = " " not in value and (_TOP_PATH_RE.match(value) or _COMPOSE_RE.search(value) or (
-                _BARE_TOP_RE.match(value) and id(node) in joined))
+            pathy = value == HOME_ENV or (" " not in value and (
+                _TOP_PATH_RE.match(value) or _COMPOSE_RE.search(value)
+                or (_BARE_TOP_RE.match(value) and id(node) in joined)
+                or (id(node) in fparts and _FSTR_TOP_RE.search(value))))
             if pathy and (rel, value) not in EXEMPT_CONSTANTS:
                 found.append(f"{rel}:{node.lineno} string {value[:50]!r}")
-        elif isinstance(node, ast.Attribute) and node.attr == "root" and _is_ctx_expr(node.value):
+        elif isinstance(node, ast.Attribute) and node.attr == "root" and _is_ctx_expr(node.value, bound):
             found.append(f"{rel}:{node.lineno} .root access")
     return found
 
@@ -132,3 +178,54 @@ def test_checker_ignores_docstrings_comments_and_plain_words() -> None:
     src = ('"""refs/travel 와 work_root() 를 설명한다."""\n'
            'def f():\n    """drafts/ 폴더."""\n    # work_root()\n    return "drafts 폴더에 저장했다", "refs", "mine", "ref_frame", "yt-conti", self.root\n')
     assert _check(src) == []
+
+
+# --- 우회 형태(최종 리뷰 I-1) ---------------------------------------------------------------
+
+def test_checker_flags_import_of_forbidden_name_even_with_alias() -> None:
+    assert len(_check("from scripts.common import work_root\n")) == 1
+    assert len(_check("from scripts.common import workspace_dir as wd\n")) == 1
+    assert len(_check("from scripts.refstore import existing_category_dir as e, read\n")) == 1
+    assert _check("from scripts.common import ScriptError\n") == []
+
+
+def test_checker_flags_getattr_of_forbidden_name() -> None:
+    assert len(_check("f = getattr(common, 'work_root')\n")) == 1
+    assert len(_check("f = getattr(common, 'move_to_trash', None)\n")) == 1
+    assert _check("f = getattr(common, 'emit')\n") == []
+
+
+def test_checker_flags_os_path_join_operands() -> None:
+    assert len(_check("p = os.path.join(base, 'refs', c)\n")) == 1
+    assert len(_check("p = posixpath.join(base, 'workspace')\n")) == 1
+    assert _check("s = ', '.join(['refs', 'mine'])\n") == []
+
+
+def test_checker_flags_fstring_path_segments() -> None:
+    assert len(_check("p = f'{root}/refs/{c}'\n")) == 1
+    assert len(_check("p = f'{root}/workspace/frames/{v}'\n")) == 1
+    assert len(_check("p = f'refs/ref_x/{name}'\n")) >= 1
+    assert len(_check("p = f'{root}/profile.md'\n")) == 1
+    assert _check("m = f'{n}개 레퍼런스를 refs 폴더에서 찾았습니다'\n") == []
+
+
+def test_checker_flags_home_env_and_cwd() -> None:
+    assert len(_check("h = os.environ.get('YT_COACH_HOME')\n")) == 1
+    assert len(_check("h = Path.cwd()\n")) == 1
+    assert len(_check("h = os.getcwd()\n")) == 1
+    assert _check("m = 'YT_COACH_HOME 환경 변수를 확인하세요'\n") == []
+
+
+def test_checker_flags_root_on_variable_bound_from_here_or_current() -> None:
+    assert len(_check("here_ctx = ctx.here()\np = here_ctx.root\n")) == 1
+    assert len(_check("cur = ctx.current()\np = cur.root\n")) == 1
+    assert len(_check("def f():\n    w = here()\n    return w.root\n")) == 1
+    assert len(_check("with ctx.use(ctx.here()) as active:\n    p = active.root\n")) == 1
+    assert _check("tree = build()\np = tree.root\n") == []
+
+
+def test_count_work_root_counts_imports_and_getattr() -> None:
+    counts = count_work_root.count_calls(
+        "from scripts.common import work_root as w, workspace_dir\nf = getattr(common, 'move_to_trash')\n")
+    assert counts["work_root"] == 1 and counts["workspace_dir"] == 1 and counts["move_to_trash"] == 1
+    assert counts["all"] == 3
