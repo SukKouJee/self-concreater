@@ -37,9 +37,9 @@ from typing import Any
 
 import numpy as np
 
-from scripts import conti, footage
+from scripts import conti, ctx, footage, keys
 from scripts import footage_match as fmatch
-from scripts.common import ArgParser, ScriptError, run, work_root
+from scripts.common import ArgParser, ScriptError, run
 from scripts.report import _vars
 from scripts.videomd import LABELS
 
@@ -60,19 +60,12 @@ AUDIO_RATE = 48000
 ClipProgress = Callable[[int, str, dict[str, Any]], None]
 
 
-def _conti_path(value: str | Path) -> Path:
-    path = conti.safe_draft_path(str(value), conti_file=True)
-    if not path.is_file():
+def _conti_key(value: str | Path) -> str:
+    """drafts/ 안의 콘티 md 키. 없으면 conti_not_found."""
+    key = conti.safe_draft_key(str(value), conti_file=True)
+    if not ctx.here().store.exists(key):
         raise ScriptError("conti_not_found", f"콘티가 없습니다: {value}")
-    return path
-
-
-def _base(path: Path) -> str:
-    return path.stem[: -len(conti.CONTI_SUFFIX)]
-
-
-def _rel(path: Path) -> str:
-    return path.resolve().relative_to(work_root().resolve()).as_posix()
+    return key
 
 
 def clock(sec: float) -> str:
@@ -127,11 +120,11 @@ class _Names:
         return self._cache[fid]
 
 
-def _load(path: Path) -> tuple[dict, list[dict], dict[str, Path]]:
+def _load(key: str) -> tuple[dict, list[dict], dict[str, Path]]:
     """(콘티 fm, 지금 컷 + 판정, 지금 있는 원본)."""
-    state = fmatch.load_state(path)
-    fm = conti._load_conti(path)
-    cuts = fmatch.visible_cuts(path, state)
+    state = fmatch.load_state(key)
+    fm = conti._load_conti(key)
+    cuts = fmatch.visible_cuts(key, state)
     return fm, cuts, present_sources(state["folders"])
 
 
@@ -234,20 +227,14 @@ def render_remaining(fm: dict, cuts: list[dict], present: dict[str, Path], now: 
             f"<body><main>{head}{board}</main></body></html>")
 
 
-def _write_text(path: Path, text: str, encoding: str = "utf-8") -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    with tmp.open("w", encoding=encoding, newline="") as f:
-        f.write(text)
-    os.replace(tmp, path)
-
-
 def remaining_html(conti_file: str | Path, now: float | None = None, embed: bool = False) -> str:
-    """drafts/<기획안>-remaining.html을 쓰고 작업 폴더 기준 상대 경로를 돌려준다."""
-    path = _conti_path(conti_file)
-    fm, cuts, present = _load(path)
-    out = path.with_name(f"{_base(path)}-remaining.html")
-    _write_text(out, render_remaining(fm, cuts, present, now, embed, conti.html_dir_of(out)))
-    return _rel(out)
+    """drafts/<기획안>-remaining.html을 쓰고 작업 폴더 기준 상대 경로(키)를 돌려준다. 줄바꿈은 만든 그대로(LF)."""
+    key = _conti_key(conti_file)
+    fm, cuts, present = _load(key)
+    out = keys.remaining_html(key)
+    html = render_remaining(fm, cuts, present, now, embed, conti.html_dir_of(out))
+    ctx.here().objects.put(out, html.encode("utf-8"))
+    return out
 
 
 # ---- 위치 CSV ------------------------------------------------------------------------------
@@ -280,13 +267,13 @@ def csv_rows(fm: dict, cuts: list[dict], present: dict[str, Path]) -> list[list[
 
 def csv_export(conti_file: str | Path) -> str:
     """drafts/<기획안>-footage.csv(UTF-8 BOM)를 쓰고 상대 경로를 돌려준다."""
-    path = _conti_path(conti_file)
-    fm, cuts, present = _load(path)
+    key = _conti_key(conti_file)
+    fm, cuts, present = _load(key)
     buf = io.StringIO()
     csv.writer(buf).writerows(csv_rows(fm, cuts, present))
-    out = path.with_name(f"{_base(path)}-footage.csv")
-    _write_text(out, buf.getvalue(), encoding="utf-8-sig")
-    return _rel(out)
+    out = keys.footage_csv(key)
+    ctx.here().objects.put(out, buf.getvalue().encode("utf-8-sig"))   # 줄바꿈은 csv가 만든 CRLF 그대로
+    return out
 
 
 # ---- 컷 파일 --------------------------------------------------------------------------------
@@ -304,18 +291,14 @@ def check_ready() -> None:
     _av()
 
 
-def clips_dir(conti_file: Path) -> Path:
-    return conti_file.with_name(f"{_base(conti_file)}-cuts")
-
-
 def clip_targets(conti_file: str | Path) -> list[dict[str, Any]]:
     """고른 구간이 있는 컷(콘티 순서). source는 지금 연결 폴더에서 찾은 원본(없으면 None)."""
-    path = _conti_path(conti_file)
-    state = fmatch.load_state(path)
+    key = _conti_key(conti_file)
+    state = fmatch.load_state(key)
     present = present_sources(state["folders"])
     names = _Names(present)
     out = []
-    for c in fmatch.visible_cuts(path, state):
+    for c in fmatch.visible_cuts(key, state):
         choice = c["match"].get("choice")
         if not choice or not isinstance(choice.get("fid"), str):
             continue
@@ -517,14 +500,15 @@ def _temp_for(dst: Path) -> Iterator[Path]:
         tmp.unlink(missing_ok=True)
 
 
-def cut_clip(target: dict[str, Any], out_dir: Path) -> dict[str, Any]:
-    """컷 하나를 잘라 out_dir에 쓴다. 재포장이 실패하면 그 구간만 다시 압축한다.
-    -> {"cut", "n", "name", "file"(상대 경로), "start", "end", "reencoded"}"""
+def cut_clip(target: dict[str, Any], out_dir: str) -> dict[str, Any]:
+    """컷 하나를 잘라 out_dir(컷 파일 폴더 키, `/`로 끝남)에 쓴다. 재포장이 실패하면 그 구간만 다시 압축한다.
+    PyAV는 저장소가 주는 쓰기 경로(`write_path`, 로컬은 최종 경로 그대로)에 쓴다.
+    -> {"cut", "n", "name", "file"(키), "start", "end", "reencoded"}"""
     src: Path = target["source"]
-    dst = out_dir / f"{target['n']:02d}_{src.stem}{CLIP_EXT}"
+    file_key = f"{out_dir}{target['n']:02d}_{src.stem}{CLIP_EXT}"
     start, end = target["start"], target["end"]
     reencoded = False
-    with _temp_for(dst) as tmp:
+    with ctx.here().objects.write_path(file_key) as dst, _temp_for(dst) as tmp:
         try:
             actual = _remux(src, tmp, start, end)
         except _remux_errors() as e:
@@ -540,18 +524,17 @@ def cut_clip(target: dict[str, Any], out_dir: Path) -> dict[str, Any]:
             os.replace(tmp, dst)
         except OSError as e:
             raise ScriptError("clip_failed", MSG_LOCKED.format(name=dst.name)) from e
-    return {"cut": target["cut"], "n": target["n"], "name": src.name, "file": _rel(dst),
+    return {"cut": target["cut"], "n": target["n"], "name": src.name, "file": file_key,
             "start": round(max(0.0, actual), 3), "end": end, "reencoded": reencoded}
 
 
-def clear_clips(out_dir: Path) -> None:
-    """이전에 만든 컷 파일만 지운다(그 폴더의 다른 파일은 둔다)."""
-    if not out_dir.is_dir():
-        return
-    for entry in out_dir.iterdir():
-        if entry.is_file() and CLIP_NAME_RE.fullmatch(entry.name):
+def clear_clips(out_dir: str) -> None:
+    """이전에 만든 컷 파일만 지운다(그 폴더의 다른 파일은 둔다). out_dir = 컷 파일 폴더 키."""
+    objects = ctx.here().objects
+    for meta in objects.list(out_dir):
+        if CLIP_NAME_RE.fullmatch(meta.key.rsplit("/", 1)[-1]):
             try:
-                entry.unlink()
+                objects.delete(meta.key)
             except OSError:
                 pass   # 다른 프로그램이 열어 둠: 같은 이름이면 그 컷에서 '열려 있어요'로 알리고, 아니면 남는다
 
@@ -563,16 +546,17 @@ def export_clips(conti_file: str | Path, progress: ClipProgress | None = None,
     "start" 콜백이 예외를 내면(작업 취소) 거기서 멈춘다.
     targets: 미리 구한 clip_targets(작업 진행 항목과 순서를 맞출 때). 없으면 지금 구한다.
     -> {"dir", "clips": [...], "skipped": [{"cut","n","name","reason"}], "failed": [...]}"""
-    path = _conti_path(conti_file)
+    key = _conti_key(conti_file)
     _av()
     if targets is None:
-        targets = clip_targets(path)
+        targets = clip_targets(key)
     if not targets:
         raise ScriptError("no_clips", MSG_NO_CLIPS)
-    out_dir = clips_dir(path)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = keys.cut_files_dir(key)
+    with ctx.here().objects.write_path(out_dir):      # 폴더를 만든다(원본이 없어 전부 건너뛰어도 폴더는 남는다)
+        pass
     clear_clips(out_dir)
-    result: dict[str, Any] = {"dir": _rel(out_dir), "clips": [], "skipped": [], "failed": []}
+    result: dict[str, Any] = {"dir": out_dir.rstrip("/"), "clips": [], "skipped": [], "failed": []}
     for i, target in enumerate(targets):
         if progress:
             progress(i, "start", target)

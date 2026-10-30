@@ -165,7 +165,7 @@ def test_html_beside_conti_md_at_root(saved, home):
     conti.update_cut(top, 1, {"ref_frame": frames[0]})
     page = (home / "top-conti.html").read_text("utf-8")
     assert f'src="{frames[0]}"' in page
-    assert conti.html_dir_of(top) == "." and conti.html_dir_of(saved) == "drafts"
+    assert conti.html_dir_of("top-conti.md") == "." and conti.html_dir_of(f"drafts/{saved.name}") == "drafts"
 
 
 # --- 컷 편집 ----------------------------------------------------------------------
@@ -282,13 +282,6 @@ def test_asset_url_and_data_uri(home):
     assert conti.asset_url("workspace/frames/x/none.jpg") is None
     assert conti.asset_url("workspace/frames/x/none.jpg", embed=True) is None
     assert conti.asset_url("workspace/frames/x") is None                   # 폴더는 파일이 아니다
-
-
-def test_rel_keeps_outside_paths_unchanged(home, tmp_path):
-    outside = tmp_path.parent / "elsewhere" / "x-conti.md"
-    assert conti._rel(outside) == outside.as_posix()
-    assert conti._rel(home / "drafts" / "a-conti.md") == "drafts/a-conti.md"
-    assert conti._rel(home / "drafts" / ".." / "drafts" / "a-conti.md") == "drafts/a-conti.md"
 
 
 # --- 탈출 검사 회귀 ----------------------------------------------------------------------

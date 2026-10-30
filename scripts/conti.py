@@ -69,19 +69,6 @@ def _key(value: str | Path) -> str:
     return ctx.here().scratch.key_of(value)
 
 
-def _rel(path: str | Path) -> str:
-    """작업 폴더 안이면 키, 밖이면 받은 경로 그대로(POSIX). 과도기: scene_merge·captions·UI가 Path로 부른다."""
-    try:
-        return _key(path)
-    except ScriptError:
-        return Path(path).as_posix()
-
-
-def _resolve(path: str | Path) -> Path:
-    """과도기(scene_merge가 아직 Path를 쓴다): 상대 경로는 작업 폴더 기준 Path로."""
-    return ctx.here().scratch.arg_path(path)
-
-
 def key_exists(key: str) -> bool:
     """키가 가리키는 파일이 있는가(md는 문서 저장소, 영상 캐시는 공유 캐시, 나머지는 객체 저장소에서 본다).
     프런트매터에 손으로 적은 값처럼 키 형식이 틀리면(`..`·역슬래시·드라이브) 없는 것으로 본다."""
@@ -738,9 +725,9 @@ def render_html(fm: dict, *, embed: bool = False, html_dir_rel: str = "drafts") 
             f"<body><main>{head}{full}{board}{table}{note}</main></body></html>")
 
 
-def html_dir_of(md: str | Path) -> str:
-    """HTML이 놓이는 폴더(md와 같은 폴더)의 작업 폴더 기준 상대 경로(바로 아래면 "."). 밖의 Path면 그 폴더 경로 그대로."""
-    return posixpath.dirname(_rel(md)) or "."
+def html_dir_of(md_key: str) -> str:
+    """HTML이 놓이는 폴더(md와 같은 폴더)의 작업 폴더 기준 상대 경로(바로 아래면 ".")."""
+    return posixpath.dirname(md_key) or "."
 
 
 def _write_html(md_key: str, fm: dict, embed: bool = False) -> str:
@@ -1368,12 +1355,12 @@ def caption_blocks(conti: str | Path, track: str = "caption", video: str | Path 
     """콘티의 자막(또는 대사) 블록과 시간을 계산한다. export_srt와 자막 영상 렌더가 같은 계산을 쓴다.
 
     video가 없으면 컷 sec의 ms 정수 누적, 있으면 그 영상의 실제 컷에 맞춘 시간. 영상 파일은 읽기만 한다.
-    돌려주는 값: key(콘티 키), path(콘티 Path, 과도기: captions가 키로 바뀌면 뺀다), fm(콘티 프런트매터),
+    돌려주는 값: key(콘티 키), fm(콘티 프런트매터),
     blocks([[시작ms, 끝ms, 텍스트]]), duration_ms, retime(맞춤 요약 또는 None), video(정리된 영상 Path 또는 None).
     """
     if track not in SRT_TRACKS:
         raise ScriptError("bad_request", f"track은 caption 또는 line이어야 합니다: {track}")
-    key = safe_draft_key(_rel(conti), conti_file=True)   # drafts/ 안의 *-conti.md만(CLI도 API와 같은 규칙)
+    key = safe_draft_key(Path(conti).as_posix() if isinstance(conti, Path) else conti, conti_file=True)   # drafts/ 안의 *-conti.md만(CLI도 API와 같은 규칙)
     field, _ = SRT_TRACKS[track]
     fm = _load_conti(key)
     retime: dict | None = None
@@ -1384,7 +1371,7 @@ def caption_blocks(conti: str | Path, track: str = "caption", video: str | Path 
         spans, retime = _retime_spans_ms(fm["cuts"], video, progress)
         video_path = _clean_video_path(video)
     blocks = _srt_blocks(fm["cuts"], field, spans)
-    return {"key": key, "path": ctx.here().scratch.arg_path(key).resolve(), "fm": fm, "blocks": blocks,
+    return {"key": key, "fm": fm, "blocks": blocks,
             "duration_ms": spans[-1][1] if spans else 0,
             "retime": retime, "video": video_path}
 

@@ -337,7 +337,7 @@ def test_export_clips_contains_locked_output_to_its_cut(two_cuts, home, monkeypa
 
 
 def test_clear_clips_ignores_locked_old_clip(two_cuts, home, monkeypatch):
-    out_dir = footage_out.clips_dir(two_cuts)
+    out_dir = home / "drafts" / (two_cuts.name.replace("-conti.md", "") + "-cuts")
     out_dir.mkdir()
     (out_dir / "07_old.mp4").write_bytes(b"x")
     real = Path.unlink

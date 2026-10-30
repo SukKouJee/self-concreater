@@ -27,7 +27,6 @@ import json
 import math
 import os
 import re
-import shutil
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,8 +35,8 @@ from typing import Any
 import cv2
 import numpy as np
 
-from scripts import stt
-from scripts.common import ArgParser, Progress, ScriptError, run, safe_progress, workspace_dir
+from scripts import ctx, keys, stt
+from scripts.common import ArgParser, Progress, ScriptError, run, safe_progress
 from scripts.cuts import DECODE_RETRIES, SCENE_THRESHOLD
 
 VIDEO_EXTS = frozenset({".mp4", ".mov", ".m4v", ".mkv"})
@@ -74,10 +73,16 @@ def valid_fid(fid: object) -> bool:
     return isinstance(fid, str) and _FID_RE.fullmatch(fid) is not None
 
 
-def footage_dir(fid: str) -> Path:
+def footage_key(fid: str) -> str:
+    """처리 캐시 폴더 키(`workspace/footage/<fid>/`). 지문 모양이 아니면 ScriptError("bad_fid")."""
     if not valid_fid(fid):
         raise ScriptError("bad_fid", "잘못된 파일 id입니다")
-    return workspace_dir("footage", fid)
+    return keys.footage_dir(fid)
+
+
+def footage_dir(fid: str) -> Path:
+    """과도기(UI 사진 서빙·테스트가 아직 Path를 쓴다): footage_key의 실제 폴더 경로."""
+    return Path(ctx.here().objects.display_path(footage_key(fid)))
 
 
 def scan_folder(folder: str | Path) -> list[dict[str, Any]]:
@@ -224,12 +229,13 @@ def _decode_errors() -> tuple[type[Exception], ...]:
     return (*errors, av.error.FFmpegError)
 
 
-def _clear_images(base: Path) -> None:
+def _clear_images(fid: str) -> None:
+    objects = ctx.here().objects
     for leftover in ("frames", "montage"):
-        shutil.rmtree(base / leftover, ignore_errors=True)
+        objects.delete_prefix(f"{footage_key(fid)}{leftover}/")
 
 
-def decode_scenes(path: Path, base: Path, report: Progress | None = None) -> tuple[str, float, list[dict]]:
+def decode_scenes(path: Path, fid: str, report: Progress | None = None) -> tuple[str, float, list[dict]]:
     """PyAV → OpenCV 순서로 장면을 뽑는다. -> (디코더, 길이, 장면)
 
     한 디코더가 못 열거나, 한 장도 못 읽거나, 읽다 오류(ValueError·cv2.error·FFmpegError)가 나면
@@ -237,14 +243,15 @@ def decode_scenes(path: Path, base: Path, report: Progress | None = None) -> tup
     같은 OSError는 ScriptError("retry")로 바로 올린다(다음 처리 때 다시 해 본다).
     """
     reasons: list[str] = []
+    objects = ctx.here().objects
     for reader in (_read_pyav, _read_opencv):
-        _clear_images(base)
+        _clear_images(fid)
         try:
-            with reader(path, DECODE_SHORT_SIDE) as source:
+            with reader(path, DECODE_SHORT_SIDE) as source, objects.write_path(footage_key(fid)) as base:
                 duration, scenes = extract_scenes(source, base, report)
             return source.decoder, duration, scenes
         except OSError as e:
-            _clear_images(base)
+            _clear_images(fid)
             detail = e.strerror or type(e).__name__
             raise ScriptError(
                 "retry", f"파일을 읽지 못했습니다(다른 프로그램이 쓰고 있거나 드라이브가 빠졌을 수 있습니다): {detail}",
@@ -255,7 +262,7 @@ def decode_scenes(path: Path, base: Path, report: Progress | None = None) -> tup
             reasons.append(e.message)
         except _decode_errors() as e:
             reasons.append(f"영상을 읽다 멈췄습니다: {stt.av_detail(e)}")
-    _clear_images(base)
+    _clear_images(fid)
     raise ScriptError("unreadable", " / ".join(dict.fromkeys(reasons)))
 
 
@@ -399,35 +406,39 @@ def extract_scenes(source: Source, out_dir: Path, report: Progress | None = None
 
 # --- 캐시·흐름 ------------------------------------------------------------------
 
-def _write_json(path: Path, data: dict[str, Any]) -> None:
-    """임시 파일에 쓴 뒤 바꿔 끼운다: 중단돼도 반쯤 쓴 json이 남지 않는다."""
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
-    os.replace(tmp, path)
+def _write_json(key: str, data: dict[str, Any]) -> None:
+    """임시 파일에 쓴 뒤 바꿔 끼운다(저장소 put): 중단돼도 반쯤 쓴 json이 남지 않는다. LF·UTF-8, 끝 줄바꿈 없음."""
+    ctx.here().objects.put(key, json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"))
 
 
-def _read_json(path: Path) -> dict[str, Any] | None:
+def _read_json(key: str) -> dict[str, Any] | None:
     """캐시 json. 없거나 깨졌으면(반쯤 쓴 파일, 손으로 고친 파일) None: 없는 캐시처럼 다시 만든다."""
-    if not path.exists():
+    objects = ctx.here().objects
+    if not objects.exists(key):
         return None
     try:
-        data = json.loads(path.read_text("utf-8"))
+        data = json.loads(objects.get(key).decode("utf-8"))
     except ValueError:
         return None
     return data if isinstance(data, dict) else None
 
 
-def _read_record(base: Path) -> dict[str, Any] | None:
+def read_transcript(fid: str) -> dict[str, Any] | None:
+    """받아쓰기 캐시(transcript.json). 없거나 깨졌으면 None."""
+    return _read_json(f"{footage_key(fid)}transcript.json")
+
+
+def _read_record(prefix: str) -> dict[str, Any] | None:
     """scenes.json 캐시. 없거나 깨졌거나 status가 없으면 None(다시 처리한다)."""
-    record = _read_json(base / "scenes.json")
+    record = _read_json(f"{prefix}scenes.json")
     return record if record is not None and isinstance(record.get("status"), str) else None
 
 
-def _scene_record(path: Path, fid: str, base: Path, report: Progress | None) -> dict[str, Any]:
+def _scene_record(path: Path, fid: str, report: Progress | None) -> dict[str, Any]:
     """장면을 뽑아 scenes.json에 남긴다. retry(잠김 등)는 남기지 않아 다음 처리 때 다시 해 본다."""
     record: dict[str, Any] = {"schema": SCHEMA, "fid": fid, "name": path.name}
     try:
-        decoder, duration, scenes = decode_scenes(path, base, report)
+        decoder, duration, scenes = decode_scenes(path, fid, report)
     except ScriptError as e:
         if e.code == "retry":
             return {**record, "status": "retry", "reason": e.message, "duration_sec": None, "scenes": []}
@@ -436,13 +447,13 @@ def _scene_record(path: Path, fid: str, base: Path, report: Progress | None) -> 
         record.update(status="unreadable", reason=e.message, duration_sec=None, scenes=[])
     else:
         record.update(status="done", decoder=decoder, duration_sec=duration, scenes=scenes)
-    _write_json(base / "scenes.json", record)
+    _write_json(f"{footage_key(fid)}scenes.json", record)
     return record
 
 
-def _transcript(path: Path, base: Path, report: Progress | None) -> dict[str, Any]:
+def _transcript(path: Path, fid: str, report: Progress | None) -> dict[str, Any]:
     """-> transcript.json 내용 {"segments": [...] | None, "error"?}. faster-whisper가 없으면 캐시하지 않는다."""
-    cached = _read_json(base / "transcript.json")
+    cached = read_transcript(fid)
     if cached is not None:
         return cached
     try:
@@ -453,7 +464,7 @@ def _transcript(path: Path, base: Path, report: Progress | None) -> dict[str, An
         if e.code != "stt_failed":
             raise
         data = {"segments": None, "error": e.message}
-    _write_json(base / "transcript.json", data)
+    _write_json(f"{footage_key(fid)}transcript.json", data)
     return data
 
 
@@ -463,20 +474,19 @@ def process_file(path: str | Path, progress: Progress | None = None, run_stt: bo
     -> {"fid", "name", "status": "done"|"unreadable"|"retry", "reason"?, "decoder"?, "duration_sec",
         "scenes": [{"i", "start", "end", "frames": [rel...], "montage": rel}],
         "transcript": [{"start", "end", "text"}] | None, "stt_missing"?, "transcript_error"?}
-    rel은 footage_dir(fid) 기준 상대 경로. progress: ("scenes", 비율, 글) → ("stt", 비율, 글).
+    rel은 footage_key(fid) 기준 상대 경로. progress: ("scenes", 비율, 글) → ("stt", 비율, 글).
     """
     path = Path(path)
     if not path.is_file():
         raise ScriptError("file_not_found", f"파일을 찾을 수 없습니다: {path.name}")
     fid = fingerprint(path)
-    base = footage_dir(fid)
-    base.mkdir(parents=True, exist_ok=True)
+    prefix = footage_key(fid)
     report = safe_progress(progress)
 
-    record = _read_record(base) or _scene_record(path, fid, base, report)
+    record = _read_record(prefix) or _scene_record(path, fid, report)
     if record["status"] != "done":
         return _result(record, None)
-    transcript = _transcript(path, base, report) if run_stt else _read_json(base / "transcript.json")
+    transcript = _transcript(path, fid, report) if run_stt else read_transcript(fid)
     return _result(record, transcript)
 
 
@@ -495,11 +505,10 @@ def _result(record: dict[str, Any], transcript: dict[str, Any] | None) -> dict[s
 def cached_result(fid: str) -> dict[str, Any] | None:
     """process_file이 남긴 캐시만 읽는다(처리하지 않는다). scenes.json이 없으면 None.
     받아쓰기를 아직 안 했으면(transcript.json 없음) transcript는 None."""
-    base = footage_dir(fid)
-    record = _read_record(base)
+    record = _read_record(footage_key(fid))
     if record is None:
         return None
-    transcript = _read_json(base / "transcript.json") if record["status"] == "done" else None
+    transcript = read_transcript(fid) if record["status"] == "done" else None
     return _result(record, transcript)
 
 

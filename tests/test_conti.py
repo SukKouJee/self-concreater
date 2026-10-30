@@ -453,7 +453,7 @@ def test_export_srt_line_track_name(saved, home):
 def test_export_srt_merges_same_caption_only_when_adjacent(saved, monkeypatch):
     _srt_cuts(monkeypatch, [_cut(2, "A"), _cut(1, "A"), _cut(1, ""), _cut(1, "A")])
     out = conti.export_srt(saved)
-    text = conti._resolve(out["path"]).read_bytes().decode("utf-8")
+    text = (saved.parents[1] / out["path"]).read_bytes().decode("utf-8")
     assert out["count"] == 2
     assert "00:00:00,000 --> 00:00:03,000\r\nA" in text and "00:00:04,000 --> 00:00:05,000\r\nA" in text
 
@@ -461,19 +461,19 @@ def test_export_srt_merges_same_caption_only_when_adjacent(saved, monkeypatch):
 def test_export_srt_skips_empty_cuts_but_keeps_time(saved, monkeypatch):
     _srt_cuts(monkeypatch, [_cut(1.5, ""), _cut(2, "B")])
     out = conti.export_srt(saved)
-    assert "1\r\n00:00:01,500 --> 00:00:03,500\r\nB" in conti._resolve(out["path"]).read_bytes().decode("utf-8")
+    assert "1\r\n00:00:01,500 --> 00:00:03,500\r\nB" in (saved.parents[1] / out["path"]).read_bytes().decode("utf-8")
 
 
 def test_export_srt_no_float_drift(saved, monkeypatch):
     _srt_cuts(monkeypatch, [_cut(0.1, f"c{i}") for i in range(30)])
     out = conti.export_srt(saved)
     assert out["duration_sec"] == 3.0
-    assert "00:00:02,900 --> 00:00:03,000\r\nc29" in conti._resolve(out["path"]).read_bytes().decode("utf-8")
+    assert "00:00:02,900 --> 00:00:03,000\r\nc29" in (saved.parents[1] / out["path"]).read_bytes().decode("utf-8")
 
 
 def test_export_srt_cleans_text(saved, monkeypatch):
     _srt_cuts(monkeypatch, [_cut(1, "  a \n\n b\nc\nd  "), _cut(1, "x --> y")])
-    text = conti._resolve(conti.export_srt(saved)["path"]).read_bytes().decode("utf-8")
+    text = (saved.parents[1] / conti.export_srt(saved)["path"]).read_bytes().decode("utf-8")
     assert "a\r\nb c d\r\n" in text and "x → y" in text and "-->" not in text.replace(" --> ", "")
 
 

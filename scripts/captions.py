@@ -22,8 +22,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from scripts import conti
-from scripts.common import ArgParser, ScriptError, run, work_root, workspace_dir
+from scripts import conti, ctx, keys
+from scripts.common import ArgParser, ScriptError, run
 
 REMOTION_DIR = Path(__file__).resolve().parent.parent / "remotion"
 FPS = 30
@@ -227,12 +227,10 @@ def render(conti_path: str | Path, video: str | Path | None = None, track: str =
     props, calc = _build(conti_path, video, track, step)
     if timeout is None:
         timeout = total_timeout(props["durationInFrames"])
-    path: Path = calc["path"]
-    out = path.with_name(f"{path.stem[: -len(conti.CONTI_SUFFIX)]}-captions.mp4")
-    tmp_dir = workspace_dir("tmp")
-    tmp_dir.mkdir(parents=True, exist_ok=True)
+    out_key = keys.captions_mp4(calc["key"])
     token = uuid.uuid4().hex[:12]
-    props_file, tmp_mp4 = tmp_dir / f"captions_{token}.json", tmp_dir / f"captions_{token}.mp4"
+    scratch = ctx.here().scratch
+    props_file, tmp_mp4 = scratch.tmp_path(f"captions_{token}.json"), scratch.tmp_path(f"captions_{token}.mp4")
     tail: deque[str] = deque(maxlen=5)
     try:
         props_file.write_text(json.dumps(props, ensure_ascii=False), encoding="utf-8")
@@ -290,13 +288,14 @@ def render(conti_path: str | Path, video: str | Path | None = None, track: str =
         if proc.returncode != 0 or not tmp_mp4.is_file():
             raise ScriptError("render_failed", "자막 영상을 만들지 못했습니다: " + "\n".join(tail))
         try:
-            os.replace(tmp_mp4, out)
+            with ctx.here().objects.write_path(out_key) as out:      # 로컬은 최종 경로 그대로
+                os.replace(tmp_mp4, out)
         except OSError as e:
             raise ScriptError("render_failed", f"자막 영상을 저장하지 못했습니다(열려 있는 파일인지 확인하세요): {e}") from e
     finally:
         _remove(props_file)
         _remove(tmp_mp4)
-    result: dict[str, Any] = {"path": conti._rel(out), "count": len(props["captions"]),
+    result: dict[str, Any] = {"path": out_key, "count": len(props["captions"]),
                               "duration_sec": calc["duration_ms"] / 1000,
                               "width": props["width"], "height": props["height"]}
     if calc["retime"] is not None:

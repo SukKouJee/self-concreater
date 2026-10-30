@@ -27,6 +27,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import posixpath
 import threading
 import time
 from collections.abc import Iterable
@@ -34,8 +35,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from scripts import claude_cli, conti, footage, llm, refstore
-from scripts.common import ScriptError, workspace_dir
+from scripts import claude_cli, conti, ctx, footage, keys, llm
+from scripts.common import ScriptError
 from scripts.features import SHOT_SIZES
 
 IMAGES_PER_CALL = 8
@@ -102,8 +103,13 @@ def _rules() -> list[Path]:
 
 # --- 저장 -----------------------------------------------------------------------------
 
-def state_path(conti_path: str | Path) -> Path:
-    return workspace_dir("footage_match", f"{Path(conti_path).stem}.json")
+def state_key(conti_path: str | Path) -> str:
+    """판정 파일 키(`workspace/footage_match/<콘티 stem>.json`). 콘티 이름(stem)만 쓴다(설계 §7-8)."""
+    return keys.footage_match(Path(conti_path).as_posix())
+
+
+def has_state(conti_path: str | Path) -> bool:
+    return ctx.here().objects.exists(state_key(conti_path))
 
 
 def _empty_state() -> dict[str, Any]:
@@ -112,28 +118,28 @@ def _empty_state() -> dict[str, Any]:
 
 def load_state(conti_path: str | Path) -> dict[str, Any]:
     """저장된 판정. 없으면 빈 상태. 깨진 파일은 ScriptError("bad_state")(덮어쓰지 않게 알린다)."""
-    path = state_path(conti_path)
-    if not path.is_file():
+    key = state_key(conti_path)
+    objects = ctx.here().objects
+    if not objects.exists(key):
         return _empty_state()
+    name = posixpath.basename(key)
     try:
-        data = json.loads(path.read_text("utf-8"))
+        data = json.loads(objects.get(key).decode("utf-8"))
     except (OSError, ValueError) as e:
-        raise ScriptError("bad_state", f"촬영 영상 판정 파일을 읽지 못했습니다: {path.name}: {e}") from e
+        raise ScriptError("bad_state", f"촬영 영상 판정 파일을 읽지 못했습니다: {name}: {e}") from e
     if not isinstance(data, dict):
-        raise ScriptError("bad_state", f"촬영 영상 판정 파일의 형식이 맞지 않습니다: {path.name}")
+        raise ScriptError("bad_state", f"촬영 영상 판정 파일의 형식이 맞지 않습니다: {name}")
     state = _empty_state()
     state.update(data)
     if not isinstance(state["cuts"], dict) or not isinstance(state["suggestions"], list) \
             or not isinstance(state["folders"], list):
-        raise ScriptError("bad_state", f"촬영 영상 판정 파일의 형식이 맞지 않습니다: {path.name}")
+        raise ScriptError("bad_state", f"촬영 영상 판정 파일의 형식이 맞지 않습니다: {name}")
     return state
 
 
 def save_state(conti_path: str | Path, state: dict[str, Any]) -> None:
     """임시 파일에 쓴 뒤 바꿔 끼운다(LF, UTF-8)."""
-    path = state_path(conti_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    refstore.write_atomic(path, json.dumps(state, ensure_ascii=False, indent=2).encode("utf-8"))
+    ctx.here().objects.put(state_key(conti_path), json.dumps(state, ensure_ascii=False, indent=2).encode("utf-8"))
 
 
 # --- 글자 후보 ------------------------------------------------------------------------
@@ -341,7 +347,7 @@ class _Scene:
     start: float
     end: float
     text: str
-    image: Path
+    image: str      # 모음 이미지 키(workspace/footage/<fid>/montage/…)
 
 
 def scene_key(fid: str, start: float) -> str:
@@ -358,6 +364,25 @@ def _seen_runs(value: Any) -> dict[str, int]:
     return {}
 
 
+def _montage_key(base: str, montage: Any) -> str | None:
+    """장면의 모음 이미지 키. 이름이 없거나 파일이 없거나 캐시에 손으로 적은 이상한 이름(`..` 등)이면 None."""
+    if not montage:
+        return None
+    key = f"{base}{montage}"
+    try:
+        return key if ctx.here().objects.exists(key) else None
+    except ScriptError as e:
+        if e.code != "bad_path":
+            raise
+        return None
+
+
+def _image_files(scenes: list[_Scene]) -> list[Path]:
+    """llm에 첨부할 사진 경로(과도기: llm이 키 목록을 받게 되면 키로 바꾼다)."""
+    objects = ctx.here().objects
+    return [Path(objects.display_path(s.image)) for s in scenes]
+
+
 def _scene_pool(usable: list[dict], transcripts: dict[str, list[dict]],
                 seen: dict[str, int] | None = None) -> list[_Scene]:
     """모음 이미지가 있는 장면. AI에 보낸 적 없는 장면부터, 그다음은 가장 오래전에 보낸 장면부터
@@ -365,10 +390,10 @@ def _scene_pool(usable: list[dict], transcripts: dict[str, list[dict]],
     seen = seen or {}
     pool: list[tuple[int, int, int, _Scene]] = []
     for order, r in enumerate(usable):
-        base = footage.footage_dir(r["fid"])
+        base = footage.footage_key(r["fid"])
         for s in r.get("scenes") or []:
-            image = base / str(s.get("montage") or "")
-            if not s.get("montage") or not image.is_file():
+            image = _montage_key(base, s.get("montage"))
+            if image is None:
                 continue
             start, end = float(s["start"]), float(s["end"])
             text = _speech(transcripts, r["fid"], start, end)
@@ -455,7 +480,7 @@ def match(conti_path: str | Path, files_results: list[dict], now: float | None =
     사용자 판정 컷(user: true)은 묻지도 바꾸지도 않는다(맞추는 도중에 사용자가 고른 것도). 처리 가능한
     파일이 없으면 Claude를 부르지 않고 모두 missing.
     """
-    path = Path(conti_path)
+    path = conti_path
     fm = conti._load_conti(path)
     labels = [str(s.get("label") or "") for s in fm.get("script") or []]
     before = load_state(path)
@@ -506,7 +531,7 @@ def match(conti_path: str | Path, files_results: list[dict], now: float | None =
             scenes = [{"image": i + 1, "fid": s.fid, "start": s.start, "end": s.end, "text": s.text}
                       for i, s in enumerate(chunk)]
             if batches.run({"mode": "images", "cuts": cuts_payload, "scenes": scenes}, IMAGE_TASK, offer,
-                           [s.image for s in chunk]):
+                           _image_files(chunk)):
                 looked.extend(chunk)
 
     image_ids = {c["id"] for c in image_cuts}
@@ -577,7 +602,7 @@ def match(conti_path: str | Path, files_results: list[dict], now: float | None =
 
 # --- 사용자 조작 ------------------------------------------------------------------------
 
-def _require_cut(conti_path: Path, cut_id: str) -> None:
+def _require_cut(conti_path: str | Path, cut_id: str) -> None:
     if not any(c["id"] == cut_id for c in conti._load_conti(conti_path)["cuts"]):
         raise ScriptError("cut_not_found", f"컷 {cut_id}이(가) 없습니다")
 
@@ -594,7 +619,7 @@ def _span(start: Any, end: Any) -> tuple[float, float]:
 
 
 def _update_cut(conti_path: str | Path, cut_id: str, change: Any) -> dict[str, Any]:
-    path = Path(conti_path)
+    path = conti_path
     _require_cut(path, cut_id)
     with STATE_LOCK:
         state = load_state(path)
@@ -640,6 +665,6 @@ def hide_suggestion(conti_path: str | Path, key: str) -> dict[str, Any]:
 
 def visible_cuts(conti_path: str | Path, state: dict[str, Any]) -> list[dict[str, Any]]:
     """지금 콘티에 있는 컷만(콘티 순서), 컷 필드 + "match"(판정, 없으면 missing)."""
-    cuts = conti._load_conti(Path(conti_path))["cuts"]
+    cuts = conti._load_conti(conti_path)["cuts"]
     return [{**{k: c.get(k) for k in CUT_KEYS}, "match": state["cuts"].get(c["id"]) or _missing_entry()}
             for c in cuts]

@@ -16,7 +16,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from scripts import conti
+from scripts import conti, ctx
 from scripts.common import ScriptError
 from scripts.conti import _norm
 
@@ -147,13 +147,13 @@ def _long_scenes(sections: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def plan(conti_path: str | Path) -> dict[str, Any]:
     """합치기 계획. {path, hash, before, after, sections: [{idx, label, text, split, scenes}], warnings}.
     id가 없던 옛 콘티는 먼저 id를 붙여 저장한다(적용할 때 같은 id로 장면을 찾도록)."""
-    path = conti._resolve(conti_path)
+    key = conti._key(conti_path)
     with conti.HISTORY_LOCK:
-        current, fm, _ = conti.ensure_ids_file(conti.read_conti(path))
+        current, fm, _ = conti.ensure_ids_file(conti.read_conti(key))
     if not has_repeats(fm["cuts"]):
         raise ScriptError("nothing_to_merge", NOTHING_MESSAGE)
     sections = _sections(fm)
-    return {"path": conti._rel(path), "hash": conti.bytes_hash(current.raw), "before": len(fm["cuts"]),
+    return {"path": key, "hash": conti.bytes_hash(current.raw), "before": len(fm["cuts"]),
             "after": sum(len(s["scenes"]) for s in sections), "sections": sections, "warnings": _long_scenes(sections)}
 
 
@@ -247,9 +247,9 @@ def apply_fm(conti_path: str | Path, cuts: Any, expected_hash: str, now: float |
     """apply와 같고 쓴 fm(검증·시간 계산 끝)도 돌려준다(화면 응답을 파일을 다시 읽지 않고 만들 때)."""
     from scripts import conti_history, footage_match   # 둘 다 conti를 쓰므로 함수 안에서 불러온다
 
-    path = conti._resolve(conti_path)
+    key = conti._key(conti_path)
     with conti.HISTORY_LOCK:
-        cf = conti.read_conti(path)
+        cf = conti.read_conti(key)
         if conti.bytes_hash(cf.raw) != expected_hash:
             raise ScriptError("conti_changed", "파일이 밖에서 바뀌었습니다. 다시 불러오세요")
         current, before, _ = conti.ensure_ids_file(cf)
@@ -262,18 +262,18 @@ def apply_fm(conti_path: str | Path, cuts: Any, expected_hash: str, now: float |
         moves = id_map(before["cuts"])
         warnings = []
         with footage_match.STATE_LOCK:
-            has_state = footage_match.state_path(path).is_file()
-            state = footage_match.load_state(path) if has_state else None   # 깨진 판정 파일이면 쓰기 전에 멈춘다
-            conti_history.record(path, before, "before_merge", now=now)
+            has_state = footage_match.has_state(key)
+            state = footage_match.load_state(key) if has_state else None   # 깨진 판정 파일이면 쓰기 전에 멈춘다
+            conti_history.record(key, before, "before_merge", now=now)
             written, html_path = conti._write_conti_file(current, fm)
-            conti_history.record(path, fm, "auto", now=now)
+            conti_history.record(key, fm, "auto", now=now)
             if state is not None:
                 try:
-                    footage_match.save_state(path, transfer_footage(state, moves))
+                    footage_match.save_state(key, transfer_footage(state, moves))
                 except OSError as e:                 # 콘티는 이미 합쳤다: 실패를 알리고 판정은 다음 맞추기에 맡긴다
                     warnings.append({"kind": "footage_not_transferred",
                                      "message": f"촬영 영상 판정을 옮기지 못했어요({e}). 촬영 영상을 다시 맞춰 주세요"})
-    result = {"status": "merged", "path": conti._rel(path), "html": html_path, "abs_html": conti.abs_path(html_path),
+    result = {"status": "merged", "path": key, "html": html_path, "abs_html": conti.abs_path(html_path),
               "hash": conti.bytes_hash(written.raw), "before": len(before["cuts"]), "after": len(fm["cuts"]),
               "warnings": [*conti.warnings(fm["script"], fm["cuts"], fm["speech_cps"]), *warnings]}
     return result, fm
@@ -292,7 +292,7 @@ def run_cli(conti_path: str, cuts_file: str | None, expected_hash: str | None) -
     if cuts_file is None or not expected_hash:
         raise ScriptError("bad_request", "--cuts와 --hash는 함께 줘야 합니다")
     try:
-        data = json.loads(conti._resolve(cuts_file).read_text("utf-8"))
+        data = json.loads(ctx.here().scratch.arg_path(cuts_file).read_text("utf-8"))
     except (OSError, ValueError) as e:
         raise ScriptError("invalid_merge", f"합친 컷 JSON을 읽을 수 없습니다: {e}") from e
     if isinstance(data, dict) and "sections" in data:

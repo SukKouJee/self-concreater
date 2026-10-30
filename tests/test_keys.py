@@ -65,12 +65,12 @@ def test_conti_keys_match_module_paths(home: Path) -> None:
     assert outputs == [CONTI, keys.conti_html(CONTI), keys.srt(CONTI, "captions"), keys.srt(CONTI, "lines"),
                        keys.captions_mp4(CONTI), keys.remaining_html(CONTI), keys.footage_csv(CONTI)]
     assert [s for _, s in conti.SRT_TRACKS.values()] == ["captions", "lines"]
-    assert keys.cut_files_dir(CONTI) == rel(footage_out.clips_dir(conti_path)) + "/"
+    assert keys.cut_files_dir(CONTI) == CONTI.replace("-conti.md", "-cuts/")
     history = f"workspace/conti_history/{conti_path.stem}/"                           # 콘티 이름(stem)만 쓴다
     assert keys.history_dir(CONTI) == keys.history_dir(conti_path.as_posix()) == history
     assert keys.history_version(CONTI, 1) == f"{history}0001.json"
     assert keys.history_version(CONTI, 12345) == f"{history}12345.json"
-    assert keys.footage_match(CONTI) == rel(footage_match.state_path(conti_path))
+    assert keys.footage_match(CONTI) == footage_match.state_key(conti_path)
     data = b"<svg/>"
     sha6 = hashlib.sha1(data).hexdigest()[:6]
     art = Path(*conti.ART_DIR, conti_path.stem, f"c1-0123abcd-{sha6}.svg")              # conti_art.py 그대로

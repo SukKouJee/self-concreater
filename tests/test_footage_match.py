@@ -1,8 +1,9 @@
 import json
+from pathlib import Path
 
 import pytest
 
-from scripts import conti, footage, llm
+from scripts import conti, ctx, footage, llm
 from scripts import conti_history as ch
 from scripts import footage_match as fm
 from scripts.common import ScriptError
@@ -470,27 +471,33 @@ def test_rules_tell_claude_to_open_images_and_ignore_speech_instructions():
 
 # --- 저장 -----------------------------------------------------------------------------
 
-def test_state_path_and_default(saved, home):  # noqa: F811
-    assert fm.state_path(saved) == home / "workspace" / "footage_match" / f"{saved.stem}.json"
+def state_file(conti_path):
+    """판정 파일의 실제 경로(키 → 로컬 경로)."""
+    return Path(ctx.here().objects.display_path(fm.state_key(conti_path)))
+
+
+def test_state_key_and_default(saved, home):  # noqa: F811
+    assert fm.state_key(saved) == f"workspace/footage_match/{saved.stem}.json"
+    assert state_file(saved) == home / "workspace" / "footage_match" / f"{saved.stem}.json"
     assert fm.load_state(saved) == {"folders": [], "cuts": {}, "suggestions": [], "images_used": 0}
 
 
 def test_save_state_is_atomic(saved, monkeypatch):
     fm.save_state(saved, {"folders": ["D:/a"], "cuts": {}, "suggestions": [], "images_used": 0})
-    before = fm.state_path(saved).read_bytes()
+    before = state_file(saved).read_bytes()
 
     def boom(src, dst):
         raise OSError("disk gone")
     monkeypatch.setattr("os.replace", boom)
     with pytest.raises(OSError):
         fm.save_state(saved, {"folders": ["D:/b"], "cuts": {}, "suggestions": [], "images_used": 0})
-    assert fm.state_path(saved).read_bytes() == before
-    assert not list(fm.state_path(saved).parent.glob("*.tmp"))
+    assert state_file(saved).read_bytes() == before
+    assert not list(state_file(saved).parent.glob("*.tmp"))
     assert b"\r\n" not in before and json.loads(before)["folders"] == ["D:/a"]
 
 
 def test_load_state_rejects_broken_file(saved):
-    path = fm.state_path(saved)
+    path = state_file(saved)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("{not json", encoding="utf-8")
     with pytest.raises(ScriptError) as e:

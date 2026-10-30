@@ -276,7 +276,7 @@ def test_apply_keeps_pinned_frame_of_later_repeat(home, draft_md):  # noqa: F811
 
 def test_apply_without_footage_state_creates_none(repeat_conti):
     _applied(repeat_conti)
-    assert not footage_match.state_path(repeat_conti).exists()
+    assert not footage_match.has_state(repeat_conti)
 
 
 def test_apply_conflict_on_changed_hash(repeat_conti):
