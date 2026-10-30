@@ -273,7 +273,7 @@ def apply_fm(conti_path: str | Path, cuts: Any, expected_hash: str, now: float |
                 except OSError as e:                 # 콘티는 이미 합쳤다: 실패를 알리고 판정은 다음 맞추기에 맡긴다
                     warnings.append({"kind": "footage_not_transferred",
                                      "message": f"촬영 영상 판정을 옮기지 못했어요({e}). 촬영 영상을 다시 맞춰 주세요"})
-    result = {"status": "merged", "path": conti._rel(path), "html": conti._rel(html_path), "abs_html": str(html_path),
+    result = {"status": "merged", "path": conti._rel(path), "html": html_path, "abs_html": conti.abs_path(html_path),
               "hash": conti.bytes_hash(written.raw), "before": len(before["cuts"]), "after": len(fm["cuts"]),
               "warnings": [*conti.warnings(fm["script"], fm["cuts"], fm["speech_cps"]), *warnings]}
     return result, fm

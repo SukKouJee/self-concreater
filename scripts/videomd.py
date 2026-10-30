@@ -260,14 +260,12 @@ def render_body(analysis: dict, cuts: dict | None, memo: str) -> str:
     return "\n".join(parts) + "\n" + memo
 
 
-def _existing_memo(target: str | Path) -> str:
-    """기존 문서의 '## 내 메모' 아래 내용. 문서 키(str)가 정석이고, Path는 conti.py가 옮겨질 때까지의 과도기 인자다(Task 7에서 삭제)."""
-    if isinstance(target, Path):
-        if not target.exists():
-            return ""
-    elif not ctx.here().store.exists(target):
+def _existing_memo(key: str) -> str:
+    """기존 문서(키)의 '## 내 메모' 아래 내용. 문서가 없으면 ""."""
+    store = ctx.here().store
+    if not store.exists(key):
         return ""
-    _, body = refstore.read_md(target)
+    _, body = store.read(key).parsed
     return memo_from_body(body)
 
 

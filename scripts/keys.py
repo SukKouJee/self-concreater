@@ -132,9 +132,16 @@ def _sibling(conti_key: str, suffix: str) -> str:
     return posixpath.join(folder, f"{base}{suffix}")
 
 
+def html_of(md_key: str) -> str:
+    """md 키 옆의 같은 이름 `.html`(`Path.with_suffix(".html")`과 같다). 콘티 HTML은 `-conti` 이름이 아니어도 md 옆에 쓴다."""
+    if not is_doc(md_key):
+        raise ValueError(f"md 키가 아닙니다: {md_key!r}")
+    return md_key[: -len(".md")] + ".html"
+
+
 def conti_html(conti_key: str) -> str:
     _conti_base(conti_key)
-    return conti_key[: -len(".md")] + ".html"
+    return html_of(conti_key)
 
 
 def srt(conti_key: str, suffix: str) -> str:

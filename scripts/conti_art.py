@@ -12,8 +12,8 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 
-from scripts import claude_cli, conti, llm, refstore, scene_merge
-from scripts.common import ScriptError, work_root
+from scripts import claude_cli, conti, ctx, keys, llm, scene_merge
+from scripts.common import ScriptError
 
 ART_FIELDS = conti.PICK_FIELDS                  # 그림의 근거가 되는 컷 필드: action, guide, size
 MAX_SVG_BYTES = 40 * 1024
@@ -64,7 +64,7 @@ def art_state(cut: dict, aspect: str) -> str | None:
 
 
 def _state_of(art: dict | None, cut: dict, aspect: str) -> str | None:
-    if art is None or not (work_root() / art["file"]).is_file():
+    if art is None or not conti.key_exists(art["file"]):
         return None
     return "fresh" if art["basis"] == basis(cut, aspect) else "stale"
 
@@ -228,11 +228,12 @@ def save_art(path: str | Path, drawn: dict[str, tuple[str, str]]) -> dict:
     되살리고, 브라우저가 같은 주소의 옛 그림을 캐시로 보여 주지 않게). 옛 svg 파일은 지우지 않는다."""
     from scripts import conti_history                  # conti_history가 conti를 쓰므로 함수 안에서 불러온다
 
-    p = conti._resolve(path)
+    c = ctx.here()
+    key = c.scratch.key_of(path)
     saved: list[str] = []
     skipped: list[str] = []
     with conti.HISTORY_LOCK:
-        current, before, _ = conti.ensure_ids_file(conti.read_conti(p))
+        current, before, _ = conti.ensure_ids_file(conti.read_conti(key))
         asp = aspect(before)
         new_cuts = []
         for cut in before["cuts"]:
@@ -246,18 +247,16 @@ def save_art(path: str | Path, drawn: dict[str, tuple[str, str]]) -> dict:
                 new_cuts.append(cut)
                 continue
             data = "\n".join(svg.splitlines()).encode("utf-8")                              # LF로 통일
-            rel = Path(*conti.ART_DIR, p.stem, f"{cut['id']}-{drawn_basis}-{hashlib.sha1(data).hexdigest()[:6]}.svg")
-            target = work_root() / rel
-            target.parent.mkdir(parents=True, exist_ok=True)
-            refstore.write_atomic(target, data)
-            new_cuts.append({**cut, "art": {"file": rel.as_posix(), "basis": drawn_basis}})
+            art_key = keys.art(key, cut["id"], drawn_basis, hashlib.sha1(data).hexdigest()[:6])
+            c.objects.put(art_key, data)
+            new_cuts.append({**cut, "art": {"file": art_key, "basis": drawn_basis}})
             saved.append(cut["id"])
         skipped += [i for i in drawn if i not in saved and i not in skipped]        # 지워진 장면
         if saved:
             fm = conti.validated({**before, "cuts": new_cuts})
-            conti_history.check_external(p, before)
+            conti_history.check_external(key, before)
             conti._write_conti_file(current, fm)
-            conti_history.record(p, fm, "auto")
+            conti_history.record(key, fm, "auto")
     return {"saved": saved, "skipped": skipped}
 
 
@@ -284,11 +283,11 @@ def _progress(job: Any, done: int, total: int) -> None:
     job.update(0, message=f"{done} / {total}장면", done=done, total=total)
 
 
-def _draw_batch(p: Path, number: int, batch_ids: list[str], tally: _Tally) -> None:
+def _draw_batch(key: str, number: int, batch_ids: list[str], tally: _Tally) -> None:
     """묶음 하나: 콘티를 다시 읽어 지금 값으로 그리고 저장한다. Claude 실패는 경고로 남긴다."""
     try:
         # 묶음마다 콘티를 다시 읽는다: 작업 중에 고친 장면은 고친 글로 그리고, 지워졌거나 사진을 고정한 장면은 건너뛴다
-        fm = conti.validated(conti.read_conti(p).stored)
+        fm = conti.validated(conti.read_conti(key).stored)
         asp = aspect(fm)
         now = {c.get("id"): c for c in fm["cuts"]}
         batch = [now[i] for i in batch_ids if i in now and not now[i].get("ref_frame")]
@@ -324,7 +323,7 @@ def _draw_batch(p: Path, number: int, batch_ids: list[str], tally: _Tally) -> No
             tally.failed += lost
             tally.lost += lost
         if results:
-            out = save_art(p, results)                     # 저장은 HISTORY_LOCK이 차례로 세운다
+            out = save_art(key, results)                   # 저장은 HISTORY_LOCK이 차례로 세운다
             with tally.lock:
                 tally.drawn += len(out["saved"])
                 tally.skipped += len(out["skipped"])
@@ -351,9 +350,9 @@ def draw(path: str | Path, ids: list[str] | None, stale_only: bool, job: Any = N
     보내지 않은 채 그 오류를 올린다.
     반환 {"drawn", "skipped", "failed", "warnings", "remaining"}(remaining: 끝난 뒤 고정 안 된 장면 중 그림이 없거나 옛
     그림인 수). job: update(index, **fields)·check_cancelled()."""
-    p = conti._resolve(path)
+    key = ctx.here().scratch.key_of(path)
     with conti.HISTORY_LOCK:
-        _, fm, _ = conti.ensure_ids_file(conti.read_conti(p))      # id가 없던 옛 파일은 먼저 저장해 둔다
+        _, fm, _ = conti.ensure_ids_file(conti.read_conti(key))    # id가 없던 옛 파일은 먼저 저장해 둔다
     if scene_merge.has_repeats(fm["cuts"]):
         raise ScriptError("merge_first", MERGE_FIRST_MESSAGE)
     todo = [c["id"] for c in targets(fm, ids, stale_only)]
@@ -371,7 +370,7 @@ def draw(path: str | Path, ids: list[str] | None, stale_only: bool, job: Any = N
                     break
                 if job is not None:
                     job.check_cancelled()
-                pending.add(pool.submit(contextvars.copy_context().run, _draw_batch, p, nxt[0], nxt[1], tally))   # 묶음마다 새 복사본
+                pending.add(pool.submit(contextvars.copy_context().run, _draw_batch, key, nxt[0], nxt[1], tally))   # 묶음마다 새 복사본
             if not pending:
                 break
             finished, pending = wait(pending, return_when=FIRST_COMPLETED)
@@ -385,6 +384,6 @@ def draw(path: str | Path, ids: list[str] | None, stale_only: bool, job: Any = N
         raise error
     if tally.lost:
         tally.warnings.append(f"{tally.lost}장면은 그림을 받지 못했어요")
-    left = counts(conti.validated(conti.read_conti(p).stored))
+    left = counts(conti.validated(conti.read_conti(key).stored))
     return {"drawn": tally.drawn, "skipped": tally.skipped, "failed": tally.failed, "warnings": tally.warnings,
             "remaining": left["missing"] + left["stale"]}

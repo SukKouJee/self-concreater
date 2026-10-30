@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from scripts import claude_cli, conti, llm, scene_merge
+from scripts import claude_cli, conti, ctx, llm, scene_merge
 from scripts.common import ScriptError
 
 PICK_BATCH = 120
@@ -143,14 +143,14 @@ def save_picks(conti_path: str | Path, picks: dict[str, str], basis: dict[str, d
     먼저 이력에 남기고, 저장 뒤 auto 이력을 남긴다."""
     from scripts import conti_history                  # conti_history가 conti를 쓰므로 함수 안에서 불러온다
 
-    path = conti._resolve(conti_path)
+    key = ctx.here().scratch.key_of(conti_path)
     with conti.HISTORY_LOCK:
-        current, before, _ = conti.ensure_ids_file(conti.read_conti(path))
+        current, before, _ = conti.ensure_ids_file(conti.read_conti(key))
         kept = {c["id"] for c in before["cuts"] if _unchanged(c, basis)}
         fm = conti.validated({**before, "cuts": apply_picks(before["cuts"], picks, basis)})
-        conti_history.check_external(path, before, now)
-        written, html_path = conti._write_conti_file(current, fm)
-        conti_history.record(path, fm, "auto", now=now)
-    return {"status": "picked", "path": conti._rel(path), "html": conti._rel(html_path), "abs_html": str(html_path),
+        conti_history.check_external(key, before, now)
+        written, html_key = conti._write_conti_file(current, fm)
+        conti_history.record(key, fm, "auto", now=now)
+    return {"status": "picked", "path": key, "html": html_key, "abs_html": conti.abs_path(html_key),
             "hash": conti.bytes_hash(written.raw), "picked": sum(1 for c in fm["cuts"] if c.get("ref_auto")),
             "scenes": len(fm["cuts"]), "skipped": len(set(basis) - kept)}

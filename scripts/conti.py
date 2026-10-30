@@ -44,10 +44,11 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from scripts import features, fetch, motif, refstore
-from scripts.common import TEMPLATES_DIR, ArgParser, ScriptError, move_to_trash, run, work_root, workspace_dir
+from scripts import ctx, features, fetch, keys, motif, refstore
+from scripts.common import TEMPLATES_DIR, ArgParser, ScriptError, run
 from scripts.features import SHOT_SIZES
 from scripts.report import SLOTS, _vars
+from scripts.stores import Doc
 from scripts.videomd import LABELS, _existing_memo, fmt_time, load_cuts, memo_from_body
 
 DEFAULT_CPS = float(json.loads((TEMPLATES_DIR / "thresholds.json").read_text("utf-8"))["speech_default_cps"])
@@ -62,27 +63,73 @@ _HEAD_RE = re.compile(r"^### (\d+:\d{2})–(\d+:\d{2}) · (\w+)(?:/(\w+))? \(")
 _ROW_RE = re.compile(r"^\| (\d+) \| (.+?) \| (.*?) \| ([\d.]+)초 \| (.*) \|\s*$")
 
 
-def _rel(path: Path) -> str:
+def _key(value: str | Path) -> str:
+    """경로나 키 → 작업 폴더 키(resolve 기준이라 `..`·심볼릭 링크로 밖을 가리키면 bad_path).
+    콘티 함수는 str|Path 인자를 들어올 때 이것으로 한 번만 키로 바꾸고, 그 뒤로는 키만 쓴다."""
+    return ctx.here().scratch.key_of(value)
+
+
+def _rel(path: str | Path) -> str:
+    """작업 폴더 안이면 키, 밖이면 받은 경로 그대로(POSIX). 과도기: conti_history·scene_merge·captions·UI가 Path로 부른다."""
     try:
-        return path.resolve().relative_to(work_root().resolve()).as_posix()
-    except ValueError:
-        return path.as_posix()
+        return _key(path)
+    except ScriptError:
+        return Path(path).as_posix()
 
 
 def _resolve(path: str | Path) -> Path:
-    p = Path(path)
-    return p if p.is_absolute() else work_root() / p
+    """과도기(conti_history·scene_merge가 아직 Path를 쓴다): 상대 경로는 작업 폴더 기준 Path로."""
+    return ctx.here().scratch.arg_path(path)
+
+
+def key_exists(key: str) -> bool:
+    """키가 가리키는 파일이 있는가(md는 문서 저장소, 영상 캐시는 공유 캐시, 나머지는 객체 저장소에서 본다).
+    프런트매터에 손으로 적은 값처럼 키 형식이 틀리면(`..`·역슬래시·드라이브) 없는 것으로 본다."""
+    try:
+        kind = keys.kind(keys.check(key))
+    except ScriptError as e:
+        if e.code != "bad_path":
+            raise
+        return False
+    c = ctx.here()
+    if kind == "doc":
+        return c.store.exists(key)
+    return (c.shared if kind == "shared" else c.objects).exists(key)
+
+
+def _get(key: str) -> bytes:
+    """키의 바이트(md·영상 캐시·그 밖 객체 중 맞는 저장소). 없으면 FileNotFoundError."""
+    c = ctx.here()
+    kind = keys.kind(key)
+    if kind == "doc":
+        return c.store.read(key).raw
+    return (c.shared if kind == "shared" else c.objects).get(key)
+
+
+def abs_path(key: str) -> str:
+    """화면·CLI에 내는 절대 경로(`abs_html`). 로컬판은 `작업 폴더 / 키` 그대로(resolve 안 함)."""
+    return ctx.here().objects.display_path(key)
+
+
+def _md_exists(key: str) -> bool:
+    return keys.is_doc(key) and ctx.here().store.exists(key)
+
+
+def _not_found(key: str) -> ScriptError:
+    return ScriptError("conti_not_found", f"콘티가 없습니다: {key}")
 
 
 # --- draft 읽기 ---------------------------------------------------------------------
 
-def parse_draft(path: Path) -> dict:
-    """draft md → 프런트매터 섹션(시간 기준) + 본문의 섹션별 대본·샷 표(사용자가 고친 내용 그대로)."""
-    if not path.exists():
-        raise ScriptError("draft_not_found", f"기획안이 없습니다: {_rel(path)} (먼저 /yt-draft)")
-    fm, body = refstore.read_md(path)
+def parse_draft(path: str | Path) -> dict:
+    """draft md(키 또는 작업 폴더 안 경로) → 프런트매터 섹션(시간 기준) + 본문의 섹션별 대본·샷 표(사용자가 고친 내용 그대로)."""
+    key = _key(path)
+    store = ctx.here().store
+    if not keys.is_doc(key) or not store.exists(key):
+        raise ScriptError("draft_not_found", f"기획안이 없습니다: {key} (먼저 /yt-draft)")
+    fm, body = store.read(key).parsed
     if not fm.get("sections"):
-        raise ScriptError("invalid_draft", f"기획안 프런트매터에 sections가 없습니다: {_rel(path)}")
+        raise ScriptError("invalid_draft", f"기획안 프런트매터에 sections가 없습니다: {key}")
     blocks: list[dict] = []
     for line in body.replace("\r\n", "\n").split("\n"):
         if line.startswith("## "):
@@ -107,7 +154,7 @@ def parse_draft(path: Path) -> dict:
         sections.append({"idx": i, "label": s["label"], **({"sub": s["sub"]} if s.get("sub") else {}),
                          "start": float(s["start"]), "end": float(s["end"]),
                          "script": "\n".join(block["script"]), "shots": block["shots"]})
-    return {"fm": fm, "title": fm.get("title") or path.stem, "sections": sections}
+    return {"fm": fm, "title": fm.get("title") or keys.stem(key), "sections": sections}
 
 
 def speech_rate(category: str | None) -> dict:
@@ -140,32 +187,41 @@ def conti_path(draft: Path) -> Path:
     return draft.with_name(f"{draft.stem}{CONTI_SUFFIX}.md")
 
 
-def safe_draft_path(value: Any, *, conti_file: bool | None = None) -> Path:
-    """작업 폴더의 drafts/ 안 .md 파일만 허용한다(상대 경로 → 절대 경로).
+def safe_draft_key(value: Any, *, conti_file: bool | None = None) -> str:
+    """작업 폴더의 drafts/ 안 .md 파일만 허용하고 그 키를 돌려준다(상대 경로·절대 경로 모두 받는다).
+    탈출 검사는 resolve 기준(`scratch.key_of`): `..`·심볼릭 링크로 drafts/ 밖이나 작업 폴더 밖을 가리키면 bad_path.
     conti_file: True면 콘티 파일만, False면 기획안만, None이면 둘 다."""
     if not isinstance(value, str) or not value:
         raise ScriptError("bad_request", "path가 필요합니다")
-    drafts = (work_root() / "drafts").resolve()
+    if "\x00" in value:
+        raise ScriptError("bad_path", f"잘못된 경로입니다: {value}")
+    outside = ScriptError("bad_path", f"drafts 폴더 안의 .md 파일만 쓸 수 있습니다: {value}")
     try:
-        target = (work_root() / value).resolve()
-    except (OSError, ValueError) as e:
-        raise ScriptError("bad_path", f"잘못된 경로입니다: {value}") from e
-    if not target.is_relative_to(drafts) or target.suffix.lower() != ".md" or "\x00" in value:
-        raise ScriptError("bad_path", f"drafts 폴더 안의 .md 파일만 쓸 수 있습니다: {value}")
-    if conti_file is not None and target.stem.endswith(CONTI_SUFFIX) != conti_file:
+        key = _key(value)
+    except ScriptError as e:
+        raise outside from e
+    if not key.startswith(keys.DRAFTS) or posixpath.splitext(key)[1].lower() != ".md":
+        raise outside
+    if conti_file is not None and keys.stem(key).endswith(CONTI_SUFFIX) != conti_file:
         raise ScriptError("bad_path", f"{'콘티' if conti_file else '기획안'} 파일이 아닙니다: {value}")
-    return target
+    return key
+
+
+def safe_draft_path(value: Any, *, conti_file: bool | None = None) -> Path:
+    """과도기(polish·footage_out·UI가 아직 Path를 쓴다): `safe_draft_key`와 같은 검사, resolve한 절대 경로를 돌려준다."""
+    return ctx.here().scratch.arg_path(safe_draft_key(value, conti_file=conti_file)).resolve()
 
 
 def context(draft: str | Path) -> dict:
-    path = _resolve(draft)
-    d = parse_draft(path)
+    key = _key(draft)
+    d = parse_draft(key)
     target = d["sections"][-1]["end"]
     rate = speech_rate(d["fm"].get("category"))
+    conti_key = keys.conti_md(key)
     return {
-        "draft": _rel(path),
-        "conti": _rel(conti_path(path)),
-        "conti_exists": conti_path(path).exists(),
+        "draft": key,
+        "conti": conti_key,
+        "conti_exists": ctx.here().store.exists(conti_key),
         "title": d["title"],
         "category": d["fm"].get("category"),
         "format": video_format(target),
@@ -330,10 +386,11 @@ def frame_pool(category: str | None) -> list[dict]:
     except ScriptError:
         return []
     pool = []
+    shared = ctx.here().shared
     for r in refs:
         fm, vid = r["fm"], r["id"]
-        labels_path = workspace_dir("shots", f"{vid}.json")
-        if labels_path.exists():
+        labels_key = keys.shots(vid)
+        if shared.exists(labels_key):
             # 저장된 section은 분류 시점 값이라 라벨 교정 뒤에는 낡는다 → 현재 sections로 장면 중간점에서 다시 구한다
             # 컷 json이 깨졌거나 시간이 숫자가 아니면 저장된 section을 그대로 쓴다
             try:
@@ -342,7 +399,7 @@ def frame_pool(category: str | None) -> list[dict]:
                        if sc.get("frame") and "start" in sc and "end" in sc}
             except (ValueError, TypeError, AttributeError, OSError):
                 mid = {}
-            for lab in json.loads(labels_path.read_text("utf-8")).get("labels") or []:
+            for lab in json.loads(shared.get(labels_key).decode("utf-8")).get("labels") or []:
                 t = mid.get(lab["frame"])
                 current = _section_at(fm.get("sections") or [], t) if t is not None else None
                 desc = lab.get("desc")
@@ -356,7 +413,7 @@ def frame_pool(category: str | None) -> list[dict]:
             if scene.get("frame") and by_section.get(label):
                 pool.append({"frame": scene["frame"], "size": by_section[label], "section": label,
                              "video": vid, "title": fm.get("title"), "match": "approx", "angle": None, "desc": None})
-    return [p for p in pool if (work_root() / p["frame"]).exists()]
+    return [p for p in pool if key_exists(p["frame"])]
 
 
 def match_frames(cuts: list[dict], sections: list[dict], pool: list[dict],
@@ -514,18 +571,17 @@ _MIME = {".svg": "image/svg+xml", ".png": "image/png", ".webp": "image/webp"}
 
 
 def _data_uri(rel: str) -> str | None:
-    path = work_root() / rel
-    if not path.is_file():
+    if not key_exists(rel):
         return None
-    mime = _MIME.get(path.suffix.lower(), "image/jpeg")
-    return f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode("ascii")
+    mime = _MIME.get(posixpath.splitext(rel)[1].lower(), "image/jpeg")
+    return f"data:{mime};base64," + base64.b64encode(_get(rel)).decode("ascii")
 
 
 def asset_url(rel: str, html_dir_rel: str = "drafts", embed: bool = False) -> str | None:
-    """작업 폴더 상대 경로 rel을 HTML(html_dir_rel 폴더에 놓임) 기준 상대 URL로. 파일이 없으면 None. embed면 data URI."""
+    """작업 폴더 키 rel을 HTML(html_dir_rel 폴더에 놓임) 기준 상대 URL로. 파일이 없으면 None. embed면 data URI."""
     if embed:
         return _data_uri(rel)
-    if not (work_root() / rel).is_file():
+    if not key_exists(rel):
         return None
     start = html_dir_rel.strip("/") or "."
     rel_path = posixpath.relpath(rel, start)
@@ -541,20 +597,20 @@ def cut_refs(fm: dict) -> dict[int, dict]:
     desc는 그 프레임의 한 줄 설명(레퍼런스 라벨에 있을 때, 없으면 None). Claude는 부르지 않는다."""
     pool = frame_pool(fm.get("category"))
     by_frame = {p["frame"]: p for p in pool}
-    root = work_root()
 
     def ref(frame: str, match: str) -> dict:
         known = by_frame.get(frame) or {}
-        return {"frame": frame, "title": known.get("title") or Path(frame).name, "match": match, "desc": known.get("desc")}
+        return {"frame": frame, "title": known.get("title") or posixpath.basename(frame), "match": match,
+                "desc": known.get("desc")}
 
     refs: dict[int, dict] = {}
     rest = []
     for c in fm["cuts"]:
         pinned = c.get("ref_frame")
         auto = (ref_auto_of(c.get("ref_auto")) or {}).get("frame")
-        if pinned and (root / pinned).exists():
-            refs[c["n"]] = {**ref(pinned, "pinned"), "title": Path(pinned).name}
-        elif auto and (root / auto).exists():
+        if pinned and key_exists(pinned):
+            refs[c["n"]] = {**ref(pinned, "pinned"), "title": posixpath.basename(pinned)}
+        elif auto and key_exists(auto):
             refs[c["n"]] = ref(auto, "content")
         else:
             rest.append(c)
@@ -670,44 +726,46 @@ def render_html(fm: dict, *, embed: bool = False, html_dir_rel: str = "drafts") 
             f"<body><main>{head}{full}{board}{table}{note}</main></body></html>")
 
 
-def html_dir_of(md_path: Path) -> str:
-    """HTML이 놓이는 폴더(콘티 md와 같은 폴더)의 작업 폴더 기준 상대 경로."""
-    return _rel(md_path.parent)
+def html_dir_of(md: str | Path) -> str:
+    """HTML이 놓이는 폴더(md와 같은 폴더)의 작업 폴더 기준 상대 경로(바로 아래면 "."). 밖의 Path면 그 폴더 경로 그대로."""
+    return posixpath.dirname(_rel(md)) or "."
 
 
-def _write_html(md_path: Path, fm: dict, embed: bool = False) -> Path:
-    out = md_path.with_suffix(".html")
-    out.write_text(render_html(fm, embed=embed, html_dir_rel=html_dir_of(md_path)), encoding="utf-8")
+def _write_html(md_key: str, fm: dict, embed: bool = False) -> str:
+    """md 옆에 HTML을 쓰고 그 키를 돌려준다. `write_text` 기본 줄바꿈과 같은 바이트(Windows CRLF)."""
+    out = keys.html_of(md_key)
+    ctx.here().objects.put(out, refstore.text_bytes(render_html(fm, embed=embed, html_dir_rel=html_dir_of(md_key))))
     return out
 
 
 def rebuild_html(conti: str | None, embed: bool = False, all_files: bool = False) -> dict:
     """콘티 HTML만 다시 쓴다(콘티 md는 건드리지 않는다). all_files면 drafts/*-conti.md 전부."""
+    c = ctx.here()
     if all_files:
-        paths = sorted((work_root() / "drafts").glob("*-conti.md"))
+        found = [m.key for m in c.store.list(keys.DRAFTS, "*-conti.md")]
     elif conti:
-        paths = [_resolve(conti)]
+        found = [_key(conti)]
     else:
         raise ScriptError("bad_args", "콘티 파일이나 --all이 필요합니다.")
     built: list[dict] = []
     failed: list[dict] = []
-    for path in paths:
+    for key in found:
         try:
-            if not path.exists():
-                raise ScriptError("conti_not_found", f"콘티가 없습니다: {_rel(path)}")
-            fm = validated(read_conti(path).stored)
-            out = _write_html(path, fm, embed)
+            if not _md_exists(key):
+                raise _not_found(key)
+            fm = validated(read_conti(key).stored)
+            out = _write_html(key, fm, embed)
         except ScriptError as e:
             if not all_files:
                 raise
-            failed.append({"path": _rel(path), "error": e.code, "message": e.message})   # --all은 깨진 콘티를 건너뛰고 계속한다
+            failed.append({"path": key, "error": e.code, "message": e.message})   # --all은 깨진 콘티를 건너뛰고 계속한다
             continue
         except (OSError, UnicodeDecodeError) as e:
             if not all_files:
                 raise
-            failed.append({"path": _rel(path), "error": "unreadable", "message": f"콘티를 읽거나 쓸 수 없습니다: {e}"})
+            failed.append({"path": key, "error": "unreadable", "message": f"콘티를 읽거나 쓸 수 없습니다: {e}"})
             continue
-        built.append({"path": _rel(out), "bytes": out.stat().st_size})
+        built.append({"path": out, "bytes": c.objects.stat(out).size})
     if all_files:
         return {"status": "built", "built": len(built), "bytes": sum(b["bytes"] for b in built), "files": built,
                 "failed": failed}
@@ -725,8 +783,7 @@ def _trusted_ref_auto(cuts: list[dict], category: str | None) -> list[dict]:
     from scripts import conti_refs          # conti_refs가 이 모듈을 쓰므로 함수 안에서 불러온다
 
     # art(장면 그림)도 같은 원칙: 파일이 실제로 있을 때만 남긴다
-    root = work_root()
-    cuts = [{k: v for k, v in c.items() if k != "art"} if c.get("art") and not (root / c["art"]["file"]).is_file() else c
+    cuts = [{k: v for k, v in c.items() if k != "art"} if c.get("art") and not key_exists(c["art"]["file"]) else c
             for c in cuts]
     if not any(c.get("ref_auto") for c in cuts):
         return cuts
@@ -738,11 +795,12 @@ def _trusted_ref_auto(cuts: list[dict], category: str | None) -> list[dict]:
 def _save_locked(draft: str | Path, conti_json: Path, force: bool, now: float | None) -> dict:
     from scripts import conti_history       # conti_history가 이 모듈을 쓰므로 함수 안에서 불러온다
 
-    draft_path = _resolve(draft)
-    d = parse_draft(draft_path)
-    target = conti_path(draft_path)
-    if target.exists() and not force:
-        raise ScriptError("conti_exists", f"이미 콘티가 있습니다: {_rel(target)} (다시 만들려면 --force, 내 메모는 보존)")
+    store = ctx.here().store
+    draft_key = _key(draft)
+    d = parse_draft(draft_key)
+    target = keys.conti_md(draft_key)
+    if store.exists(target) and not force:
+        raise ScriptError("conti_exists", f"이미 콘티가 있습니다: {target} (다시 만들려면 --force, 내 메모는 보존)")
     try:
         data = json.loads(Path(conti_json).read_text("utf-8"))
     except (OSError, json.JSONDecodeError) as e:
@@ -751,12 +809,12 @@ def _save_locked(draft: str | Path, conti_json: Path, force: bool, now: float | 
     cuts = _trusted_ref_auto(cuts, d["fm"].get("category"))
     rate = speech_rate(d["fm"].get("category"))
     total = d["sections"][-1]["end"]
-    fm = {"date": date.today().isoformat(), "draft": _rel(draft_path), "html": _rel(target.with_suffix(".html")),
+    fm = {"date": date.today().isoformat(), "draft": draft_key, "html": keys.html_of(target),
           "category": d["fm"].get("category"), "title": d["title"], "format": video_format(total),
           "target_sec": total, "speech_cps": rate["cps"], "script": script, "cuts": cuts,
           "schema_version": SCHEMA_VERSION}
     skipped = None
-    if target.exists():                                  # 다시 만들기: 덮어쓰기 전 상태를 이력에 남긴다
+    if store.exists(target):                             # 다시 만들기: 덮어쓰기 전 상태를 이력에 남긴다
         try:
             conti_history.record(target, _load_conti(target), "before_recreate", now=now)
         except ScriptError as e:
@@ -764,30 +822,28 @@ def _save_locked(draft: str | Path, conti_json: Path, force: bool, now: float | 
                 raise
             skipped = e.message                          # 깨진 파일은 상태를 읽을 수 없어 이력만 건너뛴다(다시 만들기는 계속)
     memo = _existing_memo(target)
-    target.write_bytes(refstore.join_frontmatter(fm, render_md(fm, memo)).encode("utf-8"))
-    html_path = _write_html(target, fm)
+    store.write(target, refstore.join_frontmatter(fm, render_md(fm, memo)).encode("utf-8"))
+    html_key = _write_html(target, fm)
     Path(conti_json).unlink(missing_ok=True)
     conti_history.record(target, fm, "created", now=now)
-    return {"status": "saved", "path": _rel(target), "html": _rel(html_path), "abs_html": str(html_path),
+    return {"status": "saved", "path": target, "html": html_key, "abs_html": abs_path(html_key),
             "cuts": len(cuts), "speech_cps": rate["cps"], "warnings": warnings(script, cuts, rate["cps"]),
             **({"history_skipped": skipped} if skipped else {})}
 
 
 def render(conti: str | Path) -> dict:
-    path = _resolve(conti)
-    if not path.exists():
-        raise ScriptError("conti_not_found", f"콘티가 없습니다: {_rel(path)}")
-    _, fm, _ = ensure_ids_file(read_conti(path))         # id가 없던 옛 파일은 먼저 저장해 HTML과 파일의 id를 맞춘다
-    html_path = _write_html(path, fm)
-    return {"status": "rendered", "html": _rel(html_path), "abs_html": str(html_path), "cuts": len(fm["cuts"]),
+    key = _key(conti)
+    _, fm, _ = ensure_ids_file(read_conti(key))          # id가 없던 옛 파일은 먼저 저장해 HTML과 파일의 id를 맞춘다
+    html_key = _write_html(key, fm)
+    return {"status": "rendered", "html": html_key, "abs_html": abs_path(html_key), "cuts": len(fm["cuts"]),
             "warnings": warnings(fm["script"], fm["cuts"], fm["speech_cps"])}
 
 
 # --- 컷 하나 편집 · 장면 후보 ----------------------------------------------------------
 
 def content_hash(path: str | Path) -> str:
-    """파일 바이트 sha256. 화면이 불러온 뒤 파일이 밖에서 바뀌었는지 확인하는 데 쓴다."""
-    return bytes_hash(_resolve(path).read_bytes())
+    """md 바이트 sha256(= 문서 version). 화면이 불러온 뒤 파일이 밖에서 바뀌었는지 확인하는 데 쓴다."""
+    return ctx.here().store.read(_key(path)).version
 
 
 def bytes_hash(raw: bytes) -> str:
@@ -798,22 +854,23 @@ def bytes_hash(raw: bytes) -> str:
 @dataclass(frozen=True)
 class ContiFile:
     """콘티 md를 한 번 읽은 결과. 한 요청 안에서 같은 파일을 다시 읽고 파싱하지 않도록 넘겨 쓴다.
-    raw = 디스크 바이트, stored = 프런트매터 그대로(검증 전), body = 본문('## 내 메모' 포함)."""
-    path: Path
+    key = 콘티 md 키, raw = 디스크 바이트, stored = 프런트매터 그대로(검증 전), body = 본문('## 내 메모' 포함)."""
+    key: str
     raw: bytes
     stored: dict
     body: str
 
 
-def read_conti(path: Path) -> ContiFile:
-    if not path.exists():
-        raise ScriptError("conti_not_found", f"콘티가 없습니다: {_rel(path)}")
-    return parse_conti(path, path.read_bytes())
+def read_conti(path: str | Path) -> ContiFile:
+    key = _key(path)
+    if not _md_exists(key):
+        raise _not_found(key)
+    return parse_conti(ctx.here().store.read(key))
 
 
-def parse_conti(path: Path, raw: bytes) -> ContiFile:
-    stored, body = refstore.parse_md(raw, path)
-    return ContiFile(path, raw, stored, body)
+def parse_conti(doc: Doc) -> ContiFile:
+    stored, body = doc.parsed
+    return ContiFile(doc.key, doc.raw, stored, body)
 
 
 def validated(stored: dict) -> dict:
@@ -826,7 +883,7 @@ def validated(stored: dict) -> dict:
     return {**stored, "script": script, "cuts": cuts}
 
 
-def _load_conti(path: Path) -> dict:
+def _load_conti(path: str | Path) -> dict:
     return validated(read_conti(path).stored)
 
 
@@ -873,32 +930,32 @@ def _check_edit(fields: dict) -> dict:
         raise ScriptError("invalid_edit", f"샷 크기 {edit['size']!r}은 쓸 수 없습니다 (허용: {', '.join(SHOT_SIZES)})")
     ref = edit.get("ref_frame")
     if ref:
-        target = _resolve(ref)
         try:
-            rel = target.resolve().relative_to(work_root().resolve()).as_posix()
-        except ValueError as e:
+            rel = _key(ref)                              # resolve 기준: `..`·심볼릭 링크로 밖을 가리키면 거절
+        except ScriptError as e:
             raise ScriptError("invalid_edit", f"작업 폴더 밖의 파일은 고정할 수 없습니다: {ref}") from e
-        if not target.is_file():
+        if not key_exists(rel):
             raise ScriptError("invalid_edit", f"참고 프레임 파일이 없습니다: {ref}")
         edit["ref_frame"] = rel
     return edit
 
 
-def _write_conti(path: Path, raw: bytes, fm: dict) -> Path:
-    """fm으로 md·html을 다시 쓴다(메모는 지금 파일에서 읽는다). 새 HTML 경로를 돌려준다."""
-    return _write_conti_file(ContiFile(path, raw, {}, "## 내 메모\n" + _existing_memo(path)), fm)[1]
+def _write_conti(path: str | Path, raw: bytes, fm: dict) -> str:
+    """fm으로 md·html을 다시 쓴다(메모는 지금 파일에서 읽는다). 새 HTML 키를 돌려준다."""
+    key = _key(path)
+    return _write_conti_file(ContiFile(key, raw, {}, "## 내 메모\n" + _existing_memo(key)), fm)[1]
 
 
-def _write_conti_file(cf: ContiFile, fm: dict) -> tuple[ContiFile, Path]:
+def _write_conti_file(cf: ContiFile, fm: dict) -> tuple[ContiFile, str]:
     """fm으로 md·html을 다시 쓴다. '## 내 메모'와 줄바꿈 방식(CRLF/LF)은 이미 읽은 cf에서 가져와 보존한다.
-    (방금 쓴 내용(stored = 쓴 fm), 새 HTML 경로)를 돌려준다."""
+    (방금 쓴 내용(stored = 쓴 fm), 새 HTML 키)를 돌려준다."""
     fm["schema_version"] = SCHEMA_VERSION
     nl = "\r\n" if cf.raw.lstrip(b"\xef\xbb\xbf").startswith(b"---\r\n") else "\n"
     memo = memo_from_body(cf.body).replace("\r\n", "\n")
     body = render_md(fm, memo).replace("\n", nl)
     data = refstore.join_frontmatter(fm, body, nl).encode("utf-8")
-    refstore.write_atomic(cf.path, data)
-    return ContiFile(cf.path, data, fm, body), _write_html(cf.path, fm)
+    ctx.here().store.write(cf.key, data)
+    return ContiFile(cf.key, data, fm, body), _write_html(cf.key, fm)
 
 
 def _section_lines(fm: dict) -> list[list[str]]:
@@ -922,7 +979,7 @@ def retime(fm: dict, rebuild: set[int] | None = None) -> dict:
 
 def ensure_ids(path: str | Path) -> bool:
     """파일 컷에 id가 없으면 붙여 다시 쓴다(schema 3). 이미 모두 있으면 아무것도 안 하고 False."""
-    return ensure_ids_file(read_conti(_resolve(path)))[2]
+    return ensure_ids_file(read_conti(path))[2]
 
 
 def ensure_ids_file(cf: ContiFile) -> tuple[ContiFile, dict, bool]:
@@ -1102,21 +1159,21 @@ def _edit_locked(conti: str | Path, op: dict, expected_hash: str | None, now: fl
 
     if not isinstance(op, dict):
         raise ScriptError("invalid_edit", "편집 내용은 JSON 객체여야 합니다")
-    path = _resolve(conti)
-    if not path.exists():
-        raise ScriptError("conti_not_found", f"콘티가 없습니다: {_rel(path)}")
-    raw = path.read_bytes()                              # 이 편집에서 콘티 md를 읽는 것은 이 한 번뿐
-    if expected_hash is not None and bytes_hash(raw) != expected_hash:
+    key = _key(conti)
+    if not _md_exists(key):
+        raise _not_found(key)
+    doc = ctx.here().store.read(key)                     # 이 편집에서 콘티 md를 읽는 것은 이 한 번뿐
+    if expected_hash is not None and doc.version != expected_hash:
         raise ScriptError("conti_changed", "파일이 밖에서 바뀌었습니다. 다시 불러오세요")
     # 편집 전 상태를 이력에 남기려면 id가 파일에 있어야 한다
-    current, before, _ = ensure_ids_file(parse_conti(path, raw))
+    current, before, _ = ensure_ids_file(parse_conti(doc))
     edited, cut_id = _apply_op(before, op)               # 잘못된 편집은 이력·파일을 건드리기 전에 실패한다
     old_lines, new_lines = _section_lines(before), _section_lines(edited)
     fm = retime(edited, {i for i, lines in enumerate(new_lines) if lines != old_lines[i]})   # 컷 대사가 달라진 섹션만 대사를 다시 이음
-    conti_history.check_external(path, before, now)
-    written, html_path = _write_conti_file(current, fm)
-    conti_history.record(path, fm, "auto", now=now)
-    result = {"status": "updated", "path": _rel(path), "html": _rel(html_path), "abs_html": str(html_path),
+    conti_history.check_external(key, before, now)
+    written, html_key = _write_conti_file(current, fm)
+    conti_history.record(key, fm, "auto", now=now)
+    result = {"status": "updated", "path": key, "html": html_key, "abs_html": abs_path(html_key),
               "hash": bytes_hash(written.raw), "cut_id": cut_id,
               "warnings": warnings(fm["script"], fm["cuts"], fm["speech_cps"])}
     return result, fm
@@ -1124,7 +1181,7 @@ def _edit_locked(conti: str | Path, op: dict, expected_hash: str | None, now: fl
 
 def scenes(conti: str | Path, n: int, limit: int = 6) -> list[dict]:
     """컷에 쓸 참고 장면 후보. 같은 크기+섹션 → 같은 크기 순, 각 단계 안에서 exact 먼저, 프레임 경로 순."""
-    fm = _load_conti(_resolve(conti))
+    fm = _load_conti(conti)
     cut = _find_cut(fm["cuts"], n)
     label = fm["script"][cut["section"]]["label"]
     pool = frame_pool(fm.get("category"))
@@ -1140,15 +1197,28 @@ def scenes(conti: str | Path, n: int, limit: int = 6) -> list[dict]:
     return out[:limit]
 
 
+def _draft_of(value: Any) -> str | None:
+    """콘티 프런트매터의 draft(작업 폴더 키) → 있는 기획안 키. 비었거나 작업 폴더 밖이거나 없으면 None."""
+    if not value:
+        return None
+    try:
+        key = _key(value)
+    except ScriptError as e:
+        if e.code != "bad_path":
+            raise
+        return None
+    return key if _md_exists(key) else None
+
+
 def cut_context(conti: str | Path, n: int) -> dict:
     """컷 하나를 다듬을 때 필요한 맥락: 앞뒤 컷 대사, 섹션 전체 대사, 글자 수 한도, draft의 훅·서사 유형."""
-    fm = _load_conti(_resolve(conti))
+    fm = _load_conti(conti)
     cut = _find_cut(fm["cuts"], n)
     section = fm["script"][cut["section"]]
     draft_fm: dict = {}
-    draft_path = _resolve(fm["draft"]) if fm.get("draft") else None
-    if draft_path and draft_path.exists():
-        draft_fm, _ = refstore.read_md(draft_path)
+    draft_key = _draft_of(fm.get("draft"))
+    if draft_key is not None:
+        draft_fm, _ = ctx.here().store.read(draft_key).parsed
     prev = next((c for c in fm["cuts"] if c["n"] == n - 1), None)
     nxt = next((c for c in fm["cuts"] if c["n"] == n + 1), None)
     return {"cut": cut, "prev_line": prev["line"] if prev else None, "next_line": nxt["line"] if nxt else None,
@@ -1217,7 +1287,7 @@ def _clean_video_path(value: Any) -> Path:
     if not text or "\x00" in text:
         raise ScriptError("bad_video", "영상 파일 경로가 필요합니다")
     try:
-        path = _resolve(text)
+        path = ctx.here().scratch.arg_path(text)         # 사용자 PC의 영상(작업 폴더 밖일 수 있음): 읽기만 한다
         is_file = path.is_file()
         size = path.stat().st_size if is_file else 0
     except (OSError, ValueError) as e:
@@ -1286,14 +1356,14 @@ def caption_blocks(conti: str | Path, track: str = "caption", video: str | Path 
     """콘티의 자막(또는 대사) 블록과 시간을 계산한다. export_srt와 자막 영상 렌더가 같은 계산을 쓴다.
 
     video가 없으면 컷 sec의 ms 정수 누적, 있으면 그 영상의 실제 컷에 맞춘 시간. 영상 파일은 읽기만 한다.
-    돌려주는 값: path(콘티 Path), fm(콘티 프런트매터), blocks([[시작ms, 끝ms, 텍스트]]), duration_ms,
-    retime(맞춤 요약 또는 None), video(정리된 영상 Path 또는 None).
+    돌려주는 값: key(콘티 키), path(콘티 Path, 과도기: captions가 키로 바뀌면 뺀다), fm(콘티 프런트매터),
+    blocks([[시작ms, 끝ms, 텍스트]]), duration_ms, retime(맞춤 요약 또는 None), video(정리된 영상 Path 또는 None).
     """
     if track not in SRT_TRACKS:
         raise ScriptError("bad_request", f"track은 caption 또는 line이어야 합니다: {track}")
-    path = safe_draft_path(_rel(_resolve(conti)), conti_file=True)   # drafts/ 안의 *-conti.md만(CLI도 API와 같은 규칙)
+    key = safe_draft_key(_rel(conti), conti_file=True)   # drafts/ 안의 *-conti.md만(CLI도 API와 같은 규칙)
     field, _ = SRT_TRACKS[track]
-    fm = _load_conti(path)
+    fm = _load_conti(key)
     retime: dict | None = None
     video_path: Path | None = None
     if video is None:
@@ -1302,7 +1372,8 @@ def caption_blocks(conti: str | Path, track: str = "caption", video: str | Path 
         spans, retime = _retime_spans_ms(fm["cuts"], video, progress)
         video_path = _clean_video_path(video)
     blocks = _srt_blocks(fm["cuts"], field, spans)
-    return {"path": path, "fm": fm, "blocks": blocks, "duration_ms": spans[-1][1] if spans else 0,
+    return {"key": key, "path": ctx.here().scratch.arg_path(key).resolve(), "fm": fm, "blocks": blocks,
+            "duration_ms": spans[-1][1] if spans else 0,
             "retime": retime, "video": video_path}
 
 
@@ -1314,7 +1385,7 @@ def export_srt(conti: str | Path, track: str = "caption", video: str | Path | No
     실제 컷 시각에 맞춘다. 영상 파일은 읽기만 한다. progress는 "detect" → "write" 단계 알림용.
     """
     calc = caption_blocks(conti, track, video, progress)
-    path, blocks, retime = calc["path"], calc["blocks"], calc["retime"]
+    key, blocks, retime = calc["key"], calc["blocks"], calc["retime"]
     suffix = SRT_TRACKS[track][1]
     result: dict[str, Any] = {"path": None, "track": track, "count": len(blocks),
                               "duration_sec": calc["duration_ms"] / 1000}
@@ -1325,42 +1396,43 @@ def export_srt(conti: str | Path, track: str = "caption", video: str | Path | No
     if progress:
         progress("write")
     body = "".join(f"{i}\n{_srt_time(a)} --> {_srt_time(b)}\n{t}\n\n" for i, (a, b, t) in enumerate(blocks, 1))
-    out = path.with_name(f"{path.stem[: -len(CONTI_SUFFIX)]}-{suffix}.srt")
-    with out.open("w", encoding="utf-8", newline="") as f:
-        f.write(body.replace("\n", "\r\n"))
-    result["path"] = _rel(out)
+    out = keys.srt(key, suffix)
+    ctx.here().objects.put(out, body.replace("\n", "\r\n").encode("utf-8"))   # SRT는 운영체제와 상관없이 CRLF
+    result["path"] = out
     return result
 
 
-def conti_outputs(path: Path) -> list[Path]:
+def conti_outputs(conti: str | Path) -> list[str]:
     """콘티 md와 그 콘티로 만든 파일(스토리보드 HTML, SRT 두 종류, 자막 영상, 촬영 영상의 남은 컷 HTML·위치 CSV)
-    중 있는 것. 기획안은 넣지 않는다."""
-    base = path.stem[: -len(CONTI_SUFFIX)]
-    names = [path.name, path.with_suffix(".html").name,
-             *(f"{base}-{suffix}.srt" for _, suffix in SRT_TRACKS.values()), f"{base}-captions.mp4",
-             f"{base}-remaining.html", f"{base}-footage.csv"]
-    return [path.with_name(n) for n in names if path.with_name(n).is_file()]
+    중 있는 것의 키. 기획안은 넣지 않는다."""
+    key = _key(conti)
+    names = [key, keys.html_of(key), *(keys.srt(key, suffix) for _, suffix in SRT_TRACKS.values()),
+             keys.captions_mp4(key), keys.remaining_html(key), keys.footage_csv(key)]
+    return [k for k in names if key_exists(k)]
 
 
-def trash_targets(path: Path) -> list[Path]:
-    """콘티를 지울 때 함께 옮길 것: 산출물 + 이력 폴더 + 컷 파일 폴더 + 촬영 영상 판정 파일(있으면)."""
-    from scripts import conti_history, footage_match
-
-    folders = [conti_history.history_dir(path), path.with_name(f"{path.stem[: -len(CONTI_SUFFIX)]}-cuts")]
-    state = footage_match.state_path(path)
-    return [*conti_outputs(path), *(f for f in folders if f.is_dir()), *([state] if state.is_file() else [])]
+def trash_targets(conti: str | Path) -> list[str]:
+    """콘티를 지울 때 함께 옮길 것의 키: 산출물 + 이력 폴더 + 컷 파일 폴더 + 촬영 영상 판정 파일(있으면).
+    폴더 키는 `/`로 끝난다(휴지통은 `/` 없이 옮긴 목록을 낸다)."""
+    key = _key(conti)
+    objects = ctx.here().objects
+    folders = [keys.history_dir(key), keys.cut_files_dir(key)]
+    state = keys.footage_match(key)
+    return [*conti_outputs(key), *(f for f in folders if objects.folder_exists(f)),
+            *([state] if objects.exists(state) else [])]
 
 
 def trash(conti: str | Path) -> dict:
     """콘티를 지운다: 콘티 md와 그 산출물을 `workspace/trash/<시각>/`으로 옮긴다(되돌릴 수 있게). 기획안은 그대로."""
-    path = safe_draft_path(str(conti), conti_file=True)       # drafts/ 안의 콘티 파일만
-    if not path.is_file():
-        raise ScriptError("not_found", f"콘티 파일이 없습니다: {_rel(path)}")
+    c = ctx.here()
+    key = safe_draft_key(str(conti), conti_file=True)         # drafts/ 안의 콘티 파일만
+    if not c.store.exists(key):
+        raise ScriptError("not_found", f"콘티 파일이 없습니다: {key}")
     # 이름만 -conti로 끝나는 기획안을 옮기지 않도록, 콘티 프런트매터(script·cuts)가 있는지 본다.
-    fm, _ = refstore.read_md(path)
+    fm, _ = c.store.read(key).parsed
     if "cuts" not in fm or "script" not in fm:
-        raise ScriptError("not_conti", f"콘티 파일이 아닙니다(프런트매터에 script·cuts가 없음): {_rel(path)}")
-    return move_to_trash(trash_targets(path), last=path)
+        raise ScriptError("not_conti", f"콘티 파일이 아닙니다(프런트매터에 script·cuts가 없음): {key}")
+    return c.trash.move(trash_targets(key), last=key)
 
 
 def main(argv: list[str]) -> Any:
@@ -1444,7 +1516,7 @@ def main(argv: list[str]) -> Any:
         return scenes(args.conti, args.cut, args.limit)
     if args.cmd == "cut-context":
         return cut_context(args.conti, args.cut)
-    return save(args.draft, _resolve(args.conti), args.force)
+    return save(args.draft, ctx.here().scratch.arg_path(args.conti), args.force)
 
 
 if __name__ == "__main__":

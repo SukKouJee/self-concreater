@@ -367,14 +367,11 @@ def save(category: str, draft_path: Path) -> dict:
 
 def trash(draft_md: str | Path) -> dict:
     """기획안을 지운다: 기획안 md와 그 콘티(md·HTML·SRT·자막 영상)를 `workspace/trash/<시각>/`으로 옮긴다."""
-    path = conti.safe_draft_path(str(draft_md), conti_file=False)     # drafts/ 안의 기획안만
+    key = conti.safe_draft_key(str(draft_md), conti_file=False)      # drafts/ 안의 기획안만
     c = ctx.here()
-    key = c.scratch.key_of(path)
     if not c.store.exists(key):
         raise ScriptError("draft_not_found", f"기획안을 찾을 수 없습니다: {draft_md}")
-    # conti.trash_targets는 Path를 낸다(Task 8에서 키로 바뀜): 키로 바꿔 휴지통 저장소에 맡긴다
-    targets = [key, *(c.scratch.key_of(p) for p in conti.trash_targets(conti.conti_path(path)))]
-    return c.trash.move(targets, last=key)
+    return c.trash.move([key, *conti.trash_targets(keys.conti_md(key))], last=key)
 
 
 def main(argv: list[str]) -> Any:

@@ -61,7 +61,7 @@ def test_conti_keys_match_module_paths(home: Path) -> None:
     draft_path, conti_path = root / DRAFT, root / CONTI
     assert keys.draft_md(STEM) == DRAFT
     assert keys.conti_md(DRAFT) == rel(conti.conti_path(draft_path)) == CONTI
-    outputs = [rel(p) for p in conti.conti_outputs(conti_path)]      # 픽스처에 산출물이 모두 있다
+    outputs = conti.conti_outputs(conti_path)                         # 픽스처에 산출물이 모두 있다(키)
     assert outputs == [CONTI, keys.conti_html(CONTI), keys.srt(CONTI, "captions"), keys.srt(CONTI, "lines"),
                        keys.captions_mp4(CONTI), keys.remaining_html(CONTI), keys.footage_csv(CONTI)]
     assert [s for _, s in conti.SRT_TRACKS.values()] == ["captions", "lines"]
@@ -86,6 +86,14 @@ def test_conti_output_keys_reject_non_conti_key() -> None:
         keys.srt(DRAFT, "captions")
     with pytest.raises(ValueError):
         keys.conti_md("drafts/a.html")
+
+
+def test_html_of_replaces_md_suffix_like_with_suffix() -> None:
+    for key in (CONTI, "top-conti.md", "drafts/a.b-conti.MD", "drafts/sub/x.md"):
+        assert keys.html_of(key) == Path(key).with_suffix(".html").as_posix()
+    assert keys.html_of(CONTI) == keys.conti_html(CONTI)
+    with pytest.raises(ValueError):
+        keys.html_of("drafts/a.html")
 
 
 def test_other_doc_keys_match_module_paths(home: Path) -> None:

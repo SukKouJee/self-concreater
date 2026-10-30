@@ -1122,8 +1122,8 @@ def test_edit_reads_the_conti_md_at_most_three_times(saved, monkeypatch, op):
     seen = count_reads(monkeypatch, saved)
     out = conti.edit_cuts(saved, op, expected)
     assert len(seen) <= 3, seen
-    monkeypatch.undo()
-    assert out["hash"] == conti.content_hash(saved)
+    monkeypatch.undo()                     # 환경 변수(YT_COACH_HOME)까지 되돌리므로 해시는 파일 바이트로 직접 구한다
+    assert out["hash"] == conti.bytes_hash(saved.read_bytes())
 
 
 def test_ensure_ids_reads_once_when_nothing_to_fix(saved, monkeypatch):
@@ -1565,3 +1565,18 @@ def test_render_html_missing_files_fall_back_to_sketch(saved, home):
     (home / "workspace/conti-art/test/a.svg").unlink()
     html = conti.render_html(fm)
     assert "<img" not in html and html.count('class="sk"') == 4
+
+
+# --- S3 저장소: 키가 아닌 경로 문자열 -------------------------------------------------------
+
+def test_asset_url_and_refs_ignore_values_that_are_not_keys(saved, home, tmp_path):
+    """프런트매터에 손으로 적은 `..`·역슬래시·드라이브 경로는 작업 폴더 키가 아니므로 없는 파일로 본다(밖의 파일을 싣지 않는다)."""
+    outside = tmp_path.parent / f"{tmp_path.name}-asset.jpg"
+    outside.write_bytes(b"\xff\xd8")
+    up = f"../{outside.name}"
+    assert conti.asset_url(up) is None and conti.asset_url(up, embed=True) is None
+    assert conti.asset_url(str(outside)) is None
+    assert conti.key_exists(up) is False and conti.key_exists("workspace\frames\a.jpg") is False
+    fm = conti._load_conti(saved)
+    fm["cuts"][0]["ref_frame"] = up
+    assert conti.cut_refs(fm).get(1, {}).get("frame") != up
