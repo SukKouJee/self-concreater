@@ -159,16 +159,6 @@ def workspace_dir(*parts: str) -> Path:
     return work_root().joinpath("workspace", *parts)
 
 
-def move_to_trash(files: list[Path], last: Path) -> dict:
-    """files(파일이나 폴더, 작업 폴더 안)를 `workspace/trash/<시각>/` 아래 같은 상대 경로로 옮긴다.
-    되돌릴 때는 그 경로 그대로 작업 폴더에 다시 놓으면 된다. last(지울 대상의 md)는 마지막에 옮겨서,
-    중간에 실패하면 옮긴 것을 되돌리고 md가 남아 화면에서 다시 지울 수 있게 한다. -> {"trash", "moved"}
-
-    본문은 `filestore.move_paths`(= `FileTrash.move`)에 있다. S3 이전이 끝나면 이 함수는 없어진다."""
-    from scripts import filestore
-    return filestore.move_paths(work_root(), files, last)
-
-
 def category_dir(category: str) -> Path:
     from scripts import keys      # 이름 규칙·오류 문구는 keys.category 한 곳에 있다(keys가 common을 불러 지연 import)
     prefix = keys.category(category)                  # 이름 검사를 작업 폴더보다 먼저(지금 순서)

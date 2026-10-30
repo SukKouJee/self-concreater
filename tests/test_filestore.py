@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts import common, conti_history, keys, refstore
+from scripts import conti_history, keys, refstore
 from scripts.common import ScriptError
 from scripts.filestore import FileDocStore, FileObjectStore, FileScratch, FileSharedCache, FileTrash
 from scripts.stores import Meta, VersionConflict
@@ -33,20 +33,13 @@ def home(monkeypatch, tmp_path: Path) -> Path:
     return root
 
 
-def _common_move(root: Path, rels: list[str], last: str) -> dict:
-    return common.move_to_trash([root / r for r in rels], root / last)
-
-
 def _file_trash_move(root: Path, rels: list[str], last: str) -> dict:
     return FileTrash(root).move(rels, last)
 
 
-MOVERS: dict[str, Mover] = {"common": _common_move, "filestore": _file_trash_move}
-
-
-@pytest.fixture(params=sorted(MOVERS))
-def mover(request) -> Mover:
-    return MOVERS[request.param]
+@pytest.fixture
+def mover() -> Mover:
+    return _file_trash_move
 
 
 # --- 픽스처 ------------------------------------------------------------------------
@@ -63,7 +56,7 @@ def test_fixture_keeps_line_endings_and_bom() -> None:
     assert (FIXTURE / "workspace" / "frames" / VID / "0001.jpg").is_file()
 
 
-# --- 휴지통 (common.move_to_trash = FileTrash.move) ---------------------------------
+# --- 휴지통 (FileTrash.move) ---------------------------------
 
 _STAMP = r"workspace/trash/\d{8}-\d{6}"
 
