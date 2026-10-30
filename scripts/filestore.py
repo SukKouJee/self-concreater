@@ -94,6 +94,19 @@ class FileDocStore(_FileBase):
             refstore.write_atomic(path, data)
         return hashlib.sha256(data).hexdigest()
 
+    def create(self, key: str, data: bytes) -> str:
+        """없을 때만 만든다(`open(path, "xb")`와 같은 O_EXCL: 프로세스가 달라도 하나만 이긴다). 있으면 FileExistsError."""
+        path = self._doc_path(key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0))
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+        except BaseException:
+            path.unlink(missing_ok=True)             # 반쯤 쓴 파일을 남기지 않는다
+            raise
+        return hashlib.sha256(data).hexdigest()
+
     def list(self, prefix: str, pattern: str = "*.md") -> builtins.list[Meta]:
         return self._list(prefix, pattern)
 

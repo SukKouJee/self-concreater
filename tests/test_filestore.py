@@ -303,6 +303,44 @@ def test_expect_version_conflict_keeps_file(home: Path) -> None:
     assert not (home / "drafts" / "none.md").exists()
 
 
+def test_create_refuses_existing_key_and_returns_version(home: Path) -> None:
+    store = FileDocStore(home)
+    key = f"drafts/{STEM}.md"
+    before = (home / key).read_bytes()
+    with pytest.raises(FileExistsError):
+        store.create(key, b"mine")
+    assert (home / key).read_bytes() == before
+    fresh = "drafts/brand-new/2026-11-01-new.md"
+    version = store.create(fresh, "새 기획안".encode())
+    assert (home / fresh).read_bytes() == "새 기획안".encode()
+    assert version == hashlib.sha256("새 기획안".encode()).hexdigest()
+    with pytest.raises(ValueError):
+        store.create("drafts/x.txt", b"x")
+
+
+def test_create_lets_only_one_concurrent_creator_win(home: Path) -> None:
+    key = "drafts/2026-11-01-race.md"
+    barrier = threading.Barrier(8, timeout=5)
+    results: list[str] = []
+
+    def work(i: int) -> None:
+        store = FileDocStore(home)
+        barrier.wait()
+        try:
+            store.create(key, f"creator {i}".encode())
+            results.append("ok")
+        except FileExistsError:
+            results.append("exists")
+
+    threads = [threading.Thread(target=work, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert sorted(results) == ["exists"] * 7 + ["ok"]
+    assert (home / key).read_bytes().startswith(b"creator ")
+
+
 def test_expect_version_lets_only_one_concurrent_writer_win(home: Path) -> None:
     key = f"drafts/{STEM}.md"
     base = FileDocStore(home).read(key).version

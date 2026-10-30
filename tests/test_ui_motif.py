@@ -92,7 +92,7 @@ def test_status_flags(client, home):
     (home / "profile.md").write_text("---\ncreated: 2026-10-20\n---\n# 프로필\n", encoding="utf-8")
     typify = home / "workspace" / "typify" / f"{CAT}.json"
     typify.parent.mkdir(parents=True, exist_ok=True)
-    cluster.run(CAT, out=typify)
+    cluster.run(CAT, out=f"workspace/typify/{CAT}.json")
     body = client.json("GET", f"/api/motif?category={CAT}")[1]
     assert body["has_profile"] is True and body["has_typify"] is True
     assert body["allowed_types"] == ["flow", "technique", "angle", "combo"]
@@ -169,7 +169,7 @@ def test_run_retries_then_fails(client, home, monkeypatch):
 def _write_typify(home):
     typify = home / "workspace" / "typify" / f"{CAT}.json"
     typify.parent.mkdir(parents=True, exist_ok=True)
-    cluster.run(CAT, out=typify)
+    cluster.run(CAT, out=f"workspace/typify/{CAT}.json")
 
 
 FLOW = card("흐름 카드", type="flow")

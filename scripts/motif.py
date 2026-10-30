@@ -19,8 +19,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from scripts import features, refstore
-from scripts.common import DATA_NOTICE, ArgParser, ScriptError, run, work_root, workspace_dir
+from scripts import ctx, features, keys, refstore
+from scripts.common import DATA_NOTICE, ArgParser, ScriptError, run
 
 TYPES = ["flow", "technique", "angle", "combo"]
 TYPE_KO = {"flow": "흐름", "technique": "기법", "angle": "각도", "combo": "조합"}
@@ -43,15 +43,15 @@ def _section_lines(body: str, heading: str) -> tuple[list[str], int, int]:
     return lines, start, end
 
 
-def _read(path: Path) -> tuple[dict, str, str]:
-    text = path.read_bytes().decode("utf-8-sig")
+def _read(key: str) -> tuple[dict, str, str]:
+    text = ctx.here().store.read(key).raw.decode("utf-8-sig")
     nl = "\r\n" if text.startswith("---\r\n") else "\n"
     fm, body = refstore.split_frontmatter(text)
     return fm, body.replace("\r\n", "\n"), nl
 
 
-def _write(path: Path, fm: dict, body: str, nl: str) -> None:
-    refstore.write_atomic(path, refstore.join_frontmatter(fm, body.replace("\n", nl), nl).encode("utf-8"))
+def _write(key: str, fm: dict, body: str, nl: str) -> None:
+    ctx.here().store.write(key, refstore.join_frontmatter(fm, body.replace("\n", nl), nl).encode("utf-8"))
 
 
 def _norm(title: str) -> str:
@@ -80,7 +80,7 @@ def _field(line: str, prefix: str) -> str | None:
 
 def card_details(category: str) -> list[dict]:
     """`## 모티브 카드`의 카드 블록을 필드별로 읽는다. 손으로 고친 md에도 죽지 않는다(모르는 줄 무시, 없는 필드는 None/[])."""
-    body = _read(refstore.existing_category_dir(category) / "index.md")[1]
+    body = _read(refstore.require_category(category) + "index.md")[1]
     try:
         lines, start, end = _section_lines(body, SECTION)
     except ScriptError:
@@ -124,10 +124,9 @@ def parse_techniques(body: str) -> list[dict]:
 
 
 def _profile() -> dict | None:
-    path = work_root() / "profile.md"
-    if not path.exists():
+    if not ctx.here().store.exists(keys.PROFILE):
         return None
-    _, body = refstore.read_md(path)
+    _, body = refstore.read(keys.PROFILE)
     sections, current = {}, None
     for line in body.replace("\r\n", "\n").split("\n"):
         if line.startswith("## "):
@@ -138,8 +137,8 @@ def _profile() -> dict | None:
     return {k: "\n".join(v).strip() for k, v in sections.items()}
 
 
-def _summary_line(path: str) -> str:
-    _, body = refstore.read_md(path)
+def _summary_line(key: str) -> str:
+    _, body = refstore.read(key)
     lines = body.replace("\r\n", "\n").split("\n")
     idx = next((i for i, line in enumerate(lines) if line.strip() == "## 한 줄 요약"), None)
     if idx is None:
@@ -147,8 +146,9 @@ def _summary_line(path: str) -> str:
     return next((line.strip() for line in lines[idx + 1:] if line.strip()), "")
 
 
-def typify_path(category: str) -> Path:
-    return workspace_dir("typify", f"{category}.json")
+def has_typify(category: str) -> bool:
+    """유형화 결과(`workspace/typify/<category>.json`)가 있는지."""
+    return ctx.here().objects.exists(keys.typify(category))
 
 
 def allowed_types(category: str) -> list[str]:
@@ -157,7 +157,7 @@ def allowed_types(category: str) -> list[str]:
     모티브 화면(api_motif)과 도움말 챗봇 상황(api_help)이 같은 판단을 쓰도록 여기 한 곳에 둔다.
     """
     stage = refstore.count(category)["stage"]
-    if stage == 3 and not typify_path(category).exists():
+    if stage == 3 and not has_typify(category):
         return ["technique", "angle"]
     return list(ALLOWED_BY_STAGE[stage])
 
@@ -168,19 +168,20 @@ def ref_titles(category: str) -> dict[str, Any]:
 
 
 def _typify(category: str, index_fm: dict) -> dict | None:
-    path = typify_path(category)
-    if not path.exists():
+    objects = ctx.here().objects
+    key = keys.typify(category)
+    if not objects.exists(key):
         return None
-    result = json.loads(path.read_text("utf-8"))
+    result = json.loads(objects.get(key).decode("utf-8"))
     names = {a["id"]: a.get("name") for a in index_fm.get("archetypes") or []}
     axes = {
         axis: {"verdict": res["verdict"], "max_share": res["max_share"], "k": res["k"],
                "clusters": [{"size": c["size"], "summary": c["summary"]} for c in res["clusters"]]}
         for axis, res in result["axes"].items()
     }
-    keys = ("id", "size", "skeleton", "mean_ratio", "mean_duration", "hook_type", "narrative_type", "pacing", "camera",
-            "shots", "representative", "members")
-    archetypes = [{**{k: a.get(k) for k in keys}, "name": names.get(a["id"])} for a in result["archetypes"]]
+    fields = ("id", "size", "skeleton", "mean_ratio", "mean_duration", "hook_type", "narrative_type", "pacing", "camera",
+                "shots", "representative", "members")
+    archetypes = [{**{k: a.get(k) for k in fields}, "name": names.get(a["id"])} for a in result["archetypes"]]
     return {"status": result["status"], "axes": axes, "archetypes": archetypes,
             "outliers": result["outliers"]}
 
@@ -227,9 +228,9 @@ def context(category: str, topic: str | None = None, library_ids: list[str] | No
     """shared: 이미 `library_techniques`로 검증한 지인 기법(있으면 library_ids 대신 그대로 쓴다)."""
     if shared is None:
         shared = library_techniques(library_ids)     # 파일을 읽기 전에 먼저 검증
-    cat = refstore.existing_category_dir(category)
-    index_fm, index, _ = _read(cat / "index.md")
-    _, tech_body, _ = _read(cat / "techniques.md")
+    cat = refstore.require_category(category)
+    index_fm, index, _ = _read(cat + "index.md")
+    _, tech_body, _ = _read(cat + "techniques.md")
     counts = refstore.count(category)
     cards = parse_cards(index)
     videos = [
@@ -285,8 +286,8 @@ def validate_cards(category: str, cards: Any, allowed: list[str] | None = None) 
     allowed: 허용 type 목록. None이면 단계 기본값."""
     if not isinstance(cards, list) or not cards:
         raise _invalid("카드 목록이 비어 있습니다")
-    cat = refstore.existing_category_dir(category)
-    _, body, _ = _read(cat / "index.md")
+    cat = refstore.require_category(category)
+    _, body, _ = _read(cat + "index.md")
     stage = refstore.count(category)["stage"]
     allowed = ALLOWED_BY_STAGE[stage] if allowed is None else allowed
     titles = ref_titles(category)
@@ -325,7 +326,7 @@ def validate_cards(category: str, cards: Any, allowed: list[str] | None = None) 
 
 
 def add(category: str, cards_path: Path, allowed: list[str] | None = None) -> dict:
-    index_path = refstore.existing_category_dir(category) / "index.md"
+    index_path = refstore.require_category(category) + "index.md"
     raw = _load_json(cards_path, "invalid_cards")
     stage = refstore.count(category)["stage"]            # 영상 폴더만 읽는다: index.md 락 밖에서 먼저 계산
     titles = ref_titles(category)
@@ -352,7 +353,7 @@ def add(category: str, cards_path: Path, allowed: list[str] | None = None) -> di
 # --- star -------------------------------------------------------------------------
 
 def star(category: str, card_id: str, off: bool = False) -> dict:
-    index_path = refstore.existing_category_dir(category) / "index.md"
+    index_path = refstore.require_category(category) + "index.md"
     with refstore.INDEX_LOCK:
         fm, body, nl = _read(index_path)
         lines = body.split("\n")
@@ -374,7 +375,7 @@ def _tech_line(name: str, desc: str, sources: list[str]) -> str:
 
 def merge_techniques(category: str, plan_path: Path) -> dict:
     plan = _load_json(plan_path, "invalid_plan")
-    path = refstore.existing_category_dir(category) / "techniques.md"
+    path = refstore.require_category(category) + "techniques.md"
     fm, body, nl = _read(path)
     merged = 0
     for item in plan:
@@ -402,8 +403,7 @@ def merge_techniques(category: str, plan_path: Path) -> dict:
 # --- CLI --------------------------------------------------------------------------
 
 def _work_path(value: str) -> Path:
-    path = Path(value)
-    return path if path.is_absolute() else work_root() / path
+    return ctx.here().scratch.arg_path(value)
 
 
 def main(argv: list[str]) -> Any:

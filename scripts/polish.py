@@ -17,7 +17,6 @@ choice JSON
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import unicodedata
@@ -26,8 +25,9 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from scripts import conti, features, motif, refstore
-from scripts.common import PLUGIN_ROOT, TEMPLATES_DIR, ArgParser, ScriptError, run, work_root
+from scripts import conti, ctx, features, keys, motif, refstore
+from scripts.common import PLUGIN_ROOT, TEMPLATES_DIR, ArgParser, ScriptError, run
+from scripts.stores import VersionConflict
 from scripts.draft import _escape_headings, _one_line
 from scripts.features import TITLE_PATTERNS
 from scripts.videomd import HOOK_TYPES, title_patterns
@@ -257,14 +257,20 @@ def _draft_path(value: Any) -> Path:
     return conti.safe_draft_path(value, conti_file=False)
 
 
+def _draft_key(path: Path) -> str:
+    """`_draft_path`가 돌려준 경로 → 기획안 키(resolve 기준으로 작업 폴더 밖이면 bad_path)."""
+    return ctx.here().scratch.key_of(path)
+
+
 def context(draft: str | Path) -> dict:
     path = _draft_path(str(draft))
+    key = _draft_key(path)
     d = conti.parse_draft(path)
     category = d["fm"].get("category")
     hook = next((s for s in d["sections"] if s["label"] == "hook"), None)
     rate = conti.speech_rate(category)
     return {
-        "draft": conti._rel(path),
+        "draft": key,
         "category": category,
         "title": d["title"],
         "hook": ({"label": "hook", "start": hook["start"], "end": hook["end"], "script": hook["script"]}
@@ -275,8 +281,8 @@ def context(draft: str | Path) -> dict:
         "cps": rate["cps"],
         "formulas": [{k: h[k] for k in ("id", "name", "shape", "example", "fails_when", "hook_type")}
                      for h in _hooks_file()["hooks"]],
-        "hash": conti.content_hash(path),
-        "conti_exists": conti.conti_path(path).exists(),
+        "hash": ctx.here().store.read(key).version,
+        "conti_exists": ctx.here().store.exists(keys.conti_md(key)),
     }
 
 
@@ -518,10 +524,13 @@ def _packaging(existing: list[str], pick: dict, history: list[str]) -> list[str]
 
 def apply(draft: str | Path, choice: dict, expected_hash: str) -> dict:
     path = _draft_path(str(draft))
-    if not path.exists():
-        raise ScriptError("draft_not_found", f"기획안이 없습니다: {conti._rel(path)}")
-    raw = path.read_bytes()
-    if hashlib.sha256(raw).hexdigest() != expected_hash:
+    store = ctx.here().store
+    key = _draft_key(path)
+    if not store.exists(key):
+        raise ScriptError("draft_not_found", f"기획안이 없습니다: {key}")
+    doc = store.read(key)
+    raw = doc.raw
+    if doc.version != expected_hash:
         raise ScriptError("draft_changed", "화면을 연 뒤 기획안이 바뀌었습니다. 다시 불러와 주세요")
     pick = _validate_choice(choice)
     text = raw.decode("utf-8-sig")
@@ -580,19 +589,22 @@ def apply(draft: str | Path, choice: dict, expected_hash: str) -> dict:
             block = ["", *block]
         lines[at:at] = block
 
-    if conti.conti_path(path).exists():
+    if store.exists(keys.conti_md(key)):
         warnings.append("이 기획안의 콘티가 이미 있습니다. 제목·훅 대본이 바뀌었으니 /yt-coach:yt-conti 로 콘티를 다시 만들어 주세요 "
                         "(콘티의 대사는 자동으로 바뀌지 않습니다)")
     out = refstore.join_frontmatter(fm, "\n".join(lines).replace("\n", nl), nl).encode("utf-8")
-    refstore.write_atomic(path, BOM + out if raw.startswith(BOM) else out)
-    return {"path": conti._rel(path), "hash": conti.content_hash(path), "changed": changed, "warnings": warnings}
+    try:
+        version = store.write(key, BOM + out if raw.startswith(BOM) else out, expect_version=doc.version)
+    except VersionConflict as e:                 # 읽은 뒤 다른 곳에서 바꿈
+        raise ScriptError("draft_changed", "화면을 연 뒤 기획안이 바뀌었습니다. 다시 불러와 주세요") from e
+    return {"path": key, "hash": version, "changed": changed, "warnings": warnings}
 
 
 # --- CLI -------------------------------------------------------------------------------
 
 def _read_json(value: str, what: str) -> Any:
     try:
-        return json.loads(conti._resolve(value).read_text("utf-8"))
+        return json.loads(ctx.here().scratch.arg_path(value).read_text("utf-8"))
     except (OSError, json.JSONDecodeError) as e:
         raise _invalid(f"{what} JSON을 읽을 수 없습니다: {e}") from e
 

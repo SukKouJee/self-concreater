@@ -92,7 +92,7 @@ def _status(req: Request) -> dict:
         "category": category, "ref": counts["ref"], "stage": counts["stage"],
         "allowed_types": allowed, "allowed_ko": [motif.TYPE_KO[t] for t in allowed],
         "has_profile": (work_root() / "profile.md").exists(),
-        "has_typify": motif.typify_path(category).exists(),      # context()의 typify가 None이 아닌 조건과 같다
+        "has_typify": motif.has_typify(category),      # context()의 typify가 None이 아닌 조건과 같다
         "cards": motif.card_details(category),
     }
 

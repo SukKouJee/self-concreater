@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import datetime
 import math
+import posixpath
 import re
-from pathlib import Path
 from typing import Any
 
-from scripts import conti, mission, refstore
-from scripts.common import ArgParser, ScriptError, run, work_root
+from scripts import ctx, keys, mission, refstore
+from scripts.common import ArgParser, ScriptError, run
 
 RECENT_LIMIT = 5
 # 메모장이 CP949로 저장한 md, 목록을 만든 뒤 지워진 md: 건너뛰고 나머지를 보여 준다
@@ -41,10 +41,6 @@ VIDEO_STEPS: list[tuple[str, str, bool]] = [
 ]
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _PACKAGING_RE = re.compile(r"^## 패키징\s*$", re.MULTILINE)
-
-
-def _rel(path: Path) -> str:
-    return path.relative_to(work_root()).as_posix()
 
 
 def _iso_date(text: str) -> str | None:
@@ -81,9 +77,9 @@ def _norm_target(value: Any) -> str | None:
 def _mine_records(category: str) -> tuple[int, set[str]]:
     """카테고리의 mine md를 한 번만 읽어 (진단 기록 수, 정규화한 target 집합)을 낸다. 깨진 md는 건너뛴다."""
     count, targets = 0, set()
-    for p in sorted((work_root() / "mine").glob("*.md")):
+    for meta in ctx.here().store.list(keys.MINE, "*.md"):
         try:
-            fm = refstore.read_md(p)[0]
+            fm = refstore.read(meta.key)[0]
         except _UNREADABLE:
             continue
         if fm.get("category") != category:
@@ -114,24 +110,26 @@ def _target_sec(value: Any) -> float | None:
     return value if math.isfinite(value) and value > 0 else None
 
 
-def _video(path: Path, fm: dict, body: str, diagnosed_targets: set[str]) -> dict:
-    rel = _rel(path)
+def _video(rel: str, fm: dict, body: str, version: str, diagnosed_targets: set[str]) -> dict:
+    c = ctx.here()
+    stem = keys.stem(rel)
+    conti_key = keys.conti_md(rel)
     filmed_at = filmed_date(fm.get("filmed_at"))
     done = {
         "draft": True,
         "polish": _PACKAGING_RE.search(body) is not None,
-        "conti": path.with_name(f"{path.stem}-conti.md").exists(),
+        "conti": c.store.exists(conti_key),
         "filmed": filmed_at is not None,
-        "captions": path.with_name(f"{path.stem}-captions.mp4").exists(),
+        "captions": c.objects.exists(keys.captions_mp4(conti_key)),
         "diagnose": rel in diagnosed_targets,
     }
     steps = [{"key": k, "done": done[k], "optional": optional} for k, _, optional in VIDEO_STEPS]
     return {
-        "path": rel, "title": _video_title(fm, path.stem), "date": _video_date(fm, path.name),
+        "path": rel, "title": _video_title(fm, stem), "date": _video_date(fm, posixpath.basename(rel)),
         "target_sec": _target_sec(fm.get("target_sec")), "steps": steps,
         "next": next((s["key"] for s in steps if not s["done"] and not s["optional"]), None),
         "progress": sum(1 for s in steps if s["done"] and not s["optional"]),
-        "filmed_at": filmed_at, "hash": conti.content_hash(path),
+        "filmed_at": filmed_at, "hash": version,
     }
 
 
@@ -142,15 +140,16 @@ def _videos(category: str, _targets: set[str] | None = None) -> list[dict]:
     """
     targets = _mine_records(category)[1] if _targets is None else _targets
     videos: list[dict] = []
-    for p in sorted((work_root() / "drafts").glob("*.md")):
-        if p.stem.endswith("-conti"):
+    store = ctx.here().store
+    for meta in store.list(keys.DRAFTS, "*.md"):
+        if keys.stem(meta.key).endswith("-conti"):
             continue
         try:
-            fm, body = refstore.read_md(p)
+            doc = store.read(meta.key)               # the file may be gone or replaced since the listing
+            fm, body = doc.parsed
             if fm.get("category") != category:
                 continue
-            # content_hash re-reads the file: it may be gone or replaced since the listing
-            video = _video(p, fm, body, targets)
+            video = _video(meta.key, fm, body, doc.version, targets)
         except _UNREADABLE:
             continue
         videos.append(video)
@@ -176,7 +175,7 @@ def _next(key: str, ref: int, preliminary: int) -> dict:
 def _typified_at(category: str) -> Any:
     """저장(apply)된 유형화만 완료로 본다: index.md 프런트매터의 typified_at."""
     try:
-        return refstore.read_md(refstore.existing_category_dir(category) / "index.md")[0].get("typified_at")
+        return refstore.read(refstore.require_category(category) + "index.md")[0].get("typified_at")
     except ScriptError:
         return None
 
@@ -220,23 +219,22 @@ def _category_status(entry: dict) -> dict:
 
 def _mission_card() -> dict:
     day = mission._today(None)
-    path = mission._mission_path(day)
-    if not path.exists():
+    key = keys.mission_md(day)
+    if not ctx.here().store.exists(key):
         return {"date": day, "exists": False, "status": None, "kind": None, "path": None}
     try:
-        fm, _ = refstore.read_md(path)
+        fm, _ = refstore.read(key)
     except ScriptError:
         fm = {}                           # 사용자가 고치는 중인 미션 md가 홈 화면을 막지 않게 한다
-    return {"date": day, "exists": True, "status": fm.get("status"), "kind": fm.get("kind"), "path": _rel(path)}
+    return {"date": day, "exists": True, "status": fm.get("status"), "kind": fm.get("kind"), "path": key}
 
 
 def _recent() -> list[dict]:
-    root = work_root()
-    found: list[tuple[Path, str]] = []
-    found += [(p, "draft") for p in (root / "drafts").glob("*.md") if not p.stem.endswith("-conti")]
-    found += [(p, "conti") for p in (root / "drafts").glob("*-conti.html")]
-    found += [(p, "report") for p in (root / "reports").glob("*.html")]
-    items = [{"path": _rel(p), "kind": kind, "mtime": p.stat().st_mtime} for p, kind in found]
+    c = ctx.here()
+    found = [(m, "draft") for m in c.store.list(keys.DRAFTS, "*.md") if not keys.stem(m.key).endswith("-conti")]
+    found += [(m, "conti") for m in c.objects.list(keys.DRAFTS, "*-conti.html")]
+    found += [(m, "report") for m in c.objects.list(keys.REPORTS, "*.html")]
+    items = [{"path": m.key, "kind": kind, "mtime": m.mtime} for m, kind in found]
     items.sort(key=lambda i: i["mtime"], reverse=True)
     return items[:RECENT_LIMIT]
 
@@ -246,11 +244,12 @@ def overview(category: str | None = None) -> dict:
         _category_status(c) for c in refstore.list_categories()
         if category is None or c["category"] == category
     ]
-    if category is not None and not categories and (work_root() / "refs").is_dir():
-        refstore.existing_category_dir(category)  # 없는 카테고리는 category_not_found
+    store = ctx.here().store
+    if category is not None and not categories and store.folder_exists(keys.REFS):
+        refstore.require_category(category)  # 없는 카테고리는 category_not_found
     return {
-        "initialized": (work_root() / "refs").is_dir(),
-        "work_root": str(work_root()),
+        "initialized": store.folder_exists(keys.REFS),
+        "work_root": store.label(),
         "categories": categories,
         "mission": _mission_card(),
         "recent": _recent(),

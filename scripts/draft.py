@@ -21,9 +21,9 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from scripts import conti, motif, refstore
+from scripts import conti, ctx, keys, motif, refstore
 from scripts.features import SHOT_SIZES
-from scripts.common import DATA_NOTICE, ArgParser, ScriptError, move_to_trash, run, work_root
+from scripts.common import DATA_NOTICE, ArgParser, ScriptError, run
 from scripts.videomd import BODY_SUBS, HOOK_TYPES, LABELS, NARRATIVE_TYPES, fmt_time, title_patterns
 
 _ARCHETYPE_RE = re.compile(r"^A\d+$")
@@ -66,7 +66,7 @@ def sources(category: str) -> dict[str, Any]:
     def brief(c: dict) -> dict:
         return {k: c[k] for k in ("id", "title", "type", "type_ko", "idea")}
 
-    index_fm, _ = refstore.read_md(refstore.existing_category_dir(category) / "index.md")
+    index_fm, _ = refstore.read(refstore.require_category(category) + "index.md")
     typify = motif._typify(category, index_fm)
     archetypes = [{"id": a["id"], "name": a.get("name"), "size": a.get("size"), "skeleton": a.get("skeleton"),
                    "mean_duration": a.get("mean_duration")} for a in (typify or {}).get("archetypes") or []]
@@ -74,13 +74,12 @@ def sources(category: str) -> dict[str, Any]:
         "stars": [brief(c) for c in details if c["starred"]],
         "cards": [brief(c) for c in details if not c["starred"]],
         "archetypes": archetypes,
-        "has_typify": motif.typify_path(category).exists(),
+        "has_typify": motif.has_typify(category),
     }
 
 
 def context(category: str, source: str, topic: str | None = None) -> dict:
-    cat = refstore.existing_category_dir(category)
-    index_fm, index_body = refstore.read_md(cat / "index.md")
+    index_fm, index_body = refstore.read(refstore.require_category(category) + "index.md")
     typify = motif._typify(category, index_fm)
     archetypes = (typify or {}).get("archetypes") or []
 
@@ -311,7 +310,7 @@ def render(data: dict, pacing: dict, comp: dict | None, template_line: str | Non
 
 def find_archetype(category: str, archetype_id: Any) -> dict | None:
     """유형화 결과에서 아키타입을 찾는다. 없거나 유형화 전이면 None."""
-    index_fm, _ = refstore.read_md(refstore.existing_category_dir(category) / "index.md")
+    index_fm, _ = refstore.read(refstore.require_category(category) + "index.md")
     archetypes = (motif._typify(category, index_fm) or {}).get("archetypes") or []
     return next((a for a in archetypes if a["id"] == archetype_id), None)
 
@@ -329,7 +328,7 @@ def _template_line(data: dict) -> str:
 
 
 def save(category: str, draft_path: Path) -> dict:
-    refstore.existing_category_dir(category)
+    refstore.require_category(category)
     try:
         data = json.loads(Path(draft_path).read_text("utf-8"))
     except (OSError, json.JSONDecodeError) as e:
@@ -342,8 +341,7 @@ def save(category: str, draft_path: Path) -> dict:
     template_line = _template_line(data) if isinstance(source, str) and source.startswith(LIBRARY_PREFIX) else None
 
     today = date.today().isoformat()
-    drafts = work_root() / "drafts"
-    drafts.mkdir(parents=True, exist_ok=True)
+    store = ctx.here().store
     base = f"{today}-{slugify(data['title'])}"
     fm = {
         "date": today, "category": category, "title": data["title"], "topic": data.get("topic"),
@@ -356,24 +354,27 @@ def save(category: str, draft_path: Path) -> dict:
         "status": "script" if data.get("script_only") else "draft", "schema_version": 1,
     }
     content = refstore.join_frontmatter(fm, render(data, pacing, comp, template_line)).encode("utf-8")
-    path, i = drafts / f"{base}.md", 2
+    key, i = keys.draft_md(base), 2
     while True:
         try:
-            with open(path, "xb") as f:          # exclusive create: never overwrite a file that appeared meanwhile
-                f.write(content)
+            store.create(key, content)           # exclusive create: never overwrite a file that appeared meanwhile
             break
         except FileExistsError:
-            path, i = drafts / f"{base}-{i}.md", i + 1
+            key, i = keys.draft_md(f"{base}-{i}"), i + 1
     Path(draft_path).unlink(missing_ok=True)
-    return {"status": "saved", "path": path.relative_to(work_root()).as_posix(), "pacing": pacing, "compare": comp}
+    return {"status": "saved", "path": key, "pacing": pacing, "compare": comp}
 
 
 def trash(draft_md: str | Path) -> dict:
     """기획안을 지운다: 기획안 md와 그 콘티(md·HTML·SRT·자막 영상)를 `workspace/trash/<시각>/`으로 옮긴다."""
     path = conti.safe_draft_path(str(draft_md), conti_file=False)     # drafts/ 안의 기획안만
-    if not path.is_file():
+    c = ctx.here()
+    key = c.scratch.key_of(path)
+    if not c.store.exists(key):
         raise ScriptError("draft_not_found", f"기획안을 찾을 수 없습니다: {draft_md}")
-    return move_to_trash([path, *conti.trash_targets(conti.conti_path(path))], last=path)
+    # conti.trash_targets는 Path를 낸다(Task 8에서 키로 바뀜): 키로 바꿔 휴지통 저장소에 맡긴다
+    targets = [key, *(c.scratch.key_of(p) for p in conti.trash_targets(conti.conti_path(path)))]
+    return c.trash.move(targets, last=key)
 
 
 def main(argv: list[str]) -> Any:
@@ -392,8 +393,7 @@ def main(argv: list[str]) -> Any:
         return trash(args.draft)
     if args.cmd == "context":
         return context(args.category, args.source, args.topic)
-    path = Path(args.draft)
-    return save(args.category, path if path.is_absolute() else work_root() / path)
+    return save(args.category, ctx.here().scratch.arg_path(args.draft))
 
 
 if __name__ == "__main__":

@@ -14,11 +14,10 @@ import json
 import math
 import re
 from datetime import date as Date
-from pathlib import Path
 from typing import Any
 
-from scripts import features, refstore
-from scripts.common import ArgParser, run, work_root, workspace_dir
+from scripts import ctx, features, keys, refstore
+from scripts.common import ArgParser, run
 from scripts.videomd import CAMERA_KO, LABELS, humanize_sections, section_name
 
 # dataviz 기준 팔레트 categorical 슬롯 (light, dark)
@@ -76,12 +75,11 @@ def _axis_notes(index_body: str) -> dict:
 
 
 def _mine_histories(category: str) -> list[dict]:
-    folder = work_root() / "mine"
     out = []
-    for p in sorted(folder.glob("*.md")) if folder.is_dir() else []:
-        fm, _ = refstore.read_md(p)
+    for meta in ctx.here().store.list(keys.MINE, "*.md"):
+        fm, _ = refstore.read(meta.key)
         if fm.get("category") == category and fm.get("history"):
-            out.append({"name": p.stem, "nearest": fm.get("nearest") or {}, "history": fm["history"]})
+            out.append({"name": keys.stem(meta.key), "nearest": fm.get("nearest") or {}, "history": fm["history"]})
     return out
 
 
@@ -150,12 +148,12 @@ def sparkline(values: list[float]) -> str:
 
 def build(category: str, date: str | None = None) -> dict:
     day = date or Date.today().isoformat()
-    cat = refstore.existing_category_dir(category)
-    index_fm, index_body = refstore.read_md(cat / "index.md")
+    objects = ctx.here().objects
+    index_fm, index_body = refstore.read(refstore.require_category(category) + "index.md")
     counts = refstore.count(category)
     names = {a["id"]: a.get("name") for a in index_fm.get("archetypes") or []}
-    typify_path = workspace_dir("typify", f"{category}.json")
-    typify = json.loads(typify_path.read_text("utf-8")) if typify_path.exists() else None
+    typify_key = keys.typify(category)
+    typify = json.loads(objects.get(typify_key).decode("utf-8")) if objects.exists(typify_key) else None
     refs = features.load_videos(category)
 
     out = [f"<h1>{_esc(category)} 레퍼런스 리포트</h1>",
@@ -223,10 +221,9 @@ def build(category: str, date: str | None = None) -> dict:
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             f"<title>{_esc(category)} 리포트</title><style>{CSS % (_vars(0), _vars(1), _vars(1))}</style></head>"
             f"<body><main>{''.join(out)}</main></body></html>")
-    path = work_root() / "reports" / f"{category}-{day}.html"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    refstore.write_atomic(path, page.encode("utf-8"))
-    return {"status": "built", "path": path.relative_to(work_root()).as_posix(), "abs_path": str(path)}
+    key = keys.report_html(category, day)
+    objects.put(key, page.encode("utf-8"))
+    return {"status": "built", "path": key, "abs_path": objects.display_path(key)}
 
 
 def main(argv: list[str]) -> Any:

@@ -118,7 +118,7 @@ def gates(category: str, page: str) -> dict[str, Any]:
         draft_sources["library_templates"] = None if templates is None else len(templates)
     return {
         "has_profile": (work_root() / "profile.md").exists(),
-        "typify_result": motif.typify_path(category).exists(),
+        "typify_result": motif.has_typify(category),
         "motif_allowed": [motif.TYPE_KO[t] for t in motif.allowed_types(category)],
         "diagnose": similarity.typify_gate(category),
         "draft_sources": draft_sources,

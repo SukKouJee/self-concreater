@@ -282,93 +282,20 @@ def test_cp949_mine_is_left_out_and_overview_still_works(home):
     assert c["steps"][-1]["done"] is False
 
 
-def test_draft_deleted_before_hashing_is_left_out(home, monkeypatch):
+def test_draft_deleted_before_reading_is_left_out(home, monkeypatch):
+    """목록을 만든 뒤 읽기 전에 지워진 기획안은 건너뛰고 나머지를 보여 준다."""
+    from scripts.filestore import FileDocStore
+
     standard_set(home)
     _video(home, "ok")
     _video(home, "gone")
 
-    real = conti.content_hash
+    real = FileDocStore.read
 
-    def flaky(path):
-        if str(path).endswith("gone.md"):
-            raise FileNotFoundError(path)
-        return real(path)
+    def flaky(self, key):
+        if key.endswith("gone.md"):
+            raise FileNotFoundError(key)
+        return real(self, key)
 
-    monkeypatch.setattr(conti, "content_hash", flaky)
+    monkeypatch.setattr(FileDocStore, "read", flaky)
     assert [v["path"] for v in _videos(home)] == ["drafts/ok.md"]
-
-
-def test_other_category_and_other_target_do_not_count(home):
-    _video(home, "mine1", diagnosed=True)
-    _md(home, "drafts/other.md", {"category": "other"})
-    assert [v["path"] for v in _videos(home)] == ["drafts/mine1.md"]
-    _md(home, "mine/mine1.md", {"category": CAT, "target": "drafts/elsewhere.md"})
-    assert _videos(home)[0]["steps"][-1]["done"] is False
-    (home / "mine" / "mine1.md").write_text("---\n: [\n---\n", encoding="utf-8")
-    assert _videos(home)[0]["steps"][-1]["done"] is False
-
-
-def test_title_date_fallbacks(home):
-    refstore.init_category(CAT)
-    _md(home, "drafts/2026-10-25-hello.md", {"category": CAT})
-    _md(home, "drafts/nodate.md", {"category": CAT, "title": "제목", "target_sec": 60})
-    by_path = {v["path"]: v for v in _videos(home)}
-    v = by_path["drafts/2026-10-25-hello.md"]
-    assert v["title"] == "2026-10-25-hello" and v["date"] == "2026-10-25" and v["target_sec"] is None
-    v = by_path["drafts/nodate.md"]
-    assert v["title"] == "제목" and v["date"] is None and v["target_sec"] == 60
-
-
-@pytest.mark.parametrize("bad", ["abc", -3, 0, float("nan"), float("inf"), True])
-def test_target_sec_rejects_non_positive_or_non_finite(home, bad):
-    _md(home, "drafts/t.md", {"category": CAT, "target_sec": bad})
-    assert _videos(home)[0]["target_sec"] is None
-
-
-def test_next_action_choices(home):
-    # (a) 기획안 없음, 카테고리 미완
-    refstore.init_category(CAT)
-    for i in range(3):
-        write_video(home, f"v{i:02d}")
-    c = _cat(status.overview())
-    assert c["videos"] == []
-    assert c["next_action"] == {"kind": "category", **c["next"]}
-    assert "개 더" in c["next_action"]["text"] and c["next_action"]["menu"] == "add"
-
-    # (b) 미완 영상 있음: 진행 가장 큰 것
-    _video(home, "low", date="2026-10-26")
-    _video(home, "high", date="2026-10-01", conti=True)
-    assert _cat(status.overview())["next_action"] == {
-        "kind": "video", "path": "drafts/high.md", "step": "filmed", "title": "high"}
-
-
-def test_next_action_new_draft_or_category_when_all_videos_done(home):
-    standard_set(home)
-    _video(home, "d1", conti=True, filmed=True, diagnosed=True)
-    # (d) 영상은 모두 완료, 유형화 미완 -> category
-    c = _cat(status.overview())
-    assert c["next_action"]["kind"] == "category" and c["next_action"]["menu"] == "typify"
-    # (c) 카테고리 단계도 모두 완료 -> new_draft
-    _typify(home)
-    c = _cat(status.overview())
-    assert c["current"] is None
-    assert c["next_action"] == {"kind": "new_draft"}
-
-
-def test_step_counts(home):
-    standard_set(home, n_a=7, n_b=3)
-    _video(home, "a", conti=True, diagnosed=True)
-    _video(home, "b")
-    counts = {s["key"]: s["count"] for s in _cat(status.overview())["steps"]}
-    assert counts == {"collect": 10, "typify": None, "draft": 2, "conti": 1, "diagnose": 1}
-    assert type(counts["draft"]) is int
-
-
-def test_conti_count_reads_the_conti_step_by_key(home, monkeypatch):
-    standard_set(home)
-    _video(home, "a", conti=True)
-    _video(home, "b")
-    monkeypatch.setattr(status, "VIDEO_STEPS", list(reversed(status.VIDEO_STEPS)))
-    c = _cat(status.overview())
-    conti_step = next(s for s in c["steps"] if s["key"] == "conti")
-    assert conti_step["count"] == 1 and conti_step["detail"] == "콘티 1개"

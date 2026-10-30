@@ -98,7 +98,7 @@ def _report_list(req: Request) -> dict:
         if m and path.is_file():
             found.append((m.group(1), f"reports/{path.name}"))
     reports = [{"path": rel, "date": day, "url": _file_url(rel)} for day, rel in sorted(found, reverse=True)]
-    return {"category": category, "reports": reports, "has_typify": motif.typify_path(category).exists()}
+    return {"category": category, "reports": reports, "has_typify": motif.has_typify(category)}
 
 
 @route("POST", "/api/report/build")
