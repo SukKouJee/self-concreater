@@ -1524,3 +1524,33 @@ def test_conti_html_cli_all_rewrites_html_only(saved, home):
     embedded = conti.main(["html", saved.relative_to(home).as_posix(), "--embed"])
     assert embedded["bytes"] > one["bytes"] and "data:image/jpeg;base64," in html.read_text("utf-8")
     assert saved.read_bytes() == md_before
+
+
+def test_conti_html_all_continues_past_invalid_conti(saved, home):
+    drafts = saved.parent
+    good2, bad = drafts / "b-conti.md", drafts / "a-conti.md"       # a가 먼저 정렬돼 깨진 파일이 앞에 온다
+    good2.write_bytes(saved.read_bytes())
+    bad.write_text("---\ncuts: nope\n---\n본문\n", encoding="utf-8")
+    for p in (saved, good2):
+        p.with_suffix(".html").write_text("old", encoding="utf-8")
+    before = {p: p.read_bytes() for p in (saved, good2, bad)}
+    out = conti.main(["html", "--all"])
+    assert out["status"] == "built" and out["built"] == 2
+    assert [f["path"] for f in out["failed"]] == [bad.relative_to(home).as_posix()]
+    assert out["failed"][0]["error"] and out["failed"][0]["message"]
+    assert all(p.with_suffix(".html").read_text("utf-8").startswith("<!doctype html>") for p in (saved, good2))
+    assert not bad.with_suffix(".html").exists()
+    assert {p: p.read_bytes() for p in before} == before
+    with pytest.raises(ScriptError):
+        conti.main(["html", bad.relative_to(home).as_posix()])
+
+
+def test_render_html_missing_files_fall_back_to_sketch(saved, home):
+    frames = _shots_for(home)
+    attach_art(saved, home, 1)
+    fm = conti.validated(conti.read_conti(saved).stored)
+    assert "<img" in conti.render_html(fm)
+    (home / frames[0]).unlink()
+    (home / "workspace/conti-art/test/a.svg").unlink()
+    html = conti.render_html(fm)
+    assert "<img" not in html and html.count('class="sk"') == 4

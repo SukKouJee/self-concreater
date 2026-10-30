@@ -4,6 +4,7 @@
   python -m scripts.conti context <draft.md>                          draft 파싱 + 말 속도 + 포맷
   python -m scripts.conti save <draft.md> --conti <json> [--force]    → drafts/{draft}-conti.md + .html
   python -m scripts.conti render <conti.md>                           고친 프런트매터로 HTML만 다시 그린다
+  python -m scripts.conti html <conti.md> | --all [--embed]           HTML만 다시 쓴다(사진·그림은 링크, --embed면 한 파일)
   python -m scripts.conti update <conti.md> --cut N [--line S] [--guide S] [--caption S] [--sfx S]
                           [--ref-frame S] [--expect-hash H]           컷 하나 고치기 (--ref-frame ""은 고정 해제)
   python -m scripts.conti scenes <conti.md> --cut N [--limit 6]       그 컷에 쓸 참고 장면 후보
@@ -22,7 +23,7 @@ conti JSON (yt-conti 규칙)
 - 검증(실패): 섹션 수와 script 수, 섹션별 컷 길이 합 = 섹션 길이(±0.3초), 샷 크기 어휘, action·guide 필수
 - 경고(저장은 함): 대사가 컷 길이에 비해 김(말 속도 기준), 컷 대사를 이으면 그 섹션 전체 대사와 다름
 - 말 속도 = 카테고리 ref 영상 자막의 초당 글자 수 중앙값(sparse 제외). 없으면 thresholds.json의 speech_default_cps(4.5)
-- 시각화: 컷마다 샷 크기 도식(SVG) + 레퍼런스 대표 프레임(참고용). 이미지는 base64로 넣어 한 파일로 만든다
+- 시각화: 컷마다 샷 크기 도식(SVG) + 레퍼런스 대표 프레임(참고용). 이미지는 작업 폴더 안의 파일을 상대 URL로 링크한다(--embed면 base64로 한 파일)
 """
 from __future__ import annotations
 
@@ -688,15 +689,23 @@ def rebuild_html(conti: str | None, embed: bool = False, all_files: bool = False
         paths = [_resolve(conti)]
     else:
         raise ScriptError("bad_args", "콘티 파일이나 --all이 필요합니다.")
-    built = []
+    built: list[dict] = []
+    failed: list[dict] = []
     for path in paths:
-        if not path.exists():
-            raise ScriptError("conti_not_found", f"콘티가 없습니다: {_rel(path)}")
-        fm = validated(read_conti(path).stored)
-        out = _write_html(path, fm, embed)
+        try:
+            if not path.exists():
+                raise ScriptError("conti_not_found", f"콘티가 없습니다: {_rel(path)}")
+            fm = validated(read_conti(path).stored)
+            out = _write_html(path, fm, embed)
+        except ScriptError as e:
+            if not all_files:
+                raise
+            failed.append({"path": _rel(path), "error": e.code, "message": e.message})   # --all은 깨진 콘티를 건너뛰고 계속한다
+            continue
         built.append({"path": _rel(out), "bytes": out.stat().st_size})
     if all_files:
-        return {"status": "built", "built": len(built), "bytes": sum(b["bytes"] for b in built), "files": built}
+        return {"status": "built", "built": len(built), "bytes": sum(b["bytes"] for b in built), "files": built,
+                "failed": failed}
     return {"status": "built", **built[0]}
 
 
