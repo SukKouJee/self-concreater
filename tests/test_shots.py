@@ -6,6 +6,7 @@ import pytest
 from scripts import cluster, features, refstore, shots, similarity
 from scripts.common import ScriptError
 from tests.typify_fixtures import CAT, standard_set, write_video
+from tests.helpers.paths import doc_key
 
 VID = "a00"
 
@@ -71,11 +72,11 @@ def test_apply_writes_weighted_distribution(home):
     labels = [label(frames[0], size="탑뷰", angle="탑뷰", text=True)] + \
              [label(f, size="클로즈업", hands=True, text=False) for f in frames[1:6]] + \
              [label(f, size="바스트", face=True, hands=False, text=False) for f in frames[6:]]
-    path = refstore.read_md(home / "refs" / f"ref_{CAT}" / "videos" / f"{VID}.md")
+    path = refstore.read(doc_key(home / "refs" / f"ref_{CAT}" / "videos" / f"{VID}.md"))
     body_before = path[1]
 
     out = shots.apply(VID, CAT, labels_file(home, labels))
-    fm, body = refstore.read_md(home / "refs" / f"ref_{CAT}" / "videos" / f"{VID}.md")
+    fm, body = refstore.read(doc_key(home / "refs" / f"ref_{CAT}" / "videos" / f"{VID}.md"))
     s = fm["shots"]
     assert out["status"] == "applied" and out["frames"] == 8
     assert sum(s["size"].values()) == pytest.approx(1.0, abs=0.02)
@@ -116,7 +117,7 @@ def give_shots(home, vid, size, face):
     p = home / "refs" / f"ref_{CAT}" / "videos" / f"{vid}.md"
     dist = {s: 0.0 for s in features.SHOT_SIZES}
     dist[size] = 1.0
-    refstore.update_frontmatter(p, {"shots": {"size": dist, "angle": {"정면": 1.0}, "face": face,
+    refstore.update_frontmatter(doc_key(p), {"shots": {"size": dist, "angle": {"정면": 1.0}, "face": face,
                                               "hands_only": 1 - face, "broll": 0.0, "text_overlay": 0.5,
                                               "by_section": {}}})
 
@@ -135,7 +136,7 @@ def test_shots_axis_in_typify(home):
 
 
 def test_shots_vector_none_without_shots(home):
-    fm = refstore.read_md(home / "refs" / f"ref_{CAT}" / "videos" / "a00.md")[0]
+    fm = refstore.read(doc_key(home / "refs" / f"ref_{CAT}" / "videos" / "a00.md"))[0]
     assert features.shots_vec(fm) is None
 
 
@@ -282,7 +283,7 @@ def test_desc_status_counts(home):
 
 def test_desc_status_ignores_mine_videos(home):
     make_frames(home)
-    refstore.update_frontmatter(home / "refs" / f"ref_{CAT}" / "videos" / f"{VID}.md", {"role": "mine"})
+    refstore.update_frontmatter(doc_key(home / "refs" / f"ref_{CAT}" / "videos" / f"{VID}.md"), {"role": "mine"})
     assert shots.desc_status(CAT) == {"frames": 0, "described": 0, "videos_todo": []}
 
 
@@ -291,11 +292,11 @@ def test_shots_ratio_unchanged_by_desc(home):
     sample = [f["frame"] for f in shots.context(VID, CAT)["frames"]]
     shots.apply(VID, CAT, labels_file(home, [label(f) for f in sample]))
     md = home / "refs" / f"ref_{CAT}" / "videos" / f"{VID}.md"
-    before = refstore.read_md(md)
+    before = refstore.read(doc_key(md))
 
     shots.apply_desc(VID, CAT, labels_file(home, [full(frame_path(1)), described(sample[0])]))
 
-    assert refstore.read_md(md) == before
+    assert refstore.read(doc_key(md)) == before
 
 
 def test_apply_keeps_existing_desc_and_other_frames(home):

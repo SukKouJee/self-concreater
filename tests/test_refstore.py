@@ -81,14 +81,15 @@ def test_join_keeps_top_level_block_style_and_inner_flow_style():
     ]
 
 
-def test_update_frontmatter_preserves_body_byte_for_byte(tmp_path):
-    path = tmp_path / "v.md"
+def test_update_frontmatter_preserves_body_byte_for_byte(home):
+    path = home / "mine" / "v.md"
+    path.parent.mkdir()
     path.write_text(VIDEO, encoding="utf-8", newline="")
     _, body_before = refstore.split_frontmatter(VIDEO)
 
-    refstore.update_frontmatter(path, {"hook_type": "result_first", "shots": None})
+    refstore.update_frontmatter("mine/v.md", {"hook_type": "result_first", "shots": None})
 
-    fm, body_after = refstore.read_md(path)
+    fm, body_after = refstore.read("mine/v.md")
     assert fm["hook_type"] == "result_first"
     assert fm["shots"] is None
     assert fm["id"] == "abc123"          # 건드리지 않은 키 유지
@@ -96,17 +97,18 @@ def test_update_frontmatter_preserves_body_byte_for_byte(tmp_path):
     assert body_after == body_before
 
 
-def test_update_frontmatter_keeps_crlf_body(tmp_path):
-    path = tmp_path / "v.md"
+def test_update_frontmatter_keeps_crlf_body(home):
+    path = home / "mine" / "v.md"
+    path.parent.mkdir()
     crlf = VIDEO.replace("\n", "\r\n")
     path.write_bytes(crlf.encode("utf-8"))
 
-    refstore.update_frontmatter(path, {"hook_type": "situation"})
+    refstore.update_frontmatter("mine/v.md", {"hook_type": "situation"})
 
     raw = path.read_bytes().decode("utf-8")
     assert "내가 쓴 메모 — 절대 지우면 안 됨\r\n" in raw
     assert "\n" not in raw.replace("\r\n", "")  # 줄바꿈 섞이지 않음
-    assert refstore.read_md(path)[0]["hook_type"] == "situation"
+    assert refstore.read("mine/v.md")[0]["hook_type"] == "situation"
 
 
 # --- 섹션 교체 ----------------------------------------------------------------
@@ -164,12 +166,12 @@ def test_init_category_creates_index_and_techniques(home):
     out = refstore.init_category("cooking")
     cat = home / "refs" / "ref_cooking"
     assert (cat / "videos").is_dir()
-    fm, body = refstore.read_md(cat / "index.md")
+    fm, body = refstore.read("refs/ref_cooking/index.md")
     assert fm["category"] == "cooking"
     assert fm["created"]
     assert "# cooking 레퍼런스" in body
     assert "현재 단계: 1" in body
-    assert refstore.read_md(cat / "techniques.md")[0]["category"] == "cooking"
+    assert refstore.read("refs/ref_cooking/techniques.md")[0]["category"] == "cooking"
     assert sorted(out["created"]) == ["refs/ref_cooking/index.md", "refs/ref_cooking/techniques.md"]
 
 
@@ -215,7 +217,7 @@ def test_list_categories(home):
 def test_update_stage_rewrites_only_stage_section(home):
     refstore.init_category("cooking")
     index = home / "refs" / "ref_cooking" / "index.md"
-    fm, body = refstore.read_md(index)
+    fm, body = refstore.read("refs/ref_cooking/index.md")
     index.write_text(index.read_text("utf-8").replace("## 개요\n", "## 개요\n내가 쓴 개요\n"),
                      encoding="utf-8")
     for i in range(7):
@@ -223,7 +225,7 @@ def test_update_stage_rewrites_only_stage_section(home):
 
     out = refstore.update_stage("cooking")
 
-    _, body = refstore.read_md(index)
+    _, body = refstore.read("refs/ref_cooking/index.md")
     assert out["stage"] == 2
     assert "현재 단계: 2" in body
     assert "ref 3개 더" in body
@@ -292,10 +294,11 @@ def test_write_atomic_cleans_tmp_when_replace_keeps_failing(tmp_path, monkeypatc
     assert not (tmp_path / "index.md.tmp").exists()
 
 
-def test_update_frontmatter_removes_keys_and_keeps_body(tmp_path):
-    p = tmp_path / "d.md"
+def test_update_frontmatter_removes_keys_and_keeps_body(home):
+    p = home / "drafts" / "d.md"
+    p.parent.mkdir()
     p.write_text("---\ntitle: a\nfilmed_at: '2026-10-25'\n---\n본문\n\n## 내 메모\n메모\n", encoding="utf-8")
-    fm = refstore.update_frontmatter(p, {}, remove=["filmed_at", "nope"])
+    fm = refstore.update_frontmatter("drafts/d.md", {}, remove=["filmed_at", "nope"])
     assert "filmed_at" not in fm and fm["title"] == "a"
     assert p.read_text(encoding="utf-8").endswith("본문\n\n## 내 메모\n메모\n")
 

@@ -299,9 +299,9 @@ def _symlink(link: Path, target: Path, is_dir: bool = False) -> None:
     ("drafts/a.txt", None), ("drafts", None), (".", None), ("drafts/.md", None),
     ("drafts/a-conti.md", False), ("drafts/a.md", True), ("drafts/a\x00.md", None),
 ])
-def test_safe_draft_path_rejects(home, value, flag):
+def test_safe_draft_key_rejects(home, value, flag):
     with pytest.raises(ScriptError) as e:
-        conti.safe_draft_path(value, conti_file=flag)
+        conti.safe_draft_key(value, conti_file=flag)
     assert e.value.code == "bad_path"
     golden_messages = {
         None: f"drafts 폴더 안의 .md 파일만 쓸 수 있습니다: {value}",
@@ -315,36 +315,36 @@ def test_safe_draft_path_rejects(home, value, flag):
         assert e.value.message == golden_messages[None]
 
 
-def test_safe_draft_path_rejects_absolute_outside_and_empty(home, tmp_path):
+def test_safe_draft_key_rejects_absolute_outside_and_empty(home, tmp_path):
     outside = tmp_path.parent / f"{tmp_path.name}-x" / "drafts" / "a.md"
     for value in (str(outside), outside.as_posix()):
         with pytest.raises(ScriptError) as e:
-            conti.safe_draft_path(value)
+            conti.safe_draft_key(value)
         assert e.value.code == "bad_path"
     for value in ("", None, 3):
         with pytest.raises(ScriptError) as e:
-            conti.safe_draft_path(value)
+            conti.safe_draft_key(value)
         assert (e.value.code, e.value.message) == ("bad_request", "path가 필요합니다")
 
 
-def test_safe_draft_path_accepts_and_resolves(home):
+def test_safe_draft_key_accepts_and_resolves(home):
     (home / "drafts" / "sub").mkdir(parents=True)
-    got = conti.safe_draft_path("drafts/sub/../a-conti.md", conti_file=True)
-    assert got == (home / "drafts" / "a-conti.md").resolve()
-    assert conti.safe_draft_path(str(home / "drafts" / "b.MD"), conti_file=False) == (home / "drafts" / "b.MD").resolve()
+    assert conti.safe_draft_key("drafts/sub/../a-conti.md", conti_file=True) == "drafts/a-conti.md"
+    assert conti.safe_draft_key(str(home / "drafts" / "b.MD"), conti_file=False) == "drafts/b.MD"
+    assert not hasattr(conti, "safe_draft_path")                 # 과도기 Path 래퍼는 없어졌다
 
 
-def test_safe_draft_path_symlink_escape(home, tmp_path):
+def test_safe_draft_key_symlink_escape(home, tmp_path):
     outside = tmp_path.parent / f"{tmp_path.name}-out"
     (outside).mkdir()
     (outside / "secret.md").write_bytes(b"---\nsections: []\n---\n")
     _symlink(home / "drafts" / "link.md", outside / "secret.md")
     with pytest.raises(ScriptError) as e:
-        conti.safe_draft_path("drafts/link.md")
+        conti.safe_draft_key("drafts/link.md")
     assert e.value.code == "bad_path"
     _symlink(home / "drafts" / "dir", outside, is_dir=True)
     with pytest.raises(ScriptError) as e:
-        conti.safe_draft_path("drafts/dir/secret.md")
+        conti.safe_draft_key("drafts/dir/secret.md")
     assert e.value.code == "bad_path"
 
 

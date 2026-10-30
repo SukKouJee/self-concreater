@@ -16,6 +16,7 @@ from scripts.common import ScriptError
 from tests.helpers.tree_snapshot import changes, tree
 from tests.test_videomd import ANALYSIS, CAT as VCAT, CUTS, RAW, VID
 from tests.typify_fixtures import CAT, standard_set, write_video
+from tests.helpers.paths import doc_key
 
 MD_KEY = f"refs/ref_{VCAT}/videos/{VID}.md"
 TECH_KEY = f"refs/ref_{VCAT}/techniques.md"
@@ -133,8 +134,8 @@ def test_examples_are_reviewed_refs_newest_first_max_three(home: Path) -> None:
     now = time.time()
     for i, vid in enumerate(["a1", "b1", "c1", "d1", "e1"]):
         path = write_video(home, vid)
-        fm, body = refstore.read_md(path)
-        refstore.update_frontmatter(path, {"reviewed": vid != "e1", "role": "mine" if vid == "d1" else "ref"})
+        fm, body = refstore.read(doc_key(path))
+        refstore.update_frontmatter(doc_key(path), {"reviewed": vid != "e1", "role": "mine" if vid == "d1" else "ref"})
         os.utime(path, (now + i * 10, now + i * 10))
     assert videomd.examples(CAT) == [f"refs/ref_{CAT}/videos/{v}.md" for v in ("c1", "b1", "a1")]
 
@@ -260,7 +261,7 @@ def test_load_videos_sorted_by_id_role_filtered_and_id_falls_back_to_stem(home: 
     write_video(home, "A1")
     write_video(home, "m1", role="mine")
     noid = write_video(home, "c3")
-    refstore.update_frontmatter(noid, {}, remove=["id"])
+    refstore.update_frontmatter(doc_key(noid), {}, remove=["id"])
     ids = [r["id"] for r in features.load_videos(CAT)]
     assert ids == sorted(["b2", "A1", "c3"])
     assert [r["id"] for r in features.load_videos(CAT, "mine")] == ["m1"]
@@ -387,7 +388,7 @@ def sim_notes(home: Path, result: dict) -> Path:
 
 def test_similarity_save_keeps_memo_and_appends_history(shome: Path) -> None:
     target = f"refs/ref_{CAT}/videos/a00.md"
-    refstore.update_frontmatter(target, {"role": "mine", "id": "my-1"})
+    refstore.update_frontmatter(doc_key(target), {"role": "mine", "id": "my-1"})
     result = similarity.compare(CAT, Path(target))
     assert result["target"]["path"] == target and result["target"]["name"] == "my-1"
     out = similarity.save(CAT, Path(target), sim_notes(shome, result))
@@ -397,14 +398,14 @@ def test_similarity_save_keeps_memo_and_appends_history(shome: Path) -> None:
     assert raw.startswith(b"---\n") and b"\r" not in raw and raw.endswith("## 내 메모\n".encode())
     mine.write_bytes(raw + "나중에 쓴 메모\n".encode())
     similarity.save(CAT, Path(target), sim_notes(shome, result))
-    fm, body = refstore.read_md("mine/my-1.md")
+    fm, body = refstore.read("mine/my-1.md")
     assert body.endswith("## 내 메모\n나중에 쓴 메모\n") and len(fm["history"]) == 2
     assert fm["target"] == target and not (shome / "workspace" / "tmp" / "sim_notes.json").exists()
 
 
 def test_similarity_intentional_edits_frontmatter_only(shome: Path) -> None:
     target = f"refs/ref_{CAT}/videos/a00.md"
-    refstore.update_frontmatter(target, {"role": "mine", "id": "my-1"})
+    refstore.update_frontmatter(doc_key(target), {"role": "mine", "id": "my-1"})
     result = similarity.compare(CAT, Path(target))
     similarity.save(CAT, Path(target), sim_notes(shome, result))
     mine = shome / "mine" / "my-1.md"
@@ -422,7 +423,7 @@ def test_similarity_intentional_edits_frontmatter_only(shome: Path) -> None:
 
 def test_similarity_target_resolution_and_errors(shome: Path) -> None:
     rel = f"refs/ref_{CAT}/videos/a00.md"
-    refstore.update_frontmatter(rel, {"role": "mine", "id": "my-1"})
+    refstore.update_frontmatter(doc_key(rel), {"role": "mine", "id": "my-1"})
     by_rel = similarity.compare(CAT, Path(rel))
     assert similarity.compare(CAT, shome / rel) == by_rel                 # 절대 경로도 같다
     assert by_rel["target"]["path"] == rel
@@ -438,7 +439,7 @@ def test_similarity_target_resolution_and_errors(shome: Path) -> None:
 def test_similarity_load_typify_messages(home: Path) -> None:
     standard_set(home)
     target = f"refs/ref_{CAT}/videos/a00.md"
-    refstore.update_frontmatter(target, {"role": "mine"})
+    refstore.update_frontmatter(doc_key(target), {"role": "mine"})
     with pytest.raises(ScriptError) as exc:
         similarity.compare(CAT, Path(target))
     assert exc.value.message == f"유형화 결과가 없습니다. 먼저 /yt-typify {CAT}"

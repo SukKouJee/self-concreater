@@ -12,6 +12,7 @@ from tests.test_draft import DRAFT, home  # noqa: F401 - fixture
 from tests.test_ui_add import wait_for
 from tests.test_ui_server import Client, _start, _stop, no_browser  # noqa: F401 - fixture
 from tests.typify_fixtures import CAT
+from tests.helpers.paths import doc_key
 
 REAL_ASK_VALIDATED = llm.ask_validated
 CARD_ID = "M-mukbang-001"
@@ -444,20 +445,20 @@ def test_filmed_toggle_round_trip(client, home):
     from datetime import date
     rel = _save(client)[1]["path"]
     path = home / rel
-    fm0, body0 = refstore.read_md(path)
+    fm0, body0 = refstore.read(doc_key(path))
 
     status, on = _filmed(client, rel, True, conti.content_hash(rel))
     assert status == 200, on
     assert on["path"] == rel and on["filmed_at"] == date.today().isoformat()
     assert on["hash"] == conti.content_hash(rel)
-    fm1, body1 = refstore.read_md(path)
+    fm1, body1 = refstore.read(doc_key(path))
     assert str(fm1["filmed_at"]) == on["filmed_at"] and body1 == body0
     assert {k: v for k, v in fm1.items() if k != "filmed_at"} == fm0
 
     status, off = _filmed(client, rel, False, on["hash"])
     assert status == 200, off
     assert off["filmed_at"] is None and off["hash"] == conti.content_hash(rel)
-    fm2, body2 = refstore.read_md(path)
+    fm2, body2 = refstore.read(doc_key(path))
     assert "filmed_at" not in fm2 and fm2 == fm0 and body2 == body0
     assert "## 내 메모" in body2
 

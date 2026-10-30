@@ -2,6 +2,7 @@ import pytest
 
 from scripts import conti, conti_art
 from scripts.common import ScriptError
+from tests.helpers.paths import doc_key
 
 SVG_NS = "http://www.w3.org/2000/svg"
 CUT = {"action": "컵라면 클로즈업", "guide": "천천히", "size": "클로즈업", "line": "안녕", "caption": "c", "sfx": "s", "sec": 2}
@@ -203,16 +204,16 @@ def fake(monkeypatch):
 
 
 def cuts_of(path):
-    return conti.validated(refstore.read_md(path)[0])["cuts"]
+    return conti.validated(refstore.read(doc_key(path))[0])["cuts"]
 
 
 def grow(path, extra):
     """콘티 끝 섹션에 장면 extra개를 더한다(2초씩, 섹션 길이도 늘림). 장면 id 목록을 돌려준다."""
-    fm = refstore.read_md(path)[0]
+    fm = refstore.read(doc_key(path))[0]
     base = fm["cuts"][-1]
     added = [{**base, "id": f"new{i}", "action": f"추가 장면 {i}", "guide": f"가이드 {i}"} for i in range(extra)]
     fm["script"][-1]["end"] += 2 * extra
-    refstore.update_frontmatter(path, {"cuts": fm["cuts"] + added, "script": fm["script"]})
+    refstore.update_frontmatter(doc_key(path), {"cuts": fm["cuts"] + added, "script": fm["script"]})
     conti.ensure_ids_file(conti.read_conti(path))       # 새 장면 id를 파일에 남긴다(읽을 때마다 바뀌지 않게)
     return [c["id"] for c in cuts_of(path)]
 
@@ -246,7 +247,7 @@ def test_draw_saves_files_and_art(saved, home, fake):
     assert out == {"drawn": 3, "skipped": 0, "failed": 0, "warnings": [], "remaining": 1}
     assert len(fake.calls) == 2 and fake.calls[0]["kw"]["max_tokens"] == 16000
     cuts = cuts_of(saved)
-    asp = conti_art.aspect(refstore.read_md(saved)[0])
+    asp = conti_art.aspect(refstore.read(doc_key(saved))[0])
     for c in cuts[:3]:
         assert c["art"]["basis"] == conti_art.basis(c, asp)
         assert re.fullmatch(rf"workspace/conti-art/{re.escape(saved.stem)}/{c['id']}-{c['art']['basis']}-[0-9a-f]{{6}}\.svg",
@@ -260,7 +261,7 @@ def test_draw_payload_is_small_and_has_context(saved, fake):
     conti_art.draw(saved, None, False)
     scene = fake.calls[0]["payload"]["scenes"][0]
     assert set(scene) == {"id", "action", "guide", "size", "angle", "section", "prev", "next"}
-    assert fake.calls[0]["payload"]["format"] == conti_art.aspect(refstore.read_md(saved)[0]) and "title" in fake.calls[0]["payload"]
+    assert fake.calls[0]["payload"]["format"] == conti_art.aspect(refstore.read(doc_key(saved))[0]) and "title" in fake.calls[0]["payload"]
 
 
 def test_draw_skips_scene_edited_during_draw(saved, home, monkeypatch):
@@ -291,9 +292,9 @@ def test_draw_batch_failure_keeps_earlier(saved, monkeypatch):
 
 
 def test_draw_merge_first(saved):
-    fm = refstore.read_md(saved)[0]
+    fm = refstore.read(doc_key(saved))[0]
     fm["cuts"][2]["action"] = fm["cuts"][1]["action"]
-    refstore.update_frontmatter(saved, {"cuts": fm["cuts"]})
+    refstore.update_frontmatter(doc_key(saved), {"cuts": fm["cuts"]})
     with pytest.raises(ScriptError) as exc:
         conti_art.draw(saved, None, False)
     assert exc.value.code == "merge_first" and exc.value.message == "반복 컷을 먼저 장면으로 합쳐 주세요"
@@ -347,7 +348,7 @@ def test_draw_progress_and_cancel(saved, fake):
 
 def test_save_art_skips_pinned_and_stale(saved, home):
     cuts = cuts_of(saved)
-    refstore.update_frontmatter(saved, {"cuts": pin(refstore.read_md(saved)[0]["cuts"], 0)})
+    refstore.update_frontmatter(doc_key(saved), {"cuts": pin(refstore.read(doc_key(saved))[0]["cuts"], 0)})
     drawn = {cuts[0]["id"]: (GOOD_SVG, conti_art.basis(cuts[0], "16:9")),
              cuts[1]["id"]: (GOOD_SVG, "deadbeef")}
     out = conti_art.save_art(saved, drawn)
@@ -357,7 +358,7 @@ def test_save_art_skips_pinned_and_stale(saved, home):
 def test_save_art_same_basis_redraw_keeps_both_files(saved, home):
     # 같은 근거로 다시 그려도 새 파일: 이력 복원이 앞 그림을 되살리고, 브라우저가 옛 그림을 캐시로 보이지 않는다
     cut = cuts_of(saved)[0]
-    b = conti_art.basis(cut, conti_art.aspect(refstore.read_md(saved)[0]))
+    b = conti_art.basis(cut, conti_art.aspect(refstore.read(doc_key(saved))[0]))
     other = GOOD_SVG.replace('width="9"', 'width="8"')
     conti_art.save_art(saved, {cut["id"]: (GOOD_SVG, b)})
     first = cuts_of(saved)[0]["art"]["file"]
@@ -387,7 +388,7 @@ def test_draw_uses_current_text_for_later_batches(saved, home, monkeypatch):
     [last] = [c["payload"] for c in f.calls if ids[6] in scene_ids(c["payload"])]
     assert {s["id"]: s for s in last["scenes"]}[ids[6]]["action"] == "새로 고친 행동"
     cut = cuts_of(saved)[6]
-    assert cut["art"]["basis"] == conti_art.basis(cut, conti_art.aspect(refstore.read_md(saved)[0]))
+    assert cut["art"]["basis"] == conti_art.basis(cut, conti_art.aspect(refstore.read(doc_key(saved))[0]))
 
 
 def test_draw_skips_scenes_deleted_or_pinned_before_their_batch(saved, home, monkeypatch):
@@ -413,18 +414,18 @@ def test_draw_skips_scenes_deleted_or_pinned_before_their_batch(saved, home, mon
 def test_memo_and_body_untouched(saved, home, fake):
     memo = "## 내 메모\n소품 미리 사기\n"
     saved.write_text(saved.read_text("utf-8").replace("## 내 메모\n", memo), encoding="utf-8")
-    before = refstore.read_md(saved)[1]
+    before = refstore.read(doc_key(saved))[1]
     conti_art.draw(saved, None, False)
-    after = refstore.read_md(saved)[1]
+    after = refstore.read(doc_key(saved))[1]
     assert after == before and "소품 미리 사기" in after
     assert "art" in cuts_of(saved)[0]
 
 
 def test_draw_legacy_conti_without_ids(saved, home, fake):
-    fm = refstore.read_md(saved)[0]
-    refstore.update_frontmatter(saved, {"cuts": [{k: v for k, v in c.items() if k != "id"} for c in fm["cuts"]],
+    fm = refstore.read(doc_key(saved))[0]
+    refstore.update_frontmatter(doc_key(saved), {"cuts": [{k: v for k, v in c.items() if k != "id"} for c in fm["cuts"]],
                                         "schema_version": 2})
-    assert not any(c.get("id") for c in refstore.read_md(saved)[0]["cuts"])
+    assert not any(c.get("id") for c in refstore.read(doc_key(saved))[0]["cuts"])
     out = conti_art.draw(saved, None, False)
     assert out["drawn"] == 4 and out["skipped"] == 0
     assert all(c.get("art") for c in cuts_of(saved))

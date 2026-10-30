@@ -8,6 +8,7 @@ from scripts.common import ScriptError
 from tests.test_ui_add import wait_for
 from tests.test_ui_server import Client, _start, _stop, no_browser  # noqa: F401 - fixture
 from tests.typify_fixtures import CAT, standard_set, write_video
+from tests.helpers.paths import doc_key
 
 REAL_ASK_VALIDATED = llm.ask_validated
 
@@ -258,7 +259,7 @@ def test_index_writes_do_not_lose_updates(home):
         t.join(30)
     assert not errors
     assert len(motif.card_details(CAT)) == 15
-    assert "현재 단계: 3" in refstore.read_md(_index(home))[1]
+    assert "현재 단계: 3" in refstore.read(doc_key(_index(home)))[1]
 
 
 def test_second_run_while_running(client, fakes, monkeypatch):
@@ -287,7 +288,7 @@ def test_save_selected_and_star(client, home):
     assert status == 200, body
     assert body["ids"] == ["M-mukbang-001", "M-mukbang-002"] and body["starred"] == ["M-mukbang-002"]
     assert [(c["id"], c["starred"]) for c in body["cards"]] == [("M-mukbang-001", False), ("M-mukbang-002", True)]
-    assert "### ★ M-mukbang-002 · 기법 · 둘째 카드" in refstore.read_md(_index(home))[1]
+    assert "### ★ M-mukbang-002 · 기법 · 둘째 카드" in refstore.read(doc_key(_index(home)))[1]
     assert not _tmp_files(home)
 
 

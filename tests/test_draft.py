@@ -5,6 +5,7 @@ import pytest
 from scripts import cluster, draft, motif, refstore
 from scripts.common import ScriptError
 from tests.typify_fixtures import CAT, standard_set
+from tests.helpers.paths import doc_key
 
 
 @pytest.fixture
@@ -83,7 +84,7 @@ def test_save_writes_draft_md(home):
     out = draft.save(CAT, draft_file(home))
     path = home / out["path"]
     assert out["path"].startswith("drafts/") and out["path"].endswith("-편의점-라면-3단계-맵기-도전.md")
-    fm, body = refstore.read_md(path)
+    fm, body = refstore.read(doc_key(path))
     assert fm["category"] == CAT and fm["source"] == "M-mukbang-001" and fm["archetype"] == "A1"
     assert fm["sections"][1] == {"label": "body", "sub": "story", "start": 3.0, "end": 52.0}
     assert fm["pacing"] == {"avg_cut_sec": None, "by_section": {}, "basis": "scenes"}
@@ -171,7 +172,7 @@ CHARACTERIZED_BODY = (
 
 def test_render_characterization(home):
     out = draft.save(CAT, draft_file(home, CHARACTERIZED))
-    assert refstore.read_md(home / out["path"])[1] == CHARACTERIZED_BODY
+    assert refstore.read(doc_key(home / out["path"]))[1] == CHARACTERIZED_BODY
 
 
 def _mutated(fn):
@@ -221,7 +222,7 @@ def test_validate_single_lines_and_heading_escape(home):
     data["sections"][0]["script"] = "첫 줄\n## 내 메모\n# 큰제목"
     data["sections"][0]["shots"][0].update(angle="정면\n앵글", action="한 줄\n두 줄 | 셋")
     out = draft.save(CAT, draft_file(home, data))
-    fm, body = refstore.read_md(home / out["path"])
+    fm, body = refstore.read(doc_key(home / out["path"]))
     assert fm["title"] == "제목 ## 가짜 제목"
     assert body.startswith("# 제목 ## 가짜 제목\n")
     assert r"\## 내 메모" in body and r"\# 큰제목" in body
@@ -241,7 +242,7 @@ def test_hashtag_lines_kept_and_headings_round_trip(home):
     data["archetype"] = None
     data["sections"][0]["script"] = "#해시태그\n## 내 메모\n#### 넷\n#"
     out = draft.save(CAT, draft_file(home, data))
-    _, body = refstore.read_md(home / out["path"])
+    _, body = refstore.read(doc_key(home / out["path"]))
     assert [ln for ln in body.split("\n") if ln == "## 내 메모"] == ["## 내 메모"]
     assert "\n#해시태그\n" in body and "\## 내 메모" in body
     script = conti.parse_draft(home / out["path"])["sections"][0]["script"]
@@ -330,7 +331,7 @@ def test_save_from_library_template_records_source_and_overview(home, monkeypatc
     source = f"library:{lf.TEMPLATE_ID}"
     out = draft.save(CAT, draft_file(home, {**DRAFT, "source": source, "archetype": None}))
     path = home / out["path"]
-    fm, body = refstore.read_md(path)
+    fm, body = refstore.read(doc_key(path))
     assert fm["source"] == source and fm["category"] == CAT          # 틀의 카테고리(travel)가 아니다
     assert f"- 출처: {source}" in body
     assert "- 틀: Alice의 여행 브이로그 3분" in body
@@ -351,7 +352,7 @@ def test_save_uses_template_value_without_calling_library(home, monkeypatch):
     data = {**DRAFT, "source": "library:alice-20261024-bbbbbb", "archetype": None,
             "template": {"author": " Alice ", "title": "여행   브이로그 3분"}}
     out = draft.save(CAT, draft_file(home, data))
-    fm, body = refstore.read_md(home / out["path"])
+    fm, body = refstore.read(doc_key(home / out["path"]))
     assert fm["source"] == "library:alice-20261024-bbbbbb"
     assert "- 틀: Alice의 여행 브이로그 3분" in body
 
@@ -361,7 +362,7 @@ def test_save_succeeds_when_library_disconnected_or_template_deleted(home, monke
     lf.install(monkeypatch, connected=False)
     data = {**DRAFT, "source": "library:nobody-20261024-ffffff", "archetype": None}
     out = draft.save(CAT, draft_file(home, data))
-    fm, body = refstore.read_md(home / out["path"])
+    fm, body = refstore.read(doc_key(home / out["path"]))
     assert fm["source"] == "library:nobody-20261024-ffffff" and fm["category"] == CAT
     assert "- 틀: 지인 틀(nobody-20261024-ffffff)" in body
 

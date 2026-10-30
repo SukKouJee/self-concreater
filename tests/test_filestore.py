@@ -186,7 +186,7 @@ def test_doc_round_trip_keeps_bytes(home: Path, key: str) -> None:
     assert doc.key == key
     assert doc.version == version == hashlib.sha256(raw).hexdigest()
     assert doc.label == str(home / key)
-    assert doc.parsed == refstore.read_md(home / key)
+    assert doc.parsed == refstore.parse_md(raw, home / key) == refstore.read(key)
 
 
 def test_doc_nl_follows_frontmatter_line_ending(home: Path) -> None:
@@ -198,10 +198,10 @@ def test_doc_nl_follows_frontmatter_line_ending(home: Path) -> None:
     assert store.read("drafts/bom-crlf.md").nl == "\r\n"
 
 
-def test_doc_parse_error_message_matches_read_md(home: Path) -> None:
+def test_doc_parse_error_message_matches_parse_md(home: Path) -> None:
     (home / "drafts" / "broken.md").write_bytes("제목만 있음\n".encode())
     with pytest.raises(ScriptError) as want:
-        refstore.read_md(home / "drafts" / "broken.md")
+        refstore.parse_md((home / "drafts" / "broken.md").read_bytes(), home / "drafts" / "broken.md")
     doc = FileDocStore(home).read("drafts/broken.md")          # 읽기는 되고, 파싱할 때 같은 오류
     with pytest.raises(ScriptError) as got:
         doc.parsed

@@ -5,6 +5,7 @@ import pytest
 from scripts import cluster, mission, motif, refstore, similarity, draft
 from scripts.common import ScriptError
 from tests.typify_fixtures import CAT, standard_set
+from tests.helpers.paths import doc_key
 
 
 def _json(home, name, data):
@@ -106,7 +107,7 @@ def test_context_without_profile(home):
 def test_save_writes_mission_md(home):
     out = mission.save(mission_json(home), date="2026-10-20")
     assert out["path"] == "missions/2026-10-20.md"
-    fm, body = refstore.read_md(home / out["path"])
+    fm, body = refstore.read(doc_key(home / out["path"]))
     assert fm["status"] == "open" and fm["minutes"] == 20 and fm["kind"] == "촬영"
     assert fm["stage"] == "관찰" and fm["source"] == "M-mukbang-001"
     assert "### 탑뷰 손 클로즈업 15초 찍기 (20분 · 촬영)" in body
@@ -119,7 +120,7 @@ def test_save_twice_needs_replace(home):
         mission.save(mission_json(home, title="다른 미션"), date="2026-10-20")
     assert exc.value.code == "mission_exists"
     mission.save(mission_json(home, title="다른 미션"), date="2026-10-20", replace=True)
-    fm, body = refstore.read_md(home / "missions" / "2026-10-20.md")
+    fm, body = refstore.read(doc_key(home / "missions" / "2026-10-20.md"))
     assert "다른 미션" in body and fm["swapped_from"] == "탑뷰 손 클로즈업 15초 찍기"
 
 
@@ -135,13 +136,13 @@ def test_save_validates(home):
 def test_submit_and_skip(home):
     mission.save(mission_json(home), date="2026-10-20")
     mission.submit("clips/a.mp4", "right", "탑뷰 각도가 안정적이었다. 다음엔 손 위치를 화면 중앙에.", date="2026-10-20")
-    fm, body = refstore.read_md(home / "missions" / "2026-10-20.md")
+    fm, body = refstore.read(doc_key(home / "missions" / "2026-10-20.md"))
     assert fm["status"] == "submitted" and fm["difficulty"] == "right"
     assert "a.mp4" in body.split("## 제출")[1] and "탑뷰 각도가" in body.split("## 피드백")[1]
 
     mission.save(mission_json(home), date="2026-10-21")
     mission.skip("야근", date="2026-10-21")
-    fm, _ = refstore.read_md(home / "missions" / "2026-10-21.md")
+    fm, _ = refstore.read(doc_key(home / "missions" / "2026-10-21.md"))
     assert fm["status"] == "skipped" and fm["skip_reason"] == "야근"
 
 
@@ -184,11 +185,11 @@ def test_review_save_and_profile_update(home):
         "profile_proposal": {"약점": "- 프레이밍(손 위치)", "성장 단계": "모방"},
     }))
     assert out["path"] == "reviews/2026-W43.md"
-    _, body = refstore.read_md(home / out["path"])
+    _, body = refstore.read(doc_key(home / out["path"]))
     assert "탑뷰 고정 촬영 3번" in body and "성장 단계" in body
 
     mission.profile_update(_json(home, "p.json", {"약점": "- 프레이밍(손 위치)", "성장 단계": "모방"}), date="2026-10-26")
-    fm, body = refstore.read_md(home / "profile.md")
+    fm, body = refstore.read(doc_key(home / "profile.md"))
     assert fm["updated"] == "2026-10-26"
     assert body.split("## 성장 단계")[1].strip() == "모방"
     assert "- 프레이밍(손 위치)" in body.split("## 약점")[1].split("## 성장 단계")[0]
@@ -234,7 +235,7 @@ def test_submit_output_and_sections_are_stable(home):
     mission.save(mission_json(home), date="2026-10-20")
     out = mission.submit("a.mp4", "right", " 좋았다 ", date="2026-10-20")
     assert out == {"status": "submitted", "date": "2026-10-20", "difficulty": "right"}
-    _, body = refstore.read_md(home / "missions" / "2026-10-20.md")
+    _, body = refstore.read(doc_key(home / "missions" / "2026-10-20.md"))
     assert "## 제출\n- 파일: a.mp4\n- 난이도: right\n\n## 피드백\n좋았다\n" in body.replace("\r\n", "\n")
 
 
@@ -276,14 +277,14 @@ def test_validate_mission_blank_optionals_become_none():
 def test_save_writes_cleaned_title(home):
     data = json.loads(mission_json(home).read_text("utf-8")) | {"title": "  제목 \n 둘  "}
     mission.save(_json(home, "m3.json", data), date="2026-10-20")
-    _, body = refstore.read_md(home / "missions" / "2026-10-20.md")
+    _, body = refstore.read(doc_key(home / "missions" / "2026-10-20.md"))
     assert "### 제목 둘 (20분 · 촬영)" in body
 
 
 # --- submit note / 파일 줄 ---------------------------------------------------------
 
 def _submission(home, day):
-    _, body = refstore.read_md(home / "missions" / f"{day}.md")
+    _, body = refstore.read(doc_key(home / "missions" / f"{day}.md"))
     return body.replace("\r\n", "\n").split("## 제출\n")[1].split("\n## 피드백")[0].strip()
 
 
@@ -303,7 +304,7 @@ def test_resubmit_replaces_submission(home):
     mission.save(mission_json(home), date="2026-10-20")
     mission.submit("", "hard", "첫", date="2026-10-20", note="처음")
     mission.submit("", "easy", "둘째", date="2026-10-20", note="다시")
-    fm, body = refstore.read_md(home / "missions" / "2026-10-20.md")
+    fm, body = refstore.read(doc_key(home / "missions" / "2026-10-20.md"))
     assert fm["difficulty"] == "easy" and _submission(home, "2026-10-20") == "- 한 일: 다시\n- 난이도: easy"
     assert "첫" not in body
 
@@ -335,7 +336,7 @@ def test_context_skips_record_with_broken_frontmatter(home):
 # --- fix round 1 ---------------------------------------------------------------------
 
 def _real_sections(home, day):
-    _, body = refstore.read_md(home / "missions" / f"{day}.md")
+    _, body = refstore.read(doc_key(home / "missions" / f"{day}.md"))
     return [line for line in body.replace("\r\n", "\n").split("\n") if line.startswith("## ")]
 
 
@@ -348,7 +349,7 @@ def test_submit_escapes_feedback_headings_across_resubmit(home):
     for _ in range(2):
         mission.submit("", "right", "좋았다\n## 가짜\n내용", date="2026-10-20", note="n")
         assert _real_sections(home, "2026-10-20") == ["## 미션", "## 제출", "## 피드백"]
-    _, body = refstore.read_md(home / "missions" / "2026-10-20.md")
+    _, body = refstore.read(doc_key(home / "missions" / "2026-10-20.md"))
     assert "\## 가짜" in body
 
 
@@ -356,7 +357,7 @@ def test_submit_folds_file_name_and_clears_skip_reason(home):
     mission.save(mission_json(home), date="2026-10-20")
     mission.skip("야근", date="2026-10-20")
     mission.submit("a\nb.png", "right", "f", date="2026-10-20", note="n")
-    fm, _ = refstore.read_md(home / "missions" / "2026-10-20.md")
+    fm, _ = refstore.read(doc_key(home / "missions" / "2026-10-20.md"))
     assert fm["skip_reason"] is None and fm["status"] == "submitted"
     assert "- 파일: a b.png" in _submission(home, "2026-10-20")
 
@@ -416,7 +417,7 @@ def test_review_save_keeps_memo_on_resave(home):
     path = home / "reviews" / "2026-W43.md"
     path.write_bytes(path.read_bytes() + "이번 주는 너무 바빴다.\n\n## 직접 추가한 절\n내용\n".encode("utf-8"))
     mission.review_save("2026-W43", _json(home, "r2.json", {**REVIEW, "summary": "새 요약"}))
-    fm, body = refstore.read_md(path)
+    fm, body = refstore.read(doc_key(path))
     assert "새 요약" in body and "촬영 미션은 꾸준했다" not in body
     assert body.count("## 내 메모") == 1
     assert "이번 주는 너무 바빴다." in body and "## 직접 추가한 절\n내용" in body.replace("\r\n", "\n")
@@ -426,9 +427,9 @@ def test_review_save_keeps_memo_on_resave(home):
 def test_review_save_resets_approved_and_keeps_user_keys(home):
     mission.review_save("2026-W43", _json(home, "r.json", REVIEW))
     path = home / "reviews" / "2026-W43.md"
-    refstore.update_frontmatter(path, {"approved": ["약점"], "tag": "mine"})
+    refstore.update_frontmatter(doc_key(path), {"approved": ["약점"], "tag": "mine"})
     mission.review_save("2026-W43", _json(home, "r2.json", REVIEW))
-    fm, _ = refstore.read_md(path)
+    fm, _ = refstore.read(doc_key(path))
     assert fm["approved"] is False and fm["tag"] == "mine"
 
 
@@ -449,7 +450,7 @@ def test_review_save_writes_atomically_and_escapes_headings(home, monkeypatch):
     monkeypatch.setattr(refstore, "write_atomic", lambda p, d: (calls.append(p.name), real(p, d))[1])
     mission.review_save("2026-W43", _json(home, "r.json", {**REVIEW, "summary": "요약\n## 내 메모\n가짜"}))
     assert calls == ["2026-W43.md"]
-    _, body = refstore.read_md(home / "reviews" / "2026-W43.md")
+    _, body = refstore.read(doc_key(home / "reviews" / "2026-W43.md"))
     assert body.count("\n## 내 메모") == 1
 
 
@@ -459,7 +460,7 @@ def _crlf_profile(home):
 
 def test_profile_update_escapes_heading_lines(home):
     mission.profile_update(_json(home, "p.json", {"약점": "- 손 위치\n## 강점\n가짜"}), date="2026-10-26")
-    _, body = refstore.read_md(home / "profile.md")
+    _, body = refstore.read(doc_key(home / "profile.md"))
     body = body.replace("\r\n", "\n")
     escaped = "\\" + "## 강점"
     assert body.count("\n## 강점") == 1 and escaped in body
@@ -471,7 +472,7 @@ def test_profile_update_keeps_crlf_and_untouched_sections(home):
     mission.profile_update(_json(home, "p.json", {"약점": "- 프레이밍"}), date="2026-10-26")
     raw = (home / "profile.md").read_bytes()
     assert raw.count(b"\n") == raw.count(b"\r\n") > 5
-    _, body = refstore.read_md(home / "profile.md")
+    _, body = refstore.read(doc_key(home / "profile.md"))
     assert "- 얼굴 출연" in body and "- 프레이밍" in body and "## 성장 단계\r\n관찰" in body
 
 
@@ -488,7 +489,7 @@ def test_profile_update_partial_sections_only_and_memo_untouched(home):
     memo = PROFILE.rstrip("\n") + "\n\n## 내 메모\n건드리지 마\n"
     (home / "profile.md").write_bytes(memo.replace("\r\n", "\n").encode("utf-8"))
     mission.profile_update(_json(home, "p.json", {"성장 단계": "모방"}), date="2026-10-26")
-    _, body = refstore.read_md(home / "profile.md")
+    _, body = refstore.read(doc_key(home / "profile.md"))
     assert "## 성장 단계\n모방" in body and "- 자취 요리" in body and body.endswith("## 내 메모\n건드리지 마\n")
 
 

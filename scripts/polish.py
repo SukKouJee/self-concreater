@@ -252,20 +252,14 @@ def evidence_title(title: str, stats: dict) -> str:
 
 # --- context ---------------------------------------------------------------------------
 
-def _draft_path(value: Any) -> Path:
-    """기존 콘티 화면의 경로 규칙을 그대로 쓴다: drafts/ 안의 .md, 콘티 파일 아님."""
-    return conti.safe_draft_path(value, conti_file=False)
-
-
-def _draft_key(path: Path) -> str:
-    """`_draft_path`가 돌려준 경로 → 기획안 키(resolve 기준으로 작업 폴더 밖이면 bad_path)."""
-    return ctx.here().scratch.key_of(path)
+def _draft_key(value: Any) -> str:
+    """콘티 화면의 경로 규칙을 그대로 쓴다: drafts/ 안의 .md, 콘티 파일 아님(resolve 기준 탈출 검사) → 기획안 키."""
+    return conti.safe_draft_key(value, conti_file=False)
 
 
 def context(draft: str | Path) -> dict:
-    path = _draft_path(str(draft))
-    key = _draft_key(path)
-    d = conti.parse_draft(path)
+    key = _draft_key(str(draft))
+    d = conti.parse_draft(key)
     category = d["fm"].get("category")
     hook = next((s for s in d["sections"] if s["label"] == "hook"), None)
     rate = conti.speech_rate(category)
@@ -293,8 +287,7 @@ def relint(draft: str | Path, hook_script: Any = None, title: Any = None, thumb_
             raise ScriptError("bad_request", f"{name}은(는) 문자열이어야 합니다")
     if thumb_words is not None and (not isinstance(thumb_words, list) or not all(isinstance(w, str) for w in thumb_words)):
         raise ScriptError("bad_request", "thumb_words는 문자열 목록이어야 합니다")
-    path = _draft_path(str(draft))
-    d = conti.parse_draft(path)
+    d = conti.parse_draft(_draft_key(str(draft)))
     out: dict = {}
     clean_title = None if title is None else _one_line(title)
     words = None if thumb_words is None else [w for w in (_one_line(x) for x in thumb_words) if w]
@@ -523,9 +516,8 @@ def _packaging(existing: list[str], pick: dict, history: list[str]) -> list[str]
 
 
 def apply(draft: str | Path, choice: dict, expected_hash: str) -> dict:
-    path = _draft_path(str(draft))
+    key = _draft_key(str(draft))
     store = ctx.here().store
-    key = _draft_key(path)
     if not store.exists(key):
         raise ScriptError("draft_not_found", f"기획안이 없습니다: {key}")
     doc = store.read(key)

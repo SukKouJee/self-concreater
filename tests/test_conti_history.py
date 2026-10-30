@@ -8,6 +8,7 @@ from scripts import conti, refstore
 from scripts import conti_history as ch
 from scripts.common import ScriptError
 from tests.test_conti import CONTI, conti_file, draft_md, home  # noqa: F401 - fixtures
+from tests.helpers.paths import doc_key
 
 T0 = 1_000_000.0
 
@@ -110,7 +111,7 @@ def test_memo_only_change_is_not_external(saved):
 
 
 def test_changed_line_in_md_creates_one_external(saved):
-    fm, _ = refstore.read_md(saved)
+    fm, _ = refstore.read(doc_key(saved))
     fm["cuts"][0]["line"] = "손으로 고침"
     conti._write_conti(saved, saved.read_bytes(), conti.retime(fm))
     result = ch.check_external(saved, fm_of(saved), now=T0 + 5)
@@ -120,7 +121,7 @@ def test_changed_line_in_md_creates_one_external(saved):
 
 
 def test_first_id_assignment_is_not_external(saved):
-    fm, body = refstore.read_md(saved)
+    fm, body = refstore.read(doc_key(saved))
     for c in fm["cuts"]:
         c.pop("id")
     fm["schema_version"] = 2
@@ -300,7 +301,7 @@ def test_cli_history_name_restore_diff(saved, home, monkeypatch):
 # --- 수정 1차: 손편집 보존 · 동시성 · 무변경 편집 · 큰 번호 ------------------------------------
 
 def hand_edit(path, line):
-    fm, _ = refstore.read_md(path)
+    fm, _ = refstore.read(doc_key(path))
     fm["cuts"][0]["line"] = line
     conti._write_conti(path, path.read_bytes(), conti.retime(fm))
 
@@ -407,7 +408,7 @@ def test_restore_keeps_section_text_stored_in_the_version(saved):
 
 
 def _strip_ids(path):
-    fm, body = refstore.read_md(path)
+    fm, body = refstore.read(doc_key(path))
     for c in fm["cuts"]:
         c.pop("id")
     fm["schema_version"] = 2
@@ -417,14 +418,14 @@ def _strip_ids(path):
 def test_name_restore_diff_on_v2_file_assign_ids_first(saved):
     _strip_ids(saved)
     ch.name(saved, "이름", conti.content_hash(saved), now=T0 + 1)
-    assert all(c.get("id") for c in refstore.read_md(saved)[0]["cuts"])
+    assert all(c.get("id") for c in refstore.read(doc_key(saved))[0]["cuts"])
     assert ch.same_state(ch.get_version(saved, 2)["state"], ch.current_state(saved))
     _strip_ids(saved)
     ch.diff_versions(saved, 1)
-    assert all(c.get("id") for c in refstore.read_md(saved)[0]["cuts"])
+    assert all(c.get("id") for c in refstore.read(doc_key(saved))[0]["cuts"])
     _strip_ids(saved)
     ch.restore(saved, 1, conti.content_hash(saved), now=T0 + 9)
-    assert all(c.get("id") for c in refstore.read_md(saved)[0]["cuts"])
+    assert all(c.get("id") for c in refstore.read(doc_key(saved))[0]["cuts"])
 
 
 def test_history_restore_brings_back_art(saved, home):

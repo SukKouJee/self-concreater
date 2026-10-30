@@ -8,6 +8,7 @@ from scripts import conti, draft, fetch, refstore
 from scripts.common import ScriptError
 from tests.test_cuts import sample_video  # noqa: F401 - fixture
 from tests.typify_fixtures import CAT, standard_set
+from tests.helpers.paths import doc_key
 
 DRAFT = {
     "title": "컵라면 4단계 | 도전", "topic": "편의점 라면", "source": "직접", "hook_type": "question",
@@ -117,7 +118,7 @@ def test_save_writes_md_and_html(draft_md, home):
     out = conti.save(draft_md, conti_file(home))
     md = home / out["path"]
     assert md.name == draft_md.stem + "-conti.md" and out["cuts"] == 4
-    fm, body = refstore.read_md(md)
+    fm, body = refstore.read(doc_key(md))
     assert [c["start"] for c in fm["cuts"]] == [0, 2, 4, 6] and fm["cuts"][-1]["end"] == 8
     assert fm["script"][1] == {"label": "body", "start": 2.0, "end": 6.0, "text": "1단계부터 갑니다. 와 순하다"}
     for text in ["## 전체 대사", "## 콘티", "## 내 메모", "카메라 고정, 컵 순서대로 놓기", "(대사 없음)"]:
@@ -219,7 +220,7 @@ def test_frame_pool_exact_and_approx(home):
     shots.parent.mkdir(parents=True, exist_ok=True)
     shots.write_text(json.dumps({"labels": [{"frame": frames[0], "size": "탑뷰", "section": "hook"}]}), encoding="utf-8")
     make_frames(home, "a01")
-    refstore.update_frontmatter(home / "refs" / f"ref_{CAT}" / "videos" / "a01.md",
+    refstore.update_frontmatter(doc_key(home / "refs" / f"ref_{CAT}" / "videos" / "a01.md"),
                                 {"shots": {"by_section": {"body": "클로즈업"}}})
     pool = conti.frame_pool(CAT)
     exact = [p for p in pool if p["match"] == "exact"]
@@ -261,10 +262,10 @@ def test_html_links_reference_frames(draft_md, home):
 def test_render_after_user_edit(draft_md, home):
     out = conti.save(draft_md, conti_file(home))
     md = home / out["path"]
-    fm, _ = refstore.read_md(md)
+    fm, _ = refstore.read(doc_key(md))
     fm["cuts"][1]["guide"] = "사용자가 고친 가이드"
     fm["cuts"][1]["sec"], fm["cuts"][2]["sec"] = 3, 1
-    refstore.update_frontmatter(md, {"cuts": fm["cuts"]})
+    refstore.update_frontmatter(doc_key(md), {"cuts": fm["cuts"]})
     res = conti.render(out["path"])
     page = (home / res["html"]).read_text("utf-8")
     assert res["status"] == "rendered" and "사용자가 고친 가이드" in page
@@ -274,9 +275,9 @@ def test_render_after_user_edit(draft_md, home):
 def test_render_rejects_broken_edit(draft_md, home):
     out = conti.save(draft_md, conti_file(home))
     md = home / out["path"]
-    fm, _ = refstore.read_md(md)
+    fm, _ = refstore.read(doc_key(md))
     fm["cuts"][1]["sec"] = 9
-    refstore.update_frontmatter(md, {"cuts": fm["cuts"]})
+    refstore.update_frontmatter(doc_key(md), {"cuts": fm["cuts"]})
     with pytest.raises(ScriptError) as exc:
         conti.render(out["path"])
     assert "컷 길이 합" in exc.value.message
@@ -307,7 +308,7 @@ def test_update_line_resyncs_section_text(saved, home):
     memo = "## 내 메모\n소품 미리 사기\n"
     saved.write_text(saved.read_text("utf-8").replace("## 내 메모\n", memo), encoding="utf-8")
     out = conti.update_cut(saved, 2, {"line": "1단계 시작!"})
-    fm, body = refstore.read_md(saved)
+    fm, body = refstore.read(doc_key(saved))
     assert out["status"] == "updated" and out["cut"]["line"] == "1단계 시작!"
     assert fm["script"][1]["text"] == "1단계 시작! 와 순하다"
     assert not [w for w in out["warnings"] if w["kind"] == "script_mismatch"]
@@ -342,11 +343,11 @@ def test_update_hash_conflict(saved):
 def test_ref_frame_pin_and_clear(saved, home):
     rel = pin_frame(home)
     out = conti.update_cut(saved, 1, {"ref_frame": rel})
-    fm, _ = refstore.read_md(saved)
+    fm, _ = refstore.read(doc_key(saved))
     assert fm["schema_version"] == 3 and fm["cuts"][0]["ref_frame"] == rel
     assert "참고(고정)" in (home / out["html"]).read_text("utf-8")
     conti.update_cut(saved, 1, {"ref_frame": ""})
-    fm, _ = refstore.read_md(saved)
+    fm, _ = refstore.read(doc_key(saved))
     assert "ref_frame" not in fm["cuts"][0]
 
 
@@ -365,9 +366,9 @@ def test_render_missing_ref_frame_falls_back(saved, home):
 
 
 def test_v1_file_still_renders(saved):
-    fm, _ = refstore.read_md(saved)
+    fm, _ = refstore.read(doc_key(saved))
     assert "ref_frame" not in fm["cuts"][0]
-    refstore.update_frontmatter(saved, {"schema_version": 1})
+    refstore.update_frontmatter(doc_key(saved), {"schema_version": 1})
     assert conti.render(saved)["status"] == "rendered"
 
 
@@ -391,7 +392,7 @@ def test_scenes_order_and_limit(saved, home):
         {"frame": f[1], "size": "클로즈업", "section": "body"},
         {"frame": f[2], "size": "탑뷰", "section": "body"}]}), encoding="utf-8")
     g = make_frames(home, "a01")
-    refstore.update_frontmatter(home / "refs" / f"ref_{CAT}" / "videos" / "a01.md",
+    refstore.update_frontmatter(doc_key(home / "refs" / f"ref_{CAT}" / "videos" / "a01.md"),
                                 {"shots": {"by_section": {"body": "클로즈업"}}})
     got = conti.scenes(saved, 2, limit=10)
     frames = [s["frame"] for s in got]
@@ -794,7 +795,7 @@ def test_retime_moves_later_sections(saved):
 
 
 def test_ensure_ids_migrates_v2_keeping_memo_and_crlf(saved):
-    fm, body = refstore.read_md(saved)
+    fm, body = refstore.read(doc_key(saved))
     for c in fm["cuts"]:
         del c["id"]
     fm["schema_version"] = 2
@@ -802,7 +803,7 @@ def test_ensure_ids_migrates_v2_keeping_memo_and_crlf(saved):
     saved.write_bytes(refstore.join_frontmatter(fm, body, "\r\n").encode("utf-8"))
 
     assert conti.ensure_ids(saved) is True
-    fm, body = refstore.read_md(saved)
+    fm, body = refstore.read(doc_key(saved))
     assert fm["schema_version"] == 3 and all(len(c["id"]) == 8 for c in fm["cuts"])
     raw = saved.read_bytes()
     assert raw.startswith(b"---\r\n") and b"\n" not in raw.replace(b"\r\n", b"")
@@ -811,7 +812,7 @@ def test_ensure_ids_migrates_v2_keeping_memo_and_crlf(saved):
 
 
 def _set_ids(path, ids, schema=3):
-    fm, body = refstore.read_md(path)
+    fm, body = refstore.read(doc_key(path))
     for c, i in zip(fm["cuts"], ids):
         c["id"] = i
     fm["schema_version"] = schema
@@ -836,30 +837,30 @@ def test_ensure_ids_fixes_duplicate_and_malformed_ids_stably(saved):
 
 
 def test_ensure_ids_keeps_memo_under_heading(saved):
-    fm, body = refstore.read_md(saved)
+    fm, body = refstore.read(doc_key(saved))
     body = body.replace("## 내 메모\n", "## 내 메모\n소품 미리 사기\n")
     saved.write_bytes(refstore.join_frontmatter(fm, body).encode("utf-8"))
     _set_ids(saved, ["dup00001"] * 4)
     assert conti.ensure_ids(saved) is True
-    _, body = refstore.read_md(saved)
+    _, body = refstore.read(doc_key(saved))
     assert body.split("## 내 메모")[1].strip().startswith("소품 미리 사기")
 
 
 def test_render_saves_ids_of_v2_file(saved):
-    fm, body = refstore.read_md(saved)
+    fm, body = refstore.read(doc_key(saved))
     for c in fm["cuts"]:
         del c["id"]
     fm["schema_version"] = 2
     saved.write_bytes(refstore.join_frontmatter(fm, body).encode("utf-8"))
     conti.render(saved)
-    fm, _ = refstore.read_md(saved)
+    fm, _ = refstore.read(doc_key(saved))
     assert fm["schema_version"] == 3 and all(len(c["id"]) == 8 for c in fm["cuts"])
 
 
 # --- 컷 편집 연산(edit_cuts) -----------------------------------------------------------
 
 def _ids(path):
-    fm, _ = refstore.read_md(path)
+    fm, _ = refstore.read(doc_key(path))
     return [c["id"] for c in fm["cuts"]]
 
 
@@ -868,7 +869,7 @@ def _edit(path, op, **kw):
 
 
 def _cuts(path):
-    fm, _ = refstore.read_md(path)
+    fm, _ = refstore.read(doc_key(path))
     return fm["cuts"]
 
 
@@ -879,7 +880,7 @@ def test_insert_defaults_take_previous_cut_section(saved, home):
     assert out["status"] == "updated" and out["cut_id"] == new["id"] and out["hash"] == conti.content_hash(saved)
     assert (new["size"], new["sec"], new["action"], new["guide"]) == ("미디엄", 4, "새 컷", "촬영 지시를 적어 주세요")
     assert new["section"] == cuts[1]["section"] == 1 and len(cuts) == 5
-    fm, _ = refstore.read_md(saved)
+    fm, _ = refstore.read(doc_key(saved))
     assert fm["script"][1]["end"] == 10 and fm["script"][2]["start"] == 10 and fm["script"][2]["end"] == 12
     assert [c["n"] for c in cuts] == [1, 2, 3, 4, 5]
 
@@ -960,7 +961,7 @@ def test_update_allows_long_scene_up_to_ten_minutes(saved):
 
 def test_update_sec_size_action_shifts_later_sections(saved):
     out = _edit(saved, {"op": "update", "n": 1, "fields": {"sec": 3.5, "size": "미디엄", "action": "새 동작"}})
-    fm, _ = refstore.read_md(saved)
+    fm, _ = refstore.read(doc_key(saved))
     assert out["cut_id"] == fm["cuts"][0]["id"]
     assert (fm["cuts"][0]["sec"], fm["cuts"][0]["size"], fm["cuts"][0]["action"]) == (3.5, "미디엄", "새 동작")
     assert [(s["start"], s["end"]) for s in fm["script"]] == [(0, 3.5), (3.5, 7.5), (7.5, 9.5)]
@@ -1023,18 +1024,18 @@ def test_baseline_holds_history_lock(saved, monkeypatch):
 
 
 def _hand_edit_text(path, idx, text):
-    fm, _ = refstore.read_md(path)
+    fm, _ = refstore.read(doc_key(path))
     fm["script"][idx]["text"] = text
-    refstore.update_frontmatter(path, {"script": fm["script"]})
+    refstore.update_frontmatter(doc_key(path), {"script": fm["script"]})
 
 
 def test_hand_edited_section_text_survives_unrelated_edit(saved):
     _hand_edit_text(saved, 0, "손으로 고친 훅")
     _edit(saved, {"op": "update", "n": 2, "fields": {"guide": "다른 가이드"}})
-    fm, _ = refstore.read_md(saved)
+    fm, _ = refstore.read(doc_key(saved))
     assert fm["script"][0]["text"] == "손으로 고친 훅"
     _edit(saved, {"op": "update", "n": 1, "fields": {"sec": 3}})      # 길이만 바뀐 섹션도 대사는 그대로
-    fm, _ = refstore.read_md(saved)
+    fm, _ = refstore.read(doc_key(saved))
     assert fm["script"][0]["text"] == "손으로 고친 훅"
 
 
@@ -1043,10 +1044,10 @@ def test_line_edit_and_move_rebuild_affected_sections(saved):
     _hand_edit_text(saved, 2, "손으로 고친 끝")
     ids = _ids(saved)
     _edit(saved, {"op": "update", "n": 2, "fields": {"line": "새 대사"}})
-    fm, _ = refstore.read_md(saved)
+    fm, _ = refstore.read(doc_key(saved))
     assert fm["script"][1]["text"] == "새 대사 와 순하다" and fm["script"][0]["text"] == "손으로 고친 훅"
     _edit(saved, {"op": "move", "id": ids[2], "to": 3})               # 섹션 1에서 섹션 2로
-    fm, _ = refstore.read_md(saved)
+    fm, _ = refstore.read(doc_key(saved))
     assert fm["script"][1]["text"] == "새 대사" and fm["script"][2]["text"] == "와 순하다"
 
 
@@ -1057,9 +1058,9 @@ def _stored_cut(path, i):
 
 
 def test_undo_insert_keeps_deleted_cut_id_and_angle(saved):
-    fm, _ = refstore.read_md(saved)
+    fm, _ = refstore.read(doc_key(saved))
     fm["cuts"][1]["angle"] = "로우앵글"
-    refstore.update_frontmatter(saved, {"cuts": fm["cuts"]})
+    refstore.update_frontmatter(doc_key(saved), {"cuts": fm["cuts"]})
     cut = _stored_cut(saved, 1)
     _edit(saved, {"op": "delete", "id": cut["id"]})
     out = _edit(saved, {"op": "insert", "at": 1, "section": 1, "cut": cut})
@@ -1134,7 +1135,7 @@ def test_ensure_ids_reads_once_when_nothing_to_fix(saved, monkeypatch):
 
 def test_saved_conti_round_trips_byte_for_byte(saved):
     _edit(saved, {"op": "update", "n": 2, "fields": {"caption": "최애 1위 🏆"}})
-    fm, body = refstore.read_md(saved)
+    fm, body = refstore.read(doc_key(saved))
     assert refstore.join_frontmatter(fm, body).encode("utf-8") == saved.read_bytes()
 
 
@@ -1218,7 +1219,7 @@ def test_cli_save_keeps_art_only_if_file_exists(draft_md, home):
     data = with_cuts(c0={"art": ART}, c1={"art": ghost})
     rel = draft_md.relative_to(home).as_posix()
     saved = conti.main(["save", rel, "--conti", conti_file(home, data).relative_to(home).as_posix()])
-    stored, _ = refstore.read_md(home / saved["path"])
+    stored, _ = refstore.read(doc_key(home / saved["path"]))
     assert stored["cuts"][0]["art"] == ART
     assert all("art" not in c for c in stored["cuts"][1:])
 
@@ -1276,7 +1277,7 @@ def test_save_keeps_only_ref_auto_from_described_candidates(draft_md, home):
     a = describe_frames(home, "a00", descs=("시장 골목", None, None, None))     # a[1]: 파일은 있지만 설명 없음
     data = with_cuts(c0={"ref_auto": auto(a[0])}, c1={"ref_auto": auto(a[1])},
                      c2={"ref_auto": auto("workspace/frames/zz9/scene001.jpg")})   # 없는 프레임
-    stored, _ = refstore.read_md(home / conti.save(draft_md, conti_file(home, data))["path"])
+    stored, _ = refstore.read(doc_key(home / conti.save(draft_md, conti_file(home, data))["path"]))
     assert stored["cuts"][0]["ref_auto"] == auto(a[0])
     assert all("ref_auto" not in c for c in stored["cuts"][1:])
 
@@ -1286,7 +1287,7 @@ def test_main_save_drops_claude_written_ref_auto(draft_md, home):
     data = with_cuts(c0={"ref_auto": auto("workspace/frames/a00/scene001.jpg")})
     rel = draft_md.relative_to(home).as_posix()
     saved = conti.main(["save", rel, "--conti", conti_file(home, data).relative_to(home).as_posix()])
-    stored, _ = refstore.read_md(home / saved["path"])
+    stored, _ = refstore.read(doc_key(home / saved["path"]))
     assert all("ref_auto" not in c for c in stored["cuts"])
 
 
@@ -1301,22 +1302,22 @@ def test_ref_auto_survives_edits_and_restore(saved, home):
     from scripts import conti_history
 
     a = describe_frames(home, "a00")
-    fm, _ = refstore.read_md(saved)
+    fm, _ = refstore.read(doc_key(saved))
     fm["cuts"][1]["ref_auto"] = auto(a[0])
-    refstore.update_frontmatter(saved, {"cuts": fm["cuts"]})
+    refstore.update_frontmatter(doc_key(saved), {"cuts": fm["cuts"]})
     conti.update_cut(saved, 2, {"sfx": "쿵"})
     conti.edit_cuts(saved, {"op": "move", "n": 2, "to": 2}, None)
-    stored, _ = refstore.read_md(saved)
+    stored, _ = refstore.read(doc_key(saved))
     moved = next(c for c in stored["cuts"] if c["sfx"] == "쿵")
     assert moved["ref_auto"] == auto(a[0])
     n = conti_history.list_versions(saved)[0]["n"]
     conti.update_cut(saved, 1, {"sfx": "띵띵"})
-    fm, _ = refstore.read_md(saved)
+    fm, _ = refstore.read(doc_key(saved))
     for c in fm["cuts"]:
         c.pop("ref_auto", None)
-    refstore.update_frontmatter(saved, {"cuts": fm["cuts"]})
+    refstore.update_frontmatter(doc_key(saved), {"cuts": fm["cuts"]})
     conti_history.restore(saved, n, None)
-    stored, _ = refstore.read_md(saved)
+    stored, _ = refstore.read(doc_key(saved))
     assert next(c for c in stored["cuts"] if c["sfx"] == "쿵")["ref_auto"] == auto(a[0])
 
 
@@ -1325,22 +1326,22 @@ def test_ref_auto_survives_edits_and_restore(saved, home):
     ({"sfx": "쿵"}, True), ({"line": "새 대사"}, True), ({"caption": "자막"}, True)])
 def test_update_drops_ref_auto_when_picked_fields_change(saved, home, fields, kept):
     a = describe_frames(home, "a00")
-    fm, _ = refstore.read_md(saved)
+    fm, _ = refstore.read(doc_key(saved))
     fm["cuts"][1]["ref_auto"] = auto(a[0])
-    refstore.update_frontmatter(saved, {"cuts": fm["cuts"]})
+    refstore.update_frontmatter(doc_key(saved), {"cuts": fm["cuts"]})
     conti.update_cut(saved, 2, fields)
-    stored, _ = refstore.read_md(saved)
+    stored, _ = refstore.read(doc_key(saved))
     assert ("ref_auto" in stored["cuts"][1]) is kept
 
 
 def test_update_keeps_ref_auto_when_picked_field_value_unchanged(saved, home):
     a = describe_frames(home, "a00")
-    fm, _ = refstore.read_md(saved)
+    fm, _ = refstore.read(doc_key(saved))
     fm["cuts"][1]["ref_auto"] = auto(a[0])
-    refstore.update_frontmatter(saved, {"cuts": fm["cuts"]})
+    refstore.update_frontmatter(doc_key(saved), {"cuts": fm["cuts"]})
     same = {k: fm["cuts"][1][k] for k in ("action", "guide", "size")}
     conti.update_cut(saved, 2, {**same, "sfx": "쿵"})
-    stored, _ = refstore.read_md(saved)
+    stored, _ = refstore.read(doc_key(saved))
     assert stored["cuts"][1]["ref_auto"] == auto(a[0])
 
 
@@ -1598,14 +1599,14 @@ def test_hand_edited_ref_frame_spellings_count_as_pinned(saved, home, spelling):
     value = spelling.format(rel=rel, back=rel.replace("/", "\\"))
     stored = conti.read_conti(saved).stored
     stored["cuts"][0]["ref_frame"] = value
-    refstore.update_frontmatter(saved, {"cuts": stored["cuts"]})
+    refstore.update_frontmatter(doc_key(saved), {"cuts": stored["cuts"]})
     fm = conti._load_conti(saved)
     refs = conti.cut_refs(fm)
     assert (refs[1]["match"], refs[1]["frame"], refs[1]["title"]) == ("pinned", rel, "pin.jpg")
     assert conti_art.display_art(fm["cuts"][0], conti_art.aspect(fm)) is None
     page = (home / conti.render(saved)["html"]).read_text("utf-8")
     assert "참고(고정)" in page and "장면 그림" not in page
-    assert refstore.read_md(saved)[0]["cuts"][0]["ref_frame"] == value
+    assert refstore.read(doc_key(saved))[0]["cuts"][0]["ref_frame"] == value
 
 
 def test_ref_frame_lookup_key_normalizes_only_spelling():

@@ -5,6 +5,7 @@ import pytest
 from scripts import conti, conti_history, footage_match, refstore, scene_merge
 from scripts.common import ScriptError
 from tests.test_conti import CONTI, conti_file, draft_md, home  # noqa: F401 - fixtures
+from tests.helpers.paths import doc_key
 
 
 def cut(n, section, action, **kw):
@@ -114,7 +115,7 @@ def repeat_conti(home, draft_md):  # noqa: F811
 
 
 def ids_of(path):
-    fm, _ = refstore.read_md(path)
+    fm, _ = refstore.read(doc_key(path))
     return [c["id"] for c in fm["cuts"]]
 
 
@@ -192,7 +193,7 @@ def test_merge_keeps_edited_lines(repeat_conti):
     assert plan["sections"][1]["text"] == "하나 둘이요, 진짜! 셋 넷"
     cuts = scene_merge.validate_split(plan, split(plan, [0, 1], ["하나 둘이요, 진짜!", "셋 넷"]))
     scene_merge.apply(repeat_conti, cuts, plan["hash"])
-    fm, _ = refstore.read_md(repeat_conti)
+    fm, _ = refstore.read(doc_key(repeat_conti))
     assert fm["script"][1]["text"] == "하나 둘이요, 진짜! 셋 넷"
     assert [c["line"] for c in fm["cuts"] if c["section"] == 1] == ["하나 둘이요, 진짜!", "셋 넷"]
 
@@ -206,7 +207,7 @@ def _applied(path, order=(1, 0), lines=("하나 둘", "셋 넷"), **kw):
 def test_apply_writes_scenes_and_retimes(repeat_conti, home):
     ids = ids_of(repeat_conti)
     _, out = _applied(repeat_conti)
-    fm, _ = refstore.read_md(repeat_conti)
+    fm, _ = refstore.read(doc_key(repeat_conti))
     assert out["status"] == "merged" and out["before"] == 6 and out["after"] == 4
     assert out["hash"] == conti.content_hash(repeat_conti) and (home / out["html"]).exists()
     assert [c["id"] for c in fm["cuts"]] == [ids[0], ids[2], ids[1], ids[5]]
@@ -227,7 +228,7 @@ def test_apply_keeps_memo_and_body(repeat_conti):
     text = repeat_conti.read_text("utf-8").replace("## 내 메모\n", "## 내 메모\n소품 미리 사기\n")
     repeat_conti.write_text(text, encoding="utf-8", newline="\n")
     _applied(repeat_conti)
-    _, body = refstore.read_md(repeat_conti)
+    _, body = refstore.read(doc_key(repeat_conti))
     assert "## 내 메모\n소품 미리 사기" in body
     assert "하나 둘" in body and "셋 넷" in body
 
@@ -270,7 +271,7 @@ def test_apply_keeps_pinned_frame_of_later_repeat(home, draft_md):  # noqa: F811
     data["cuts"][3]["ref_frame"] = "workspace/frames/pin.jpg"
     path = home / conti.save(draft_md, conti_file(home, data))["path"]
     _applied(path)
-    fm, _ = refstore.read_md(path)
+    fm, _ = refstore.read(doc_key(path))
     assert [c.get("ref_frame") for c in fm["cuts"]] == [None, None, "workspace/frames/pin.jpg", None]
 
 
@@ -338,7 +339,7 @@ def test_apply_takes_only_order_and_lines_from_client(home, draft_md, tamper):  
               "extra_key": lambda: target.update(merged_ids=["x"], start=99)}
     change[tamper]()
     scene_merge.apply(path, cuts, plan["hash"])
-    fm, _ = refstore.read_md(path)
+    fm, _ = refstore.read(doc_key(path))
     scene = fm["cuts"][2]
     assert scene["ref_frame"] == "workspace/frames/pin.jpg" and scene["guide"] == "소리 크게 / 천천히"
     assert scene["sec"] == 2 and scene["size"] == "클로즈업" and scene.get("angle") is None
@@ -394,12 +395,12 @@ def test_merge_fields_carries_first_ref_auto():
 def test_apply_keeps_ref_auto_of_merged_and_single_scenes(home, draft_md):  # noqa: F811
     a, b = {"frame": "workspace/frames/a.jpg", "match": "content"}, {"frame": "workspace/frames/b.jpg", "match": "content"}
     path = home / conti.save(draft_md, conti_file(home, REPEAT))["path"]
-    stored, _ = refstore.read_md(path)                    # 저장은 후보에 없는 ref_auto를 버리므로 파일에 직접 둔다
+    stored, _ = refstore.read(doc_key(path))                    # 저장은 후보에 없는 ref_auto를 버리므로 파일에 직접 둔다
     stored["cuts"][0]["ref_auto"] = a                     # 혼자인 장면
     stored["cuts"][3]["ref_auto"] = b                     # 묶인 장면의 뒤 컷
-    refstore.update_frontmatter(path, {"cuts": stored["cuts"]})
+    refstore.update_frontmatter(doc_key(path), {"cuts": stored["cuts"]})
     _applied(path)
-    fm, _ = refstore.read_md(path)
+    fm, _ = refstore.read(doc_key(path))
     assert [c.get("ref_auto") for c in fm["cuts"]] == [a, None, b, None]
 
 

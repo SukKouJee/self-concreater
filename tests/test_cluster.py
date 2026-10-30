@@ -6,6 +6,7 @@ import pytest
 from scripts import cluster, refstore
 from scripts.common import ScriptError
 from tests.typify_fixtures import CAT, SKELETON_B, standard_set, write_video
+from tests.helpers.paths import doc_key
 
 
 @pytest.fixture
@@ -76,7 +77,7 @@ def test_edited_md_changes_result(home):
     before = axis(cluster.run(CAT), "structure")
     # 사용자가 a00의 섹션을 골격 B로 고쳤다
     path = home / "refs" / f"ref_{CAT}" / "videos" / "a00.md"
-    refstore.update_frontmatter(path, {"sections": [
+    refstore.update_frontmatter(doc_key(path), {"sections": [
         {"label": label, **({"sub": sub} if sub else {}), "start": float(start), "end": float(end)}
         for label, sub, start, end in SKELETON_B]})
     after = axis(cluster.run(CAT), "structure")
@@ -94,7 +95,7 @@ def test_outliers(home):
 def test_categorical_singletons_are_outliers_only_on_typable_axes(home):
     standard_set(home)
     # a05의 서사를 바꿔 a00이 problem_solution으로 혼자 남게 한다 (narrative는 여전히 typable 아님)
-    refstore.update_frontmatter(home / "refs" / f"ref_{CAT}" / "videos" / "a05.md", {"narrative_type": "list"})
+    refstore.update_frontmatter(doc_key(home / "refs" / f"ref_{CAT}" / "videos" / "a05.md"), {"narrative_type": "list"})
     out = cluster.run(CAT)
     assert out["axes"]["narrative"]["verdict"] != "typable"
     assert "a00" in out["axes"]["narrative"]["singletons"]
@@ -109,10 +110,10 @@ def test_archetype_card_skips_missing_pacing_values(home):
     standard_set(home)
     for vid in ["b00", "b01", "b02"]:
         path = home / "refs" / f"ref_{CAT}" / "videos" / f"{vid}.md"
-        refstore.update_frontmatter(path, {"pacing": {"avg_cut_sec": 4.0, "by_section": {"hook": 2.0}}})
+        refstore.update_frontmatter(doc_key(path), {"pacing": {"avg_cut_sec": 4.0, "by_section": {"hook": 2.0}}})
     cluster.run(CAT)
     cluster.apply(CAT, notes(home, NOTES))
-    _, body = refstore.read_md(home / "refs" / f"ref_{CAT}" / "index.md")
+    _, body = refstore.read(doc_key(home / "refs" / f"ref_{CAT}" / "index.md"))
     assert "None" not in body
     assert "평균 컷 4.0초 (hook 2.0)" in body
 
@@ -180,7 +181,7 @@ def test_apply_writes_index_sections(home):
 
     out = cluster.apply(CAT, notes(home, NOTES))
 
-    fm, body = refstore.read_md(index)
+    fm, body = refstore.read(doc_key(index))
     assert out["status"] == "applied"
     assert "내가 쓴 개요" in body
     judge = body.split("## 판정")[1].split("## 아키타입")[0]
@@ -224,7 +225,7 @@ def test_preliminary_apply_marks_header(home):
     cluster.run(CAT)
     cluster.apply(CAT, notes(home, {**NOTES, "archetypes": [
         {"id": "A1", "name": "a"}, {"id": "A2", "name": "b"}]}))
-    _, body = refstore.read_md(home / "refs" / f"ref_{CAT}" / "index.md")
+    _, body = refstore.read(doc_key(home / "refs" / f"ref_{CAT}" / "index.md"))
     assert "예비 관찰" in body.split("## 판정")[1].split("## 아키타입")[0]
 
 

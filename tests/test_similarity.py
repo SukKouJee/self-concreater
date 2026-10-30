@@ -5,6 +5,7 @@ import pytest
 from scripts import cluster, draft, refstore, similarity
 from scripts.common import ScriptError
 from tests.typify_fixtures import CAT, standard_set, write_video
+from tests.helpers.paths import doc_key
 
 
 def _json(home, name, data):
@@ -76,7 +77,7 @@ def test_restructured_draft_is_far_with_gaps(home):
 
 def test_old_draft_stored_pacing_still_scored(home):
     path = make_draft(home, LIKE_A1)
-    refstore.update_frontmatter(path, {"pacing": {"avg_cut_sec": 1.3, "by_section": {"hook": 1.5, "body": 1.29}}})
+    refstore.update_frontmatter(doc_key(path), {"pacing": {"avg_cut_sec": 1.3, "by_section": {"hook": 1.5, "body": 1.29}}})
     out = similarity.compare(CAT, path)
     assert out["axes"]["pacing"]["proximity"] is not None
 
@@ -124,7 +125,7 @@ def test_save_writes_mine_md_and_history(home):
     out = similarity.save(CAT, target, notes_for(home, target))
     path = home / out["path"]
     assert out["path"] == f"mine/{target.stem}.md"
-    fm, body = refstore.read_md(path)
+    fm, body = refstore.read(doc_key(path))
     assert fm["nearest"] == {"id": "A2", "name": "사이즈별 리스트 비교"}
     assert fm["target"] == f"drafts/{target.name}"
     assert "structure:body" in fm["gaps"]
@@ -147,7 +148,7 @@ def test_intentional_gap_excluded_on_rediagnosis(home):
     assert out["intentional"] == ["hook"]
 
     similarity.save(CAT, target, notes_for(home, target))
-    fm, body = refstore.read_md(p)
+    fm, body = refstore.read(doc_key(p))
     assert fm["intentional"] == ["hook"] and "hook" not in fm["gaps"]
     assert len(fm["history"]) == 2
     assert body.endswith("## 내 메모\n직접 쓴 메모\n")

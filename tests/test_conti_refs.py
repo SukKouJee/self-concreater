@@ -6,6 +6,7 @@ import pytest
 from scripts import claude_cli, conti, conti_history, conti_refs, llm, refstore
 from scripts.common import ScriptError
 from tests.test_conti import conti_file, draft_md, home, make_frames, saved  # noqa: F401 - fixtures
+from tests.helpers.paths import doc_key
 
 
 def describe(home, vid, descs, size="클로즈업", angle="눈높이"):
@@ -44,7 +45,7 @@ def fake(monkeypatch):
 def test_candidates_only_described_frames(home):
     a = describe(home, "a00", ["시장 골목, 사람 많음", None, "국물 클로즈업", None])
     make_frames(home, "a01")                                   # 라벨 파일이 없는 영상: 후보 아님
-    refstore.update_frontmatter(home / "refs" / "ref_mukbang" / "videos" / "a01.md",
+    refstore.update_frontmatter(doc_key(home / "refs" / "ref_mukbang" / "videos" / "a01.md"),
                                 {"shots": {"by_section": {"body": "클로즈업"}}})
     got = conti_refs.candidates("mukbang")
     assert [c["frame"] for c in got] == [a[0], a[2]]
@@ -54,7 +55,7 @@ def test_candidates_only_described_frames(home):
 def test_candidates_skip_missing_files_and_mine(home):
     a = describe(home, "a00", ["하나", "둘", None, None])
     (home / a[1]).unlink()
-    refstore.update_frontmatter(home / "refs" / "ref_mukbang" / "videos" / "a01.md", {"role": "mine"})
+    refstore.update_frontmatter(doc_key(home / "refs" / "ref_mukbang" / "videos" / "a01.md"), {"role": "mine"})
     describe(home, "a01", ["내 영상", None, None, None])
     assert [c["frame"] for c in conti_refs.candidates("mukbang")] == [a[0]]
     assert conti_refs.candidates(None) == []
@@ -174,7 +175,7 @@ def test_save_picks_writes_ref_auto_and_history(saved, home):
     fm = conti._load_conti(saved)
     picks = {fm["cuts"][1]["id"]: a[0]}
     result = conti_refs.save_picks(saved, picks, basis_of(fm["cuts"]))
-    stored, body = refstore.read_md(saved)
+    stored, body = refstore.read(doc_key(saved))
     assert stored["cuts"][1]["ref_auto"] == {"frame": a[0], "match": "content"}
     assert all("ref_auto" not in c for i, c in enumerate(stored["cuts"]) if i != 1)
     assert result["hash"] == conti.content_hash(saved) and result["picked"] == 1 and result["scenes"] == 4
@@ -191,7 +192,7 @@ def test_save_picks_survives_unrelated_edit(saved, home):
     basis = basis_of(fm["cuts"])
     conti.update_cut(saved, 4, {"line": "고르는 사이 고친 대사"})          # 다른 컷의 대사: 고른 근거와 무관
     result = conti_refs.save_picks(saved, {fm["cuts"][0]["id"]: a[0], fm["cuts"][2]["id"]: a[0]}, basis)
-    stored, _ = refstore.read_md(saved)
+    stored, _ = refstore.read(doc_key(saved))
     assert stored["cuts"][0]["ref_auto"]["frame"] == a[0] and stored["cuts"][2]["ref_auto"]["frame"] == a[0]
     assert stored["cuts"][3]["line"] == "고르는 사이 고친 대사"
     assert result["skipped"] == 0 and result["picked"] == 2
@@ -202,14 +203,14 @@ def test_save_picks_skips_cut_edited_or_unpicked_during_pick(saved, home):
     fm = conti._load_conti(saved)
     ids = [c["id"] for c in fm["cuts"]]
     basis = basis_of(fm["cuts"])
-    stored, _ = refstore.read_md(saved)
+    stored, _ = refstore.read(doc_key(saved))
     stored["cuts"][3]["ref_auto"] = {"frame": a[0], "match": "content"}      # 고르기 전부터 있던 사진
-    refstore.update_frontmatter(saved, {"cuts": stored["cuts"]})
+    refstore.update_frontmatter(doc_key(saved), {"cuts": stored["cuts"]})
     conti.update_cut(saved, 1, {"action": "바뀐 동작"})                        # 고른 근거가 바뀐 컷
     picks = {ids[0]: a[0], ids[1]: a[0]}                                     # ids[2]는 맞는 사진 없음
     del basis[ids[3]]                                                        # ids[3]은 실패한 묶음(고르지 않음)
     result = conti_refs.save_picks(saved, picks, basis)
-    stored, _ = refstore.read_md(saved)
+    stored, _ = refstore.read(doc_key(saved))
     by_id = {c["id"]: c for c in stored["cuts"]}
     assert "ref_auto" not in by_id[ids[0]] and by_id[ids[1]]["ref_auto"]["frame"] == a[0]
     assert by_id[ids[3]]["ref_auto"]["frame"] == a[0]                        # 고르지 않은 장면은 그대로

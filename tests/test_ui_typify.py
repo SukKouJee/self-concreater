@@ -10,6 +10,7 @@ from tests.test_cluster import NOTES
 from tests.test_ui_add import wait_for
 from tests.test_ui_server import Client, _start, _stop, no_browser  # noqa: F401 - fixture
 from tests.typify_fixtures import CAT, standard_set, write_video
+from tests.helpers.paths import doc_key
 
 
 class Fakes:
@@ -175,7 +176,7 @@ def test_save_applies_and_returns_snapshot(client, home):
     status, body = client.json("POST", "/api/typify/save", _save_body(job, notes=edited))
     assert status == 200, body
     assert body["status"] == "applied" and body["applied"]["archetypes"][0]["name"] == "고친 이름"
-    fm, _ = refstore.read_md(_index(home))
+    fm, _ = refstore.read(doc_key(_index(home)))
     assert [a["name"] for a in fm["archetypes"]] == ["고친 이름", "둘째 이름"]
     got = client.json("GET", f"/api/typify?category={CAT}")[1]
     assert got["applied"] is not None and got["typified_at"] == fm["typified_at"]
@@ -280,7 +281,7 @@ def test_status_overlays_index_names_onto_applied(client, home):
     index = _index(home)
     index.write_text(index.read_text("utf-8").replace("결과 먼저 몰아먹기", "손으로 고친 이름", 1), encoding="utf-8")
     got = client.json("GET", f"/api/typify?category={CAT}")[1]
-    fm, _ = refstore.read_md(index)
+    fm, _ = refstore.read(doc_key(index))
     names = {a["id"]: a["name"] for a in got["applied"]["archetypes"]}
     assert names["A1"] == "손으로 고친 이름" == fm["archetypes"][0]["name"]
 

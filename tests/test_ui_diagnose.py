@@ -11,6 +11,7 @@ from tests.test_similarity import LIKE_A1, UNLIKE, _json, make_draft
 from tests.test_ui_add import wait_for
 from tests.test_ui_server import Client, _start, _stop, no_browser  # noqa: F401 - fixture
 from tests.typify_fixtures import CAT, standard_set, write_video
+from tests.helpers.paths import doc_key
 
 
 @pytest.fixture
@@ -255,7 +256,7 @@ def test_save_writes_record_and_marks_job(client, home):
     assert status == 200, body
     assert body["status"] == "saved" and body["path"] == f"mine/{draft.stem}.md"
     assert body["record"] == client.json("GET", f"/api/diagnose/record?category={CAT}&name={quote(draft.stem)}")[1]
-    assert "구조가 달라요" in refstore.read_md(home / body["path"])[1] and not _tmp_files(home)
+    assert "구조가 달라요" in refstore.read(doc_key(home / body["path"]))[1] and not _tmp_files(home)
     item = client.json("GET", f"/api/jobs/{job['id']}")[1]["job"]["items"][0]
     assert item["state"] == "saved" and item["ask"] is None
 
@@ -269,7 +270,7 @@ def test_save_keeps_memo_intentional_and_history(client, home):
     assert client.json("POST", "/api/diagnose/intentional",
                        {"category": CAT, "name": draft.stem, "key": "hook", "on": True})[0] == 200
     status, _ = _save(client, rel)
-    fm, body = refstore.read_md(path)
+    fm, body = refstore.read(doc_key(path))
     assert status == 200 and fm["intentional"] == ["hook"] and len(fm["history"]) == 2
     assert body.endswith("## 내 메모\n직접 쓴 메모\n")
 
@@ -398,7 +399,7 @@ def test_intentional_rolls_back_when_compare_fails(client, home):
     status, body = client.json("POST", "/api/diagnose/intentional",
                                {"category": CAT, "name": draft.stem, "key": "hook", "on": True})
     assert status == 400 and body["error"] == "target_not_found"
-    assert refstore.read_md(home / "mine" / f"{draft.stem}.md")[0]["intentional"] == []
+    assert refstore.read(doc_key(home / "mine" / f"{draft.stem}.md"))[0]["intentional"] == []
 
 
 def test_broken_typify_json_is_no_typify_result(client, home):
@@ -426,7 +427,7 @@ def test_concurrent_intentional_toggles_keep_both(client, home):
     for t in threads:
         t.join(15)
     assert results == [200, 200]
-    assert sorted(refstore.read_md(home / "mine" / f"{draft.stem}.md")[0]["intentional"]) == ["hook", "narrative"]
+    assert sorted(refstore.read(doc_key(home / "mine" / f"{draft.stem}.md"))[0]["intentional"]) == ["hook", "narrative"]
 
 
 def test_save_and_update_frontmatter_use_atomic_write(home, monkeypatch):

@@ -13,6 +13,7 @@ from tests.test_conti import CONTI, DRAFT, conti_file, draft_md, home, pin_frame
 from tests.test_cuts import sample_video  # noqa: F401 - fixture
 from tests.test_ui_add import wait_for
 from tests.test_ui_server import Client, _start, _stop, no_browser  # noqa: F401 - fixture
+from tests.helpers.paths import doc_key
 
 
 class Fakes:
@@ -759,10 +760,10 @@ def big_conti(home, draft_md, n_cuts=450, n_videos=10, frames=40):  # noqa: F811
              "line": f"{i}번째 대사, 이건 생각보다 훨씬 맵네요 🏆", "caption": f"자막 {i} | 맵기 단계",
              "sfx": "후루룩", "guide": "카메라는 고정하고 손만 프레임 안에, 소리는 크게 담기"}
             for s in range(3) for i in range(per)]
-    fm, _ = refstore.read_md(src)
+    fm, _ = refstore.read(doc_key(src))
     script = [{"label": s["label"], "start": k * per, "end": (k + 1) * per, "text": f"섹션 {k} 전체 대사"}
               for k, s in enumerate(fm["script"])]
-    refstore.update_frontmatter(src, {"cuts": cuts, "script": script, "target_sec": per * 3})
+    refstore.update_frontmatter(doc_key(src), {"cuts": cuts, "script": script, "target_sec": per * 3})
     for v in range(n_videos):
         vid = f"a{v:02d}"
         labels = []
@@ -774,7 +775,7 @@ def big_conti(home, draft_md, n_cuts=450, n_videos=10, frames=40):  # noqa: F811
         shots = home / "workspace" / "shots" / f"{vid}.json"
         shots.parent.mkdir(parents=True, exist_ok=True)
         shots.write_text(json.dumps({"labels": labels}), encoding="utf-8")
-    assert refstore.read_md(home / "refs" / f"ref_{CAT}" / "videos" / "a00.md")[0]["role"] == "ref"
+    assert refstore.read(doc_key(home / "refs" / f"ref_{CAT}" / "videos" / "a00.md"))[0]["role"] == "ref"
     return src
 
 
@@ -950,7 +951,7 @@ def test_create_preview_has_ref_auto(client, home, draft_md, fakes):
     assert all(w["kind"] != "refs_pick_failed" for w in preview["warnings"])
     status, saved = client.json("POST", "/api/conti/save", {"draft": rel(home, draft_md), "conti": preview["conti"]})
     assert status == 200, saved
-    stored, _ = refstore.read_md(home / saved["path"])
+    stored, _ = refstore.read(doc_key(home / saved["path"]))
     assert stored["cuts"][0]["ref_auto"] == {"frame": frames[1], "match": "content"}
 
 
@@ -986,7 +987,7 @@ def test_refs_pick_route_saves_ref_auto(client, home, draft_md, fakes):
     job = wait_for(client, body["job"]["id"], lambda j: j["status"] == "done")
     assert job["summary"]["picked"] == 4 and job["summary"]["hash"] == conti.content_hash(src)
     assert job["summary"]["path"] == rel(home, src) and not job["items"][0].get("preview")
-    stored, _ = refstore.read_md(src)
+    stored, _ = refstore.read(doc_key(src))
     assert all(c["ref_auto"] == {"frame": frames[1], "match": "content"} for c in stored["cuts"])
     assert conti_history.list_versions(src)[0]["kind"] == "auto"
     after = _view(client, home, src)
@@ -1011,7 +1012,7 @@ def test_refs_pick_route_keeps_picks_when_other_fields_change(client, home, draf
     job = wait_for(client, body["job"]["id"], lambda j: j["status"] == "done")
     assert job["summary"]["picked"] == 3 and job["summary"]["skipped"] == 1
     assert [w["kind"] for w in job["summary"]["warnings"]] == ["refs_pick_skipped"]
-    stored, _ = refstore.read_md(src)
+    stored, _ = refstore.read(doc_key(src))
     assert stored["cuts"][0]["sfx"] == "밖에서 고침" and stored["cuts"][0]["ref_auto"]["frame"] == frames[1]
     assert "ref_auto" not in stored["cuts"][1] and stored["cuts"][1]["action"] == "밖에서 바꾼 동작"
 
@@ -1034,7 +1035,7 @@ def test_refs_pick_route_saves_earlier_batches_when_a_later_one_fails(client, ho
     assert job["summary"]["picked"] == 2
     [warning] = job["summary"]["warnings"]
     assert warning["kind"] == "refs_pick_partial" and "Claude 응답이 없습니다" in warning["message"]
-    stored, _ = refstore.read_md(src)
+    stored, _ = refstore.read(doc_key(src))
     assert [bool(c.get("ref_auto")) for c in stored["cuts"]] == [True, True, False, False]
 
 
@@ -1282,7 +1283,7 @@ def test_art_job_draws_and_finishes(client, home, draft_md, fakes):
     assert summary["path"] == rel(home, src) and summary["drawn"] == 4 and summary["failed"] == 0
     assert summary["skipped"] == 0 and summary["warnings"] == [] and summary["remaining"] == 0
     assert summary["hash"] == conti.content_hash(src)
-    stored, _ = refstore.read_md(src)
+    stored, _ = refstore.read(doc_key(src))
     assert all(c["art"]["file"] for c in stored["cuts"])
 
 

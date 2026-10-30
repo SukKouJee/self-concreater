@@ -24,7 +24,7 @@ from typing import Any
 import yaml
 
 from scripts import ctx, keys
-from scripts.common import TEMPLATES_DIR, ArgParser, ScriptError, run, work_root
+from scripts.common import TEMPLATES_DIR, ArgParser, ScriptError, run
 
 INDEX_LOCK = threading.RLock()        # index.md 읽기-고치기-쓰기를 한 번에 하나씩 (프로세스 안)
 PROTECTED_SECTIONS = {"## 내 메모"}
@@ -125,31 +125,15 @@ def parse_md(raw: bytes, path: Path | str) -> tuple[dict, str]:
         raise ScriptError(e.code, f"{path}: {e.message}") from e
 
 
+def _doc_key(key: Any) -> str:
+    if not isinstance(key, str):
+        raise TypeError(f"문서 키(str)만 받습니다: {key!r}")
+    return key
+
+
 def read(key: str) -> tuple[dict, str]:
     """문서 키 → (프런트매터, 본문). 없으면 FileNotFoundError, 파싱 오류는 `<label>: ...` ScriptError."""
-    return ctx.here().store.read(key).parsed
-
-
-def _key_of(target: str | Path) -> str | None:
-    """과도기 래퍼용: 문서 키(상대 str)나 작업 폴더 안 md 경로 → 키. `str` 인자는 작업 폴더 기준 키이지 cwd 기준 경로가 아니다(`Path`만 경로로 본다). 작업 폴더 밖이거나 md가 아니면 None(Path 그대로 읽는다).
-    상대 Path는 지금처럼 현재 폴더 기준이다. 탈출 검사는 `scratch.key_of`의 resolve 기준(`..`·심볼릭 링크 포함)."""
-    if isinstance(target, str) and not Path(target).is_absolute():
-        return target
-    path = Path(target)
-    try:
-        key = ctx.here().scratch.key_of(path if path.is_absolute() else Path.cwd() / path)
-    except ScriptError:
-        return None
-    return key if keys.is_doc(key) else None
-
-
-def read_md(target: str | Path) -> tuple[dict, str]:
-    """과도기: 키(str) 또는 Path. Path가 작업 폴더 안 md면 저장소로, 아니면 그 경로를 그대로 읽는다."""
-    key = _key_of(target)
-    if key is not None:
-        return read(key)
-    path = Path(target)
-    return parse_md(path.read_bytes(), path)
+    return ctx.here().store.read(_doc_key(key)).parsed
 
 
 def _updated(raw: bytes, updates: dict[str, Any], remove: Iterable[str]) -> tuple[dict, bytes]:
@@ -162,20 +146,13 @@ def _updated(raw: bytes, updates: dict[str, Any], remove: Iterable[str]) -> tupl
     return fm, join_frontmatter(fm, body, nl).encode("utf-8")
 
 
-def update_frontmatter(target: str | Path, updates: dict[str, Any], remove: Iterable[str] = (), *,
+def update_frontmatter(key: str, updates: dict[str, Any], remove: Iterable[str] = (), *,
                        expect_version: str | None = None) -> dict:
-    """`updates`를 적용한 뒤 `remove`의 키를 지운다(없는 키는 무시). 본문은 그대로 둔다.
-    `target`은 문서 키(str) 또는 Path(과도기: 작업 폴더 밖이면 그 경로를 그대로 고친다).
-    `expect_version`(문서 키에만): 쓰는 순간 바이트의 sha256이 다르면 `VersionConflict`."""
-    key = _key_of(target)
-    if key is not None:
-        store = ctx.here().store
-        fm, data = _updated(store.read(key).raw, updates, remove)
-        store.write(key, data, expect_version=expect_version)
-        return fm
-    path = Path(target)
-    fm, data = _updated(path.read_bytes(), updates, remove)
-    write_atomic(path, data)
+    """문서 키의 프런트매터에 `updates`를 적용한 뒤 `remove`의 키를 지운다(없는 키는 무시). 본문은 그대로 둔다.
+    `expect_version`: 쓰는 순간 바이트의 sha256이 다르면 `VersionConflict`."""
+    store = ctx.here().store
+    fm, data = _updated(store.read(_doc_key(key)).raw, updates, remove)
+    store.write(key, data, expect_version=expect_version)
     return fm
 
 
@@ -287,11 +264,6 @@ def require_category(category: str) -> str:
     if not ctx.here().store.folder_exists(prefix):
         raise ScriptError("category_not_found", f"카테고리가 없습니다: {category} (먼저 init)")
     return prefix
-
-
-def existing_category_dir(category: str) -> Path:
-    """과도기(Task 15에서 삭제): 아직 Path를 쓰는 호출부용."""
-    return work_root() / require_category(category)
 
 
 def _role_counts(prefix: str) -> tuple[int, int]:

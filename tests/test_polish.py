@@ -10,6 +10,7 @@ from scripts.common import ScriptError
 from scripts.videomd import HOOK_TYPES
 from tests.test_conti import CONTI, conti_file, draft_md, home  # noqa: F401 - fixtures
 from tests.typify_fixtures import CAT
+from tests.helpers.paths import doc_key
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -281,7 +282,7 @@ def test_apply_without_hook_section(home):
     result = polish.apply(draft_file.relative_to(home).as_posix(), choice(), ctx["hash"])
     assert "title" in result["changed"] and "hook" not in result["changed"]
     assert any("훅" in w for w in result["warnings"])
-    assert conti.refstore.read_md(draft_file)[0]["title"] == "컵라면 4단계 전부 먹어 봤다"
+    assert conti.refstore.read(doc_key(draft_file))[0]["title"] == "컵라면 4단계 전부 먹어 봤다"
 
 
 def test_apply_stale_hash(draft_md, home):
@@ -365,8 +366,11 @@ def test_draft_path_rule_lives_in_conti(home):
     assert api_conti._safe_key is conti.safe_draft_key and api_conti.CONTI_SUFFIX == conti.CONTI_SUFFIX == "-conti"
     for bad, flag in (("profile.md", None), ("drafts/a-conti.md", False), ("drafts/a.md", True)):
         with pytest.raises(ScriptError) as e:
-            conti.safe_draft_path(bad, conti_file=flag)
+            conti.safe_draft_key(bad, conti_file=flag)
         assert e.value.code == "bad_path"
+    with pytest.raises(ScriptError) as e:
+        polish.context("drafts/a-conti.md")                      # 다듬기도 같은 규칙(기획안만)
+    assert e.value.code == "bad_path"
     assert "scripts.ui" not in (ROOT / "scripts/polish.py").read_text("utf-8")
 
 
@@ -378,7 +382,7 @@ def test_apply_syncs_hook_type(draft_md, home):
     rel = draft_md.relative_to(home).as_posix()
     assert overview(draft_md) == "- 훅: question · 서사: list"
     result = polish.apply(rel, choice(hook_type="shock_line"), sha(draft_md))
-    fm = conti.refstore.read_md(draft_md)[0]
+    fm = conti.refstore.read(doc_key(draft_md))[0]
     assert fm["hook_type"] == "shock_line" and overview(draft_md) == "- 훅: shock_line · 서사: list"
     assert "hook" in result["changed"]
     assert "이전 훅 유형: question" in body_of(draft_md)
@@ -394,23 +398,23 @@ def test_apply_hook_type_never_touches_memo(draft_md, home):
     polish.apply(rel, choice(hook_type="shock_line"), sha(draft_md))
     body = body_of(draft_md)
     assert "- 훅: 내가 적어 둔 메모" in body
-    assert conti.refstore.read_md(draft_md)[0]["hook_type"] == "shock_line"
+    assert conti.refstore.read(doc_key(draft_md))[0]["hook_type"] == "shock_line"
 
 
 def test_apply_hook_type_defaults_to_formula(draft_md, home):
     rel = draft_md.relative_to(home).as_posix()
     polish.apply(rel, choice(hook_formula="the-teardown"), sha(draft_md))          # situation
-    assert conti.refstore.read_md(draft_md)[0]["hook_type"] == "situation"
+    assert conti.refstore.read(doc_key(draft_md))[0]["hook_type"] == "situation"
     assert overview(draft_md).startswith("- 훅: situation")
 
 
 def test_apply_keeps_hook_type_without_formula_or_hook_change(draft_md, home):
     rel = draft_md.relative_to(home).as_posix()
     polish.apply(rel, choice(hook_formula=None), sha(draft_md))
-    assert conti.refstore.read_md(draft_md)[0]["hook_type"] == "question"
+    assert conti.refstore.read(doc_key(draft_md))[0]["hook_type"] == "question"
     same = conti.parse_draft(draft_md)["sections"][0]["script"]
     polish.apply(rel, choice(hook_script=same, hook_type="shock_line"), sha(draft_md))     # 훅이 그대로면 유형도 그대로
-    assert conti.refstore.read_md(draft_md)[0]["hook_type"] == "question"
+    assert conti.refstore.read(doc_key(draft_md))[0]["hook_type"] == "question"
     with pytest.raises(ScriptError) as e:
         polish.apply(rel, choice(hook_type="nope"), sha(draft_md))
     assert e.value.code == "invalid_polish"
@@ -543,7 +547,7 @@ def test_relint_scores_edits_without_claude(draft_md, home):
     assert out["thumbnail"]["overlap"] == ["라면"]
     assert set(polish.relint(rel, title="제목 3개")) == {"title"}
     # 고친 제목의 레퍼런스 근거도 다시 계산한다(패턴이 바뀌면 근거 문장도 바뀐다)
-    stats = polish.ref_stats(conti.refstore.read_md(draft_md)[0].get("category"))
+    stats = polish.ref_stats(conti.refstore.read(doc_key(draft_md))[0].get("category"))
     for t in ("라면 5봉지 먹방!", "라면 먹방"):
         assert polish.relint(rel, title=t)["title"]["evidence"] == polish.evidence_title(t, stats)
     assert set(polish.relint(rel, thumb_words=["가"])) == {"thumbnail"}

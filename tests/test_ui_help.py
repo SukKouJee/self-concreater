@@ -12,6 +12,7 @@ from scripts.ui.api_help import HELP_DIR, MENU
 from scripts.ui.server import STATIC_DIR
 from tests.test_ui_add import wait_for
 from tests.test_ui_server import Client, _start, _stop, no_browser  # noqa: F401 - fixture
+from tests.helpers.paths import doc_key
 
 CAT = "mukbang"
 VIDEO = """---
@@ -300,7 +301,7 @@ def _typified(home, n_a=8, n_b=3, run=True, typified_at=False, **json_over):
             path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     if typified_at:
         index = home / "refs" / f"ref_{CAT}" / "index.md"
-        fm, body = refstore.read_md(index)
+        fm, body = refstore.read(doc_key(index))
         fm["typified_at"] = "2026-10-20T10:00:00"
         index.write_bytes(refstore.join_frontmatter(fm, body).encode("utf-8"))
 

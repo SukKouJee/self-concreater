@@ -36,8 +36,8 @@ def test_category_keys_match_module_paths(home: Path) -> None:
     assert keys.category("travel") == rel(common.category_dir("travel")) + "/"
     assert keys.video_md("travel", VID) == videomd.video_md_key(VID, "travel")
     assert keys.video_md("travel", "-C8U1fizcms") == videomd.video_md_key("-C8U1fizcms", "travel")
-    assert keys.index_md("travel") == rel(refstore.existing_category_dir("travel") / "index.md")
-    assert keys.techniques_md("travel") == rel(refstore.existing_category_dir("travel") / "techniques.md")
+    assert keys.index_md("travel") == rel(common.category_dir("travel") / "index.md")
+    assert keys.techniques_md("travel") == rel(common.category_dir("travel") / "techniques.md")
     assert keys.REFS == "refs/"
     assert keys.category_name(keys.category("travel")) == "travel"
 

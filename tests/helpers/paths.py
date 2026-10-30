@@ -6,8 +6,24 @@ from pathlib import Path
 from scripts import ctx, footage
 
 
-def footage_base(fid: str) -> Path:
-    """처리 캐시 폴더 `<작업 폴더>/workspace/footage/<fid>`(지금 문맥의 작업 폴더 기준)."""
+def _root() -> Path:
     root = ctx.here().root
     assert root is not None
-    return root / footage.footage_key(fid)
+    return root
+
+
+def footage_base(fid: str) -> Path:
+    """처리 캐시 폴더 `<작업 폴더>/workspace/footage/<fid>`(지금 문맥의 작업 폴더 기준)."""
+    return _root() / footage.footage_key(fid)
+
+
+def work_path(key: str) -> Path:
+    """키 → 지금 문맥의 작업 폴더 안 실제 경로(테스트가 파일을 직접 볼 때)."""
+    return _root() / key
+
+
+def doc_key(target: str | Path) -> str:
+    """테스트가 만든 작업 폴더 안 파일 경로 → 문서 키. 상대 `str`은 이미 키로 보고 그대로 돌려준다."""
+    if isinstance(target, str) and not Path(target).is_absolute():
+        return target
+    return Path(target).relative_to(_root()).as_posix()

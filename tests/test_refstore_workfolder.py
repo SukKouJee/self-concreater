@@ -1,14 +1,16 @@
-"""refstore의 작업 폴더 동작(scaffold·init·count·update-stage·find_video·list_categories·Path 입력)을 바이트까지 고정한다.
+"""refstore의 작업 폴더 동작(scaffold·init·count·update-stage·find_video·list_categories·문서 키 읽기/쓰기)을 바이트까지 고정한다.
 
 S3 단계 3(키 기반 이전) 전후로 같은 테스트가 통과해야 한다: 픽스처 작업 폴더를 복사해 쓰고, 반환 JSON과 파일 트리 해시를 비교한다.
 """
 import datetime
+import hashlib
 import os
 
 import pytest
 
 from scripts import refstore
 from scripts.common import ScriptError
+from scripts.stores import VersionConflict
 from tests.helpers import tree_snapshot as snap
 
 
@@ -221,95 +223,15 @@ def test_scaffold_counts_git_file_as_git(home):
     assert refstore.scaffold()["git"] is True
 
 
-# --- read_md / update_frontmatter (Path 입력) ----------------------------------------
+# --- read / update_frontmatter (문서 키만) -----------------------------------------
 
-def test_read_md_path_in_root(work):
-    fm, body = refstore.read_md(work / "refs/ref_travel/videos/Q8PSsikq8PA.md")
-    assert fm["role"] == "ref" and body
+VIDEO_KEY = "refs/ref_travel/videos/Q8PSsikq8PA.md"
 
-
-def test_read_md_missing_file_raises_file_not_found(work):
-    with pytest.raises(FileNotFoundError):
-        refstore.read_md(work / "refs/ref_travel/videos/none.md")
-
-
-def test_read_md_bad_frontmatter_message_uses_path(work):
-    bad = work / "mine/bad.md"
-    bad.write_bytes(b"---\n: [\n---\nx\n")
-    with pytest.raises(ScriptError) as exc:
-        refstore.read_md(bad)
-    assert exc.value.code == "bad_frontmatter" and exc.value.message.startswith(f"{bad}: ")
-
-
-def test_read_md_outside_root_reads_plain_path(work, tmp_path):
-    outside = tmp_path / "elsewhere.md"
-    outside.write_bytes("---\nid: out\n---\n본문\n".encode())
-    assert refstore.read_md(outside) == ({"id": "out"}, "본문\n")
-
-
-def test_read_md_outside_root_error_label_is_the_path(work, tmp_path):
-    outside = tmp_path / "elsewhere.md"
-    outside.write_bytes(b"plain\n")
-    with pytest.raises(ScriptError) as exc:
-        refstore.read_md(outside)
-    assert exc.value.message.startswith(f"{outside}: ")
-
-
-def test_read_md_non_md_path_still_works(work):
-    odd = work / "workspace/tmp/note.txt"
-    odd.parent.mkdir(parents=True, exist_ok=True)
-    odd.write_bytes(b"---\na: 1\n---\nx\n")
-    assert refstore.read_md(odd) == ({"a": 1}, "x\n")
-
-
-def test_update_frontmatter_in_root_keeps_body_bytes_and_crlf(home):
-    path = home / "mine/m.md"
-    path.parent.mkdir(parents=True)
-    body = "## 내 메모\r\n그대로 🏆\r\n"
-    path.write_bytes(b"\xef\xbb\xbf" + f"---\r\nid: m\r\nold: 1\r\n---\r\n{body}".encode())
-
-    fm = refstore.update_frontmatter(path, {"new": [1, 2]}, remove=["old", "absent"])
-
-    assert fm == {"id": "m", "new": [1, 2]}
-    assert path.read_bytes() == f"---\r\nid: m\r\nnew: [1, 2]\r\n---\r\n{body}".encode()
-
-
-def test_update_frontmatter_outside_root_edits_plain_path(work, tmp_path):
-    outside = tmp_path / "o.md"
-    outside.write_bytes(b"---\nid: o\n---\nbody\n")
-    assert refstore.update_frontmatter(outside, {"k": "v"}) == {"id": "o", "k": "v"}
-    assert outside.read_bytes() == b"---\nid: o\nk: v\n---\nbody\n"
-
-
-def test_update_frontmatter_missing_file_raises(work):
-    with pytest.raises(FileNotFoundError):
-        refstore.update_frontmatter(work / "mine/none.md", {"a": 1})
-
-
-def test_update_frontmatter_leaves_no_temp_files(work):
-    before = set(os.listdir(work / "mine"))
-    refstore.update_frontmatter(work / "mine/my-jeju-vlog.md", {"zz": 1})
-    assert set(os.listdir(work / "mine")) == before
-
-
-def test_update_frontmatter_changes_only_that_file(work):
-    target = work / "mine/my-jeju-vlog.md"
-    before = snap.tree(work)
-    refstore.update_frontmatter(target, {"zz": 1})
-    ch = snap.changes(before, snap.tree(work))
-    assert ch == {"added": [], "removed": [], "modified": ["mine/my-jeju-vlog.md"]}
-    assert "zz: 1" in target.read_text("utf-8")
-
-
-def test_main_categories_json(work):
-    assert refstore.main(["categories"])["categories"][0]["category"] == "food"
-
-
-# --- 키 기반 API (S3 단계 3) -------------------------------------------------------
 
 def test_read_by_key(work):
-    fm, body = refstore.read("refs/ref_travel/videos/Q8PSsikq8PA.md")
-    assert (fm, body) == refstore.read_md(work / "refs/ref_travel/videos/Q8PSsikq8PA.md")
+    fm, body = refstore.read(VIDEO_KEY)
+    assert fm["role"] == "ref" and body
+    assert (fm, body) == refstore.parse_md((work / VIDEO_KEY).read_bytes(), work / VIDEO_KEY)
 
 
 def test_read_by_key_missing_and_bad(work):
@@ -320,20 +242,87 @@ def test_read_by_key_missing_and_bad(work):
     assert exc.value.code == "bad_path"
 
 
-def test_update_frontmatter_by_key_matches_path_form(work, tmp_path):
-    key = "mine/my-jeju-vlog.md"
-    other = snap.copy_workfolder(tmp_path / "other")
+def test_read_bad_frontmatter_message_uses_path(work):
+    bad = work / "mine/bad.md"
+    bad.write_bytes(b"---\n: [\n---\nx\n")
+    with pytest.raises(ScriptError) as exc:
+        refstore.read("mine/bad.md")
+    assert exc.value.code == "bad_frontmatter" and exc.value.message.startswith(f"{bad}: ")
+
+
+@pytest.mark.parametrize("key", ["refs/../profile.md", "../outside.md", "C:/x.md", "/abs.md", "mine\\m.md"])
+def test_read_and_update_reject_keys_leaving_the_work_folder(work, key):
     before = snap.tree(work)
+    with pytest.raises(ScriptError) as exc:
+        refstore.read(key)
+    assert exc.value.code == "bad_path"
+    with pytest.raises(ScriptError) as exc:
+        refstore.update_frontmatter(key, {"k": 1})
+    assert exc.value.code == "bad_path"
+    assert snap.tree(work) == before
 
-    refstore.update_frontmatter(key, {"zz": 1})
-    refstore.update_frontmatter(other / key, {"zz": 1})
 
-    assert snap.tree(work)[key] == snap.tree(other)[key]
-    assert snap.changes(before, snap.tree(work)) == {"added": [], "removed": [], "modified": [key]}
+def test_read_and_update_take_keys_not_paths(work):
+    """과도기 Path 래퍼(read_md, Path를 받는 update_frontmatter, existing_category_dir)는 없어졌다."""
+    before = snap.tree(work)
+    with pytest.raises(TypeError):
+        refstore.read(work / VIDEO_KEY)
+    with pytest.raises(TypeError):
+        refstore.update_frontmatter(work / VIDEO_KEY, {"k": 1})
+    assert snap.tree(work) == before
+    for name in ("read_md", "_key_of", "existing_category_dir"):
+        assert not hasattr(refstore, name), name
 
 
-def test_read_md_accepts_key_string(work):
-    assert refstore.read_md("profile.md") == refstore.read_md(work / "profile.md")
+def test_read_non_md_key_is_a_program_error(work):
+    with pytest.raises(ValueError):
+        refstore.read("workspace/typify/travel.json")
+
+
+def test_update_frontmatter_keeps_body_bytes_and_crlf(home):
+    path = home / "mine/m.md"
+    path.parent.mkdir(parents=True)
+    body = "## 내 메모\r\n그대로 🏆\r\n"
+    path.write_bytes(b"\xef\xbb\xbf" + f"---\r\nid: m\r\nold: 1\r\n---\r\n{body}".encode())
+
+    fm = refstore.update_frontmatter("mine/m.md", {"new": [1, 2]}, remove=["old", "absent"])
+
+    assert fm == {"id": "m", "new": [1, 2]}
+    assert path.read_bytes() == f"---\r\nid: m\r\nnew: [1, 2]\r\n---\r\n{body}".encode()
+
+
+def test_update_frontmatter_missing_file_raises(work):
+    with pytest.raises(FileNotFoundError):
+        refstore.update_frontmatter("mine/none.md", {"a": 1})
+
+
+def test_update_frontmatter_leaves_no_temp_files(work):
+    before = set(os.listdir(work / "mine"))
+    refstore.update_frontmatter("mine/my-jeju-vlog.md", {"zz": 1})
+    assert set(os.listdir(work / "mine")) == before
+
+
+def test_update_frontmatter_changes_only_that_file(work):
+    before = snap.tree(work)
+    refstore.update_frontmatter("mine/my-jeju-vlog.md", {"zz": 1})
+    ch = snap.changes(before, snap.tree(work))
+    assert ch == {"added": [], "removed": [], "modified": ["mine/my-jeju-vlog.md"]}
+    assert "zz: 1" in (work / "mine/my-jeju-vlog.md").read_text("utf-8")
+
+
+def test_update_frontmatter_expect_version(work):
+    path = work / "mine/my-jeju-vlog.md"
+    before = path.read_bytes()
+    with pytest.raises(VersionConflict):
+        refstore.update_frontmatter("mine/my-jeju-vlog.md", {"zz": 1}, expect_version="0" * 64)
+    assert path.read_bytes() == before
+    refstore.update_frontmatter("mine/my-jeju-vlog.md", {"zz": 1},
+                                expect_version=hashlib.sha256(before).hexdigest())
+    assert b"zz: 1" in path.read_bytes()
+
+
+def test_main_categories_json(work):
+    assert refstore.main(["categories"])["categories"][0]["category"] == "food"
 
 
 def test_require_category(work):
@@ -344,31 +333,6 @@ def test_require_category(work):
     with pytest.raises(ScriptError) as exc:
         refstore.require_category("../x")
     assert exc.value.code == "invalid_category"
-
-
-def test_existing_category_dir_still_returns_path(work):
-    assert refstore.existing_category_dir("travel") == work / "refs" / "ref_travel"
-
-
-def test_dotdot_path_that_leaves_root_is_read_as_plain_path(work, tmp_path):
-    outside = tmp_path / "secret.md"
-    outside.write_bytes(b"---\nid: s\n---\nx\n")
-    sneaky = work / "mine" / ".." / ".." / "secret.md"
-    assert refstore.read_md(sneaky)[0] == {"id": "s"}
-    refstore.update_frontmatter(sneaky, {"k": 1})
-    assert outside.read_bytes() == b"---\nid: s\nk: 1\n---\nx\n"
-    assert not (work / "workspace/tmp").exists()
-
-
-def test_symlink_inside_root_pointing_outside_is_plain_path(work, tmp_path):
-    outside = tmp_path / "target.md"
-    outside.write_bytes(b"---\nid: t\n---\nx\n")
-    link = work / "mine" / "link.md"
-    try:
-        link.symlink_to(outside)
-    except OSError:
-        pytest.skip("symlink를 만들 수 없는 환경")
-    assert refstore.read_md(link)[0] == {"id": "t"}
 
 
 def test_follows_ctx_when_environment_changes(monkeypatch, tmp_path):

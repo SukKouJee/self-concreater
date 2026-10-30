@@ -16,7 +16,7 @@ from tests.test_conti import conti_file, draft_md, home  # noqa: F401 - fixtures
 from tests.test_footage_match import FakeLLM, answer, m
 from tests.test_ui_add import wait_for
 from tests.test_ui_server import Client, _start, _stop, no_browser  # noqa: F401 - fixture
-from tests.helpers.paths import footage_base
+from tests.helpers.paths import footage_base, work_path
 
 VIDEO_BYTES = bytes(range(256)) * 40          # 10240 bytes
 
@@ -350,7 +350,7 @@ def test_collect_rejected_while_footage_runs(client, rel, tmp_path, fake_process
     proc.gate = threading.Event()
     fake_llm(lambda payload, files: answer())
     job = client.json("POST", "/api/footage/process", {"path": rel})[1]["job"]
-    cat = conti._load_conti(conti.safe_draft_path(rel))["category"]
+    cat = conti._load_conti(conti.safe_draft_key(rel))["category"]
     status, body = client.json("POST", "/api/add", {"category": cat, "links": ["https://youtu.be/abcdefghijk"]})
     assert status == 400 and body["error"] == "busy"
     assert body["message"] == "촬영 영상 처리가 끝난 뒤 시작해 주세요"
@@ -727,7 +727,7 @@ def test_footage_refused_while_collect_has_work(client, rel, tmp_path, fake_proc
 
 
 def saved_path(rel):
-    return conti.safe_draft_path(rel)
+    return work_path(conti.safe_draft_key(rel))
 
 
 # --- 결과물: 남은 컷 HTML, CSV, 컷 파일(작업 footage_clips) -----------------------------------------

@@ -11,6 +11,7 @@ from tests.test_mission import PROFILE
 from tests.test_ui_add import wait_for
 from tests.test_ui_server import Client, _start, _stop, no_browser  # noqa: F401 - fixture
 from tests.typify_fixtures import CAT, standard_set
+from tests.helpers.paths import doc_key
 
 WEEK = "2026-W43"                                     # 2026-10-19(월) ~ 10-25(일)
 GOOD = {"summary": "촬영 미션은 꾸준했다.", "repeated_weakness": ["손이 화면 밖으로 나감"],
@@ -312,10 +313,10 @@ def test_apply_only_checked_sections_and_records_approved(client, home):
     sections = out["profile"]["sections"]
     assert sections["약점"] == "- 프레이밍(손 위치)" and sections["성장 단계"] == "관찰" and sections["강점"] == ""
     assert sections["관심 주제"] == "- 자취 요리"
-    fm, body = refstore.read_md(path)
+    fm, body = refstore.read(doc_key(path))
     assert fm["approved"] == ["약점"] and body.rstrip().endswith("메모")
     _ok(client, "POST", "/api/review/apply", {"week": WEEK, "sections": {"성장 단계": "모방", "약점": "- 다시"}})
-    assert refstore.read_md(path)[0]["approved"] == ["약점", "성장 단계"]
+    assert refstore.read(doc_key(path))[0]["approved"] == ["약점", "성장 단계"]
     assert not _tmp(home, "profile_*")
 
 
@@ -323,7 +324,7 @@ def test_apply_keeps_profile_memo_and_other_sections(client, home):
     text = LF_PROFILE.rstrip("\n") + "\n\n## 내 메모\n건드리지 마\n"
     (home / "profile.md").write_bytes(text.encode("utf-8"))
     _ok(client, "POST", "/api/review/apply", {"week": WEEK, "sections": {"성장 단계": "모방"}})
-    body = refstore.read_md(home / "profile.md")[1]
+    body = refstore.read(doc_key(home / "profile.md"))[1]
     assert "## 성장 단계\n모방" in body and "- 자취 요리" in body and body.endswith("## 내 메모\n건드리지 마\n")
 
 

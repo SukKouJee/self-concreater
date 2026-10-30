@@ -8,6 +8,7 @@ from scripts import refstore
 from tests.test_conti import home, make_frames  # noqa: F401 - fixtures
 from tests.test_ui_server import Client, _start, _stop, no_browser  # noqa: F401 - fixture
 from tests.typify_fixtures import CAT, write_video
+from tests.helpers.paths import doc_key
 
 
 @pytest.fixture
@@ -79,7 +80,7 @@ def test_detail_body_frames_and_md_path(client, home):  # noqa: F811
 
 def test_detail_body_keeps_html_as_text(client, home):  # noqa: F811
     path = video_path(home, "a00")
-    fm, _ = refstore.read_md(path)
+    fm, _ = refstore.read(doc_key(path))
     path.write_bytes(refstore.join_frontmatter(fm, "intro\n\n## 내 메모\n<script>x</script>\n").encode("utf-8"))
     d = get(client, "/api/refs/a00?category=mukbang")
     assert d["body"][0] == {"heading": "", "text": "intro"}
@@ -101,7 +102,7 @@ def test_detail_requires_category(client, home):  # noqa: F811
 
 @pytest.mark.parametrize("url", ["javascript:alert(1)", "http://evil.example/", None, 5])
 def test_detail_url_only_youtube_https(client, home, url):  # noqa: F811
-    refstore.update_frontmatter(video_path(home, "a00"), {"url": url})
+    refstore.update_frontmatter(doc_key(video_path(home, "a00")), {"url": url})
     assert get(client, "/api/refs/a00?category=mukbang")["video"]["url"] is None
 
 
@@ -132,7 +133,7 @@ def test_non_dict_scenes_means_no_frames(client, home):  # noqa: F811
 
 def test_bad_section_value_skips_in_list_and_400_in_detail(client, home):  # noqa: F811
     path = video_path(home, "a00")
-    fm, body = refstore.read_md(path)
+    fm, body = refstore.read(doc_key(path))
     fm["sections"][0]["start"] = "abc"
     path.write_bytes(refstore.join_frontmatter(fm, body).encode("utf-8"))
     data = get(client, "/api/refs?category=mukbang")
@@ -141,7 +142,7 @@ def test_bad_section_value_skips_in_list_and_400_in_detail(client, home):  # noq
 
 
 def test_non_dict_pacing_and_camera_become_none(client, home):  # noqa: F811
-    refstore.update_frontmatter(video_path(home, "a00"), {"pacing": 3, "camera": "x"})
+    refstore.update_frontmatter(doc_key(video_path(home, "a00")), {"pacing": 3, "camera": "x"})
     v = get(client, "/api/refs/a00?category=mukbang")["video"]
     assert v["pacing"] is None and v["camera"] is None
 
@@ -167,7 +168,7 @@ def test_nan_section_start_skips_video_and_response_is_strict_json(client, home)
 
 
 def test_non_finite_duration_pacing_camera_are_strict_json(client, home):  # noqa: F811
-    refstore.update_frontmatter(video_path(home, "a00"), {
+    refstore.update_frontmatter(doc_key(video_path(home, "a00")), {
         "duration_sec": float("inf"), "pacing": {"avg_cut_sec": float("nan"), "by_section": {"hook": 1.0}},
         "camera": {"static": float("inf"), "pan": 0.1}})
     data = _strict_get(client, "/api/refs?category=mukbang")
@@ -180,7 +181,7 @@ def test_non_finite_duration_pacing_camera_are_strict_json(client, home):  # noq
 def test_huge_int_values_do_not_break_list(client, home):  # noqa: F811
     path = video_path(home, "a00")
     path.write_text(path.read_text(encoding="utf-8").replace("start: 3.0", "start: " + "9" * 400, 1), encoding="utf-8")
-    refstore.update_frontmatter(video_path(home, "a01"), {"duration_sec": 10 ** 400})
+    refstore.update_frontmatter(doc_key(video_path(home, "a01")), {"duration_sec": 10 ** 400})
     data = _strict_get(client, "/api/refs?category=mukbang")
     vids = {v["id"]: v for v in data["videos"]}
     assert "a00" not in vids and data["skipped"] == 1
@@ -200,8 +201,8 @@ def test_non_finite_scene_times_are_skipped(client, home):  # noqa: F811
 
 def test_yaml_date_and_int_titles_become_strings(client, home):  # noqa: F811
     import datetime
-    refstore.update_frontmatter(video_path(home, "a00"), {"title": datetime.date(2024, 5, 1)})
-    refstore.update_frontmatter(video_path(home, "a01"), {"title": 1984, "channel": 7})
+    refstore.update_frontmatter(doc_key(video_path(home, "a00")), {"title": datetime.date(2024, 5, 1)})
+    refstore.update_frontmatter(doc_key(video_path(home, "a01")), {"title": 1984, "channel": 7})
     vids = {v["id"]: v for v in get(client, "/api/refs?category=mukbang")["videos"]}
     assert vids["a00"]["title"] == "2024-05-01"
     assert vids["a01"]["title"] == "1984" and vids["a01"]["channel"] == "7"
@@ -215,7 +216,7 @@ def test_detail_non_utf8_md_is_bad_md(client, home):  # noqa: F811
 
 def test_bad_md_message_has_no_raw_exception_text(client, home):  # noqa: F811
     path = video_path(home, "a00")
-    fm, body = refstore.read_md(path)
+    fm, body = refstore.read(doc_key(path))
     fm["sections"][0]["start"] = "abc"
     path.write_bytes(refstore.join_frontmatter(fm, body).encode("utf-8"))
     d = get(client, "/api/refs/a00?category=mukbang", status=400)
@@ -302,13 +303,13 @@ def test_post_labels_returns_null_video_when_summary_fails(client, home, monkeyp
 
 
 def test_list_carries_avg_cut_and_camera_shares(client, home):  # noqa: F811
-    refstore.update_frontmatter(video_path(home, "a00"), {
+    refstore.update_frontmatter(doc_key(video_path(home, "a00")), {
         "pacing": {"avg_cut_sec": 2.38, "by_section": {"hook": 2.7}},
         "camera": {"static": 0.88, "pan": 0.12, "zoom": 0.0}})
-    refstore.update_frontmatter(video_path(home, "a01"), {
+    refstore.update_frontmatter(doc_key(video_path(home, "a01")), {
         "pacing": {"avg_cut_sec": "fast"}, "camera": {"static": 1.5, "pan": float("nan"), "tilt": 0.3, "zoom": True}})
-    refstore.update_frontmatter(video_path(home, "a02"), {"pacing": None, "camera": "static"})
-    refstore.update_frontmatter(video_path(home, "a03"), {"pacing": {"avg_cut_sec": 10 ** 30}})
+    refstore.update_frontmatter(doc_key(video_path(home, "a02")), {"pacing": None, "camera": "static"})
+    refstore.update_frontmatter(doc_key(video_path(home, "a03")), {"pacing": {"avg_cut_sec": 10 ** 30}})
     data = _strict_get(client, "/api/refs?category=mukbang")
     vids = {v["id"]: v for v in data["videos"]}
     assert vids["a00"]["avg_cut_sec"] == 2.38
@@ -335,7 +336,7 @@ def test_trash_video_moves_md_and_data_keeping_layout(client, home):  # noqa: F8
     other = _data(home, "a01")
     md = video_path(home, "a00")
     tech = home / "refs" / f"ref_{CAT}" / "techniques.md"
-    fm, body = refstore.read_md(tech)
+    fm, body = refstore.read(doc_key(tech))
     tech.write_bytes(refstore.join_frontmatter(fm, body + "\n## 훅\n- **결과 먼저**: 설명 — [a00](videos/a00.md), [a01](videos/a01.md)\n"
                                                "- **혼자만**: 설명 — [a00](videos/a00.md)\n").encode("utf-8"))
     result = videomd.trash_video("a00", CAT)

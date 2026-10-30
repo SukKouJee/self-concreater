@@ -5,6 +5,7 @@ import pytest
 from scripts import motif, refstore
 from scripts.common import ScriptError
 from tests.typify_fixtures import CAT, standard_set, write_video
+from tests.helpers.paths import doc_key
 
 
 @pytest.fixture
@@ -14,7 +15,7 @@ def home(monkeypatch, tmp_path):
 
 
 def index_body(home):
-    return refstore.read_md(home / "refs" / f"ref_{CAT}" / "index.md")[1]
+    return refstore.read(doc_key(home / "refs" / f"ref_{CAT}" / "index.md"))[1]
 
 
 def cards_file(home, cards, name="cards.json"):
@@ -40,7 +41,7 @@ def write_profile(home):
 
 def write_techniques(home):
     path = home / "refs" / f"ref_{CAT}" / "techniques.md"
-    fm, body = refstore.read_md(path)
+    fm, body = refstore.read(doc_key(path))
     body = body.replace("## 훅\n", "## 훅\n- **결과 선공개**: 완성품 먼저 — [a00](videos/a00.md)\n"
                                    "- **완성품 먼저 보여주기**: 첫 장면에 결과 — [a01](videos/a01.md), [b00](videos/b00.md)\n")
     body = body.replace("## 촬영\n", "## 촬영\n- **탑뷰 손 클로즈업**: 위에서 손만 — [a02](videos/a02.md)\n")
@@ -288,7 +289,7 @@ def test_card_details_tolerates_hand_edits(home):
     standard_set(home, n_a=3, n_b=0)
     motif.add(CAT, cards_file(home, [TECH_CARD]))
     path = home / "refs" / f"ref_{CAT}" / "index.md"
-    fm, body = refstore.read_md(path)
+    fm, body = refstore.read(doc_key(path))
     block = body.split("### M-mukbang-001")[1].split("\n\n## ")[0]
     edited = "\n".join([
         " · 기법 · 첫 1초 완성품 클로즈업",
@@ -305,11 +306,11 @@ def test_card_details_tolerates_hand_edits(home):
 def test_card_details_no_section(home):
     standard_set(home, n_a=3, n_b=0)
     path = home / "refs" / f"ref_{CAT}" / "index.md"
-    fm, body = refstore.read_md(path)
+    fm, body = refstore.read(doc_key(path))
     head, rest = body.split("## 모티브 카드")
     tail = rest.split("\n## ", 1)[1]
     path.write_bytes(refstore.join_frontmatter(fm, head + "## " + tail).encode("utf-8"))
-    assert "## 모티브 카드" not in refstore.read_md(path)[1]
+    assert "## 모티브 카드" not in refstore.read(doc_key(path))[1]
     assert motif.card_details(CAT) == []
 
 

@@ -6,6 +6,7 @@ import pytest
 
 from scripts import fetch, refstore, videomd
 from scripts.common import TEMPLATES_DIR, ScriptError
+from tests.helpers.paths import doc_key
 
 VID = "dQw4w9WgXcQ"
 CAT = "mukbang"
@@ -192,8 +193,9 @@ def test_write_creates_md_matching_template_schema(home):
     assert out["status"] == "written"
     assert out["md"] == f"refs/ref_{CAT}/videos/{VID}.md"
 
-    fm, body = refstore.read_md(md_path(home))
-    template_keys = list(refstore.read_md(TEMPLATES_DIR / "video.md")[0])
+    fm, body = refstore.read(doc_key(md_path(home)))
+    template = TEMPLATES_DIR / "video.md"                     # 플러그인 폴더(작업 폴더 밖)
+    template_keys = list(refstore.parse_md(template.read_bytes(), template)[0])
     assert list(fm) == template_keys
     assert fm["role"] == "ref" and fm["format"] == "shorts" and fm["transcript_source"] == "auto"
     assert fm["sections"] == [
@@ -219,7 +221,7 @@ def test_write_removes_analysis_file_and_updates_stage(home):
     out = videomd.write(VID, CAT, "ref", path)
     assert not path.exists()
     assert out["stage"] == {"ref": 1, "mine": 0, "stage": 1}
-    _, index = refstore.read_md(home / "refs" / f"ref_{CAT}" / "index.md")
+    _, index = refstore.read(doc_key(home / "refs" / f"ref_{CAT}" / "index.md"))
     assert "ref: 1개" in index
 
 
@@ -235,7 +237,7 @@ def test_force_rewrite_keeps_user_memo(home):
     p.write_text(p.read_text("utf-8") + "훅이 좋아서 따라 해 볼 것\n- 다음엔 자막 색도 볼 것\n",
                  encoding="utf-8", newline="")
     videomd.write(VID, CAT, "ref", write_analysis(home, {**ANALYSIS, "summary": "새 요약"}), force=True)
-    _, body = refstore.read_md(p)
+    _, body = refstore.read(doc_key(p))
     assert "새 요약" in body
     assert body.endswith("## 내 메모\n훅이 좋아서 따라 해 볼 것\n- 다음엔 자막 색도 볼 것\n")
 
@@ -267,7 +269,7 @@ def test_write_rejects_role_conflict(home):
 def test_write_without_cuts_leaves_pacing_empty(home):
     (home / "workspace" / "cuts" / f"{VID}.json").unlink()
     videomd.write(VID, CAT, "ref", write_analysis(home))
-    fm, body = refstore.read_md(md_path(home))
+    fm, body = refstore.read(doc_key(md_path(home)))
     assert fm["pacing"] == {"avg_cut_sec": None, "by_section": {}}
     assert fm["camera"] is None
     assert "| 0:00–0:03 | hook | 완성된 라면 클로즈업 | - |" in body
@@ -285,7 +287,7 @@ def test_techniques_are_appended_under_kind_and_merged_by_name(home):
     ]}, name=other))
     assert out["techniques_added"] == 1 and out["techniques_merged"] == 1
 
-    _, body = refstore.read_md(home / "refs" / f"ref_{CAT}" / "techniques.md")
+    _, body = refstore.read(doc_key(home / "refs" / f"ref_{CAT}" / "techniques.md"))
     hook = body.split("## 훅")[1].split("## 전환")[0]
     assert hook.count("**결과 선공개**") == 1
     assert f"[{VID}](videos/{VID}.md), [{other}](videos/{other}.md)" in hook
@@ -300,7 +302,7 @@ def test_rewrite_drops_stale_techniques_of_that_video(home):
     videomd.write(other, CAT, "ref", write_analysis(home, name=other))   # 같은 두 기법에 출처 추가
     videomd.write(VID, CAT, "ref", write_analysis(home, {**ANALYSIS, "techniques": [
         {"kind": "촬영", "name": "탑뷰", "desc": "위에서"}]}), force=True)
-    _, body = refstore.read_md(home / "refs" / f"ref_{CAT}" / "techniques.md")
+    _, body = refstore.read(doc_key(home / "refs" / f"ref_{CAT}" / "techniques.md"))
     hook = body.split("## 훅")[1].split("## 전환")[0]
     assert f"[{VID}]" not in hook                                  # 예전 분석의 출처는 빠지고
     assert f"**결과 선공개**" in hook and f"[{other}]" in hook       # 다른 영상 출처는 남는다
@@ -310,14 +312,14 @@ def test_rewrite_drops_stale_techniques_of_that_video(home):
 def test_stale_technique_line_removed_when_no_sources_left(home):
     videomd.write(VID, CAT, "ref", write_analysis(home))
     videomd.write(VID, CAT, "ref", write_analysis(home, {**ANALYSIS, "techniques": []}), force=True)
-    _, body = refstore.read_md(home / "refs" / f"ref_{CAT}" / "techniques.md")
+    _, body = refstore.read(doc_key(home / "refs" / f"ref_{CAT}" / "techniques.md"))
     assert "결과 선공개" not in body and "구독 요청 반복" not in body
 
 
 def test_rewrite_does_not_duplicate_technique_sources(home):
     videomd.write(VID, CAT, "ref", write_analysis(home))
     videomd.write(VID, CAT, "ref", write_analysis(home), force=True)
-    _, body = refstore.read_md(home / "refs" / f"ref_{CAT}" / "techniques.md")
+    _, body = refstore.read(doc_key(home / "refs" / f"ref_{CAT}" / "techniques.md"))
     assert body.count(f"[{VID}](videos/{VID}.md)") == 2   # 훅 1, 엔딩 1
 
 

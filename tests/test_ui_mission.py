@@ -14,6 +14,7 @@ from scripts.ui import api_mission
 from tests.test_mission import PROFILE
 from tests.test_ui_add import wait_for
 from tests.test_ui_server import Client, _start, _stop, no_browser  # noqa: F401 - fixture
+from tests.helpers.paths import doc_key
 
 DAY = "2026-10-22"                                    # 목요일(그 주 월요일은 10-19)
 GOOD = {"title": "탑뷰 손 클로즈업 15초 찍기", "kind": "촬영", "minutes": 20, "source": "M-mukbang-001",
@@ -274,7 +275,7 @@ def test_save_writes_record_and_returns_today(client, home):
     status, body = _save(client)
     assert status == 200 and body["status"] == "saved" and body["path"] == f"missions/{DAY}.md"
     assert body["today"]["title"] == GOOD["title"] and body["today"]["body"]
-    assert refstore.read_md(home / "missions" / f"{DAY}.md")[0]["status"] == "open"
+    assert refstore.read(doc_key(home / "missions" / f"{DAY}.md"))[0]["status"] == "open"
     assert _tmp(home, "mission_*") == []
 
 
@@ -461,7 +462,7 @@ def test_submit_records_note_file_name_and_returns_today(client, home):
     _put(home)
     status, body = _submit(client, file_name="shot.png")
     assert status == 200 and body["status"] == "submitted" and body["today"]["status"] == "submitted"
-    fm = refstore.read_md(home / "missions" / f"{DAY}.md")[0]
+    fm = refstore.read(doc_key(home / "missions" / f"{DAY}.md"))[0]
     assert fm["status"] == "submitted" and fm["difficulty"] == "right"
     text = _record_text(home)
     assert "- 한 일: 탑뷰로 찍었어요\n- 파일: shot.png\n- 난이도: right" in text and "좋아요. 다음엔 중앙에." in text
@@ -493,7 +494,7 @@ def test_submit_allowed_after_skip(client, home):
     _put(home)
     client.json("POST", "/api/mission/skip", {"date": DAY, "reason": "시간 부족"})
     assert _submit(client)[0] == 200
-    assert refstore.read_md(home / "missions" / f"{DAY}.md")[0]["status"] == "submitted"
+    assert refstore.read(doc_key(home / "missions" / f"{DAY}.md"))[0]["status"] == "submitted"
 
 
 def test_submit_marks_feedback_item_saved(client, home):
@@ -544,7 +545,7 @@ def test_skip_does_not_overwrite_completed_mission(client, home):
     _put(home)
     _submit(client)
     assert _err(client, "POST", "/api/mission/skip", {"date": DAY, "reason": "a"}) == "already_submitted"
-    assert refstore.read_md(home / "missions" / f"{DAY}.md")[0]["status"] == "submitted"
+    assert refstore.read(doc_key(home / "missions" / f"{DAY}.md"))[0]["status"] == "submitted"
 
 
 # ---- fix round 1 ---------------------------------------------------------------------

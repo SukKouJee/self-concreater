@@ -8,6 +8,7 @@ from scripts import refstore, videomd
 from scripts.common import ScriptError
 from tests.test_conti import home  # noqa: F401 - fixture
 from tests.typify_fixtures import CAT
+from tests.helpers.paths import doc_key
 
 
 def vpath(home, vid="a00"):  # noqa: F811
@@ -29,7 +30,7 @@ def test_relabel_updates_frontmatter_only_and_marks_reviewed(home):  # noqa: F81
     changes = {"sections": [{"label": "hook"}, {"label": "body", "sub": "list_item"}, {"label": "outro"}],
                "hook_type": "question"}
     r = videomd.relabel("a00", CAT, changes, h0)
-    fm, _ = refstore.read_md(path)
+    fm, _ = refstore.read(doc_key(path))
     assert [s["label"] for s in fm["sections"]] == ["hook", "body", "outro"]
     assert fm["sections"][1]["sub"] == "list_item"
     assert fm["sections"][2]["start"] == 52.0
@@ -79,7 +80,7 @@ def test_relabel_rejects_bad_values(home, changes):  # noqa: F811
 def test_relabel_drops_sub_when_leaving_body(home):  # noqa: F811
     path = vpath(home)
     videomd.relabel("a00", CAT, {"sections": [{"label": "hook"}, {"label": "cta"}, {"label": "cta"}]}, sha(path))
-    fm, _ = refstore.read_md(path)
+    fm, _ = refstore.read(doc_key(path))
     assert "sub" not in fm["sections"][1]
 
 
@@ -95,7 +96,7 @@ def test_relabel_keeps_crlf_and_memo_and_drops_bom_on_bom_input(home):  # noqa: 
     head = raw.split(b"---", 2)[1]
     assert b"\n" not in head.replace(b"\r\n", b"")
     assert "## 내 메모\r\n내 생각\r\n".encode() in raw
-    assert refstore.read_md(path)[0]["hook_type"] == "question"
+    assert refstore.read(doc_key(path))[0]["hook_type"] == "question"
     assert not raw.startswith("﻿".encode())   # current behavior: BOM is not preserved
 
 
@@ -107,7 +108,7 @@ def test_relabel_noop_does_not_write(home):  # noqa: F811
     r = videomd.relabel("a00", CAT, same, h0)
     assert r["changed"] == [] and r["hash"] == h0 and r["reviewed"] is False
     assert path.stat().st_mtime_ns == mtime
-    assert refstore.read_md(path)[0]["reviewed"] is False
+    assert refstore.read(doc_key(path))[0]["reviewed"] is False
 
 
 def _write_cuts(home, text):  # noqa: F811
@@ -123,23 +124,23 @@ def test_relabel_recomputes_pacing_when_cuts_exist(home):  # noqa: F811
     _write_cuts(home, json.dumps({"cuts": [10, 20, 55], "avg_cut_sec": 15}))
     path = vpath(home)
     videomd.relabel("a00", CAT, OUTRO, sha(path))
-    by = refstore.read_md(path)[0]["pacing"]["by_section"]
+    by = refstore.read(doc_key(path))[0]["pacing"]["by_section"]
     assert "outro" in by and "cta" not in by
 
 
 def test_relabel_keeps_pacing_without_cuts(home):  # noqa: F811
     path = vpath(home)
-    old = refstore.read_md(path)[0]["pacing"]
+    old = refstore.read(doc_key(path))[0]["pacing"]
     videomd.relabel("a00", CAT, OUTRO, sha(path))
-    assert refstore.read_md(path)[0]["pacing"] == old
+    assert refstore.read(doc_key(path))[0]["pacing"] == old
 
 
 def test_relabel_keeps_pacing_with_broken_cuts(home):  # noqa: F811
     _write_cuts(home, "{broken")
     path = vpath(home)
-    old = refstore.read_md(path)[0]["pacing"]
+    old = refstore.read(doc_key(path))[0]["pacing"]
     videomd.relabel("a00", CAT, OUTRO, sha(path))
-    assert refstore.read_md(path)[0]["pacing"] == old
+    assert refstore.read(doc_key(path))[0]["pacing"] == old
 
 
 def test_relabel_missing_video_and_bad_id(home):  # noqa: F811
@@ -160,10 +161,10 @@ def test_cli_relabel(home, tmp_path):  # noqa: F811
 
 def test_relabel_bad_md_when_section_time_not_numeric_and_cuts_exist(home):  # noqa: F811
     path = vpath(home)
-    fm, _ = refstore.read_md(path)
+    fm, _ = refstore.read(doc_key(path))
     sections = [dict(s) for s in fm["sections"]]
     sections[1]["start"] = "x"
-    refstore.update_frontmatter(path, {"sections": sections})
+    refstore.update_frontmatter(doc_key(path), {"sections": sections})
     _write_cuts(home, json.dumps({"cuts": [10, 20, 55], "avg_cut_sec": 15}))
     before = path.read_bytes()
     with pytest.raises(ScriptError) as e:
@@ -185,7 +186,7 @@ def test_relabel_bad_md_when_cuts_items_not_numeric(home):  # noqa: F811
 @pytest.mark.parametrize("bad", ["notalist", [1, 2, 3], [{"start": 0}, {"label": "body"}, {"label": "cta"}]])
 def test_relabel_bad_md_when_stored_sections_malformed(home, bad):  # noqa: F811
     path = vpath(home)
-    refstore.update_frontmatter(path, {"sections": bad})
+    refstore.update_frontmatter(doc_key(path), {"sections": bad})
     before = path.read_bytes()
     with pytest.raises(ScriptError) as e:
         videomd.relabel("a00", CAT, {"sections": GOOD}, sha(path))
@@ -208,14 +209,14 @@ def test_relabel_rejects_none_values(home, changes):  # noqa: F811
 def test_relabel_ignores_extra_keys_in_section_items(home):  # noqa: F811
     path = vpath(home)
     videomd.relabel("a00", CAT, _with(2, label="outro", start=999), sha(path))
-    fm, _ = refstore.read_md(path)
+    fm, _ = refstore.read(doc_key(path))
     assert fm["sections"][2]["label"] == "outro" and fm["sections"][2]["start"] == 52.0
 
 
 def test_relabel_omitted_sub_clears_existing_sub(home):  # noqa: F811
     path = vpath(home)
     videomd.relabel("a00", CAT, {"sections": [{"label": "hook"}, {"label": "body"}, {"label": "cta"}]}, sha(path))
-    assert "sub" not in refstore.read_md(path)[0]["sections"][1]
+    assert "sub" not in refstore.read(doc_key(path))[0]["sections"][1]
 
 
 def test_frame_pool_exact_section_follows_relabel(home):  # noqa: F811

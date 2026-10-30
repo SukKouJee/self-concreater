@@ -14,6 +14,7 @@ from scripts import mission, motif, refstore, status
 from scripts.common import ScriptError
 from tests.helpers.tree_snapshot import changes, tree
 from tests.test_mission import PROFILE, mission_json
+from tests.helpers.paths import doc_key
 
 ROOT = Path(__file__).resolve().parents[1]
 DAY = "2026-10-31"
@@ -83,7 +84,7 @@ def test_save_exists_and_swap(home):
     assert src.exists() and (home / "missions" / f"{DAY}.md").read_bytes() == first
     result = mission.save(src, DAY, replace=True)
     assert result == {"status": "saved", "path": f"missions/{DAY}.md", "swapped_from": "탑뷰 손 클로즈업 15초 찍기"}
-    fm, body = refstore.read_md(home / "missions" / f"{DAY}.md")
+    fm, body = refstore.read(doc_key(home / "missions" / f"{DAY}.md"))
     assert fm["swapped_from"] == "탑뷰 손 클로즈업 15초 찍기" and "### 다른 미션 (20분" in body
     assert not src.exists()
 

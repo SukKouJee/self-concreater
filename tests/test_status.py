@@ -8,6 +8,7 @@ from scripts import cluster, conti, draft, keys, mission, refstore, status
 from tests.test_draft import DRAFT
 from tests.test_cluster import NOTES, notes
 from tests.typify_fixtures import CAT, standard_set, write_video
+from tests.helpers.paths import doc_key
 
 
 @pytest.fixture
@@ -220,7 +221,7 @@ def test_video_steps_from_files_and_filmed(home):
         "draft": True, "polish": False, "conti": True, "filmed": False, "captions": False, "diagnose": False}
     assert [s["optional"] for s in v["steps"]] == [False, True, False, False, True, False]
     assert v["next"] == "filmed" and v["progress"] == 2 and v["filmed_at"] is None
-    refstore.update_frontmatter(d, {"filmed_at": "2026-10-25"})
+    refstore.update_frontmatter(doc_key(d), {"filmed_at": "2026-10-25"})
     d.write_text(d.read_text(encoding="utf-8") + "\n## 패키징\n- x\n", encoding="utf-8")
     (d.parent / f"{stem}-captions.mp4").write_bytes(b"")
     (home / "mine").mkdir(exist_ok=True)
