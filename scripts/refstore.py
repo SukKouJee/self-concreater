@@ -156,6 +156,35 @@ def update_frontmatter(key: str, updates: dict[str, Any], remove: Iterable[str] 
     return fm
 
 
+# --- 내 메모 가드 --------------------------------------------------------------
+
+MEMO_HEADING = "## 내 메모"
+
+
+def memo_text(raw: bytes) -> str | None:
+    """md 바이트의 '## 내 메모' 내용(메모 가드의 비교 기준). 제목 줄이 없으면 None.
+
+    프런트매터 뒤 본문에서 `## 내 메모` 줄(줄 끝 공백 무시) 다음부터 다음 `## ` 제목 줄 전까지를 LF로 맞추고,
+    줄마다 끝 공백을 지운 뒤 앞뒤 빈 줄을 뺀다. 메모를 옮겨 쓰는 흐름마다 앞 빈 줄·끝 공백·줄바꿈 방식·메모 뒤 절을
+    다루는 방식이 조금씩 달라서 그 차이는 같은 메모로 본다. 깨진 UTF-8은 대체 문자로 읽는다(같은 바이트면 같은 결과)."""
+    text = raw.decode("utf-8-sig", errors="replace").replace("\r\n", "\n")
+    m = _FRONTMATTER_RE.match(text)
+    lines = (m.group(3) if m else text).split("\n")
+    start = next((i for i, line in enumerate(lines) if line.rstrip() == MEMO_HEADING), None)
+    if start is None:
+        return None
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+    return "\n".join(line.rstrip() for line in lines[start + 1:end]).strip("\n")
+
+
+def check_memo(key: str, old: bytes, new: bytes) -> None:
+    """기존 문서(old)에 내용 있는 '## 내 메모'가 있으면 새 바이트(new)에도 같은 메모가 있어야 한다. 아니면 memo_lost."""
+    before = memo_text(old)
+    if before and memo_text(new) != before:
+        raise ScriptError("memo_lost", f"'{MEMO_HEADING}' 내용이 빠지거나 바뀌는 쓰기라 저장하지 않았습니다: {key} "
+                                       "(메모는 그대로 두고 다시 시도해 주세요)")
+
+
 # --- 본문 섹션 ----------------------------------------------------------------
 
 def replace_section(body: str, heading: str, content: str) -> str:

@@ -16,6 +16,9 @@ import pytest
 
 from scripts import cluster, conti, fetch, mission, motif, polish, refstore, similarity, videomd
 from scripts import conti_history as ch
+from scripts.common import ScriptError
+from scripts.filestore import FileDocStore
+from scripts.stores import VersionConflict
 from tests.test_conti import conti_file, draft_md, home  # noqa: F401 - fixtures
 from tests.test_mission import PROFILE, mission_json
 from tests.test_polish import choice
@@ -220,3 +223,119 @@ def test_mission_review_and_profile_keep_memo(home, variant, crlf):
     expected = set_memo(profile, variant, crlf)
     mission.profile_update(tmp_json(home, "upd.json", {"성장 단계": "모방", "약점": "훅"}), DAY)
     kept(profile, expected)
+
+
+# --- 가드: 저장소가 메모를 잃는 쓰기를 막는다 ---------------------------------------------------
+
+def _guard_doc(home: Path, memo: str = "지우면 안 되는 메모 🏆\n- 둘째 줄\n") -> tuple[FileDocStore, str, bytes]:
+    key = "mine/guard.md"
+    raw = f"---\nid: g\n---\n# 제목\n\n## 요약\n본문\n\n{HEADING}\n{memo}".encode()
+    (home / "mine").mkdir(parents=True, exist_ok=True)
+    (home / key).write_bytes(raw)
+    return FileDocStore(home), key, raw
+
+
+@pytest.mark.parametrize("variant,crlf", VARIANTS, ids=IDS)
+@pytest.mark.parametrize("bom", [False, True], ids=["nobom", "bom"])
+def test_memo_text_matches_the_rule(variant, crlf, bom):
+    heading, memo = MEMOS[variant]
+    text = f"---\na: 1\n---\n# t\n\n## 요약\nx\n\n{heading}\n{memo}"
+    raw = (b"\xef\xbb\xbf" if bom else b"") + (text.replace("\n", "\r\n") if crlf else text).encode()
+    assert refstore.memo_text(raw) == memo_of(raw)
+    assert refstore.memo_text(b"---\na: 1\n---\n## x\n") is None
+    assert refstore.memo_text(f"# no frontmatter\n{HEADING}\n메모\n".encode()) == "메모"
+
+
+@pytest.mark.parametrize("new_tail", [
+    "",                                                   # 메모 절을 통째로 뺌
+    f"{HEADING}\n",                                       # 제목만 남김
+    f"{HEADING}\n지우면 안 되는 메모 🏆\n",                  # 둘째 줄을 잃음
+    f"{HEADING}\n지우면 안 되는 메모 🏆\n- 둘째 줄 고침\n",       # 내용을 바꿈
+    f"### 내 메모\n지우면 안 되는 메모 🏆\n- 둘째 줄\n",       # 제목 수준이 바뀜(메모가 아님)
+    f"{HEADING}\n## 끼어든 절\n지우면 안 되는 메모 🏆\n- 둘째 줄\n",   # 메모 앞에 제목이 끼어듦
+], ids=["dropped", "emptied", "truncated", "altered", "demoted", "split"])
+def test_write_that_loses_the_memo_fails_and_leaves_the_file(home, new_tail):
+    store, key, raw = _guard_doc(home)
+    before = sorted(p.name for p in (home / "mine").iterdir())
+    with pytest.raises(ScriptError) as exc:
+        store.write(key, f"---\nid: g\n---\n# 새 본문\n\n{new_tail}".encode())
+    assert exc.value.code == "memo_lost" and key in exc.value.message
+    assert (home / key).read_bytes() == raw
+    assert sorted(p.name for p in (home / "mine").iterdir()) == before       # 임시 파일도 없다
+
+
+def test_memo_lost_through_refstore_and_expect_version(home):
+    store, key, raw = _guard_doc(home)
+    with pytest.raises(ScriptError) as exc:
+        store.write(key, b"---\nid: g\n---\n", expect_version=hashlib.sha256(raw).hexdigest())
+    assert exc.value.code == "memo_lost" and (home / key).read_bytes() == raw
+    with pytest.raises(VersionConflict):                  # 버전 검사가 먼저다
+        store.write(key, b"---\nid: g\n---\n", expect_version="0" * 64)
+    assert (home / key).read_bytes() == raw
+
+
+@pytest.mark.parametrize("new_body", [
+    f"## 요약\n바뀐 본문\n\n{HEADING}\n지우면 안 되는 메모 🏆\n- 둘째 줄\n",
+    f"{HEADING}\r\n\r\n지우면 안 되는 메모 🏆   \r\n- 둘째 줄\r\n\r\n\r\n## 새로 붙은 절\r\n",
+    f"# 앞에 새 절\n\n## 패키징\n- 제목\n\n{HEADING}  \n\n지우면 안 되는 메모 🏆\n- 둘째 줄\t\n",
+], ids=["body_changed", "crlf_blank_lines_and_trailing_space", "moved_and_heading_space"])
+def test_write_that_keeps_the_memo_passes(home, new_body):
+    store, key, _ = _guard_doc(home)
+    data = f"---\nid: g\nnew: 1\n---\n{new_body}".encode()
+    store.write(key, data)
+    assert (home / key).read_bytes() == data
+
+
+def test_empty_or_missing_memo_is_not_guarded(home):
+    store, key, _ = _guard_doc(home, memo="\n  \n")
+    store.write(key, b"---\nid: g\n---\nno memo\n")
+    store.write(key, b"---\nid: g\n---\nstill none\n")
+    store.write("mine/new.md", f"---\nid: n\n---\n{HEADING}\n새 메모\n".encode())
+    assert (home / "mine/new.md").is_file()
+
+
+def test_unreadable_old_bytes_still_guarded(home):
+    store, key, _ = _guard_doc(home, memo="메모 \xff 깨짐\n")
+    (home / key).write_bytes((home / key).read_bytes().replace("\xff".encode(), b"\xff"))
+    raw = (home / key).read_bytes()
+    with pytest.raises(ScriptError) as exc:
+        store.write(key, b"---\nid: g\n---\n")
+    assert exc.value.code == "memo_lost" and (home / key).read_bytes() == raw
+    store.write(key, raw + b"\n")                         # 같은 바이트(끝 빈 줄만 다름)는 통과
+    assert (home / key).read_bytes() == raw + b"\n"
+
+
+def test_create_never_replaces_a_doc_with_a_memo(home):
+    store, key, raw = _guard_doc(home)
+    with pytest.raises(FileExistsError):
+        store.create(key, b"---\nid: g\n---\n")
+    assert (home / key).read_bytes() == raw
+
+
+def test_mission_swap_over_a_user_memo_is_refused(home):
+    """미션 바꾸기(swap)는 미션 md를 새로 쓴다. 사용자가 메모를 적어 둔 미션이면 memo_lost로 막고 아무것도 바꾸지 않는다."""
+    (home / "profile.md").write_text(PROFILE, encoding="utf-8")
+    mission.save(mission_json(home), DAY)
+    day = home / "missions" / f"{DAY}.md"
+    set_memo(day, "plain", False)
+    raw = day.read_bytes()
+    src = mission_json(home, title="다른 미션")
+    with pytest.raises(ScriptError) as exc:
+        mission.save(src, DAY, replace=True)
+    assert exc.value.code == "memo_lost"
+    assert day.read_bytes() == raw and src.exists()
+
+
+def test_reanalysis_refuses_to_edit_a_technique_line_inside_the_techniques_memo(home):
+    """techniques.md 메모에 기법 항목 형식 줄이 있으면 다시 분석이 그 줄을 고치려다 memo_lost로 멈춘다(영상 md는 이미 다시 쓴 뒤)."""
+    fetch.save_raw(RAW)
+    (home / "workspace" / "cuts").mkdir(parents=True, exist_ok=True)
+    (home / "workspace" / "cuts" / f"{VID}.json").write_text(json.dumps(CUTS), encoding="utf-8")
+    videomd.write(VID, CAT, "ref", tmp_json(home, "analysis.json", ANALYSIS))
+    tech = home / "refs" / f"ref_{CAT}" / "techniques.md"
+    tech.write_bytes(tech.read_bytes() + f"\n{HEADING}\n- **내가 본 기법**: 메모 — [{VID}](videos/{VID}.md)\n".encode())
+    raw = tech.read_bytes()
+    with pytest.raises(ScriptError) as exc:
+        videomd.write(VID, CAT, "ref", tmp_json(home, "analysis.json", ANALYSIS), force=True)
+    assert exc.value.code == "memo_lost"
+    assert tech.read_bytes() == raw

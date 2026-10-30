@@ -57,6 +57,7 @@ class DocStore(Protocol):
     def exists(self, key: str) -> bool: ...
     def stat(self, key: str) -> Meta: ...
     def write(self, key: str, data: bytes, *, expect_version: str | None = None) -> str: ...  # 원자적, 새 version
+    # ↑ 기존 '## 내 메모'가 새 바이트에 없으면 ScriptError("memo_lost")로 거부(refstore.check_memo, 설계 §4.1)
     def create(self, key: str, data: bytes) -> str: ...                   # 없을 때만 만든다. 있으면 FileExistsError, 새 version
     def list(self, prefix: str, pattern: str = "*.md") -> builtins.list[Meta]: ...   # prefix 바로 아래, 순서 §3.1
     def folders(self, prefix: str, pattern: str) -> builtins.list[str]: ...   # "refs/"+"ref_*" → ["refs/ref_a/"]

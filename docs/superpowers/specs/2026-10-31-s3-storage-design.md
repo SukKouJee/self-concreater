@@ -100,7 +100,7 @@ class DocStore(Protocol):                # 키는 반드시 ".md"로 끝난다
     def read(self, key: str) -> Doc: ...                                   # 없으면 FileNotFoundError
     def exists(self, key: str) -> bool: ...
     def stat(self, key: str) -> Meta: ...
-    def write(self, key: str, data: bytes, *, expect_version: str | None = None) -> str: ...  # 원자적, 새 version
+    def write(self, key: str, data: bytes, *, expect_version: str | None = None) -> str: ...  # 원자적, 새 version. 내 메모 가드(§4.1) 위반이면 ScriptError("memo_lost")
     def create(self, key: str, data: bytes) -> str: ...                   # 없을 때만 만든다(Task 5 추가). 있으면 FileExistsError, 새 version. File = O_CREAT|O_EXCL
     def list(self, prefix: str, pattern: str = "*.md") -> list[Meta]: ...  # prefix 바로 아래, 순서 = 아래 3.1
     def folders(self, prefix: str, pattern: str) -> list[str]: ...         # "refs/" + "ref_*" → ["refs/ref_a/", …]
@@ -178,7 +178,7 @@ def here() -> Ctx: ...    # current() or Ctx(root=Path(YT_COACH_HOME or cwd))  �
 - `FileDocStore/FileObjectStore/FileSharedCache/FileScratch/FileTrash(root: Path)`. 모두 `root / key`(키 검증 후)로만 경로를 만든다.
 - 키 검증(`keys.check`): 상대, `/` 구분, 빈 조각·`.`·`..`·`\`·`:`·NUL 금지, 점·공백으로 끝나는 조각과 Windows 예약 이름
   (CON·PRN·AUX·NUL·COM1~9·LPT1~9, 확장자·대소문자 무관) 금지. 위반은 `ScriptError("bad_path")`. 폴더 키의 끝 `/` 하나는 허용.
-- 읽기: `path.read_bytes()`(지금 `refstore.read_md`와 동일. BOM은 `parse_md`의 `utf-8-sig`가 처리).
+- 읽기: `path.read_bytes()`(옛 `refstore.read_md`와 동일. BOM은 `parse_md`의 `utf-8-sig`가 처리).
 - 쓰기: `refstore.write_atomic(path, data)` 재사용(임시 이름 `<name>.tmp`, Windows 재시도). `conti_history`는 지금 임시 이름
   `.<name>.<pid>.<tid>.tmp`를 쓴다 → 동시 쓰기 안전을 위해 `write_atomic`의 임시 이름에 pid·tid를 붙이도록 함께 바꾼다
   (최종 바이트 무관, `glob("*.md")`·`_VERSION_RE`에 걸리지 않음을 테스트).
@@ -187,6 +187,21 @@ def here() -> Ctx: ...    # current() or Ctx(root=Path(YT_COACH_HOME or cwd))  �
 - `FileTrash.move`: 지금 `common.move_to_trash` 본문을 그대로 옮긴다(키 → `root/key`). 반환 문자열·오류 코드(`bad_path`, `trash_failed`)·
   되돌리기 동작 동일. 폴더 키(`workspace/frames/<vid>`, history 폴더, `-cuts` 폴더)는 끝 `/` 없이 받는다(지금 `moved` 형식).
 - `FileDocStore.label()` = `str(root)`, `Doc.label` = `str(root / key)`: 지금 오류 메시지·`status.overview["work_root"]`와 같은 문자열.
+
+### 4.1 내 메모 가드 (단계 15)
+`DocStore.write`는 쓰기 잠금 안에서 지금 바이트를 읽어 `expect_version`을 먼저 비교하고(다르면 `VersionConflict`), 이어서
+**기존 문서의 `## 내 메모` 내용이 새 바이트에 그대로 있는지** 본다. 아니면 `ScriptError("memo_lost")`를 던지고 아무것도 쓰지 않는다
+(임시 파일도 남기지 않는다). 규칙은 바이트만 보는 순수 함수 `refstore.memo_text`·`check_memo`에 있고, 서버판(S5) 저장소도 같은 함수를 쓴다.
+- 메모 = 프런트매터 뒤 본문에서 `## 내 메모` 줄(줄 끝 공백 무시) **다음부터 다음 `## ` 제목 줄 전까지**. 제목 줄이 없으면 메모 없음.
+- 비교 전 정규화: BOM 제거, CRLF→LF, 줄마다 끝 공백 제거, 앞뒤 빈 줄 제거. 깨진 UTF-8은 대체 문자로 읽는다(같은 바이트면 같은 결과).
+- 기존 메모가 없거나 비어 있으면 검사하지 않는다(새 문서, 메모 칸만 있는 문서). `create`는 기존 문서를 덮지 않으므로 검사가 필요 없다.
+- 정규화 범위는 정상 흐름이 메모를 옮기는 방식의 차이에서 정했다(`tests/test_memo_writers.py`가 흐름마다 확인):
+  영상 md 다시 분석·콘티 다시 그리기(`memo_from_body`: 앞 줄바꿈 버림, 메모 뒤 절까지 통째로 옮김), 콘티 `render_md`(끝 공백 버림),
+  진단·회고 다시 저장(CRLF→LF, 메모부터 끝까지), `update_frontmatter`·`update_stage`·유형화·모티브 카드·별표·기법 합치기·
+  미션 제출/건너뛰기·프로필 반영·다듬기(메모 밖 절만 고침). 이 흐름들은 모두 통과한다.
+- 막히는 흐름(의도): 사용자가 메모를 적어 둔 미션을 바꾸기(swap)하면 새 미션 md가 메모를 옮기지 않으므로 `memo_lost`로 거부된다
+  (전에는 메모가 조용히 사라졌다). 같은 이유로 techniques.md 메모에 기법 항목 형식 줄(`- **이름**: … — [id](videos/id.md)`)이 있으면 그 영상을 다시 분석할 때
+  `drop_video_techniques`가 그 줄을 고치려다 거부된다(영상 md는 이미 다시 쓴 뒤라 기법 목록만 갱신되지 않는다).
 
 ## 5. 저장소 밖에 남는 것과 "직접 호출 0"의 정의
 

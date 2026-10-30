@@ -81,21 +81,28 @@ class FileDocStore(_FileBase):
         return _meta(self.root, self._doc_path(key))
 
     def write(self, key: str, data: bytes, *, expect_version: str | None = None) -> str:
+        """원자적으로 쓴다. 잠금 안에서 지금 바이트를 읽어 ① `expect_version` 비교(다르면 VersionConflict),
+        ② 내 메모 가드(`refstore.check_memo`: 기존 메모가 새 바이트에 없으면 memo_lost)를 한 뒤에만 쓴다."""
         path = self._doc_path(key)
         with _write_lock(path):
+            try:
+                current: bytes | None = path.read_bytes()
+            except FileNotFoundError:
+                current = None
             if expect_version is not None:
-                try:
-                    current = hashlib.sha256(path.read_bytes()).hexdigest()
-                except FileNotFoundError as e:
-                    raise VersionConflict(f"{key}: 파일이 없습니다") from e
-                if current != expect_version:
+                if current is None:
+                    raise VersionConflict(f"{key}: 파일이 없습니다")
+                if hashlib.sha256(current).hexdigest() != expect_version:
                     raise VersionConflict(f"{key}: 다른 곳에서 바뀌었습니다")
+            if current is not None:
+                refstore.check_memo(key, current, data)
             path.parent.mkdir(parents=True, exist_ok=True)
             refstore.write_atomic(path, data)
         return hashlib.sha256(data).hexdigest()
 
     def create(self, key: str, data: bytes) -> str:
-        """없을 때만 만든다(`open(path, "xb")`와 같은 O_EXCL: 프로세스가 달라도 하나만 이긴다). 있으면 FileExistsError."""
+        """없을 때만 만든다(`open(path, "xb")`와 같은 O_EXCL: 프로세스가 달라도 하나만 이긴다). 있으면 FileExistsError.
+        기존 문서를 덮지 않으므로 내 메모 가드가 필요 없다."""
         path = self._doc_path(key)
         path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0))

@@ -280,7 +280,7 @@ def test_write_creates_parent_and_returns_version(home: Path) -> None:
 
 def test_expect_version_conflict_keeps_file(home: Path) -> None:
     store = FileDocStore(home)
-    key = f"drafts/{STEM}.md"
+    key = "missions/2026-10-30.md"                             # 내 메모가 없는 문서(메모 가드와 따로 버전만 본다)
     doc = store.read(key)
     (home / key).write_bytes(doc.raw + b"\nedited elsewhere")
     edited = (home / key).read_bytes()
@@ -335,7 +335,7 @@ def test_create_lets_only_one_concurrent_creator_win(home: Path) -> None:
 
 
 def test_expect_version_lets_only_one_concurrent_writer_win(home: Path) -> None:
-    key = f"drafts/{STEM}.md"
+    key = "missions/2026-10-30.md"                             # 내 메모가 없는 문서
     base = FileDocStore(home).read(key).version
     barrier = threading.Barrier(8, timeout=5)
     results: list[str] = []
