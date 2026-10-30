@@ -390,10 +390,36 @@ export function artCaption(art, busy) {
   return busy ? "다시 그리는 중…" : "설명이 바뀌었어요";
 }
 
-// Scene tool button: 장면 그림 그리기 while a scene that can have a drawing has none, else 전체 다시 그리기;
-// null when every scene has a pinned photo (nothing to draw).
-export function artToolLabel(cuts) {
-  const drawable = (Array.isArray(cuts) ? cuts : []).filter((c) => !c.ref_frame);
-  if (!drawable.length) return null;
-  return drawable.some((c) => !c.art) ? "장면 그림 그리기" : "전체 다시 그리기";
+// Minutes a drawing job about takes: two scenes per Claude call, three calls at once, about 30 s a call. At least 1.
+export function artEta(scenes) {
+  const calls = Math.ceil((Number(scenes) || 0) / 2);
+  return Math.max(1, Math.ceil(((calls / 3) * 30) / 60));
+}
+
+const artAbout = (n) => `${n}장면 · 약 ${artEta(n)}분`;
+
+// Scene tool drawing buttons from the view's art_counts {total, missing, stale, fresh} (scenes without a pinned photo).
+// No drawing yet: 장면 그림 그리기. Some or all drawn: 남은 장면 그리기 (missing + stale, hidden at 0) and 처음부터 다시
+// 그리기. [] when nothing can be drawn. staleOnly: the job draws only scenes with no drawing or an old one.
+export function artButtons(counts) {
+  const total = (counts && counts.total) || 0;
+  if (!total) return [];
+  const drawn = (counts.fresh || 0) + (counts.stale || 0);
+  if (!drawn) return [{ fk: "art", label: `장면 그림 그리기 (${artAbout(total)})`, staleOnly: true }];
+  const left = (counts.missing || 0) + (counts.stale || 0);
+  const out = [];
+  if (left) out.push({ fk: "art", label: `남은 장면 그리기 (${artAbout(left)})`, staleOnly: true });
+  out.push({ fk: "art-all", label: `처음부터 다시 그리기 (${artAbout(total)})`, staleOnly: false });
+  return out;
+}
+
+// Scenes the last ended drawing job left undrawn ("N장면을 못 그렸어요"), 0 for no line. last: {status, failed, remaining}
+// of that job (null: none, or a new one started). A job that ended with failures, was stopped or failed counts; the number
+// is what is left now (counts), or the job's remaining when the counts are not known.
+export function artTrouble(last, counts) {
+  if (!last) return 0;
+  const trouble = (last.status === "done" && (last.failed || 0) > 0) || last.status === "stopped" || last.status === "failed";
+  if (!trouble) return 0;
+  if (counts) return (counts.missing || 0) + (counts.stale || 0);
+  return last.remaining || 0;
 }

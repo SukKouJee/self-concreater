@@ -12,6 +12,8 @@
 //   다시 4초) 그 장면만 다시 그린다(artRedrawPlan). 콘티당 작업은 하나라 도는 중에 고친 장면은 끝난 뒤 한 번 더.
 //   자동 시작이 Claude 준비 오류로 막히면 토스트 없이 한 줄만 보이고 이 화면에서 자동 시작을 멈춘다.
 //   화면을 떠나면 예약만 지운다(시작한 작업은 계속).
+// - 그림 버튼은 콘티 응답의 art_counts로 정한다(artButtons): 그림이 없으면 "장면 그림 그리기", 있으면 "남은 장면 그리기"와
+//   "처음부터 다시 그리기". 작업이 실패·멈춤·일부 실패로 끝나 남은 장면이 있으면 "N장면을 못 그렸어요"와 이어 그리기 버튼.
 // opts: { path, category, getData() -> GET /api/conti 응답, getHash(), isBusy() (컷 저장·편집 중),
 //         hasDrafts() (패널에 저장하지 않은 입력이 있음: 합치기를 막는다),
 //         onMerged(res) (합친 콘티 응답), onReload() (사진·그림이 저장됐거나 콘티가 밖에서 바뀜: 편집기 다시 불러오기,
@@ -21,7 +23,7 @@ import { h, fill } from "/static/dom.js";
 import { tag } from "/static/ui.js";
 import { sectionLabelName } from "/static/labels.js";
 import {
-  aboutSec, artBusy as artBusyOf, artRedrawPlan, artToolLabel, describeHint, hasRepeats, mergeApplyCuts, mergeView, tagKind,
+  aboutSec, artBusy as artBusyOf, artButtons, artRedrawPlan, artTrouble, describeHint, hasRepeats, mergeApplyCuts, mergeView, tagKind,
 } from "/static/conti-utils.js";
 
 const POLL_MS = 1000;
@@ -427,6 +429,10 @@ function adoptArt(job) {
   run.ids = null;
   run.stopping = false;
   const s = job.summary || {};
+  // a manual job, or any job that left scenes undrawn, decides the "N장면을 못 그렸어요" line (a clean auto redraw keeps it)
+  if (!run.auto || job.status !== "done" || (s.failed ?? 0) > 0) {
+    run.last = { status: job.status, failed: s.failed ?? 0, remaining: s.remaining ?? 0 };
+  }
   if (job.status === "done") {
     const drawn = s.drawn ?? 0;
     // an auto redraw is quiet (the card caption tells); the buttons say what they did
@@ -445,7 +451,12 @@ function adoptArt(job) {
   mine.art.lastEnd = Date.now();
   paint();
   // new pictures first, then scenes edited while it ran go with the new hash
-  Promise.resolve(mine.opts.onArtSaved()).catch(() => {}).then(() => { if (alive(mine)) feedArt({ type: "done" }); });
+  // (the reloaded art_counts repaint the tool row's buttons and the undrawn line)
+  Promise.resolve(mine.opts.onArtSaved()).catch(() => {}).then(() => {
+    if (!alive(mine)) return;
+    paint();
+    feedArt({ type: "done" });
+  });
 }
 
 // Another drawing job holds this conti (started in another tab): follow it; the plan goes on when it ends.
@@ -469,7 +480,7 @@ async function followArt() {
   feedArt({ type: "missed" });
 }
 
-// ids: these scenes only; staleOnly: scenes with no drawing or an old one; neither: every scene (전체 다시 그리기).
+// ids: these scenes only; staleOnly: scenes with no drawing or an old one; neither: every scene (처음부터 다시 그리기).
 async function startArt({ ids = null, staleOnly = false, auto = false } = {}) {
   const mine = A;
   const run = mine.runs.art;
@@ -480,6 +491,7 @@ async function startArt({ ids = null, staleOnly = false, auto = false } = {}) {
     if (mine.opts.isBusy()) { run.error = "저장 중이에요. 잠시 뒤 다시 눌러 주세요"; paint(); return; }
     run.error = "";                     // an auto start keeps what a manual one said
     run.note = "";
+    run.last = null;                    // a new try: the undrawn line goes until this job ends
   }
   run.starting = true;
   run.ids = ids;                        // the scenes this job draws (null: whole / stale-only): only they show 다시 그리는 중
@@ -568,22 +580,27 @@ function paint() {
     b.addEventListener("click", startPick);
     buttons.push(b);
   }
-  const artLabel = artToolLabel(data.cuts);
-  if (artLabel) {
-    const missing = artLabel !== "전체 다시 그리기";
+  const artBusyNow = art.starting || isActive(art.job);
+  for (const spec of artButtons(data.art_counts)) {
     const b = h("button", {
-      type: "button", class: "btn btn-s", "data-fk": "art", disabled: art.starting || isActive(art.job) || repeats,
+      type: "button", class: "btn btn-s", "data-fk": spec.fk, disabled: artBusyNow || repeats,
       "aria-describedby": repeats ? "sa-merge-first" : false,
-    }, artLabel);
-    b.addEventListener("click", () => startArt({ staleOnly: missing }));
+    }, spec.label);
+    b.addEventListener("click", () => startArt({ staleOnly: spec.staleOnly }));
     buttons.push(b);
   }
   const notes = [];
   if (hint && !isActive(describe.job)) notes.push(h("p", { class: "sa-hint" }, hint.text));
-  if (repeats && buttons.some((b) => b.dataset.fk === "pick" || b.dataset.fk === "art")) {
+  if (repeats && buttons.some((b) => ["pick", "art", "art-all"].includes(b.dataset.fk))) {
     notes.push(h("p", { class: "sa-hint", id: "sa-merge-first" }, MERGE_FIRST));
   }
   if (A.art.blocked) notes.push(h("p", { class: "sa-note", role: "status" }, ART_BLOCKED));
+  const undrawn = artBusyNow ? 0 : artTrouble(art.last, data.art_counts);
+  if (undrawn) {
+    const again = h("button", { type: "button", class: "btn btn-s", "data-fk": "art-resume", disabled: repeats }, "남은 장면 그리기");
+    again.addEventListener("click", () => startArt({ staleOnly: true }));
+    notes.push(h("div", { class: "sa-note sa-undrawn" }, h("span", { role: "status" }, `${undrawn}장면을 못 그렸어요`), again));
+  }
   fill(A.slots.row, ...buttons);
   fill(A.slots.notes, ...notes);
 
@@ -652,7 +669,7 @@ async function resume() {
 }
 
 const freshRun = () => ({ job: null, timer: null, errors: 0, starting: false, stopping: false, saving: false, error: "", note: "", warnings: [],
-  focus: false, auto: false, seen: null, ids: null });
+  focus: false, auto: false, seen: null, ids: null, last: null });
 
 export function mountSceneActions(ctx, opts) {
   stopTimers();

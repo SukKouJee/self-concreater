@@ -381,14 +381,55 @@ def test_art_caption():
     assert run_js("m.artCaption({state:'stale'}, false)") == "설명이 바뀌었어요"
 
 
-def test_art_tool_label():
-    a = "{url:'/files/x.svg',state:'fresh'}"
-    assert run_js(f"m.artToolLabel([{{id:'a',art:{a}}},{{id:'b',art:null}}])") == "장면 그림 그리기"
-    assert run_js(f"m.artToolLabel([{{id:'a',art:{a}}},{{id:'b',art:{a}}}])") == "전체 다시 그리기"
-    # a scene with a pinned photo is never drawn: it does not count as missing
-    assert run_js(f"m.artToolLabel([{{id:'a',art:{a}}},{{id:'b',art:null,ref_frame:'workspace/frames/p.jpg'}}])") == "전체 다시 그리기"
-    assert run_js("m.artToolLabel([{id:'b',art:null,ref_frame:'workspace/frames/p.jpg'}])") is None
-    assert run_js("m.artToolLabel([])") is None
+def test_art_eta_minutes():
+    # 2장면씩 묶어 3묶음 동시, 묶음 하나 약 30초
+    assert run_js("[1, 2, 6, 80, 266, 0].map(m.artEta)") == [1, 1, 1, 7, 23, 1]
+
+
+def counts(total, missing, stale, fresh):
+    return f"{{total:{total},missing:{missing},stale:{stale},fresh:{fresh}}}"
+
+
+def test_art_buttons_when_nothing_is_drawn():
+    assert run_js(f"m.artButtons({counts(80, 80, 0, 0)})") == [
+        {"fk": "art", "label": "장면 그림 그리기 (80장면 · 약 7분)", "staleOnly": True}]
+
+
+def test_art_buttons_when_some_are_drawn():
+    assert run_js(f"m.artButtons({counts(266, 200, 6, 60)})") == [
+        {"fk": "art", "label": "남은 장면 그리기 (206장면 · 약 18분)", "staleOnly": True},
+        {"fk": "art-all", "label": "처음부터 다시 그리기 (266장면 · 약 23분)", "staleOnly": False}]
+
+
+def test_art_buttons_when_all_are_drawn():
+    assert run_js(f"m.artButtons({counts(4, 0, 0, 4)})") == [
+        {"fk": "art-all", "label": "처음부터 다시 그리기 (4장면 · 약 1분)", "staleOnly": False}]
+    # only old drawings: they count as left to draw
+    assert run_js(f"m.artButtons({counts(4, 0, 4, 0)})")[0]["label"] == "남은 장면 그리기 (4장면 · 약 1분)"
+
+
+def test_art_buttons_when_nothing_can_be_drawn():
+    assert run_js(f"m.artButtons({counts(0, 0, 0, 0)})") == []
+    assert run_js("m.artButtons(null)") == []
+    assert run_js("m.artButtons(undefined)") == []
+
+
+def test_art_trouble_count():
+    left = counts(10, 3, 1, 6)
+    # done with failures: what is still left to draw now
+    assert run_js(f"m.artTrouble({{status:'done',failed:2,remaining:4}}, {left})") == 4
+    # done without failures: no line
+    assert run_js(f"m.artTrouble({{status:'done',failed:0,remaining:4}}, {left})") == 0
+    # stopped / failed: what is left
+    assert run_js(f"m.artTrouble({{status:'stopped'}}, {left})") == 4
+    assert run_js(f"m.artTrouble({{status:'failed'}}, {left})") == 4
+    # everything got drawn since (or nothing left): no line
+    assert run_js(f"m.artTrouble({{status:'stopped'}}, {counts(10, 0, 0, 10)})") == 0
+    # no ended job yet (or a new one started)
+    assert run_js(f"m.artTrouble(null, {left})") == 0
+    # counts not known: the job summary says
+    assert run_js("m.artTrouble({status:'done',failed:1,remaining:2}, null)") == 2
+    assert run_js("m.artTrouble({status:'stopped'}, null)") == 0
 
 
 def test_art_redraw_followed_job_not_found_waits_instead_of_looping():

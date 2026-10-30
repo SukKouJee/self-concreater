@@ -765,6 +765,7 @@ a.chip-job:hover, button.chip-job:hover { background: color-mix(in srgb, var(--k
 .sa-row { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
 .sa-row:empty, .sa-notes:empty, .sa-lines:empty, .sa-preview:empty { display: none; }
 .sa-hint, .sa-note { margin: 0; font-size: 13px; color: var(--ink-2); }
+.sa-undrawn { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
 .sa-lines { display: flex; flex-direction: column; gap: var(--sp-1); }
 .sa-lines .error, .sa-lines .warn-list { margin: 0; font-size: 13px; }
 .sa-progress { display: flex; align-items: center; gap: var(--sp-2); font-size: 13px; color: var(--ink-2); flex-wrap: wrap; }

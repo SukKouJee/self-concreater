@@ -1756,13 +1756,21 @@ def test_conti_panel_shows_art_next_to_the_photo_and_redraw():
 
 def test_conti_scene_tools_draw_and_auto_redraw():
     js = _js("conti-scenes.js")
-    for token in ["/api/conti/art", "conti_art", "artToolLabel(", "artRedrawPlan(", "ART_DEBOUNCE_MS", "body.stale_only = true",
+    for token in ["/api/conti/art", "conti_art", "artButtons(", "artTrouble(", "art_counts", "장면을 못 그렸어요",
+                  '"art-resume"', "artRedrawPlan(", "ART_DEBOUNCE_MS", "body.stale_only = true",
                   '"Claude를 쓸 수 없어 장면 그림을 다시 그리지 못했어요"', "claude_missing", "llm_not_configured",
                   "conti_busy", "conti_changed", 'type: "leave"', 'type: "done"', 'type: "stale"', 'type: "timer"',
                   'type: "fail_ready"', 'type: "requeue"', "artStale:", "artBusy:", "redraw:", "clearTimeout(mine.art.timer)"]:
         assert token in js, token
-    for banned in ["innerHTML", "outerHTML", "insertAdjacentHTML", "confirm(", "alert(", "prompt("]:
+    for banned in ["innerHTML", "outerHTML", "insertAdjacentHTML", "confirm(", "alert(", "prompt(", "artToolLabel("]:
         assert banned not in js, banned
+    # the line after a job that left scenes undrawn goes away when a new job starts, and its button draws what is left
+    start = _between(js, "async function startArt(", "\n}\n")
+    assert "run.last = null" in start
+    adopt = _between(js, "function adoptArt(", "\n}\n")
+    assert "run.last = {" in adopt
+    # after the end of a job the tool row is painted again with the reloaded counts
+    assert "paint();" in adopt[adopt.index("onArtSaved()).catch"):]
 
 
 def _between(text, start, end):
