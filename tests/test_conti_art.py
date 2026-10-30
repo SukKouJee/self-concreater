@@ -339,3 +339,41 @@ def test_memo_and_body_untouched(saved, home, fake):
     after = refstore.read_md(saved)[1]
     assert after == before and "소품 미리 사기" in after
     assert "art" in cuts_of(saved)[0]
+
+
+def test_draw_legacy_conti_without_ids(saved, home, fake):
+    fm = refstore.read_md(saved)[0]
+    refstore.update_frontmatter(saved, {"cuts": [{k: v for k, v in c.items() if k != "id"} for c in fm["cuts"]],
+                                        "schema_version": 2})
+    assert not any(c.get("id") for c in refstore.read_md(saved)[0]["cuts"])
+    out = conti_art.draw(saved, None, False)
+    assert out["drawn"] == 4 and out["skipped"] == 0
+    assert all(c.get("art") for c in cuts_of(saved))
+
+
+def test_draw_progress_reports_zero_first_and_message(saved, fake):
+    class Job:
+        def __init__(self):
+            self.updates = []
+
+        def update(self, index, **fields):
+            self.updates.append(fields)
+
+        def check_cancelled(self):
+            pass
+
+    job = Job()
+    conti_art.draw(saved, None, False, job)
+    assert job.updates[0] == {"message": "0 / 4장면", "done": 0, "total": 4}
+    assert job.updates[-1] == {"message": "4 / 4장면", "done": 4, "total": 4}
+
+
+def test_draw_warns_once_for_scenes_without_art(saved, monkeypatch):
+    def hook(payload, call_no, data):
+        a, b = payload["scenes"]
+        return {"scenes": [{"id": a["id"], "svg": "<html/>"}, {"id": b["id"], "svg": None}]} if call_no == 1 else None
+
+    monkeypatch.setattr(llm, "ask_validated", FakeDraw(hook))
+    out = conti_art.draw(saved, None, False)
+    assert out["failed"] == 2 and out["drawn"] == 2
+    assert out["warnings"] == ["2장면은 그림을 받지 못했어요"]

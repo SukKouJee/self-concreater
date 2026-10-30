@@ -255,18 +255,25 @@ def save_art(path: str | Path, drawn: dict[str, tuple[str, str]]) -> dict:
     return {"saved": saved, "skipped": skipped}
 
 
+def _progress(job: Any, done: int, total: int) -> None:
+    job.update(0, message=f"{done} / {total}장면", done=done, total=total)
+
+
 def draw(path: str | Path, ids: list[str] | None, stale_only: bool, job: Any = None) -> dict:
     """장면 그림을 2장면씩 그려 묶음마다 저장한다. 묶음이 실패하면 경고로 남기고 다음 묶음을 계속한다.
     반환 {"drawn", "skipped", "failed", "warnings"}. job: update(index, **fields)·check_cancelled()."""
     p = conti._resolve(path)
-    fm = conti.validated(conti.read_conti(p).stored)
+    with conti.HISTORY_LOCK:
+        _, fm, _ = conti.ensure_ids_file(conti.read_conti(p))      # id가 없던 옛 파일은 먼저 저장해 둔다
     if scene_merge.has_repeats(fm["cuts"]):
         raise ScriptError("merge_first", MERGE_FIRST_MESSAGE)
     asp = aspect(fm)
     todo = targets(fm, ids, stale_only)
     batches = [todo[i:i + BATCH] for i in range(0, len(todo), BATCH)]
-    drawn_n = skipped = failed = 0
+    drawn_n = skipped = failed = lost = 0
     warnings: list[str] = []
+    if job is not None:
+        _progress(job, 0, len(todo))
     for number, batch in enumerate(batches, 1):
         if job is not None:
             job.check_cancelled()
@@ -287,15 +294,19 @@ def draw(path: str | Path, ids: list[str] | None, stale_only: bool, job: Any = N
             if svg is None:
                 if asked:                                  # 묶음 호출은 됐는데 이 장면만 못 그림(null·빠짐)
                     failed += 1
+                    lost += 1
                 continue
             try:
                 results[cut_id] = (sanitize_svg(svg, asp), bases[cut_id])
             except ScriptError:
                 failed += 1
+                lost += 1
         if results:
             out = save_art(p, results)
             drawn_n += len(out["saved"])
             skipped += len(out["skipped"])
         if job is not None:
-            job.update(0, done=min(number * BATCH, len(todo)), total=len(todo))
+            _progress(job, min(number * BATCH, len(todo)), len(todo))
+    if lost:
+        warnings.append(f"{lost}장면은 그림을 받지 못했어요")
     return {"drawn": drawn_n, "skipped": skipped, "failed": failed, "warnings": warnings}
