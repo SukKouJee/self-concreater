@@ -17,6 +17,11 @@ def saved(draft_md, home):
     return home / conti.save(draft_md, conti_file(home), now=T0)["path"]
 
 
+def hist(path):
+    """콘티의 이력 폴더(실제 경로)."""
+    return path.parents[1] / "workspace" / "conti_history" / path.stem
+
+
 def fm_of(path):
     return conti._load_conti(path)
 
@@ -43,7 +48,7 @@ def test_save_records_created(saved):
     vs = versions(saved)
     assert [(v["n"], v["kind"]) for v in vs] == [(1, "created")]
     assert vs[0]["summary"] == {"cuts": 4, "total_sec": 8.0, "changed": 0}
-    assert (ch.history_dir(saved) / "0001.json").is_file()
+    assert (hist(saved) / "0001.json").is_file()
 
 
 def test_auto_within_group_window_overwrites_latest(saved):
@@ -91,9 +96,9 @@ def test_record_rejects_unknown_kind(saved):
 
 def test_versions_are_valid_json_without_temp_files(saved):
     edit_line(saved, "x", T0 + 1)
-    files = sorted(p.name for p in ch.history_dir(saved).iterdir())
+    files = sorted(p.name for p in hist(saved).iterdir())
     assert files == ["0001.json", "0002.json"]
-    assert json.loads((ch.history_dir(saved) / "0002.json").read_text("utf-8"))["kind"] == "auto"
+    assert json.loads((hist(saved) / "0002.json").read_text("utf-8"))["kind"] == "auto"
 
 
 # --- 외부 수정 감지 --------------------------------------------------------------------
@@ -126,13 +131,13 @@ def test_first_id_assignment_is_not_external(saved):
 
 
 def test_check_external_without_history_creates_created(saved):
-    shutil.rmtree(ch.history_dir(saved))
+    shutil.rmtree(hist(saved))
     assert ch.check_external(saved, fm_of(saved), now=T0) is None
     assert [v["kind"] for v in versions(saved)] == ["created"]
 
 
 def test_update_on_legacy_conti_keeps_pre_edit_state(saved):
-    shutil.rmtree(ch.history_dir(saved))
+    shutil.rmtree(hist(saved))
     edit_line(saved, "고침", T0 + 5)
     assert [v["kind"] for v in versions(saved)] == ["auto", "created"]
     assert ch.get_version(saved, 1)["state"]["cuts"][0]["line"] == "4단계 다 먹을 수 있을까?"
@@ -273,7 +278,7 @@ def test_same_state_ignores_id_and_rounding(saved):
 # --- 휴지통 · CLI -----------------------------------------------------------------------
 
 def test_trash_moves_history_folder_with_conti(saved, home):
-    folder = ch.history_dir(saved)
+    folder = hist(saved)
     assert folder.is_dir()
     result = conti.trash(saved)
     assert not folder.exists() and not saved.exists()
@@ -342,7 +347,7 @@ def test_concurrent_updates_with_same_hash_one_wins(saved):
         t.join()
     assert sorted(outcomes) == ["conti_changed", "ok"]
     assert [v["n"] for v in versions(saved)] == [2, 1]
-    assert not [p for p in ch.history_dir(saved).iterdir() if p.suffix == ".tmp"]
+    assert not [p for p in hist(saved).iterdir() if p.suffix == ".tmp"]
 
 
 def test_noop_auto_edit_only_touches_last_touch(saved):
@@ -354,7 +359,7 @@ def test_noop_auto_edit_only_touches_last_touch(saved):
 
 
 def test_version_numbers_beyond_9999_sort_numerically(saved):
-    folder = ch.history_dir(saved)
+    folder = hist(saved)
     src = folder / "0001.json"
     for n in (9999, 10000):
         data = json.loads(src.read_text("utf-8"))
@@ -371,8 +376,8 @@ def test_record_reuses_read_versions_and_writes_only_the_latest(saved, monkeypat
     edit_line(saved, "둘째 수정", T0 + 10 + 6 * 60)         # 0003 auto (새 묶음)
     reads, writes = [], []
     real_load, real_write = ch._load_file, ch._write_atomic
-    monkeypatch.setattr(ch, "_load_file", lambda p: (reads.append(p.name), real_load(p))[1])
-    monkeypatch.setattr(ch, "_write_atomic", lambda p, d: (writes.append(p.name), real_write(p, d))[1])
+    monkeypatch.setattr(ch, "_load_file", lambda k: (reads.append(k.rsplit("/", 1)[-1]), real_load(k))[1])
+    monkeypatch.setattr(ch, "_write_atomic", lambda k, d: (writes.append(k.rsplit("/", 1)[-1]), real_write(k, d))[1])
     edit_line(saved, "셋째 수정", T0 + 10 + 7 * 60)         # 0003에 묶임: 요약에는 0002 상태가 필요
     assert reads == [] and writes == ["0003.json"]
     assert ch.get_version(saved, 3)["summary"]["changed"] == 1
@@ -380,7 +385,7 @@ def test_record_reuses_read_versions_and_writes_only_the_latest(saved, monkeypat
 
 def test_version_file_changed_on_disk_is_read_again(saved):
     edit_line(saved, "첫 수정", T0 + 10)
-    path = ch.history_dir(saved) / "0002.json"
+    path = hist(saved) / "0002.json"
     data = json.loads(path.read_text("utf-8"))
     data["name"] = "밖에서 붙인 이름"
     path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")

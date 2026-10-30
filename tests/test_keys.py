@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from scripts import (
-    cluster, common, conti, conti_history, fetch, footage, footage_match, footage_out, keys, library, llm, mission,
+    cluster, common, conti, fetch, footage, footage_match, footage_out, keys, library, llm, mission,
     refstore, shots, similarity, videomd,
 )
 from scripts.common import ScriptError
@@ -66,10 +66,10 @@ def test_conti_keys_match_module_paths(home: Path) -> None:
                        keys.captions_mp4(CONTI), keys.remaining_html(CONTI), keys.footage_csv(CONTI)]
     assert [s for _, s in conti.SRT_TRACKS.values()] == ["captions", "lines"]
     assert keys.cut_files_dir(CONTI) == rel(footage_out.clips_dir(conti_path)) + "/"
-    assert keys.history_dir(CONTI) == rel(conti_history.history_dir(conti_path)) + "/"
-    assert keys.history_dir(CONTI) == rel(conti_history.history_dir(CONTI)) + "/"     # str 인자도 stem만
-    assert keys.history_version(CONTI, 1) == rel(conti_history.history_dir(conti_path) / f"{1:04d}.json")
-    assert keys.history_version(CONTI, 12345) == rel(conti_history.history_dir(conti_path) / "12345.json")
+    history = f"workspace/conti_history/{conti_path.stem}/"                           # 콘티 이름(stem)만 쓴다
+    assert keys.history_dir(CONTI) == keys.history_dir(conti_path.as_posix()) == history
+    assert keys.history_version(CONTI, 1) == f"{history}0001.json"
+    assert keys.history_version(CONTI, 12345) == f"{history}12345.json"
     assert keys.footage_match(CONTI) == rel(footage_match.state_path(conti_path))
     data = b"<svg/>"
     sha6 = hashlib.sha1(data).hexdigest()[:6]

@@ -70,7 +70,7 @@ def _key(value: str | Path) -> str:
 
 
 def _rel(path: str | Path) -> str:
-    """작업 폴더 안이면 키, 밖이면 받은 경로 그대로(POSIX). 과도기: conti_history·scene_merge·captions·UI가 Path로 부른다."""
+    """작업 폴더 안이면 키, 밖이면 받은 경로 그대로(POSIX). 과도기: scene_merge·captions·UI가 Path로 부른다."""
     try:
         return _key(path)
     except ScriptError:
@@ -78,7 +78,7 @@ def _rel(path: str | Path) -> str:
 
 
 def _resolve(path: str | Path) -> Path:
-    """과도기(conti_history·scene_merge가 아직 Path를 쓴다): 상대 경로는 작업 폴더 기준 Path로."""
+    """과도기(scene_merge가 아직 Path를 쓴다): 상대 경로는 작업 폴더 기준 Path로."""
     return ctx.here().scratch.arg_path(path)
 
 

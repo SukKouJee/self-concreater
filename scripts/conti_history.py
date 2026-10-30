@@ -1,6 +1,7 @@
 """콘티 이력: 한 줄짜리 버전 목록(자동 묶음 · 이름 · md 직접 수정 감지), 비교, 되돌리기.
 
-저장: workspace/conti_history/<콘티 파일 stem>/NNNN.json (4자리, 0001부터). 모든 쓰기는 임시 파일 + 교체(원자적).
+저장: workspace/conti_history/<콘티 파일 stem>/NNNN.json (4자리, 0001부터, 객체 저장소 키 `keys.history_version`).
+모든 쓰기는 `objects.put`(임시 파일 + 교체, 원자적). 버전 JSON은 indent=1, 줄바꿈 LF 고정(os.linesep으로 바꾸지 않는다).
 버전 = {"n", "kind", "name", "at", "last_touch", "state", "summary"}.
 state = {"script": [{label, text, start, end}], "cuts": [{id, section, size, angle, sec, action, line, caption, sfx,
 guide, (ref_frame), (ref_auto), (art)}], "target_sec"}. n·start·end 같은 파생 값과 본문·메모는 넣지 않는다(프런트매터가 유일한 입력).
@@ -8,7 +9,7 @@ guide, (ref_frame), (ref_auto), (art)}], "target_sec"}. n·start·end 같은 파
 from __future__ import annotations
 
 import json
-import os
+import posixpath
 import re
 import threading
 import time
@@ -17,8 +18,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from scripts import conti
-from scripts.common import ScriptError, workspace_dir
+from scripts import conti, ctx, keys
+from scripts.common import ScriptError
 
 KINDS = ("created", "auto", "named", "before_recreate", "before_merge", "external", "restored")
 GROUP_SEC = 300                      # 마지막 손길에서 5분 안의 편집은 같은 auto 버전에 묶는다
@@ -29,8 +30,9 @@ _VERSION_RE = re.compile(r"^(\d{4,})\.json$")
 
 # --- 상태 ---------------------------------------------------------------------------
 
-def history_dir(conti_path: str | Path) -> Path:
-    return workspace_dir("conti_history", Path(conti_path).stem)
+def _key(conti_path: str | Path) -> str:
+    """콘티 경로나 키 → 콘티 md 키. 공개 함수는 들어올 때 한 번만 바꾸고 그 뒤로는 키만 쓴다."""
+    return conti._key(conti_path)
 
 
 def _num(value: Any) -> float:
@@ -144,58 +146,63 @@ def _changed_cuts(result: dict) -> int:
 
 # --- 저장소 -------------------------------------------------------------------------
 
-def _paths(folder: Path) -> list[Path]:
-    if not folder.is_dir():
-        return []
-    return sorted((p for p in folder.iterdir() if _VERSION_RE.match(p.name)), key=lambda p: int(p.stem))
+def _paths(conti_key: str) -> list[str]:
+    """이력 폴더의 버전 파일 키(번호 오름차순). 폴더가 없으면 빈 목록."""
+    metas = ctx.here().objects.list(keys.history_dir(conti_key))
+    return sorted((m.key for m in metas if _VERSION_RE.match(posixpath.basename(m.key))),
+                  key=lambda k: int(posixpath.basename(k).split(".")[0]))
 
 
-# 버전 파일 읽기 캐시: 경로 → ((수정 시각 ns, 크기), 내용). 편집마다 최신·직전 버전을 다시 읽고 파싱하지 않도록.
-# 디스크의 수정 시각이나 크기가 다르면 다시 읽는다. 돌려준 dict는 읽기 전용으로 다룬다(고치려면 복사).
+# 버전 파일 읽기 캐시: (저장소 label, 키) → ((수정 시각 ns, 크기), 내용). 편집마다 최신·직전 버전을 다시 읽고 파싱하지 않도록.
+# 저장소 label을 키에 넣어 작업 폴더가 다른 두 저장소가 같은 키로 항목을 공유하지 않게 한다.
+# 저장소의 수정 시각이나 크기가 다르면 다시 읽는다. 돌려준 dict는 읽기 전용으로 다룬다(고치려면 복사).
 CACHE_SIZE = 16
-_cache: OrderedDict[str, tuple[tuple[int, int], dict]] = OrderedDict()
+_cache: OrderedDict[tuple[str, str], tuple[tuple[int, int], dict]] = OrderedDict()
 _cache_lock = threading.Lock()
 
 
-def _stamp(path: Path) -> tuple[int, int]:
-    st = path.stat()
-    return st.st_mtime_ns, st.st_size
+def _slot(key: str) -> tuple[str, str]:
+    return ctx.here().store.label(), key
 
 
-def _remember(path: Path, stamp: tuple[int, int], data: dict) -> None:
+def _stamp(key: str) -> tuple[int, int]:
+    meta = ctx.here().objects.stat(key)
+    return meta.mtime_ns, meta.size
+
+
+def _remember(key: str, stamp: tuple[int, int], data: dict) -> None:
+    slot = _slot(key)
     with _cache_lock:
-        _cache[str(path)] = (stamp, data)
-        _cache.move_to_end(str(path))
+        _cache[slot] = (stamp, data)
+        _cache.move_to_end(slot)
         while len(_cache) > CACHE_SIZE:
             _cache.popitem(last=False)
 
 
-def _load_file(path: Path) -> dict:
+def _load_file(key: str) -> dict:
     try:
-        return json.loads(path.read_text("utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
-        raise ScriptError("history_corrupt", f"이력 파일을 읽을 수 없습니다: {path.name} ({e})") from e
+        return json.loads(ctx.here().objects.get(key).decode("utf-8"))
+    except (OSError, ValueError) as e:        # JSONDecodeError·UnicodeDecodeError는 ValueError
+        raise ScriptError("history_corrupt", f"이력 파일을 읽을 수 없습니다: {posixpath.basename(key)} ({e})") from e
 
 
-def _read(path: Path) -> dict:
+def _read(key: str) -> dict:
     try:
-        stamp = _stamp(path)
+        stamp = _stamp(key)
     except OSError as e:
-        raise ScriptError("history_corrupt", f"이력 파일을 읽을 수 없습니다: {path.name} ({e})") from e
+        raise ScriptError("history_corrupt", f"이력 파일을 읽을 수 없습니다: {posixpath.basename(key)} ({e})") from e
     with _cache_lock:
-        hit = _cache.get(str(path))
+        hit = _cache.get(_slot(key))
     if hit is not None and hit[0] == stamp:
         return hit[1]
-    data = _load_file(path)
-    _remember(path, stamp, data)
+    data = _load_file(key)
+    _remember(key, stamp, data)
     return data
 
 
-def _write_atomic(path: Path, data: dict) -> None:
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8", newline="\n")
-    os.replace(tmp, path)
-    _remember(path, _stamp(path), data)
+def _write_atomic(key: str, data: dict) -> None:
+    ctx.here().objects.put(key, json.dumps(data, ensure_ascii=False, indent=1).encode("utf-8"))   # LF 고정(변환 없음)
+    _remember(key, _stamp(key), data)
 
 
 def _summary(version: dict) -> dict:
@@ -208,9 +215,8 @@ def record(conti_path: str | Path, fm: dict, kind: str, name: str | None = None,
     if kind not in KINDS:
         raise ScriptError("bad_request", f"알 수 없는 이력 종류입니다: {kind}")
     stamp = time.time() if now is None else now
-    folder = history_dir(conti_path)
-    folder.mkdir(parents=True, exist_ok=True)
-    paths = _paths(folder)
+    key = _key(conti_path)
+    paths = _paths(key)
     latest = _read(paths[-1]) if paths else None
     state = state_of(fm)
     at = datetime.fromtimestamp(stamp).isoformat(timespec="seconds")
@@ -226,25 +232,25 @@ def record(conti_path: str | Path, fm: dict, kind: str, name: str | None = None,
     changed = _changed_cuts(diff(before["state"], state)) if before else 0
     version = {"n": n, "kind": kind, "name": name, "at": at, "last_touch": stamp, "state": state,
                "summary": {"cuts": len(state["cuts"]), "total_sec": _total(state), "changed": changed}}
-    _write_atomic(folder / f"{n:04d}.json", version)
+    _write_atomic(keys.history_version(key, n), version)
     return _summary(version)
 
 
 def list_versions(conti_path: str | Path) -> list[dict]:
     """최신순 버전 목록(state 없이)."""
-    return [_summary(_read(p)) for p in reversed(_paths(history_dir(conti_path)))]
+    return [_summary(_read(p)) for p in reversed(_paths(_key(conti_path)))]
 
 
 def get_version(conti_path: str | Path, n: int) -> dict:
-    path = history_dir(conti_path) / f"{int(n):04d}.json"
-    if not path.is_file():
+    version_key = keys.history_version(_key(conti_path), int(n))
+    if not ctx.here().objects.exists(version_key):
         raise ScriptError("version_not_found", f"이력 {n}번이 없습니다")
-    return _read(path)
+    return _read(version_key)
 
 
 def check_external(conti_path: str | Path, fm: dict, now: float | None = None) -> dict | None:
     """파일 상태가 최신 버전과 다르면 external로 남긴다. 이력이 없으면 created를 만들고 None."""
-    versions = _paths(history_dir(conti_path))
+    versions = _paths(_key(conti_path))
     if not versions:
         record(conti_path, fm, "created", now=now)
         return None
@@ -255,16 +261,16 @@ def check_external(conti_path: str | Path, fm: dict, now: float | None = None) -
 
 # --- 이름 · 되돌리기 -------------------------------------------------------------------
 
-def _guard(path: Path, expected_hash: str | None) -> None:
-    if not path.exists():
-        raise ScriptError("conti_not_found", f"콘티가 없습니다: {conti._rel(path)}")
-    if expected_hash is not None and conti.content_hash(path) != expected_hash:
+def _guard(key: str, expected_hash: str | None) -> None:
+    if not conti._md_exists(key):
+        raise ScriptError("conti_not_found", f"콘티가 없습니다: {key}")
+    if expected_hash is not None and conti.content_hash(key) != expected_hash:
         raise ScriptError("conti_changed", "파일이 밖에서 바뀌었습니다. 다시 불러오세요")
 
 
 def name(conti_path: str | Path, label: str, expected_hash: str | None, now: float | None = None) -> dict:
     with conti.HISTORY_LOCK:
-        path = conti._resolve(conti_path)
+        path = _key(conti_path)
         _guard(path, expected_hash)
         conti.ensure_ids(path)
         text = str(label or "").strip()
@@ -282,7 +288,7 @@ def restore(conti_path: str | Path, n: int, expected_hash: str | None, now: floa
 
 
 def _restore_locked(conti_path: str | Path, n: int, expected_hash: str | None, now: float | None) -> dict:
-    path = conti._resolve(conti_path)
+    path = _key(conti_path)
     _guard(path, expected_hash)
     conti.ensure_ids(path)
     version = get_version(path, n)
@@ -296,13 +302,13 @@ def _restore_locked(conti_path: str | Path, n: int, expected_hash: str | None, n
     written, html_path = conti._write_conti_file(current, fm)
     label = version["name"] or datetime.fromisoformat(version["at"]).strftime("%Y-%m-%d %H:%M")
     recorded = record(path, fm, "restored", name=f"되돌림: {label}", now=now)
-    return {"status": "restored", "version": recorded, "path": conti._rel(path), "html": conti._rel(html_path),
+    return {"status": "restored", "version": recorded, "path": path, "html": html_path,
             "hash": conti.bytes_hash(written.raw)}
 
 
 def current_state(conti_path: str | Path) -> dict:
     """파일의 지금 상태(비교용)."""
-    path = conti._resolve(conti_path)
+    path = _key(conti_path)
     with conti.HISTORY_LOCK:
         conti.ensure_ids(path)
         return state_of(conti._load_conti(path))
@@ -322,7 +328,7 @@ def baseline(conti_path: str | Path, now: float | None = None) -> dict | None:
 
 def baseline_state(conti_path: str | Path, now: float | None = None) -> tuple[dict | None, dict, str]:
     """baseline과 같고, 그때 읽은 파일의 fm(검증 끝)과 content hash도 돌려준다(화면 응답용, 다시 읽지 않게)."""
-    path = conti._resolve(conti_path)
+    path = _key(conti_path)
     with conti.HISTORY_LOCK:                             # 편집과 겹쳐 같은 버전 번호를 두 번 쓰지 않도록
         conti.ensure_ids(path)
         current = conti.read_conti(path)
