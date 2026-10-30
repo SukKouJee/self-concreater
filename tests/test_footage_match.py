@@ -53,10 +53,6 @@ def talk_files():
     return [a, b]
 
 
-def _as_path(f):
-    return f if hasattr(f, "is_file") else Path(os.environ["YT_COACH_HOME"]) / f
-
-
 class FakeLLM:
     """llm.ask_validated 대역. respond(payload, files) -> Claude 응답 dict."""
 
@@ -158,8 +154,12 @@ def test_match_sets_auto_review_missing(saved, fake):
     image_calls = [c for c in f.calls if c["files"]]
     assert {c["id"] for call in text_calls for c in call["payload"]["cuts"]} == set(ids[:3])
     assert {c["id"] for call in image_calls for c in call["payload"]["cuts"]} == {ids[3]}
-    # 사진은 경로(과도기)나 키(str, 작업 폴더 기준)로 온다
-    assert all(_as_path(p).is_file() for call in image_calls for p in call["files"])
+    # 사진은 키(str, 작업 폴더 기준 상대 경로, 역슬래시 없음)로 온다. 두 영상의 장면 모음 이미지
+    sent = [p for call in image_calls for p in call["files"]]
+    assert sent and all(isinstance(p, str) and not p.startswith("/") and "\\" not in p for p in sent)
+    root = Path(os.environ["YT_COACH_HOME"])
+    assert all((root / p).is_file() for p in sent)
+    assert set(sent) == {f"workspace/footage/{fid}/montage/{i:03d}.jpg" for fid in (FID_A, FID_B) for i in (0, 1)}
     assert state["images_used"] == sum(len(c["files"]) for c in f.calls)
     assert f.calls[0]["rules"][0].name == "footage-match.md"
 

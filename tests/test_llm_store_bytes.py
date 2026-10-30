@@ -216,3 +216,13 @@ def test_library_edits_file_relative_to_work_folder(tmp_path, monkeypatch):
     with pytest.raises(ScriptError) as e:
         library._load_edits("@missing.json")
     assert e.value.code == "invalid_edits"
+
+
+def test_ask_rejects_files_outside_work_folder_before_any_engine_call(home, tmp_path_factory, monkeypatch):
+    monkeypatch.setattr(claude_cli.shutil, "which", lambda name: pytest.fail("엔진을 부르면 안 됩니다"))
+    monkeypatch.setattr(claude_cli.subprocess, "run", lambda *a, **k: pytest.fail("엔진을 부르면 안 됩니다"))
+    outside = tmp_path_factory.mktemp("outside") / "a.jpg"
+    for bad in (outside, "../a.jpg", "a" + chr(92) + "b.jpg"):
+        with pytest.raises(ScriptError) as e:
+            llm.ask([], {}, "t", files=[bad])
+        assert e.value.code == "bad_path", bad

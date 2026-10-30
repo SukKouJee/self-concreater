@@ -754,10 +754,10 @@ def _ledger_ids(key: Any) -> list[dict[str, Any]]:
 
 def my_techniques(category: str) -> list[dict[str, Any]]:
     refstore.require_category(category)
-    key = keys.techniques_md(category)
-    if not ctx.here().store.exists(key):
+    md_key = keys.techniques_md(category)
+    if not ctx.here().store.exists(md_key):
         return []
-    _, body = refstore.read(key)
+    _, body = refstore.read(md_key)
     items = motif.parse_techniques(body)
     counts: dict[tuple[str, str], int] = {}
     for it in items:

@@ -79,11 +79,11 @@ def check() -> dict[str, Any]:
 
 
 def _file_keys(files: list[str | Path] | None) -> list[str] | None:
-    """첨부 목록을 키로. str은 이미 키, Path(과도기: api_add·api_mission이 아직 넘긴다)는 resolve 검사를 거쳐 키로 바꾼다."""
+    """첨부 목록을 키로. str은 키(keys.check로 검증), Path(과도기: api_add·api_mission이 아직 넘긴다)는 resolve 검사를 거쳐 키로 바꾼다."""
     if files is None:
         return None
     scratch = ctx.here().scratch
-    return [f if isinstance(f, str) else scratch.key_of(f) for f in files]
+    return [keys.check(f) if isinstance(f, str) else scratch.key_of(f) for f in files]
 
 
 def ask(
