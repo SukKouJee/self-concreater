@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -50,6 +51,10 @@ def talk_files():
     ])
     b = result(FID_B, [scene(0, 0.0, 5.0, FID_B), scene(1, 5.0, 9.0, FID_B)], [])
     return [a, b]
+
+
+def _as_path(f):
+    return f if hasattr(f, "is_file") else Path(os.environ["YT_COACH_HOME"]) / f
 
 
 class FakeLLM:
@@ -153,7 +158,8 @@ def test_match_sets_auto_review_missing(saved, fake):
     image_calls = [c for c in f.calls if c["files"]]
     assert {c["id"] for call in text_calls for c in call["payload"]["cuts"]} == set(ids[:3])
     assert {c["id"] for call in image_calls for c in call["payload"]["cuts"]} == {ids[3]}
-    assert all(p.is_file() for call in image_calls for p in call["files"])
+    # 사진은 경로(과도기)나 키(str, 작업 폴더 기준)로 온다
+    assert all(_as_path(p).is_file() for call in image_calls for p in call["files"])
     assert state["images_used"] == sum(len(c["files"]) for c in f.calls)
     assert f.calls[0]["rules"][0].name == "footage-match.md"
 
