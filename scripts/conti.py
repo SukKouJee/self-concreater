@@ -52,7 +52,7 @@ from scripts.stores import Doc
 from scripts.videomd import LABELS, _existing_memo, fmt_time, load_cuts, memo_from_body
 
 DEFAULT_CPS = float(json.loads((TEMPLATES_DIR / "thresholds.json").read_text("utf-8"))["speech_default_cps"])
-CONTI_SUFFIX = "-conti"
+CONTI_SUFFIX = keys.CONTI_SUFFIX
 SEC_TOLERANCE = 0.3
 OVERFLOW_SLACK = 1.15          # 말 속도 × 컷 길이의 115%까지는 허용
 SCHEMA_VERSION = 3
@@ -238,7 +238,7 @@ def new_cut_id() -> str:
     return "".join(secrets.choice(_ID_ALPHABET) for _ in range(8))
 
 
-FRAMES_PREFIX = "workspace/frames/"
+FRAMES_PREFIX = keys.FRAMES
 
 
 def ref_auto_of(value: Any) -> dict | None:
@@ -736,7 +736,7 @@ def rebuild_html(conti: str | None, embed: bool = False, all_files: bool = False
     """콘티 HTML만 다시 쓴다(콘티 md는 건드리지 않는다). all_files면 drafts/*-conti.md 전부."""
     c = ctx.here()
     if all_files:
-        found = [m.key for m in c.store.list(keys.DRAFTS, "*-conti.md")]
+        found = [m.key for m in c.store.list(keys.DRAFTS, keys.CONTI_MD_GLOB)]
     elif conti:
         found = [_key(conti)]
     else:

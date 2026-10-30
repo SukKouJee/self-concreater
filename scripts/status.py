@@ -142,7 +142,7 @@ def _videos(category: str, _targets: set[str] | None = None) -> list[dict]:
     videos: list[dict] = []
     store = ctx.here().store
     for meta in store.list(keys.DRAFTS, "*.md"):
-        if keys.stem(meta.key).endswith("-conti"):
+        if keys.stem(meta.key).endswith(keys.CONTI_SUFFIX):
             continue
         try:
             doc = store.read(meta.key)               # the file may be gone or replaced since the listing
@@ -231,8 +231,8 @@ def _mission_card() -> dict:
 
 def _recent() -> list[dict]:
     c = ctx.here()
-    found = [(m, "draft") for m in c.store.list(keys.DRAFTS, "*.md") if not keys.stem(m.key).endswith("-conti")]
-    found += [(m, "conti") for m in c.objects.list(keys.DRAFTS, "*-conti.html")]
+    found = [(m, "draft") for m in c.store.list(keys.DRAFTS, "*.md") if not keys.stem(m.key).endswith(keys.CONTI_SUFFIX)]
+    found += [(m, "conti") for m in c.objects.list(keys.DRAFTS, keys.CONTI_HTML_GLOB)]
     found += [(m, "report") for m in c.objects.list(keys.REPORTS, "*.html")]
     items = [{"path": m.key, "kind": kind, "mtime": m.mtime} for m, kind in found]
     items.sort(key=lambda i: i["mtime"], reverse=True)

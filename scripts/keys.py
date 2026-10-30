@@ -29,7 +29,12 @@ GITIGNORE = ".gitignore"
 GIT_DIR = ".git/"
 TRASH = "workspace/trash/"
 
+WORKSPACE = "workspace/"
+FRAMES = "workspace/frames/"
+CATEGORY_GLOB = "ref_*"                  # refs/ 아래 카테고리 폴더(`ref_<카테고리>`)를 고르는 패턴
 CONTI_SUFFIX = "-conti"
+CONTI_MD_GLOB = "*-conti.md"
+CONTI_HTML_GLOB = "*-conti.html"
 SHARED_PREFIXES = ("workspace/raw/", "workspace/cuts/", "workspace/frames/", "workspace/shots/")
 TYPIFY_VARIANTS = (None, "applied", "preview")
 

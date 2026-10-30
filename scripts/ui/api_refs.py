@@ -17,7 +17,7 @@ from scripts.common import ScriptError
 from scripts.ui.server import Request, route
 
 ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
-FRAMES_PREFIX = "workspace/frames/"
+FRAMES_PREFIX = keys.FRAMES
 YOUTUBE_PREFIXES = (
     "https://www.youtube.com/", "https://youtube.com/", "https://m.youtube.com/", "https://youtu.be/",
 )

@@ -540,7 +540,7 @@ def trash_video(video_id: str, category: str) -> dict:
     key = video_md_key(video_id, category)
     if not store.exists(key):
         raise ScriptError("video_not_found", f"영상 md가 없습니다: {video_id}")
-    elsewhere = [k for k in (f"{prefix}videos/{video_id}.md" for prefix in store.folders("refs/", "ref_*"))
+    elsewhere = [k for k in (f"{prefix}videos/{video_id}.md" for prefix in store.folders(keys.REFS, keys.CATEGORY_GLOB))
                  if k != key and store.exists(k)]
     data = [] if elsewhere else video_data(video_id)
     result = ctx.here().trash.move([key, *data], last=key)

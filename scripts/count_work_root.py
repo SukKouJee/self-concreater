@@ -1,11 +1,13 @@
-"""`scripts/` 아래에서 작업 폴더 경로를 직접 만드는 호출(`work_root(`·`workspace_dir(`·`category_dir(`)을 모듈별로 센다.
+"""`scripts/` 아래에서 작업 폴더 경로를 직접 만드는 호출을 모듈별로 센다(S3 설계 §5 규칙 1).
 
-서버판 준비(S3)에서 파일 입출력을 저장소 인터페이스로 옮기며 이 수를 0으로 줄인다. 함수 정의(`def work_root(`)와
+세는 이름: `work_root(`·`workspace_dir(`·`category_dir(`·`existing_category_dir(`·`move_to_trash(`. 함수 정의(`def work_root(`)와
 이 스크립트 자신은 세지 않는다. 주석·문자열 안의 이름도 함께 세는 단순한 텍스트 측정이다.
+허용 목록 모듈(경로를 직접 다뤄도 되는 곳, 설계 §5)의 합계는 `allowed`, 그 밖의 합계는 `outside`로 나누어 낸다.
+`tests/test_no_direct_paths.py`가 `outside == 0`을 강제한다.
 
     python -m scripts.count_work_root
-    -> {"modules": {"scripts/conti.py": {"work_root": 3, "workspace_dir": 5, "category_dir": 2, "all": 10}, ...},
-        "total": {"work_root": ..., "workspace_dir": ..., "category_dir": ..., "all": ...}}
+    -> {"modules": {"scripts/common.py": {"work_root": 3, ..., "all": 3, "allowed": true}, ...},
+        "allowed": {"work_root": ..., "all": ...}, "outside": {"work_root": ..., "all": ...}, "total": {...}}
 """
 from __future__ import annotations
 
@@ -14,7 +16,12 @@ from pathlib import Path
 
 from scripts.common import PLUGIN_ROOT, ArgParser, run
 
-NAMES = ("work_root", "workspace_dir", "category_dir")
+NAMES = ("work_root", "workspace_dir", "category_dir", "existing_category_dir", "move_to_trash")
+# 경로를 직접 다뤄도 되는 모듈(설계 §5 허용 목록). scripts/ 기준 POSIX 상대 경로
+ALLOWED = frozenset({
+    "scripts/ctx.py", "scripts/common.py", "scripts/filestore.py", "scripts/keys.py",
+    "scripts/count_work_root.py", "scripts/ui/server.py", "scripts/ui/__main__.py",
+})
 _CALL_RE = re.compile(r"(?<![\w.])(?<!def )(?:\w+\.)?(" + "|".join(NAMES) + r")\(")
 
 
@@ -25,19 +32,25 @@ def count_calls(text: str) -> dict[str, int]:
     return {**counts, "all": sum(counts.values())}
 
 
+def _sum(rows: list[dict[str, int]]) -> dict[str, int]:
+    return {name: sum(r[name] for r in rows) for name in (*NAMES, "all")}
+
+
 def main(argv: list[str]) -> dict:
     ArgParser(prog="count_work_root").parse_args(argv)
     scripts_dir = PLUGIN_ROOT / "scripts"
     me = Path(__file__).resolve()
-    modules: dict[str, dict[str, int]] = {}
+    modules: dict[str, dict] = {}
     for path in sorted(scripts_dir.rglob("*.py")):
         if path.resolve() == me:
             continue
         counts = count_calls(path.read_text(encoding="utf-8"))
         if counts["all"]:
-            modules[path.relative_to(PLUGIN_ROOT).as_posix()] = counts
-    total = {name: sum(c[name] for c in modules.values()) for name in (*NAMES, "all")}
-    return {"modules": modules, "total": total}
+            rel = path.relative_to(PLUGIN_ROOT).as_posix()
+            modules[rel] = {**counts, "allowed": rel in ALLOWED}
+    allowed = _sum([c for m, c in modules.items() if c["allowed"]])
+    outside = _sum([c for m, c in modules.items() if not c["allowed"]])
+    return {"modules": modules, "allowed": allowed, "outside": outside, "total": _sum([allowed, outside])}
 
 
 if __name__ == "__main__":

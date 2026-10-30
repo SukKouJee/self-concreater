@@ -128,23 +128,27 @@ def test_two_ctx_isolated_in_threads(tmp_path: Path) -> None:
 
 
 def test_count_work_root_outputs_modules() -> None:
+    names = set(count_work_root.NAMES)
     out = count_work_root.main([])
-    assert set(out) == {"modules", "total"}
-    assert set(out["total"]) == {"work_root", "workspace_dir", "category_dir", "all"}
-    assert out["modules"], "scripts/ 아래에 호출이 하나 이상 있다"
+    assert set(out) == {"modules", "allowed", "outside", "total"}
+    for part in ("allowed", "outside", "total"):
+        assert set(out[part]) == names | {"all"}
+    assert out["modules"], "허용 목록 안에 호출이 하나 이상 있다"
     for module, counts in out["modules"].items():
         assert module.startswith("scripts/") and module.endswith(".py")
-        assert set(counts) == {"work_root", "workspace_dir", "category_dir", "all"}
-        assert counts["all"] == counts["work_root"] + counts["workspace_dir"] + counts["category_dir"] > 0
-    assert out["total"]["all"] == sum(c["all"] for c in out["modules"].values())
+        assert counts["all"] == sum(counts[n] for n in names) > 0
+        assert counts["allowed"] == (module in count_work_root.ALLOWED)
+    assert out["total"]["all"] == out["allowed"]["all"] + out["outside"]["all"]
     assert "scripts/count_work_root.py" not in out["modules"]
 
 
 def test_count_calls_skips_definitions_and_lookalikes() -> None:
-    text = ("def work_root() -> Path:\n"
-            "    x = work_root() / common.workspace_dir('a')\n"
-            "    y = category_dir(c), my_work_root(), self.workspace_dir_x()\n")
-    assert count_work_root.count_calls(text) == {"work_root": 1, "workspace_dir": 1, "category_dir": 1, "all": 3}
+    text = ("def work_root() -> Path:" + chr(10)
+            + "    x = work_root() / common.workspace_dir('a')" + chr(10)
+            + "    y = category_dir(c), my_work_root(), self.workspace_dir_x()" + chr(10)
+            + "    z = refstore.existing_category_dir(c), move_to_trash(p)" + chr(10))
+    assert count_work_root.count_calls(text) == {"work_root": 1, "workspace_dir": 1, "category_dir": 1,
+                                                "existing_category_dir": 1, "move_to_trash": 1, "all": 5}
 
 
 # --- 저장소 속성 · here() (S3 §3.2, ADR-7) ---------------------------------------------

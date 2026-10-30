@@ -265,8 +265,8 @@ def scaffold() -> dict:
         lines = _decode(objects.get(keys.GITIGNORE)).splitlines()
     except FileNotFoundError:
         lines = []
-    if "workspace/" not in lines:
-        objects.put(keys.GITIGNORE, ("\n".join(lines + ["workspace/"]) + "\n").encode("utf-8"))
+    if keys.WORKSPACE not in lines:
+        objects.put(keys.GITIGNORE, ("\n".join(lines + [keys.WORKSPACE]) + "\n").encode("utf-8"))
         created.append(".gitignore")
 
     return {
@@ -333,7 +333,7 @@ def find_video(video_id: str) -> list[dict]:
     """모든 카테고리에서 videos/{video_id}.md를 찾는다."""
     store = ctx.here().store
     found = []
-    for folder in store.folders(keys.REFS, "ref_*"):
+    for folder in store.folders(keys.REFS, keys.CATEGORY_GLOB):
         for meta in store.list(f"{folder}videos/", f"{video_id}.md"):
             found.append({
                 "category": keys.category_name(folder),
@@ -346,7 +346,7 @@ def find_video(video_id: str) -> list[dict]:
 def list_categories() -> list[dict]:
     return [
         {"category": name, **count(name)}
-        for name in (keys.category_name(f) for f in ctx.here().store.folders(keys.REFS, "ref_*"))
+        for name in (keys.category_name(f) for f in ctx.here().store.folders(keys.REFS, keys.CATEGORY_GLOB))
     ]
 
 
