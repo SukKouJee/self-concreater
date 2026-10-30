@@ -21,20 +21,38 @@ labels JSON: [{"frame", "size", "angle", "face", "hands_only", "broll", "text_ov
 from __future__ import annotations
 
 import json
-import os
-import threading
 from pathlib import Path
 from typing import Any
 
-from scripts import refstore
-from scripts.common import TEMPLATES_DIR, ArgParser, ScriptError, run, work_root, workspace_dir
+from scripts import ctx, keys, refstore
+from scripts.common import TEMPLATES_DIR, ArgParser, ScriptError, run
 from scripts.cuts import pick_frame_scenes
 from scripts.features import SHOT_ANGLES, SHOT_FLAGS, SHOT_SIZES
-from scripts.videomd import load_cuts, video_md_path
+from scripts.videomd import load_cuts
 
 DESC_MAX = 60
 DESC_BATCH = 8
 SAMPLE = json.loads((TEMPLATES_DIR / "thresholds.json").read_text("utf-8"))["frames"]["shots_sample"]
+
+
+def _video_key(video_id: str, category: str) -> str:
+    """영상 md 키. 카테고리 이름·폴더 검사는 refstore.require_category와 같다(invalid_category·category_not_found)."""
+    refstore.require_category(category)
+    return keys.video_md(category, video_id)
+
+
+def _video_keys(category: str) -> list[str]:
+    """카테고리 videos/ 아래 md 키, 목록 순서는 sorted(glob)과 같다."""
+    refstore.require_category(category)
+    return [m.key for m in ctx.here().store.list(keys.videos_dir(category))]
+
+
+def _frame_exists(frame: str) -> bool:
+    """cuts json에 적힌 대표 프레임 파일이 아직 있는가. 공유 캐시 키가 아닌 값(손으로 고친 json)은 없는 것으로 본다."""
+    try:
+        return ctx.here().shared.exists(frame)
+    except (ValueError, ScriptError):
+        return False
 
 
 def _section_at(fm: dict, t: float) -> str | None:
@@ -46,10 +64,10 @@ def _section_at(fm: dict, t: float) -> str | None:
 
 
 def context(video_id: str, category: str) -> dict:
-    md = video_md_path(video_id, category)
-    if not md.exists():
+    md = _video_key(video_id, category)
+    if not ctx.here().store.exists(md):
         raise ScriptError("video_not_found", f"영상 md가 없습니다: {video_id} (먼저 /yt-add)")
-    fm, _ = refstore.read_md(md)
+    fm, _ = refstore.read(md)
     cuts = load_cuts(video_id)
     scenes = [s for s in (cuts or {}).get("scenes", []) if s.get("frame")]
     if not scenes:
@@ -75,18 +93,18 @@ def _has_sample_labels(video_id: str, category: str) -> bool:
     try:
         sample = context(video_id, category)["frames"]
     except ScriptError:
-        return _labels_file(video_id).exists()
+        return ctx.here().shared.exists(keys.shots(video_id))
     return any(f["frame"] in labelled for f in sample)
 
 
 def pending(category: str) -> dict:
-    videos = refstore.existing_category_dir(category) / "videos"
     todo, relabel = [], []
-    for p in sorted(videos.glob("*.md")):
-        if not refstore.read_md(p)[0].get("shots"):
-            todo.append(p.stem)
-        elif not _has_sample_labels(p.stem, category):
-            relabel.append(p.stem)          # 비율만 있고 표본의 프레임별 라벨이 없음(Phase 12 이전 분류; 설명만 있는 파일 포함)
+    for key in _video_keys(category):
+        vid = keys.stem(key)
+        if not refstore.read(key)[0].get("shots"):
+            todo.append(vid)
+        elif not _has_sample_labels(vid, category):
+            relabel.append(vid)          # 비율만 있고 표본의 프레임별 라벨이 없음(Phase 12 이전 분류; 설명만 있는 파일 포함)
     return {"category": category, "pending": todo + relabel, "relabel": relabel}
 
 
@@ -113,13 +131,9 @@ def _check_desc(lab: dict) -> str:
     return text
 
 
-def _labels_file(video_id: str) -> Path:
-    return workspace_dir("shots", f"{video_id}.json")
-
-
 def _read_labels(video_id: str) -> list[dict]:
     try:
-        data = json.loads(_labels_file(video_id).read_text("utf-8"))
+        data = json.loads(ctx.here().shared.get(keys.shots(video_id)).decode("utf-8"))
     except (OSError, json.JSONDecodeError):
         return []
     labels = data.get("labels") if isinstance(data, dict) else None
@@ -127,14 +141,9 @@ def _read_labels(video_id: str) -> list[dict]:
 
 
 def _write_labels(video_id: str, labels: list[dict]) -> None:
-    out = _labels_file(video_id)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out.with_name(f"{out.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-    try:
-        tmp.write_text(json.dumps({"id": video_id, "labels": labels}, ensure_ascii=False, indent=1), encoding="utf-8")
-        os.replace(tmp, out)
-    finally:
-        tmp.unlink(missing_ok=True)
+    # write_text 기본 줄바꿈(Windows CRLF)과 같은 바이트
+    text = json.dumps({"id": video_id, "labels": labels}, ensure_ascii=False, indent=1)
+    ctx.here().shared.put(keys.shots(video_id), refstore.text_bytes(text))
 
 
 def apply(video_id: str, category: str, labels_path: Path) -> dict:
@@ -168,7 +177,7 @@ def apply(video_id: str, category: str, labels_path: Path) -> dict:
         "by_section": {sec: max(sizes, key=sizes.get) for sec, sizes in by_section.items()},
         "frames": len(labels),
     }
-    refstore.update_frontmatter(video_md_path(video_id, category), {"shots": result})
+    refstore.update_frontmatter(_video_key(video_id, category), {"shots": result})
     old = {l["frame"]: l for l in _read_labels(video_id)}
     fresh = {}
     for lab in labels:
@@ -189,9 +198,8 @@ def apply(video_id: str, category: str, labels_path: Path) -> dict:
 
 def _stored_frames(video_id: str) -> list[dict]:
     """cuts가 저장한 장면 대표 프레임 전부(장면 순서). 파일이 지워진 것은 뺀다."""
-    root = work_root()
     scenes = (load_cuts(video_id) or {}).get("scenes", [])
-    return [s for s in scenes if s.get("frame") and (root / s["frame"]).is_file()]
+    return [s for s in scenes if s.get("frame") and _frame_exists(s["frame"])]
 
 
 def _undescribed(video_id: str) -> list[dict]:
@@ -200,10 +208,10 @@ def _undescribed(video_id: str) -> list[dict]:
 
 
 def _video_fm(video_id: str, category: str) -> dict:
-    md = video_md_path(video_id, category)
-    if not md.exists():
+    md = _video_key(video_id, category)
+    if not ctx.here().store.exists(md):
         raise ScriptError("video_not_found", f"영상 md가 없습니다: {video_id} (먼저 /yt-add)")
-    return refstore.read_md(md)[0]
+    return refstore.read(md)[0]
 
 
 def describe_context(video_id: str, category: str, limit: int = DESC_BATCH) -> dict:
@@ -254,18 +262,18 @@ def apply_desc(video_id: str, category: str, labels_path: Path) -> dict:
 
 def desc_status(category: str) -> dict:
     """카테고리 레퍼런스의 저장 프레임 수, 설명이 있는 수, 아직 남은 영상(mine은 세지 않는다)."""
-    videos = refstore.existing_category_dir(category) / "videos"
     total = done = 0
     todo = []
-    for p in sorted(videos.glob("*.md")):
-        if refstore.read_md(p)[0].get("role", "ref") == "mine":
+    for key in _video_keys(category):
+        vid = keys.stem(key)
+        if refstore.read(key)[0].get("role", "ref") == "mine":
             continue
-        frames = _stored_frames(p.stem)
-        left = len(_undescribed(p.stem))
+        frames = _stored_frames(vid)
+        left = len(_undescribed(vid))
         total += len(frames)
         done += len(frames) - left
         if left:
-            todo.append(p.stem)
+            todo.append(vid)
     return {"frames": total, "described": done, "videos_todo": todo}
 
 
@@ -297,8 +305,7 @@ def main(argv: list[str]) -> Any:
         return describe_context(args.video_id, args.category)
     if args.cmd == "desc-status":
         return desc_status(args.category)
-    path = Path(args.labels)
-    path = path if path.is_absolute() else work_root() / path
+    path = ctx.here().scratch.arg_path(args.labels)
     if args.cmd == "apply-desc":
         return apply_desc(args.video_id, args.category, path)
     return apply(args.video_id, args.category, path)

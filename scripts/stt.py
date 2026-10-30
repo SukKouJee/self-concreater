@@ -16,7 +16,8 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator, NamedTuple
 
-from scripts.common import ArgParser, Progress, ScriptError, run, safe_progress, workspace_dir
+from scripts import ctx
+from scripts.common import ArgParser, Progress, ScriptError, run, safe_progress
 from scripts.fetch import load_raw, save_raw, ytdlp_error, ytdlp_options
 
 DEFAULT_MODEL = "small"
@@ -136,7 +137,7 @@ def transcribe(video_id: str, force: bool = False, progress: Progress | None = N
 
     WhisperModel = _load_whisper()
     model_name = os.environ.get("YT_STT_MODEL") or DEFAULT_MODEL
-    tmp_dir = workspace_dir("tmp")
+    tmp_dir = ctx.here().scratch.local_path("tmp")
     report = safe_progress(progress)
     try:
         if report is not None:

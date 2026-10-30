@@ -24,12 +24,11 @@ import os
 import re
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from scripts import refstore
-from scripts.common import ArgParser, Progress, ScriptError, run, safe_progress, work_root, workspace_dir
+from scripts import ctx, keys, refstore
+from scripts.common import ArgParser, Progress, ScriptError, run, safe_progress
 
 SHORTS_MAX_SEC = 180
 # 공백 제외 글자 수 / 영상 길이(초)가 이보다 낮으면 말이 거의 없는 영상으로 본다
@@ -227,7 +226,7 @@ def wait_turn(progress: Progress | None = None) -> None:
     progress가 있으면 1초마다 ("wait", None, "차단 방지 대기 N초")로 남은 대기를 알린다.
     """
     interval = float(os.environ.get("YT_FETCH_INTERVAL") or FETCH_INTERVAL_SEC)
-    stamp = workspace_dir(".last_fetch")
+    stamp = ctx.here().scratch.local_path(".last_fetch")
     report = safe_progress(progress)
     if stamp.exists():
         try:
@@ -245,28 +244,24 @@ def wait_turn(progress: Progress | None = None) -> None:
     stamp.write_text(str(time.time()), encoding="utf-8")
 
 
-def raw_path(video_id: str) -> Path:
-    return workspace_dir("raw", f"{video_id}.json")
-
-
 def load_raw(video_id: str) -> dict:
-    path = raw_path(video_id)
-    if not path.exists():
+    shared = ctx.here().shared
+    key = keys.raw(video_id)
+    if not shared.exists(key):
         raise ScriptError("raw_not_found", f"수집 데이터가 없습니다: {video_id} (먼저 fetch)")
-    return json.loads(path.read_text("utf-8"))
+    return json.loads(shared.get(key).decode("utf-8"))
 
 
-def save_raw(data: dict) -> Path:
-    path = raw_path(data["id"])
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
-    return path
+def save_raw(data: dict) -> str:
+    """수집 데이터를 공유 캐시에 쓴다. 돌려주는 값은 키(`workspace/raw/<id>.json`)."""
+    key = keys.raw(data["id"])
+    # write_text 기본 줄바꿈(Windows CRLF)과 같은 바이트
+    ctx.here().shared.put(key, refstore.text_bytes(json.dumps(data, ensure_ascii=False, indent=2)))
+    return key
 
 
 def check_duplicates(video_id: str, category: str, role: str) -> tuple[dict | None, list[str]]:
-    refstore.existing_category_dir(category)
+    refstore.require_category(category)
     found = refstore.find_video(video_id)
     conflict = [f for f in found if f["role"] != role]
     if conflict:
@@ -296,7 +291,7 @@ def _summary(data: dict, status: str, also_in: list[str]) -> dict:
     return {
         "id": data["id"],
         "status": status,
-        "raw": raw_path(data["id"]).relative_to(work_root()).as_posix(),
+        "raw": keys.raw(data["id"]),
         "title": meta.get("title"),
         "channel": meta.get("channel"),
         "duration_sec": meta.get("duration"),
@@ -321,8 +316,7 @@ def fetch(url: str, category: str | None = None, role: str = "ref", force: bool 
         if same and not (force or reanalyze):
             return {"id": video_id, "status": "exists", "md": same["md"], "also_in": also_in}
 
-    path = raw_path(video_id)
-    if path.exists() and not force:
+    if ctx.here().shared.exists(keys.raw(video_id)) and not force:
         data, status = load_raw(video_id), "cached"
     else:
         proxy = os.environ.get("YT_PROXY") or None

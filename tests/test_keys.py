@@ -106,10 +106,10 @@ def test_other_doc_keys_match_module_paths(home: Path) -> None:
 
 
 def test_workspace_keys_match_module_paths(home: Path) -> None:
-    assert keys.raw(VID) == rel(fetch.raw_path(VID))
+    assert keys.raw(VID) == rel(common.workspace_dir("raw", f"{VID}.json"))     # fetch.py (옮긴 뒤엔 저장소가 같은 키를 씀)
     assert keys.cuts(VID) == rel(common.workspace_dir("cuts", f"{VID}.json"))           # cuts.py·videomd.load_cuts
     assert keys.frames_dir(VID) == rel(common.workspace_dir("frames", VID)) + "/"         # cuts.py
-    assert keys.shots(VID) == rel(shots._labels_file(VID))
+    assert keys.shots(VID) == rel(common.workspace_dir("shots", f"{VID}.json"))   # shots.py
     assert keys.typify("travel") == rel(cluster.result_path("travel"))
     assert keys.typify("travel", "applied") == rel(cluster.applied_path("travel"))
     assert keys.typify("travel", "preview") == rel(cluster.preview_path("travel"))

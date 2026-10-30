@@ -10,9 +10,10 @@ import os
 import statistics
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
-from scripts.common import workspace_dir
+from scripts import ctx
 
 STEPS = ("fetch", "stt", "cuts", "analyze", "shots", "describe")
 KEEP = 20
@@ -46,8 +47,8 @@ def _key(step: str, engine: str | None) -> str:
     return f"{step}:{engine}" if engine and step in ENGINE_STEPS else step
 
 
-def _path():
-    return workspace_dir("timings.json")
+def _path() -> Path:
+    return ctx.here().scratch.local_path("timings.json")
 
 
 def _load() -> dict[str, list[dict[str, Any]]]:

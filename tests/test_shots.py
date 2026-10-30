@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 
@@ -380,8 +381,8 @@ def test_apply_desc_counts_unique_frames(home):
 def test_labels_are_written_atomically(home, monkeypatch):
     make_frames(home)
     seen = []
-    real = shots.os.replace
-    monkeypatch.setattr(shots.os, "replace", lambda a, b: (seen.append((str(a), str(b))), real(a, b))[1])
+    real = os.replace
+    monkeypatch.setattr(os, "replace", lambda a, b: (seen.append((str(a), str(b))), real(a, b))[1])
     shots.apply_desc(VID, CAT, labels_file(home, [full(frame_path(1))]))
     assert len(seen) == 1 and seen[0][0] != seen[0][1] and seen[0][1].endswith(f"{VID}.json")
     assert [p.name for p in (home / "workspace" / "shots").iterdir()] == [f"{VID}.json"]

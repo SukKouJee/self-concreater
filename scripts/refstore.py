@@ -132,7 +132,7 @@ def read(key: str) -> tuple[dict, str]:
 
 
 def _key_of(target: str | Path) -> str | None:
-    """과도기 래퍼용: 문서 키(상대 str)나 작업 폴더 안 md 경로 → 키. 작업 폴더 밖이거나 md가 아니면 None(Path 그대로 읽는다).
+    """과도기 래퍼용: 문서 키(상대 str)나 작업 폴더 안 md 경로 → 키. `str` 인자는 작업 폴더 기준 키이지 cwd 기준 경로가 아니다(`Path`만 경로로 본다). 작업 폴더 밖이거나 md가 아니면 None(Path 그대로 읽는다).
     상대 Path는 지금처럼 현재 폴더 기준이다. 탈출 검사는 `scratch.key_of`의 resolve 기준(`..`·심볼릭 링크 포함)."""
     if isinstance(target, str) and not Path(target).is_absolute():
         return target

@@ -16,13 +16,13 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterator
 
 import cv2
 import numpy as np
 
+from scripts import ctx, keys, refstore
 from scripts.common import (
     TEMPLATES_DIR,
     ArgParser,
@@ -30,8 +30,6 @@ from scripts.common import (
     ScriptError,
     run,
     safe_progress,
-    work_root,
-    workspace_dir,
 )
 from scripts.fetch import wait_turn, parse_video_id, ytdlp_error, ytdlp_options
 
@@ -380,13 +378,14 @@ DOWNLOAD_START_TEXT = "영상 받는 중"
 
 def cut_stats(video_id: str, force: bool = False, progress: Progress | None = None) -> dict:
     """progress가 있으면 wait → download → scenes → camera 순서로 하위 구간 진행을 알린다."""
-    out_path = workspace_dir("cuts", f"{video_id}.json")
-    if out_path.exists() and not force:
-        return {**json.loads(out_path.read_text("utf-8")), "status": "cached"}
+    c = ctx.here()
+    cuts_key = keys.cuts(video_id)
+    if c.shared.exists(cuts_key) and not force:
+        return {**json.loads(c.shared.get(cuts_key).decode("utf-8")), "status": "cached"}
 
-    frames_dir = workspace_dir("frames", video_id)
-    shutil.rmtree(frames_dir, ignore_errors=True)
-    tmp_dir = workspace_dir("tmp")
+    frames_key = keys.frames_dir(video_id)
+    c.shared.delete_prefix(frames_key)
+    tmp_dir = c.scratch.local_path("tmp")
     try:
         report = safe_progress(progress)
         wait_turn(report)
@@ -395,13 +394,14 @@ def cut_stats(video_id: str, force: bool = False, progress: Progress | None = No
             report("download", None, DOWNLOAD_START_TEXT)
         proxy = os.environ.get("YT_PROXY") or None
         video = download_video(video_id, tmp_dir, proxy, progress=report)
-        analysis = analyze_video(video, frames_dir, report)
+        with c.shared.write_path(frames_key) as frames_dir:
+            analysis = analyze_video(video, frames_dir, report)
     finally:
         # 원본 영상은 어떤 경우에도 남기지 않는다
         for leftover in tmp_dir.glob(f"{video_id}.*") if tmp_dir.exists() else []:
             leftover.unlink(missing_ok=True)
 
-    rel_frames = frames_dir.relative_to(work_root()).as_posix()
+    rel_frames = frames_key.rstrip("/")
     scenes = [
         {**s, "frame": f"{rel_frames}/{s['frame']}" if s["frame"] else None}
         for s in analysis["scenes"]
@@ -417,8 +417,8 @@ def cut_stats(video_id: str, force: bool = False, progress: Progress | None = No
         "frames": [s["frame"] for s in scenes if s["frame"]],
         "scenes": scenes,
     }
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    # write_text 기본 줄바꿈(Windows CRLF)과 같은 바이트
+    c.shared.put(cuts_key, refstore.text_bytes(json.dumps(result, ensure_ascii=False, indent=2)))
     return {**result, "status": "analyzed"}
 
 
