@@ -1152,3 +1152,68 @@ def test_merge_apply_without_footage_has_no_merge_warnings(client, home, draft_m
     body = {"path": rel(home, src), "cuts": preview["cuts"], "hash": preview["hash"]}
     status, resp = client.json("POST", "/api/conti/merge/apply", body)
     assert status == 200 and resp["merged"]["warnings"] == []
+
+
+# --- 장면 그림 ---------------------------------------------------------------------------
+
+def _art_cut(home, draft_md, n=1):
+    from tests.test_conti import attach_art
+    src = saved_conti(home, draft_md)
+    return src, attach_art(src, home, n)
+
+
+def test_view_and_html_without_art_unchanged(client, home, draft_md):
+    src = saved_conti(home, draft_md)
+    before_html = conti.render_html(conti.validated(conti.read_conti(src).stored))
+    body = client.json("GET", f"/api/conti?path={q(rel(home, src))}")[1]
+    assert all(c["art"] is None for c in body["cuts"])
+    assert body["cuts"][0]["ref"] is None and body["cuts"][0]["sketch"].startswith("<svg")
+    assert conti.render_html(conti.validated(conti.read_conti(src).stored)) == before_html
+    assert "장면 그림" not in before_html
+
+
+def test_view_art_url_and_state(client, home, draft_md):
+    src, art = _art_cut(home, draft_md)
+    cuts = client.json("GET", f"/api/conti?path={q(rel(home, src))}")[1]["cuts"]
+    assert cuts[0]["art"] == {"url": "/files/" + art["file"], "state": "fresh"}
+    assert cuts[1]["art"] is None
+    conti.update_cut(src, 1, {"action": "완전히 다른 장면"})
+    cuts = client.json("GET", f"/api/conti?path={q(rel(home, src))}")[1]["cuts"]
+    assert cuts[0]["art"]["state"] == "stale"
+
+
+def test_pinned_photo_beats_art(client, home, draft_md):
+    src, _ = _art_cut(home, draft_md)
+    conti.update_cut(src, 1, {"ref_frame": pin_frame(home)})
+    cuts = client.json("GET", f"/api/conti?path={q(rel(home, src))}")[1]["cuts"]
+    assert cuts[0]["art"] is None and cuts[0]["ref"]["match"] == "pinned"
+
+
+def test_update_cut_reports_art_stale(client, home, draft_md):
+    src, _ = _art_cut(home, draft_md)
+    path = rel(home, src)
+    first = client.json("GET", f"/api/conti?path={q(path)}")[1]
+    cid = first["cuts"][0]["id"]
+    status, resp = client.json("POST", "/api/conti/cut", {"path": path, "n": 1, "fields": {"line": "대사만 변경"},
+                                                          "hash": first["hash"]})
+    assert status == 200 and resp["art_stale"] == []
+    status, resp = client.json("POST", "/api/conti/cut", {"path": path, "n": 1, "fields": {"action": "다른 행동"},
+                                                          "hash": resp["hash"]})
+    assert status == 200 and resp["art_stale"] == [cid]
+    # 이미 stale인 그림은 다시 알리지 않는다
+    status, resp = client.json("POST", "/api/conti/cut", {"path": path, "n": 1, "fields": {"action": "또 다른 행동"},
+                                                          "hash": resp["hash"]})
+    assert resp["art_stale"] == []
+
+
+def test_cuts_edit_reports_art_stale(client, home, draft_md):
+    src, _ = _art_cut(home, draft_md)
+    path = rel(home, src)
+    first = client.json("GET", f"/api/conti?path={q(path)}")[1]
+    cid = first["cuts"][0]["id"]
+    status, resp = client.json("POST", "/api/conti/cuts", {"path": path, "op": "update", "id": cid,
+                                                           "fields": {"guide": "새 가이드"}, "hash": first["hash"]})
+    assert status == 200 and resp["art_stale"] == [cid]
+    status, resp = client.json("POST", "/api/conti/cuts", {"path": path, "op": "update", "id": cid,
+                                                           "fields": {"line": "대사"}, "hash": resp["hash"]})
+    assert resp["art_stale"] == []

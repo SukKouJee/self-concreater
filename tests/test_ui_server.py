@@ -510,3 +510,15 @@ def test_byte_range_lives_in_server_and_is_shared():
     assert api_footage.byte_range is server.byte_range
     assert api_footage.RangeNotSatisfiable is server.RangeNotSatisfiable
     assert server.MAX_OPEN_RANGE == api_footage.MAX_OPEN_RANGE == 8 * 1024 * 1024
+
+
+def test_files_serves_conti_art(client, tmp_path):
+    svg = tmp_path / "workspace" / "conti-art" / "d" / "a.svg"
+    svg.parent.mkdir(parents=True)
+    svg.write_text("<svg xmlns='http://www.w3.org/2000/svg'/>", encoding="utf-8")
+    status, headers, raw = client.call("GET", "/files/workspace/conti-art/d/a.svg")
+    assert status == 200 and raw.startswith(b"<svg")
+    assert headers["Content-Type"] == "image/svg+xml"
+    assert headers["Content-Security-Policy"] == "default-src 'none'; style-src 'unsafe-inline'; img-src data:"
+    status, headers, _ = client.call("GET", "/files/workspace/frames/none.jpg")
+    assert "Content-Security-Policy" not in headers

@@ -1389,3 +1389,49 @@ def test_deleted_scene_of_7_2_seconds_comes_back_exactly(saved):
                                       (61.4, "약 61초"), (0.5, "약 0.5초")])
 def test_about_rounds_half_up_like_the_ui(sec, text):
     assert conti._about(sec) == text
+
+
+# --- 장면 그림 표시 ---------------------------------------------------------------------------
+
+def attach_art(path, home, n, name="a.svg"):
+    """n번 컷에 그림 파일을 만들고 그 근거(basis)로 art를 붙인다. 붙인 art를 돌려준다."""
+    from scripts import conti_art
+    current = conti.read_conti(path)
+    fm = conti.validated(current.stored)
+    rel = f"workspace/conti-art/test/{name}"
+    (home / rel).parent.mkdir(parents=True, exist_ok=True)
+    (home / rel).write_text('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900"/>', encoding="utf-8")
+    art = {"file": rel, "basis": conti_art.basis(fm["cuts"][n - 1], conti_art.aspect(fm))}
+    fm["cuts"][n - 1]["art"] = art
+    conti._write_conti_file(current, fm)
+    return art
+
+
+def test_render_html_without_art_unchanged(saved):
+    fm = conti.validated(conti.read_conti(saved).stored)
+    html = conti.render_html(fm)
+    assert "장면 그림" not in html and "image/svg+xml" not in html
+    assert html == conti.render_html({**fm, "cuts": [{k: v for k, v in c.items() if k != "art"} for c in fm["cuts"]]})
+
+
+def test_render_html_prefers_art_over_photo(saved, home):
+    attach_art(saved, home, 1)
+    fm = conti.validated(conti.read_conti(saved).stored)
+    html = conti.render_html(fm)
+    assert html.count("<figcaption>장면 그림</figcaption>") == 1 and "data:image/svg+xml;base64," in html
+    assert "설명이 바뀌어" not in html
+
+
+def test_render_html_stale_art_caption(saved, home):
+    attach_art(saved, home, 1)
+    fm = conti.validated(conti.read_conti(saved).stored)
+    fm["cuts"][0]["action"] = "전혀 다른 장면"
+    assert "장면 그림 · 설명이 바뀌어 다시 그려야 해요" in conti.render_html(fm)
+
+
+def test_pinned_photo_beats_art_in_html(saved, home):
+    attach_art(saved, home, 1)
+    fm = conti.validated(conti.read_conti(saved).stored)
+    fm["cuts"][0]["ref_frame"] = pin_frame(home)
+    html = conti.render_html(fm)
+    assert "장면 그림" not in html and "image/svg+xml" not in html

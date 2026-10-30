@@ -49,7 +49,7 @@ LOCK = "ui.lock"
 COOKIE_PREFIX = "ytc_key"
 HEADER = "X-YTC-Key"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
-FILE_DIRS: tuple[tuple[str, ...], ...] = (("workspace", "frames"), ("drafts",), ("reports",))
+FILE_DIRS: tuple[tuple[str, ...], ...] = (("workspace", "frames"), ("workspace", "conti-art"), ("drafts",), ("reports",))
 MAX_BODY = 10 * 1024 * 1024
 STREAM_CHUNK = 1024 * 1024
 MAX_OPEN_RANGE = 8 * 1024 * 1024   # 끝을 정하지 않은 Range(bytes=N-)에 한 번에 내주는 상한
@@ -200,8 +200,15 @@ def _contained(base: Path, rel: str) -> Path | None:
     return target
 
 
+# SVG를 탭에서 직접 열어도 스크립트·외부 자원이 돌지 않게 하는 방어선(그림은 sanitize를 거치지만 한 겹 더)
+SVG_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:"
+
+
 def _file_response(path: Path) -> Response:
-    return Response(200, path.read_bytes(), content_type(path))
+    resp = Response(200, path.read_bytes(), content_type(path))
+    if path.suffix.lower() == ".svg":
+        resp.headers.append(("Content-Security-Policy", SVG_CSP))
+    return resp
 
 
 class RangeNotSatisfiable(Exception):

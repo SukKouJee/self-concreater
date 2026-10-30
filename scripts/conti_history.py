@@ -3,7 +3,7 @@
 저장: workspace/conti_history/<콘티 파일 stem>/NNNN.json (4자리, 0001부터). 모든 쓰기는 임시 파일 + 교체(원자적).
 버전 = {"n", "kind", "name", "at", "last_touch", "state", "summary"}.
 state = {"script": [{label, text, start, end}], "cuts": [{id, section, size, angle, sec, action, line, caption, sfx,
-guide, (ref_frame), (ref_auto)}], "target_sec"}. n·start·end 같은 파생 값과 본문·메모는 넣지 않는다(프런트매터가 유일한 입력).
+guide, (ref_frame), (ref_auto), (art)}], "target_sec"}. n·start·end 같은 파생 값과 본문·메모는 넣지 않는다(프런트매터가 유일한 입력).
 """
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from scripts.common import ScriptError, workspace_dir
 KINDS = ("created", "auto", "named", "before_recreate", "before_merge", "external", "restored")
 GROUP_SEC = 300                      # 마지막 손길에서 5분 안의 편집은 같은 auto 버전에 묶는다
 NAME_MAX = 30
-CUT_FIELDS = ("section", "size", "angle", "sec", "action", "line", "caption", "sfx", "guide", "ref_frame", "ref_auto")
+CUT_FIELDS = ("section", "size", "angle", "sec", "action", "line", "caption", "sfx", "guide", "ref_frame", "ref_auto", "art")
 _VERSION_RE = re.compile(r"^(\d{4,})\.json$")
 
 
@@ -48,6 +48,9 @@ def state_of(fm: dict) -> dict:
         auto = conti.ref_auto_of(c.get("ref_auto"))
         if auto:
             cut["ref_auto"] = auto
+        art = conti.art_of(c.get("art"))
+        if art:
+            cut["art"] = art
         cuts.append(cut)
     script = [{"label": s["label"], "text": s.get("text") or "", "start": _num(s["start"]), "end": _num(s["end"])}
               for s in fm["script"]]
@@ -58,6 +61,7 @@ def _clean(cut: dict) -> dict:
     out = {f: cut.get(f) for f in CUT_FIELDS}
     out["ref_frame"] = out["ref_frame"] or None
     out["ref_auto"] = (conti.ref_auto_of(out["ref_auto"]) or {}).get("frame")   # 비교·표시는 사진 경로만
+    out["art"] = (conti.art_of(out["art"]) or {}).get("file")                    # 비교·표시는 그림 파일 경로만
     out["angle"] = out["angle"] or None
     out["sec"] = _num(cut["sec"])
     return out
@@ -122,7 +126,7 @@ def diff(a_state: dict, b_state: dict) -> dict:
         for field in CUT_FIELDS:
             old, new = _clean(a)[field], _clean(b)[field]
             if old != new:
-                changes.append(entry("changed", a, b, field, *((old, new) if field == "ref_auto" else (a.get(field), b.get(field)))))
+                changes.append(entry("changed", a, b, field, *((old, new) if field in ("ref_auto", "art") else (a.get(field), b.get(field)))))
     ta, tb = _total(a_state), _total(b_state)
     if ta != tb:
         changes.append({"kind": "total", "cut": None, "n_from": None, "n_to": None, "field": "total_sec", "from": ta, "to": tb})

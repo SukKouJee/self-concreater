@@ -570,6 +570,22 @@ def ref_figure(ref: dict | None) -> str:
             f'<figcaption>{_esc(ref_caption(ref))}</figcaption></figure>')
 
 
+ART_CAPTION = "장면 그림"
+ART_STALE_CAPTION = "장면 그림 · 설명이 바뀌어 다시 그려야 해요"
+
+
+def art_figure(shown: dict | None) -> str:
+    """장면 그림 한 칸(SVG를 base64 data URI <img>로 넣는다). 그릴 그림이 없으면 빈 문자열."""
+    if not shown:
+        return ""
+    path = work_root() / shown["file"]
+    if not path.is_file():
+        return ""
+    uri = "data:image/svg+xml;base64," + base64.b64encode(path.read_bytes()).decode("ascii")
+    caption = ART_STALE_CAPTION if shown["state"] == "stale" else ART_CAPTION
+    return f'<figure><img class="ref" src="{uri}" alt="{ART_CAPTION}"><figcaption>{caption}</figcaption></figure>'
+
+
 def _about(sec: float) -> str:
     """카드의 장면 길이 '약 25초'(10초 미만은 소수 한 자리). UI conti-utils.js aboutSec과 같은 규칙."""
     n = float(sec or 0)
@@ -578,9 +594,11 @@ def _about(sec: float) -> str:
 
 
 def render_html(fm: dict) -> str:
+    from scripts import conti_art           # conti_art가 conti를 가져오므로 순환을 피해 늦게 가져온다
     script, cuts = fm["script"], fm["cuts"]
     vertical = fm["format"] == "shorts"
     refs = cut_refs(fm)
+    ratio = conti_art.aspect(fm)
     warn = {w["cut"]: w for w in warnings(script, cuts, fm["speech_cps"]) if w["kind"] == "line_too_long"}
     color = lambda label: f"var(--s{LABELS.index(label) + 1})" if label in LABELS else "var(--muted)"
     used = list(dict.fromkeys(s["label"] for s in script))
@@ -598,8 +616,8 @@ def render_html(fm: dict) -> str:
     for c in cuts:
         label = script[c["section"]]["label"]
         shot = _esc(c["size"]) + (" · " + _esc(c["angle"]) if c.get("angle") else "")
-        # 사진이 주 그림: 장면 사진이 있으면 그것만, 없을 때만 샷 크기 도식
-        picture = ref_figure(refs.get(c["n"])) or f'<figure>{sketch(c["size"], vertical)}<figcaption>{shot}</figcaption></figure>'
+        # 그림 순서: 고정 사진 없이 장면 그림이 있으면 그림 → 장면 사진 → 샷 크기 도식(display_art가 고정 사진을 먼저 가린다)
+        picture = art_figure(conti_art.display_art(c, ratio)) or ref_figure(refs.get(c["n"])) or f'<figure>{sketch(c["size"], vertical)}<figcaption>{shot}</figcaption></figure>'
         rows = [("화면", _esc(c["action"]), ""), ("샷", shot, ""), ("대사", _esc(c["line"]) or "—", "line"),
                 ("자막", _esc(c["caption"]) or "—", ""), ("효과음", _esc(c["sfx"]) or "—", ""), ("가이드", _esc(c["guide"]), "")]
         w = warn.get(c["n"])

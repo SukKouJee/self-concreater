@@ -420,3 +420,21 @@ def test_name_restore_diff_on_v2_file_assign_ids_first(saved):
     _strip_ids(saved)
     ch.restore(saved, 1, conti.content_hash(saved), now=T0 + 9)
     assert all(c.get("id") for c in refstore.read_md(saved)[0]["cuts"])
+
+
+def test_history_restore_brings_back_art(saved, home):
+    from scripts import conti_art
+    from tests.test_conti import attach_art
+    art = attach_art(saved, home, 1)
+    edit_line(saved, "다른 대사", T0 + 10)                # art가 든 상태가 버전으로 남는다
+    with_art = versions(saved)[0]["n"]
+    assert ch.get_version(saved, with_art)["state"]["cuts"][0]["art"] == art
+    current = conti.read_conti(saved)
+    fm = conti.validated(current.stored)
+    fm["cuts"][0].pop("art")                             # 사용자가 art를 지운 상태(옛 파일은 그대로 남는다)
+    conti._write_conti_file(current, fm)
+    assert "art" not in fm_of(saved)["cuts"][0]
+    ch.restore(saved, with_art, conti.content_hash(saved), now=T0 + 5000)
+    cut1 = fm_of(saved)["cuts"][0]
+    assert cut1["art"] == art and conti_art.art_state(cut1, conti_art.aspect(fm_of(saved))) == "fresh"
+    assert "art" in ch.CUT_FIELDS

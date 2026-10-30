@@ -95,7 +95,7 @@ export function fmtWhen(iso) {
 
 const FIELD_TEXT = {
   line: "대사", caption: "자막", action: "장면 설명", guide: "가이드", sfx: "효과음", size: "샷 크기", angle: "앵글",
-  sec: "길이", ref_frame: "참고 프레임", ref_auto: "자동 참고 사진", section: "섹션",
+  sec: "길이", ref_frame: "참고 프레임", ref_auto: "자동 참고 사진", art: "장면 그림", section: "섹션",
 };
 export const CUT_FIELD_KEYS = ["section", "size", "angle", "sec", "action", "line", "caption", "sfx", "guide", "ref_frame"];
 export const fieldText = (f) => FIELD_TEXT[f] || f;

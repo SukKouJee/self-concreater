@@ -27,7 +27,7 @@ from urllib.parse import quote
 from pathlib import Path
 from typing import Any
 
-from scripts import captions, claude_cli, conti, conti_history, conti_refs, llm, refstore, scene_merge
+from scripts import captions, claude_cli, conti, conti_art, conti_history, conti_refs, llm, refstore, scene_merge
 from scripts.common import ScriptError, work_root, workspace_dir
 from scripts.ui.jobs import Job, JobCancelled, new_item
 from scripts.ui.server import Request, route
@@ -243,8 +243,11 @@ def view_of(path: Path, fm: dict, digest: str) -> dict:
     refs = conti.cut_refs(fm)                            # 컷마다 {frame, match(pinned/content/composition), title, desc}
     vertical = fm.get("format") == "shorts"
     cuts = []
+    ratio = conti_art.aspect(fm)
     for c in fm["cuts"]:
-        cuts.append({**c, "label": fm["script"][c["section"]]["label"], "sketch": conti.sketch(c["size"], vertical),
+        shown = conti_art.display_art(c, ratio)
+        art = {"url": "/files/" + shown["file"], "state": shown["state"]} if shown else None
+        cuts.append({**c, "art": art, "label": fm["script"][c["section"]]["label"], "sketch": conti.sketch(c["size"], vertical),
                      "ref": refs.get(c["n"]), "max_chars": int(fm["speech_cps"] * c["sec"])})
     base = path.stem[: -len(CONTI_SUFFIX)]
     srt_files = [path.with_name(f"{base}-{suffix}.srt") for _, suffix in conti.SRT_TRACKS.values()]
@@ -304,7 +307,21 @@ def _cut(req: Request) -> dict:
     expected = body.get("hash")
     if not isinstance(expected, str) or not expected:
         raise ScriptError("bad_request", "hash가 필요합니다. 콘티를 다시 불러오세요")
-    return conti.update_cut(path, _int(body.get("n"), "n"), fields, expected_hash=expected)
+    before = _art_states(conti.validated(conti.read_conti(path).stored))
+    result = conti.update_cut(path, _int(body.get("n"), "n"), fields, expected_hash=expected)
+    return {**result, "art_stale": _art_stale(before, [result["cut"]], before["aspect"])}
+
+
+def _art_states(fm: dict) -> dict:
+    """편집 전 컷별 그림 상태 {"aspect", id: "fresh"|"stale"|None}. 편집 응답의 art_stale 계산용."""
+    ratio = conti_art.aspect(fm)
+    return {"aspect": ratio, **{c["id"]: conti_art.art_state(c, ratio) for c in fm["cuts"] if c.get("id")}}
+
+
+def _art_stale(before: dict, after_cuts: list[dict], ratio: str) -> list[str]:
+    """이번 편집으로 fresh에서 stale이 된 컷 id(이미 stale이던 그림은 다시 알리지 않는다)."""
+    return [c["id"] for c in after_cuts
+            if c.get("id") and before.get(c["id"]) == "fresh" and conti_art.art_state(c, ratio) == "stale"]
 
 
 def _hash(body: dict) -> str:
@@ -331,8 +348,10 @@ def _cuts(req: Request) -> dict:
     unknown = sorted(set(op) - allowed)
     if unknown:
         raise ScriptError("invalid_edit", f"{op['op']}에서 쓸 수 없는 항목입니다: {', '.join(unknown)}")
+    before = _art_states(conti.validated(conti.read_conti(path).stored))
     result, fm = conti.edit_cuts_fm(path, op, expected)
-    return {**view_of(path, fm, result["hash"]), "cut_id": result["cut_id"]}
+    return {**view_of(path, fm, result["hash"]), "cut_id": result["cut_id"],
+            "art_stale": _art_stale(before, fm["cuts"], conti_art.aspect(fm))}
 
 
 # ---- 장면으로 합치기(작업) · 저장 -----------------------------------------------------------

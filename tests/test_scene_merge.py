@@ -410,3 +410,12 @@ def test_command_doc_describes_merge_flow():
     assert "ytc conti merge <파일>" in doc and "--cuts" in doc and "--hash" in doc
     assert "skills/yt-conti/merge.md" in doc and "저장 전 사용자 확인" in doc
     assert "참고 프레임은 같은 샷 크기의 레퍼런스 장면입니다(구도만 참고)" not in doc
+
+
+def test_merge_carries_first_art():
+    art1 = {"file": "workspace/conti-art/d/1.svg", "basis": "0123abcd"}
+    art2 = {"file": "workspace/conti-art/d/2.svg", "basis": "0123abce"}
+    members = [cut(1, 1, "A"), cut(2, 1, "A", art=art1), cut(3, 1, "A", art=art2)]
+    assert scene_merge.merge_fields(members)["art"] == art1
+    assert "art" not in scene_merge.merge_fields([cut(1, 1, "A")])
+    assert "art" in scene_merge.CUT_FIELDS
