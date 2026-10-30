@@ -1,0 +1,14 @@
+{
+ "1": {
+  "frame": "workspace/frames/a00/scene001.jpg",
+  "title": "라면 5봉지 먹방!",
+  "match": "composition",
+  "desc": "컵 네 개"
+ },
+ "2": {
+  "frame": "workspace/frames/a00/scene002.jpg",
+  "title": "라면 5봉지 먹방!",
+  "match": "composition",
+  "desc": "뚜껑"
+ }
+}

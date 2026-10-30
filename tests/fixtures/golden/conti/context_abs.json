@@ -1,0 +1,82 @@
+{
+ "draft": "drafts/2026-10-31-컵라면-4단계-도전.md",
+ "conti": "drafts/2026-10-31-컵라면-4단계-도전-conti.md",
+ "conti_exists": false,
+ "title": "컵라면 4단계 | 도전",
+ "category": "mukbang",
+ "format": "shorts",
+ "target_sec": 8.0,
+ "hook_type": "question",
+ "narrative_type": "list",
+ "script_only": false,
+ "speech_cps": 4.5,
+ "speech_basis": 0,
+ "sections": [
+  {
+   "idx": 0,
+   "label": "hook",
+   "start": 0.0,
+   "end": 2.0,
+   "script": "자막: 4단계 다 먹을 수 있을까?",
+   "shots": [
+    {
+     "size": "탑뷰",
+     "angle": "탑뷰",
+     "sec": 2.0,
+     "action": "컵라면 4개 나란히"
+    }
+   ],
+   "max_chars": 9
+  },
+  {
+   "idx": 1,
+   "label": "body",
+   "sub": "list_item",
+   "start": 2.0,
+   "end": 6.0,
+   "script": "말: 1단계부터 갑니다",
+   "shots": [
+    {
+     "size": "클로즈업",
+     "angle": "45도",
+     "sec": 2.0,
+     "action": "뚜껑 | 뜯기"
+    },
+    {
+     "size": "익스트림 클로즈업",
+     "angle": null,
+     "sec": 2.0,
+     "action": "면발 후루룩"
+    }
+   ],
+   "max_chars": 18
+  },
+  {
+   "idx": 2,
+   "label": "outro",
+   "start": 6.0,
+   "end": 8.0,
+   "script": "자막: 다음은 불닭",
+   "shots": [
+    {
+     "size": "인서트",
+     "angle": "탑뷰",
+     "sec": 2.0,
+     "action": "빈 컵"
+    }
+   ],
+   "max_chars": 9
+  }
+ ],
+ "profile": null,
+ "shot_sizes": [
+  "익스트림 클로즈업",
+  "클로즈업",
+  "바스트",
+  "미디엄",
+  "와이드",
+  "탑뷰",
+  "POV",
+  "인서트"
+ ]
+}

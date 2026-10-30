@@ -1,0 +1,22 @@
+[
+ {
+  "frame": "workspace/frames/a00/scene001.jpg",
+  "size": "탑뷰",
+  "section": "body",
+  "video": "a00",
+  "title": "라면 5봉지 먹방!",
+  "match": "exact",
+  "angle": "탑뷰",
+  "desc": "컵 네 개"
+ },
+ {
+  "frame": "workspace/frames/a00/scene002.jpg",
+  "size": "클로즈업",
+  "section": "body",
+  "video": "a00",
+  "title": "라면 5봉지 먹방!",
+  "match": "exact",
+  "angle": "45도",
+  "desc": "뚜껑"
+ }
+]

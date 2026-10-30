@@ -1,0 +1,27 @@
+{
+ "cut": {
+  "n": 2,
+  "id": "id000002",
+  "section": 1,
+  "size": "클로즈업",
+  "angle": "45도",
+  "sec": 2.0,
+  "action": "뚜껑 뜯기",
+  "line": "1단계부터 갑니다.",
+  "caption": "",
+  "sfx": "뜯는 소리",
+  "guide": "소리 크게 천천히",
+  "start": 2.0,
+  "end": 4.0
+ },
+ "prev_line": "4단계 다 먹을 수 있을까?",
+ "next_line": "와 순하다",
+ "section_label": "body",
+ "section_text": "1단계부터 갑니다. 와 순하다",
+ "speech_cps": 4.5,
+ "max_chars": 9,
+ "hook_type": "question",
+ "narrative_type": "list",
+ "title": "컵라면 4단계 | 도전",
+ "profile": null
+}

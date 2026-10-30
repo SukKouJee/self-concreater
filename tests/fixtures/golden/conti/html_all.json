@@ -1,0 +1,23 @@
+{
+ "status": "built",
+ "built": 1,
+ "bytes": 9715,
+ "files": [
+  {
+   "path": "drafts/2026-10-31-컵라면-4단계-도전-conti.html",
+   "bytes": 9715
+  }
+ ],
+ "failed": [
+  {
+   "path": "drafts/a-conti.md",
+   "error": "invalid_conti",
+   "message": "콘티 프런트매터에 script·cuts가 없습니다"
+  },
+  {
+   "path": "drafts/b-conti.md",
+   "error": "unreadable",
+   "message": "콘티를 읽거나 쓸 수 없습니다: 'utf-8' codec can't decode byte 0xff in position 4: invalid start byte"
+  }
+ ]
+}

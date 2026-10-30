@@ -1,0 +1,40 @@
+{
+ "trash": "workspace/trash/<STAMP>",
+ "moved": [
+  "drafts/2026-10-31-컵라면-4단계-도전-conti.html",
+  "drafts/2026-10-31-컵라면-4단계-도전-captions.srt",
+  "drafts/2026-10-31-컵라면-4단계-도전-lines.srt",
+  "drafts/2026-10-31-컵라면-4단계-도전-captions.mp4",
+  "drafts/2026-10-31-컵라면-4단계-도전-remaining.html",
+  "drafts/2026-10-31-컵라면-4단계-도전-footage.csv",
+  "workspace/conti_history/2026-10-31-컵라면-4단계-도전-conti",
+  "drafts/2026-10-31-컵라면-4단계-도전-cuts",
+  "workspace/footage_match/2026-10-31-컵라면-4단계-도전-conti.json",
+  "drafts/2026-10-31-컵라면-4단계-도전-conti.md"
+ ],
+ "added": [
+  "workspace/trash/<STAMP>/drafts/2026-10-31-컵라면-4단계-도전-captions.mp4",
+  "workspace/trash/<STAMP>/drafts/2026-10-31-컵라면-4단계-도전-captions.srt",
+  "workspace/trash/<STAMP>/drafts/2026-10-31-컵라면-4단계-도전-conti.html",
+  "workspace/trash/<STAMP>/drafts/2026-10-31-컵라면-4단계-도전-conti.md",
+  "workspace/trash/<STAMP>/drafts/2026-10-31-컵라면-4단계-도전-cuts/01_a.mp4",
+  "workspace/trash/<STAMP>/drafts/2026-10-31-컵라면-4단계-도전-footage.csv",
+  "workspace/trash/<STAMP>/drafts/2026-10-31-컵라면-4단계-도전-lines.srt",
+  "workspace/trash/<STAMP>/drafts/2026-10-31-컵라면-4단계-도전-remaining.html",
+  "workspace/trash/<STAMP>/workspace/conti_history/2026-10-31-컵라면-4단계-도전-conti/0001.json",
+  "workspace/trash/<STAMP>/workspace/footage_match/2026-10-31-컵라면-4단계-도전-conti.json"
+ ],
+ "removed": [
+  "drafts/2026-10-31-컵라면-4단계-도전-captions.mp4",
+  "drafts/2026-10-31-컵라면-4단계-도전-captions.srt",
+  "drafts/2026-10-31-컵라면-4단계-도전-conti.html",
+  "drafts/2026-10-31-컵라면-4단계-도전-conti.md",
+  "drafts/2026-10-31-컵라면-4단계-도전-cuts/01_a.mp4",
+  "drafts/2026-10-31-컵라면-4단계-도전-footage.csv",
+  "drafts/2026-10-31-컵라면-4단계-도전-lines.srt",
+  "drafts/2026-10-31-컵라면-4단계-도전-remaining.html",
+  "workspace/conti_history/2026-10-31-컵라면-4단계-도전-conti/0001.json",
+  "workspace/footage_match/2026-10-31-컵라면-4단계-도전-conti.json"
+ ],
+ "modified": []
+}
