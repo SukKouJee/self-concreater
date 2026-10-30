@@ -469,7 +469,7 @@ def test_scratch_key_of(home: Path, tmp_path: Path) -> None:
     assert s.key_of(CONTI) == CONTI
     assert s.key_of(str(home / "refs" / "ref_travel" / "videos" / f"{VID}.md")) == keys.video_md("travel", VID)
     assert s.key_of("drafts/../profile.md") == "profile.md"
-    for bad in [tmp_path / "outside.md", "../outside.md", "drafts/../../x.md", home]:
+    for bad in [tmp_path / "outside.md", "../outside.md", "drafts/../../x.md", home, "drafts/\x00a.md"]:
         with pytest.raises(ScriptError) as e:
             s.key_of(bad)
         assert e.value.code == "bad_path"

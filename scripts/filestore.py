@@ -249,7 +249,7 @@ class FileScratch:
                 if lexical is None or not self._under_linked_workspace(lexical, real):
                     raise outside
                 return lexical
-        except OSError as e:
+        except (OSError, ValueError) as e:              # ValueError: NUL 같은 경로로 쓸 수 없는 글자
             raise outside from e
         rel = real.relative_to(self._real_root).as_posix()
         if rel == ".":
