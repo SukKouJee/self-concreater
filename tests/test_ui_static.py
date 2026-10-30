@@ -1405,7 +1405,7 @@ def test_conti_board_tool_row_and_cards():
                   '"뒤로 옮기기"', "has-sel", "panel-close", "장면 ${d.cuts.length}개"]:
         assert token in conti, token
     # the photo is the picture: the sketch only when a scene has no photo (list rows and the panel)
-    assert conti.count("c.ref ? null : sanitizeSvg(c.sketch)") == 1 and "cut.art || cut.ref ? null : sanitizeSvg(cut.sketch)" in conti
+    assert conti.count("c.ref ? null : sanitizeSvg(c.sketch)") == 1 and "art || cut.ref ? null : sanitizeSvg(cut.sketch)" in conti
     css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
     assert "repeat(auto-fill, minmax(210px, 1fr))" in _rule(css, ".cb-grid")
     assert "height: 112px" in _rule(css, ".cb-frame")
@@ -1748,8 +1748,10 @@ def test_conti_panel_shows_art_next_to_the_photo_and_redraw():
     edit = conti[conti.index("async function editCuts("):conti.index("function showEdited(")]
     assert "artStale(res.art_stale)" in edit
     assert "S.actions.artBusy" in conti or "mine.actions.artBusy" in conti
-    for banned in ["c.art.url", "art.url)", "innerHTML"]:
+    for banned in ["c.art.url", "innerHTML"]:
         assert banned not in conti, banned
+    # the drawing url is only an img src (and the key of drawings that failed to load)
+    assert conti.count("src: cut.art.url") == 1
 
 
 def test_conti_scene_tools_draw_and_auto_redraw():
@@ -1761,3 +1763,43 @@ def test_conti_scene_tools_draw_and_auto_redraw():
         assert token in js, token
     for banned in ["innerHTML", "outerHTML", "insertAdjacentHTML", "confirm(", "alert(", "prompt("]:
         assert banned not in js, banned
+
+
+def _between(text, start, end):
+    i = text.index(start)
+    return text[i:text.index(end, i + len(start))]
+
+
+def test_conti_art_fix_round_1_contracts():
+    scenes = _js("conti-scenes.js")
+    conti = _js("pages/conti.js")
+    board = _js("conti-board.js")
+    # I-1: a saved batch takes the light path (cards + art figure), never the full editor reload that rebuilds the form
+    adopt = _between(scenes, "function adoptArt(", "\n}\n")
+    assert "mine.opts.onArtSaved()" in adopt and "onReload(" not in adopt
+    assert "onArtSaved: () =>" in conti
+    saved = _between(conti, "async function artSaved(", "\n}\n")
+    for token in ["mine.saving || mine.editing || mine.conflict", "mine.reloadPending = true", "mine.hash = data.hash",
+                  "renderCutList(", "refreshArt("]:
+        assert token in saved, token
+    for banned in ["renderPanel(", "loadEditor(", "editForm("]:
+        assert banned not in saved, banned
+    # I-2: a followed job that is not found waits (missed) instead of feeding done at once
+    follow = _between(scenes, "async function followArt(", "\n}\n")
+    assert 'feedArt({ type: "missed" })' in follow and 'type: "done"' not in follow
+    # m-1: auto start yields to a manual start; m-2: a manual start clears the blocked line
+    start = _between(scenes, "async function startArt(", "\n}\n")
+    assert 'if (auto && (run.starting || isActive(run.job))) { feedArt({ type: "requeue", ids }); return; }' in start
+    assert "mine.art.blocked = false" in start
+    # m-3: jobs followed from another tab or picked up on return finish without the 그렸어요 toast
+    assert "run.auto = true" in follow
+    resume = _between(scenes, "async function resume(", "\n}\n")
+    assert "mine.runs.art.auto = true" in resume
+    # m-4: a drawing that does not load falls back to the photo / sketch
+    assert 'addEventListener("error"' in board
+    figure = _between(conti, "function artFigure(", "\n}\n")
+    assert 'addEventListener("error"' in figure
+    # m-5: a save refused because a drawing was just saved says so
+    assert "장면 그림을 저장하느라 파일이 바뀌었어요" in conti and "artRunning()" in conti
+    # m-6: the fresh caption is decoration for screen readers; the stale one is read
+    assert '"aria-hidden": stale ? false : "true"' in board

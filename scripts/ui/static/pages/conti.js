@@ -5,7 +5,7 @@
 //                      구간 칩 · 카드/리스트), 장면 카드 보드(conti-board.js) 또는 컷 목록, 패널(장면 그림·참고 사진 · 레퍼런스
 //                      실제 장면 · 대사 대안 · 직접 고치기)
 // 모든 컷 저장은 마지막으로 받은 hash를 보낸다. 파일이 밖에서 바뀌면 서버가 conti_changed로 거절한다.
-import { h, filesUrl } from "/static/dom.js";
+import { h, fill, filesUrl } from "/static/dom.js";
 import { button } from "/static/ui.js";
 import { sectionLabelName } from "/static/labels.js";
 import {
@@ -135,7 +135,7 @@ function freshState(el, params, ctx) {
     scenes: new Map(), alts: new Map(), forms: new Map(),
     nodes: {}, live: null, lastAnnounce: "",
     editing: false, undo: null, menu: null, drag: null, hist: freshHist(),
-    footage: null, verdicts: new Map(), actions: null,
+    footage: null, verdicts: new Map(), actions: null, brokenArt: new Set(), conflictByArt: false,
     view: readView(), q: "", section: "all",
   };
 }
@@ -659,6 +659,7 @@ function sceneActions() {
     },
     // a pick or drawing finishing while a cut save/edit is in flight: reload once that is done (flushReload)
     onReload: () => { if (!alive(mine)) return undefined; mine.reloadPending = true; return flushReload(mine); },
+    onArtSaved: () => artSaved(mine),
     onArtChange: () => { if (alive(mine)) refreshArt(); },
   });
   return S.actions;
@@ -1253,10 +1254,13 @@ function renderConflict() {
   const slot = S.nodes.conflict;
   if (!slot) return;
   if (!S.conflict) { slot.replaceChildren(); return; }
-  const btn = h("button", { type: "button", class: "btn btn-danger" }, CHANGED_TEXT);
+  // a drawing job saving its pictures moved the file, not another editor
+  const byArt = !!S.conflictByArt;
+  const btn = h("button", { type: "button", class: "btn btn-danger" }, byArt ? "다시 불러오기" : CHANGED_TEXT);
   btn.addEventListener("click", () => loadEditor(true));
   slot.replaceChildren(h("div", { class: "conflict", role: "alert" },
-    h("p", {}, "다른 곳(편집기·터미널)에서 이 콘티 파일이 바뀌어 저장하지 않았습니다. 다시 불러온 뒤 고쳐 주세요. 입력해 둔 내용은 남아 있습니다."),
+    h("p", {}, byArt ? "장면 그림을 저장하느라 파일이 바뀌었어요. 다시 불러온 뒤 저장해 주세요. 입력해 둔 내용은 남아 있습니다."
+      : "다른 곳(편집기·터미널)에서 이 콘티 파일이 바뀌어 저장하지 않았습니다. 다시 불러온 뒤 고쳐 주세요. 입력해 둔 내용은 남아 있습니다."),
     btn));
 }
 
@@ -1597,15 +1601,9 @@ function renderPanel() {
     const b = navNode(id);
     if (b) { b.scrollIntoView({ block: "center" }); b.focus(); }
   });
-  // Claude's drawing next to the reference photo (a pinned photo hides the drawing); the shot sketch only when the
-  // scene has neither
-  const svg = cut.art || cut.ref ? null : sanitizeSvg(cut.sketch);
-  S.nodes.artFig = sceneVisual(cut).kind === "art" ? artFigure(cut) : null;
-  const compare = h("div", { class: "cut-compare" }, S.nodes.artFig, cut.ref
-    ? h("figure", {},
-      h("div", { class: "fig-box" }, h("img", { src: filesUrl(cut.ref.frame), alt: `참고 사진: ${cut.ref.desc || ""}` })),
-      h("figcaption", {}, refCaption(cut.ref)))
-    : svg ? h("figure", {}, h("div", { class: "fig-box" }, svg), h("figcaption", {}, `도식 · ${cut.size} · 참고 사진 없음`)) : null);
+  const compare = h("div", { class: "cut-compare" });
+  S.nodes.compare = compare;
+  paintVisuals(cut);
   const info = h("div", { class: "cut-info" },
     h("p", { class: "panel-line" + (cut.line ? "" : " muted") }, cut.line ? `“${cut.line}”` : "(대사 없음)"),
     cut.action ? h("p", { class: "muted small" }, `장면 · ${cut.action}`) : null,
@@ -1644,6 +1642,11 @@ function renderPanel() {
 // A drawing job runs on this conti, or the scene waits for its auto redraw.
 const artBusy = (id) => !!(S && S.actions && S.actions.artBusy(id));
 
+// The drawing the panel shows: none when the photo is pinned, there is no drawing, or its file did not load.
+function shownArt(cut) {
+  return sceneVisual(cut).kind === "art" && !S.brokenArt.has(cut.art.url) ? cut.art : null;
+}
+
 // The panel's drawing with its caption. An old drawing offers 다시 그리기 while nothing is drawing.
 function artFigure(cut) {
   const busy = artBusy(cut.id);
@@ -1654,8 +1657,38 @@ function artFigure(cut) {
       onClick: () => S.actions.redraw([cut.id]),
     }));
   }
-  return h("figure", { class: "art-fig" },
-    h("div", { class: "fig-box is-art" }, h("img", { src: cut.art.url, alt: "장면 그림", loading: "lazy" })), cap);
+  const img = h("img", { src: cut.art.url, alt: "장면 그림", loading: "lazy" });
+  // the drawing file is gone or broken: show the photo / sketch instead
+  img.addEventListener("error", () => {
+    if (!S || S.brokenArt.has(cut.art.url)) return;
+    S.brokenArt.add(cut.art.url);
+    const now = currentCut();
+    if (now && now.id === cut.id) paintVisuals(now);
+  }, { once: true });
+  return h("figure", { class: "art-fig" }, h("div", { class: "fig-box is-art" }, img), cap);
+}
+
+// Claude's drawing next to the reference photo (a pinned photo hides the drawing); the shot sketch only when the
+// scene has neither. Painted again only when what it shows changes (no flicker, the edit form is not touched).
+function paintVisuals(cut) {
+  const box = S.nodes.compare;
+  if (!box) return;
+  const art = shownArt(cut);
+  const key = JSON.stringify([cut.id, art && art.url, art && art.state, art && artBusy(cut.id), cut.ref && cut.ref.frame]);
+  if (box.dataset.key === key) return;
+  box.dataset.key = key;
+  const had = box.contains(document.activeElement);
+  const svg = art || cut.ref ? null : sanitizeSvg(cut.sketch);
+  const artFig = art ? artFigure(cut) : null;
+  fill(box, artFig, cut.ref
+    ? h("figure", {},
+      h("div", { class: "fig-box" }, h("img", { src: filesUrl(cut.ref.frame), alt: `참고 사진: ${cut.ref.desc || ""}` })),
+      h("figcaption", {}, refCaption(cut.ref)))
+    : svg ? h("figure", {}, h("div", { class: "fig-box" }, svg), h("figcaption", {}, `도식 · ${cut.size} · 참고 사진 없음`)) : null);
+  if (had && artFig) {
+    const b = artFig.querySelector('[data-fk="art-redraw"]');
+    (b || artFig.querySelector("figcaption")).focus({ preventScroll: true });
+  }
 }
 
 // A drawing job started or ended, or scenes wait to be drawn again: captions on the cards and the panel follow
@@ -1667,16 +1700,33 @@ function refreshArt() {
     if (c && c.art) el.textContent = artCaption(c.art, artBusy(c.id));
   }
   const cut = currentCut();
-  const old = S.nodes.artFig;
-  if (!cut || !old || !old.isConnected || sceneVisual(cut).kind !== "art") return;
-  const had = old.contains(document.activeElement);
-  const next = artFigure(cut);
-  old.replaceWith(next);
-  S.nodes.artFig = next;
-  if (had) {
-    const b = next.querySelector('[data-fk="art-redraw"]');
-    (b || next.querySelector("figcaption")).focus({ preventScroll: true });
+  if (cut && S.nodes.compare && S.nodes.compare.isConnected) paintVisuals(cut);
+}
+
+// Same scenes apart from their drawings (an art-only save): the light path may take the new answer.
+const withoutArt = (cuts) => JSON.stringify(cuts.map((c) => ({ ...c, art: null })));
+
+// A drawing batch was saved (the file hash moved): take the new answer without rebuilding the edit form, which would
+// break typing (Korean IME composition included). Cards are redrawn (focus follows data-nav) and only the panel's
+// pictures change. While a save, edit or conflict is open the full reload waits for it (flushReload); when something
+// else changed in the file too, the full reload runs.
+async function artSaved(mine) {
+  if (!alive(mine)) return undefined;
+  if (mine.saving || mine.editing || mine.conflict) { mine.reloadPending = true; return undefined; }
+  let data;
+  try {
+    data = await mine.ctx.api("GET", `/api/conti?path=${encodeURIComponent(mine.params.path)}`);
+  } catch {
+    return undefined;                   // the next batch or the end of the job tries again
   }
+  if (!alive(mine)) return undefined;
+  if (mine.saving || mine.editing || mine.conflict) { mine.reloadPending = true; return undefined; }
+  if (withoutArt(data.cuts) !== withoutArt(mine.data.cuts)) { mine.reloadPending = true; return flushReload(mine); }
+  mine.data = data;
+  mine.hash = data.hash;
+  renderCutList();
+  refreshArt();
+  return undefined;
 }
 
 // ---- scenes ----------------------------------------------------------------------------
@@ -1996,6 +2046,7 @@ async function saveCut(n, fields, focusKey) {
     setPanelBusy(false);
     if (e.error === "conti_changed") {
       mine.conflict = true;
+      mine.conflictByArt = !!(mine.actions && mine.actions.artRunning());
       renderConflict();
       const b = mine.nodes.conflict.querySelector("button");
       if (b) b.focus();
@@ -2041,6 +2092,7 @@ async function editCuts(op) {
     if (!alive(mine) || e.error === "aborted") return null;
     if (e.error === "conti_changed") {
       mine.conflict = true;
+      mine.conflictByArt = !!(mine.actions && mine.actions.artRunning());
       renderConflict();
       const b = mine.nodes.conflict.querySelector("button");
       if (b) b.focus();
@@ -2438,6 +2490,7 @@ async function nameNow(name, btn, note) {
     const live = (mine.nodes.hist && mine.nodes.hist.querySelector(".hist-form .hist-err")) || note;   // the panel may have been redrawn
     if (e.error === "conti_changed") {
       mine.conflict = true;
+      mine.conflictByArt = !!(mine.actions && mine.actions.artRunning());
       renderConflict();
       live.textContent = STALE_TEXT;
     } else {
@@ -2563,6 +2616,7 @@ async function restoreTo(n, buttons, note) {
     const live = (mine.nodes.hist && mine.nodes.hist.querySelector(".hist-confirm .hist-err")) || note;
     if (e.error === "conti_changed") {
       mine.conflict = true;
+      mine.conflictByArt = !!(mine.actions && mine.actions.artRunning());
       renderConflict();
       live.textContent = STALE_TEXT;
     } else {

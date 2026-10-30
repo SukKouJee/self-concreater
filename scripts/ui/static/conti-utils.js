@@ -332,7 +332,8 @@ export const ART_DEBOUNCE_MS = 4000;
 // Auto redraw as a pure state machine. state = { pending: [ids], running, disabled } (never mutated).
 // Events: stale {ids} (an edit made these drawings old: wait ART_DEBOUNCE_MS again) · timer (the wait is over: start
 // the pending scenes unless a drawing job is running) · done (the job ended: pending scenes go at once) ·
-// requeue {ids} (the start found another job on this conti: wait for it) · fail_ready (Claude is not usable: stop
+// requeue {ids} (the start found another job on this conti: wait for it) · missed (that job was not found: wait
+// ART_DEBOUNCE_MS again) · fail_ready (Claude is not usable: stop
 // auto start on this screen) · leave (the screen is left: drop what was scheduled; a started job goes on).
 // Returns { state, start: ids to draw now | null, delayMs: (re)start the wait timer | null }.
 export function artRedrawPlan(state, event) {
@@ -356,6 +357,12 @@ export function artRedrawPlan(state, event) {
   if (type === "requeue") {
     if (!st.disabled) add(event.ids);
     return { state: st, start: null, delayMs: null };
+  }
+  // the job that held this conti could not be found (another conti's job, a failed request): try again after a
+  // full wait, never at once (that would POST, meet conti_busy and look again in a tight loop)
+  if (type === "missed") {
+    st.running = false;
+    return { state: st, start: null, delayMs: st.pending.length && !st.disabled ? ART_DEBOUNCE_MS : null };
   }
   if (type === "fail_ready") return { state: { pending: [], running: false, disabled: true }, start: null, delayMs: null };
   if (type === "leave") return { state: { ...st, pending: [] }, start: null, delayMs: null };

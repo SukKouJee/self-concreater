@@ -389,3 +389,18 @@ def test_art_tool_label():
     assert run_js(f"m.artToolLabel([{{id:'a',art:{a}}},{{id:'b',art:null,ref_frame:'workspace/frames/p.jpg'}}])") == "전체 다시 그리기"
     assert run_js("m.artToolLabel([{id:'b',art:null,ref_frame:'workspace/frames/p.jpg'}])") is None
     assert run_js("m.artToolLabel([])") is None
+
+
+def test_art_redraw_followed_job_not_found_waits_instead_of_looping():
+    # conti_busy -> requeue -> the running job is not found (another conti's job, or the request failed):
+    # "missed" must not restart at once (delay 0 would POST again and loop); it waits a full ART_DEBOUNCE_MS
+    r = art_js("return run([{type:'stale',ids:['a']},{type:'timer'},{type:'requeue',ids:['a']},{type:'missed'},"
+               "{type:'timer'}]);")
+    assert r["out"][3] == {"start": None, "delayMs": 4000}
+    assert r["out"][4]["start"] == ["a"]
+    # nothing pending, or auto redraw stopped: missed only clears running
+    r = art_js("return run([{type:'stale',ids:['a']},{type:'timer'},{type:'missed'}]);")
+    assert r["out"][2] == {"start": None, "delayMs": None} and r["state"]["running"] is False
+    r = art_js("return run([{type:'stale',ids:['a']},{type:'timer'},{type:'requeue',ids:['a']},{type:'fail_ready'},"
+               "{type:'missed'}]);")
+    assert r["out"][4] == {"start": None, "delayMs": None}

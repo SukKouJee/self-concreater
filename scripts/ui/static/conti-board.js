@@ -52,9 +52,12 @@ export function noMatch(onClear) {
 }
 
 // Caption under a scene drawing. data-art-cap lets the page change it in place when a drawing job starts or ends.
+// A fresh drawing's "장면 그림" is decoration for screen readers (the img alt says it); an old one's caption is read.
 function artCap(c, busy) {
   const stale = c.art.state === "stale";
-  return h("span", { class: `cb-ref cb-art-cap${stale ? " is-stale" : ""}`, "data-art-cap": c.id }, artCaption(c.art, busy));
+  return h("span", {
+    class: `cb-ref cb-art-cap${stale ? " is-stale" : ""}`, "data-art-cap": c.id, "aria-hidden": stale ? false : "true",
+  }, artCaption(c.art, busy));
 }
 
 // One scene card. o: { selected, isTab, warn, dot (element or null), artBusy (a drawing job runs or the scene waits
@@ -64,7 +67,19 @@ function artCap(c, busy) {
 export function sceneCard(c, o) {
   const vis = sceneVisual(c);
   const frame = h("span", { class: `cb-frame${vis.kind === "art" ? " has-art" : vis.ref ? " has-photo" : ""}` });
-  if (vis.kind === "art") frame.append(h("img", { src: c.art.url, alt: "장면 그림", loading: "lazy" }));
+  let card = null;
+  if (vis.kind === "art") {
+    const img = h("img", { src: c.art.url, alt: "장면 그림", loading: "lazy" });
+    // the drawing file is gone or broken: the same card with the photo / shot description instead
+    img.addEventListener("error", () => {
+      if (!card || !card.isConnected) return;
+      const had = card.contains(document.activeElement);
+      const again = sceneCard({ ...c, art: null }, o);
+      card.replaceWith(again);
+      if (had) again.querySelector(".cb-open").focus({ preventScroll: true });
+    }, { once: true });
+    frame.append(img);
+  }
   else if (vis.ref) frame.append(h("img", { src: filesUrl(c.ref.frame), alt: "", loading: "lazy" }));
   else frame.append(h("span", { class: "cb-shot" }, [c.size, c.angle].filter(Boolean).join(" · ")));
   frame.append(h("span", { class: "cb-stamp num" }, cardStamp(c)), h("span", { class: "cb-len" }, aboutSec(c.sec)));
@@ -80,5 +95,6 @@ export function sceneCard(c, o) {
     "data-nav": `card:${c.id}`, "aria-current": o.selected ? "true" : false, tabindex: o.isTab ? "0" : "-1",
   }, frame, body);
   open.addEventListener("click", o.onOpen);
-  return h("li", { class: "cb-card" + (o.selected ? " is-selected" : ""), "data-id": c.id }, open, o.more);
+  card = h("li", { class: "cb-card" + (o.selected ? " is-selected" : ""), "data-id": c.id }, open, o.more);
+  return card;
 }
