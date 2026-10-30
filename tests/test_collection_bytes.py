@@ -173,6 +173,32 @@ def test_cut_stats_failed_download_leaves_no_frames_folder(home: Path, fake_cuts
     assert not (home / "workspace" / "cuts" / f"{VID}.json").exists()
 
 
+def test_cut_stats_early_analysis_failure_leaves_no_frames_folder(home: Path, fake_cuts: dict,
+                                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(path, frames_dir, progress=None):
+        raise ScriptError("bad_video", "영상을 열 수 없습니다")     # detect_scenes 단계: 폴더를 만들기 전
+
+    monkeypatch.setattr(cuts, "analyze_video", boom)
+    with pytest.raises(ScriptError) as exc:
+        cuts.cut_stats(VID)
+    assert exc.value.code == "bad_video"
+    assert not (home / "workspace" / "frames" / VID).exists()
+    assert list((home / "workspace" / "tmp").iterdir()) == []
+
+
+def test_cut_stats_late_analysis_failure_keeps_partial_frames(home: Path, fake_cuts: dict,
+                                                              monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom(path, frames_dir, progress=None):
+        frames_dir.mkdir(parents=True, exist_ok=True)
+        (frames_dir / "scene001_1.0s.jpg").write_bytes(b"jpg")
+        raise RuntimeError("decode error")
+
+    monkeypatch.setattr(cuts, "analyze_video", boom)
+    with pytest.raises(RuntimeError):
+        cuts.cut_stats(VID)
+    assert [p.name for p in (home / "workspace" / "frames" / VID).iterdir()] == ["scene001_1.0s.jpg"]
+
+
 # --- shots ----------------------------------------------------------------------
 
 def _label(frame: str) -> dict:

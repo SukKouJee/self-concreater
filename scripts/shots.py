@@ -147,8 +147,8 @@ def _write_labels(video_id: str, labels: list[dict]) -> None:
 
 
 def apply(video_id: str, category: str, labels_path: Path) -> dict:
-    ctx = context(video_id, category)
-    by_frame = {f["frame"]: f for f in ctx["frames"]}
+    info = context(video_id, category)
+    by_frame = {f["frame"]: f for f in info["frames"]}
     try:
         labels = json.loads(Path(labels_path).read_text("utf-8"))
     except (OSError, json.JSONDecodeError) as e:

@@ -394,8 +394,14 @@ def cut_stats(video_id: str, force: bool = False, progress: Progress | None = No
             report("download", None, DOWNLOAD_START_TEXT)
         proxy = os.environ.get("YT_PROXY") or None
         video = download_video(video_id, tmp_dir, proxy, progress=report)
-        with c.shared.write_path(frames_key) as frames_dir:
-            analysis = analyze_video(video, frames_dir, report)
+        try:
+            with c.shared.write_path(frames_key) as frames_dir:
+                analysis = analyze_video(video, frames_dir, report)
+        except BaseException:
+            # write_path가 미리 만든 빈 폴더는 남기지 않는다(프레임이 일부 있으면 예전처럼 둔다)
+            if not c.shared.list(frames_key):
+                c.shared.delete_prefix(frames_key)
+            raise
     finally:
         # 원본 영상은 어떤 경우에도 남기지 않는다
         for leftover in tmp_dir.glob(f"{video_id}.*") if tmp_dir.exists() else []:
