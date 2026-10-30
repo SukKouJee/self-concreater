@@ -80,7 +80,7 @@ def _field(line: str, prefix: str) -> str | None:
 
 def card_details(category: str) -> list[dict]:
     """`## 모티브 카드`의 카드 블록을 필드별로 읽는다. 손으로 고친 md에도 죽지 않는다(모르는 줄 무시, 없는 필드는 None/[])."""
-    body = _read(refstore.require_category(category) + "index.md")[1]
+    body = _read(keys.index_md_at(refstore.require_category(category)))[1]
     try:
         lines, start, end = _section_lines(body, SECTION)
     except ScriptError:
@@ -230,8 +230,8 @@ def context(category: str, topic: str | None = None, library_ids: list[str] | No
     if shared is None:
         shared = library_techniques(library_ids)     # 파일을 읽기 전에 먼저 검증
     cat = refstore.require_category(category)
-    index_fm, index, _ = _read(cat + "index.md")
-    _, tech_body, _ = _read(cat + "techniques.md")
+    index_fm, index, _ = _read(keys.index_md_at(cat))
+    _, tech_body, _ = _read(keys.techniques_md_at(cat))
     counts = refstore.count(category)
     cards = parse_cards(index)
     videos = [
@@ -288,7 +288,7 @@ def validate_cards(category: str, cards: Any, allowed: list[str] | None = None) 
     if not isinstance(cards, list) or not cards:
         raise _invalid("카드 목록이 비어 있습니다")
     cat = refstore.require_category(category)
-    _, body, _ = _read(cat + "index.md")
+    _, body, _ = _read(keys.index_md_at(cat))
     stage = refstore.count(category)["stage"]
     allowed = ALLOWED_BY_STAGE[stage] if allowed is None else allowed
     titles = ref_titles(category)
@@ -327,7 +327,7 @@ def validate_cards(category: str, cards: Any, allowed: list[str] | None = None) 
 
 
 def add(category: str, cards_path: Path, allowed: list[str] | None = None) -> dict:
-    index_path = refstore.require_category(category) + "index.md"
+    index_path = keys.index_md_at(refstore.require_category(category))
     raw = _load_json(cards_path, "invalid_cards")
     stage = refstore.count(category)["stage"]            # 영상 폴더만 읽는다: index.md 락 밖에서 먼저 계산
     titles = ref_titles(category)
@@ -354,7 +354,7 @@ def add(category: str, cards_path: Path, allowed: list[str] | None = None) -> di
 # --- star -------------------------------------------------------------------------
 
 def star(category: str, card_id: str, off: bool = False) -> dict:
-    index_path = refstore.require_category(category) + "index.md"
+    index_path = keys.index_md_at(refstore.require_category(category))
     with refstore.INDEX_LOCK:
         fm, body, nl = _read(index_path)
         lines = body.split("\n")
@@ -376,7 +376,7 @@ def _tech_line(name: str, desc: str, sources: list[str]) -> str:
 
 def merge_techniques(category: str, plan_path: Path) -> dict:
     plan = _load_json(plan_path, "invalid_plan")
-    path = refstore.require_category(category) + "techniques.md"
+    path = keys.techniques_md_at(refstore.require_category(category))
     fm, body, nl = _read(path)
     merged = 0
     for item in plan:

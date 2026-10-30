@@ -92,20 +92,43 @@ def category_name(prefix: str) -> str:
     return prefix.rstrip("/").rsplit("/", 1)[-1].removeprefix("ref_")
 
 
+def _category_prefix(prefix: str) -> str:
+    """`store.folders(REFS, CATEGORY_GLOB)`가 준 카테고리 폴더 키. 이름 검사는 하지 않는다(손으로 만든 폴더도 지금처럼 읽는다)."""
+    if not (prefix.startswith(REFS) and prefix.endswith("/") and prefix != REFS):
+        raise ValueError(f"카테고리 폴더 키가 아닙니다: {prefix!r}")
+    return prefix
+
+
+def videos_dir_at(prefix: str) -> str:
+    return f"{_category_prefix(prefix)}videos/"
+
+
+def video_md_at(prefix: str, vid: str) -> str:
+    return f"{videos_dir_at(prefix)}{vid}.md"
+
+
+def index_md_at(prefix: str) -> str:
+    return f"{_category_prefix(prefix)}index.md"
+
+
+def techniques_md_at(prefix: str) -> str:
+    return f"{_category_prefix(prefix)}techniques.md"
+
+
 def videos_dir(cat: str) -> str:
-    return f"{category(cat)}videos/"
+    return videos_dir_at(category(cat))
 
 
 def video_md(cat: str, vid: str) -> str:
-    return f"{videos_dir(cat)}{vid}.md"
+    return video_md_at(category(cat), vid)
 
 
 def index_md(cat: str) -> str:
-    return f"{category(cat)}index.md"
+    return index_md_at(category(cat))
 
 
 def techniques_md(cat: str) -> str:
-    return f"{category(cat)}techniques.md"
+    return techniques_md_at(category(cat))
 
 
 # --- 기획안 · 콘티 ---------------------------------------------------------------------------
@@ -122,7 +145,7 @@ def draft_md(name: str) -> str:
 
 
 def conti_md(draft_key: str) -> str:
-    """기획안 키 → 같은 폴더의 `<이름>-conti.md`(`conti.conti_path`)."""
+    """기획안 키 → 같은 폴더의 `<이름>-conti.md`."""
     if not is_doc(draft_key):
         raise ValueError(f"기획안 md 키가 아닙니다: {draft_key!r}")
     return posixpath.join(posixpath.dirname(draft_key), f"{stem(draft_key)}{CONTI_SUFFIX}.md")

@@ -187,7 +187,7 @@ def _youtube_url(value: Any) -> str | None:
 @route("GET", "/api/refs")
 def _list(req: Request) -> dict:
     category = _category(req)
-    folder = refstore.require_category(category) + "videos/"
+    folder = keys.videos_dir_at(refstore.require_category(category))
     store = ctx.here().store
     videos = []
     skipped = 0

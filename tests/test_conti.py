@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts import conti, draft, fetch, refstore
+from scripts import conti, draft, fetch, keys, refstore
 from scripts.common import ScriptError
 from tests.test_cuts import sample_video  # noqa: F401 - fixture
 from tests.typify_fixtures import CAT, standard_set
@@ -706,7 +706,7 @@ def test_trash_twice_in_a_row_uses_separate_folders(draft_md, home):
 
 def test_trash_missing_conti(draft_md, home):
     with pytest.raises(ScriptError) as e:
-        conti.trash(conti.conti_path(draft_md))
+        conti.trash(keys.conti_md(draft_md.relative_to(home).as_posix()))
     assert e.value.code == "not_found"
 
 

@@ -3,7 +3,8 @@
 1. `work_root(`·`workspace_dir(`·`category_dir(`·`existing_category_dir(`·`move_to_trash(` 호출 0.
    그 이름의 `from … import`(별칭 포함)·`getattr(x, "<이름>")`도 같은 위반이다
 2. 작업 폴더 최상위 이름으로 시작하는 경로형 문자열 상수, `ref_`/`-conti`로 경로를 조립하는 상수 0 (독스트링 제외).
-   경로를 만드는 자리는 `/`·`joinpath`·`Path(…)`·`os.path.join(…)`. f-문자열 조각은 `/refs/`처럼 중간에 든 최상위 이름도 센다
+   경로를 만드는 자리는 `/`·`joinpath`·`Path(…)`·`os.path.join(…)`. f-문자열 조각은 `/refs/`처럼 중간에 든 최상위 이름도 센다.
+   카테고리 폴더 키에 `index.md`·`techniques.md`·`videos/`를 이어 붙이는 것(`+`, f-문자열)도 센다(ADR-5: `keys.*_md(_at)`)
 3. `ctx.root`·`here().root`, `here()`·`current()`·`use()`로 받은 변수의 `.root` 속성 접근 0
 4. 작업 폴더를 스스로 정하는 것 0: 문자열 상수 `"YT_COACH_HOME"`, `Path.cwd()`·`os.getcwd()` 호출
 키 문자열은 `scripts/keys.py`에서만 만든다. 예외는 아래 `EXEMPT_*`에 이유와 함께 적는다.
@@ -35,6 +36,8 @@ _COMPOSE_RE = re.compile(r"(?<![-A-Za-z0-9])(?:ref_(?:$|\*|\{)|-conti)")
 # f-문자열 조각 안의 최상위 이름: `f"{root}/refs/{c}"`의 `/refs/`, `f"{root}/profile.md"`의 `/profile.md`
 _FSTR_TOP_RE = re.compile(r"(?:^|[/\\])(?:(?:refs|drafts|mine|missions|reviews|reports|workspace)[/\\]|"
                           r"(?:profile\.md|yt-coach\.json|library\.json)$)")
+# 카테고리 안 파일 이름: 폴더 키에 이어 붙이면(`prefix + "index.md"`, `f"{folder}videos/…"`) keys.*_md(_at)를 우회한다
+CATEGORY_FILES = ("index.md", "techniques.md", "videos/")
 HOME_ENV = "YT_COACH_HOME"
 CWD_CALLS = {"cwd", "getcwd"}
 _CTX_CALLS = {"here", "current", "use"}
@@ -77,6 +80,18 @@ def _is_path_join(func: ast.expr) -> bool:
     """`os.path.join`·`posixpath.join`·`ntpath.join`(문자열의 `", ".join`은 아니다)."""
     return isinstance(func, ast.Attribute) and func.attr == "join" and not isinstance(func.value, ast.Constant) \
         and ast.unparse(func.value) in {"os.path", "posixpath", "ntpath", "path"}
+
+
+def _concat_nodes(tree: ast.AST) -> set[int]:
+    """`x + "index.md"`의 상수 피연산자, `f"{x}videos/…"`처럼 자리 표시 바로 뒤에 오는 f-문자열 조각의 id."""
+    ids: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            ids.update(id(o) for o in (node.left, node.right))
+        elif isinstance(node, ast.JoinedStr):
+            ids.update(id(v) for prev, v in zip(node.values, node.values[1:])
+                       if isinstance(prev, ast.FormattedValue) and isinstance(v, ast.Constant))
+    return ids
 
 
 def _fstring_parts(tree: ast.AST) -> set[int]:
@@ -123,6 +138,7 @@ def violations(path: Path, source: str | None = None) -> list[str]:
     docs = _docstring_nodes(tree)
     joined = _path_operand_nodes(tree)
     fparts = _fstring_parts(tree)
+    concat = _concat_nodes(tree)
     bound = _ctx_names(tree)
     found: list[str] = []
     for node in ast.walk(tree):
@@ -140,7 +156,8 @@ def violations(path: Path, source: str | None = None) -> list[str]:
             pathy = value == HOME_ENV or (" " not in value and (
                 _TOP_PATH_RE.match(value) or _COMPOSE_RE.search(value)
                 or (_BARE_TOP_RE.match(value) and id(node) in joined)
-                or (id(node) in fparts and _FSTR_TOP_RE.search(value))))
+                or (id(node) in fparts and _FSTR_TOP_RE.search(value))
+                or (id(node) in concat and value.startswith(CATEGORY_FILES))))
             if pathy and (rel, value) not in EXEMPT_CONSTANTS:
                 found.append(f"{rel}:{node.lineno} string {value[:50]!r}")
         elif isinstance(node, ast.Attribute) and node.attr == "root" and _is_ctx_expr(node.value, bound):
@@ -229,3 +246,12 @@ def test_count_work_root_counts_imports_and_getattr() -> None:
         "from scripts.common import work_root as w, workspace_dir\nf = getattr(common, 'move_to_trash')\n")
     assert counts["work_root"] == 1 and counts["workspace_dir"] == 1 and counts["move_to_trash"] == 1
     assert counts["all"] == 3
+
+
+def test_checker_flags_category_file_concatenation() -> None:
+    # 카테고리 안 파일 키는 keys.index_md·videos_dir·techniques_md(_at)로 만든다(ADR-5)
+    assert len(_check("k = prefix + 'index.md'\n")) == 1
+    assert len(_check("k = refstore.require_category(c) + 'videos/'\n")) == 1
+    assert len(_check("k = f'{folder}videos/{vid}.md'\n")) == 1
+    assert len(_check("k = f'{folder}techniques.md'\n")) == 1
+    assert _check("names = ['index.md', 'techniques.md']\nlink = f'[{v}](videos/{v}.md)'\n") == []

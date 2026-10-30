@@ -168,10 +168,6 @@ def video_format(target_sec: float) -> str:
     return "shorts" if target_sec <= fetch.SHORTS_MAX_SEC else "long"
 
 
-def conti_path(draft: Path) -> Path:
-    return draft.with_name(f"{draft.stem}{CONTI_SUFFIX}.md")
-
-
 def safe_draft_key(value: Any, *, conti_file: bool | None = None) -> str:
     """작업 폴더의 drafts/ 안 .md 파일만 허용하고 그 키를 돌려준다(상대 경로·절대 경로 모두 받는다).
     탈출 검사는 resolve 기준(`scratch.key_of`): `..`·심볼릭 링크로 drafts/ 밖이나 작업 폴더 밖을 가리키면 bad_path.

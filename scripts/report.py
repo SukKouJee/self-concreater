@@ -149,7 +149,7 @@ def sparkline(values: list[float]) -> str:
 def build(category: str, date: str | None = None) -> dict:
     day = date or Date.today().isoformat()
     objects = ctx.here().objects
-    index_fm, index_body = refstore.read(refstore.require_category(category) + "index.md")
+    index_fm, index_body = refstore.read(keys.index_md_at(refstore.require_category(category)))
     counts = refstore.count(category)
     names = {a["id"]: a.get("name") for a in index_fm.get("archetypes") or []}
     typify_key = keys.typify(category)

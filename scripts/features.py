@@ -32,7 +32,7 @@ def record(key: str) -> dict:
 
 def load_videos(category: str, role: str = "ref") -> list[dict]:
     """카테고리의 영상 중 role이 일치하는 것만 (유형화는 ref만. mine은 섞지 않는다)."""
-    prefix = refstore.require_category(category) + "videos/"
+    prefix = keys.videos_dir_at(refstore.require_category(category))
     records = [record(meta.key) for meta in ctx.here().store.list(prefix, "*.md")]
     return sorted((r for r in records if r["fm"].get("role") == role), key=lambda r: r["id"])
 

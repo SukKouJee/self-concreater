@@ -66,7 +66,7 @@ def sources(category: str) -> dict[str, Any]:
     def brief(c: dict) -> dict:
         return {k: c[k] for k in ("id", "title", "type", "type_ko", "idea")}
 
-    index_fm, _ = refstore.read(refstore.require_category(category) + "index.md")
+    index_fm, _ = refstore.read(keys.index_md_at(refstore.require_category(category)))
     typify = motif._typify(category, index_fm)
     archetypes = [{"id": a["id"], "name": a.get("name"), "size": a.get("size"), "skeleton": a.get("skeleton"),
                    "mean_duration": a.get("mean_duration")} for a in (typify or {}).get("archetypes") or []]
@@ -79,7 +79,7 @@ def sources(category: str) -> dict[str, Any]:
 
 
 def context(category: str, source: str, topic: str | None = None) -> dict:
-    index_fm, index_body = refstore.read(refstore.require_category(category) + "index.md")
+    index_fm, index_body = refstore.read(keys.index_md_at(refstore.require_category(category)))
     typify = motif._typify(category, index_fm)
     archetypes = (typify or {}).get("archetypes") or []
 
@@ -310,7 +310,7 @@ def render(data: dict, pacing: dict, comp: dict | None, template_line: str | Non
 
 def find_archetype(category: str, archetype_id: Any) -> dict | None:
     """유형화 결과에서 아키타입을 찾는다. 없거나 유형화 전이면 None."""
-    index_fm, _ = refstore.read(refstore.require_category(category) + "index.md")
+    index_fm, _ = refstore.read(keys.index_md_at(refstore.require_category(category)))
     archetypes = (motif._typify(category, index_fm) or {}).get("archetypes") or []
     return next((a for a in archetypes if a["id"] == archetype_id), None)
 

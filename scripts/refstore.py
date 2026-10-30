@@ -291,8 +291,7 @@ def init_category(category: str) -> dict:
     prefix = keys.category(category)                  # 이름 검사가 폴더 만들기보다 먼저
     store.ensure_folder(keys.videos_dir(category))
     created, skipped = [], []
-    for name in ["index.md", "techniques.md"]:
-        key = prefix + name
+    for name, key in [("index.md", keys.index_md_at(prefix)), ("techniques.md", keys.techniques_md_at(prefix))]:
         if store.exists(key):
             skipped.append(key)
             continue
@@ -315,7 +314,7 @@ def require_category(category: str) -> str:
 
 def _role_counts(prefix: str) -> tuple[int, int]:
     ref = mine = 0
-    for meta in ctx.here().store.list(prefix + "videos/", "*.md"):
+    for meta in ctx.here().store.list(keys.videos_dir_at(prefix), "*.md"):
         role = read(meta.key)[0].get("role")
         if role == "ref":
             ref += 1
@@ -334,7 +333,7 @@ def find_video(video_id: str) -> list[dict]:
     store = ctx.here().store
     found = []
     for folder in store.folders(keys.REFS, keys.CATEGORY_GLOB):
-        for meta in store.list(f"{folder}videos/", f"{video_id}.md"):
+        for meta in store.list(keys.videos_dir_at(folder), f"{video_id}.md"):
             found.append({
                 "category": keys.category_name(folder),
                 "role": read(meta.key)[0].get("role"),
@@ -353,7 +352,7 @@ def list_categories() -> list[dict]:
 def update_stage(category: str) -> dict:
     store = ctx.here().store
     prefix = require_category(category)
-    index = prefix + "index.md"
+    index = keys.index_md_at(prefix)
     with INDEX_LOCK:
         ref, mine = _role_counts(prefix)       # 락 안에서 세야 늦게 쓰는 쪽이 낡은 단계를 덮어쓰지 않는다
         section = stage_text(ref, mine)

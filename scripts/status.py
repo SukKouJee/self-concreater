@@ -175,7 +175,7 @@ def _next(key: str, ref: int, preliminary: int) -> dict:
 def _typified_at(category: str) -> Any:
     """저장(apply)된 유형화만 완료로 본다: index.md 프런트매터의 typified_at."""
     try:
-        return refstore.read(refstore.require_category(category) + "index.md")[0].get("typified_at")
+        return refstore.read(keys.index_md_at(refstore.require_category(category)))[0].get("typified_at")
     except ScriptError:
         return None
 

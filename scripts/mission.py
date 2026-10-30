@@ -97,7 +97,7 @@ def _missions_between(start: str, end: str) -> list[dict]:
 def _starred() -> list[dict]:
     found = []
     for folder in ctx.here().store.folders(keys.REFS, keys.CATEGORY_GLOB):
-        _, body = refstore.read(folder + "index.md")
+        _, body = refstore.read(keys.index_md_at(folder))
         for card in motif.parse_cards(body):
             if card["starred"]:
                 found.append({"category": keys.category_name(folder), "id": card["id"],
@@ -272,7 +272,7 @@ def week(week_id: str | None = None) -> dict:
     statuses = Counter(m["status"] for m in missions)
     cards = 0
     for folder in ctx.here().store.folders(keys.REFS, keys.CATEGORY_GLOB):
-        _, body = refstore.read(folder + "index.md")
+        _, body = refstore.read(keys.index_md_at(folder))
         cards += sum(1 for d in re.findall(r"^- 만든 날: (\S+)", body, re.M) if s <= d <= e)
     diagnoses = [d for d in _diagnosis_gaps() if s <= d["date"] <= e]
     return {

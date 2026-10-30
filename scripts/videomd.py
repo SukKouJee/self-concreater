@@ -89,7 +89,7 @@ def video_md_key(video_id: str, category: str) -> str:
 
 def examples(category: str) -> list[str]:
     """사용자가 고친(reviewed: true) ref 영상 md, 최근 수정순 최대 3개."""
-    metas = ctx.here().store.list(refstore.require_category(category) + "videos/", "*.md")
+    metas = ctx.here().store.list(keys.videos_dir_at(refstore.require_category(category)), "*.md")
     picked = []
     for meta in sorted(metas, key=lambda m: m.mtime, reverse=True):
         fm = refstore.read(meta.key)[0]
@@ -540,7 +540,7 @@ def trash_video(video_id: str, category: str) -> dict:
     key = video_md_key(video_id, category)
     if not store.exists(key):
         raise ScriptError("video_not_found", f"영상 md가 없습니다: {video_id}")
-    elsewhere = [k for k in (f"{prefix}videos/{video_id}.md" for prefix in store.folders(keys.REFS, keys.CATEGORY_GLOB))
+    elsewhere = [k for k in (keys.video_md_at(prefix, video_id) for prefix in store.folders(keys.REFS, keys.CATEGORY_GLOB))
                  if k != key and store.exists(k)]
     data = [] if elsewhere else video_data(video_id)
     result = ctx.here().trash.move([key, *data], last=key)

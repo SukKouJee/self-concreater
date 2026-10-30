@@ -60,7 +60,7 @@ def test_conti_keys_match_module_paths(home: Path) -> None:
     root = common.work_root()
     draft_path, conti_path = root / DRAFT, root / CONTI
     assert keys.draft_md(STEM) == DRAFT
-    assert keys.conti_md(DRAFT) == rel(conti.conti_path(draft_path)) == CONTI
+    assert keys.conti_md(DRAFT) == rel(draft_path.with_name(f"{STEM}-conti.md")) == CONTI
     outputs = conti.conti_outputs(conti_path)                         # 픽스처에 산출물이 모두 있다(키)
     base = f"drafts/{STEM}"                                           # srt·mp4·csv는 `-conti`를 뺀 이름에 붙는다
     assert outputs == [f"{base}-conti.md", f"{base}-conti.html", f"{base}-captions.srt", f"{base}-lines.srt",
@@ -190,3 +190,17 @@ def test_tmp_key_is_under_workspace_tmp() -> None:
     for bad in ["../x.json", "a/../../x", "a\\b", "", "sub/"]:
         with pytest.raises(ScriptError):
             keys.tmp(bad)
+
+
+def test_category_keys_from_a_listed_folder_prefix() -> None:
+    # store.folders가 준 폴더 키(이름 검사를 거치지 않은 사용자 폴더 포함)로 그 안의 키를 만든다
+    for prefix in [keys.category("travel"), "refs/ref_Old Name/"]:
+        assert keys.index_md_at(prefix) == prefix + "index.md"
+        assert keys.techniques_md_at(prefix) == prefix + "techniques.md"
+        assert keys.videos_dir_at(prefix) == prefix + "videos/"
+        assert keys.video_md_at(prefix, VID) == f"{prefix}videos/{VID}.md"
+    assert keys.index_md_at(keys.category("travel")) == keys.index_md("travel")
+    assert keys.video_md_at(keys.category("travel"), VID) == keys.video_md("travel", VID)
+    for bad in ["refs/ref_travel", "drafts/", "refs/"]:
+        with pytest.raises(ValueError):
+            keys.index_md_at(bad)
