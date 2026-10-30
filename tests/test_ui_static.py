@@ -1405,7 +1405,7 @@ def test_conti_board_tool_row_and_cards():
                   '"뒤로 옮기기"', "has-sel", "panel-close", "장면 ${d.cuts.length}개"]:
         assert token in conti, token
     # the photo is the picture: the sketch only when a scene has no photo (list rows and the panel)
-    assert conti.count("c.ref ? null : sanitizeSvg(c.sketch)") == 1 and "cut.ref ? null : sanitizeSvg(cut.sketch)" in conti
+    assert conti.count("c.ref ? null : sanitizeSvg(c.sketch)") == 1 and "cut.art || cut.ref ? null : sanitizeSvg(cut.sketch)" in conti
     css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
     assert "repeat(auto-fill, minmax(210px, 1fr))" in _rule(css, ".cb-grid")
     assert "height: 112px" in _rule(css, ".cb-frame")
@@ -1720,3 +1720,44 @@ def test_final_motif_page_announces_its_own_job():
     motif = _js("pages/motif.js")
     assert "function say(text)" in motif and '"aria-live": "polite"' in motif
     assert 'say("Claude가 모티브 카드를 만드는 중이에요")' in motif and "카드 ${n}장을 뽑았어요" in motif
+
+
+# ---- scene illustrations (장면 그림) on the board, the scene panel and the scene tools -----------------
+
+def test_conti_board_shows_scene_art_as_img_only():
+    board = _js("conti-board.js")
+    for token in ["sceneVisual(c)", "artCaption(c.art, busy)", "artCap(c, o.artBusy)", 'src: c.art.url', 'alt: "장면 그림"', 'loading: "lazy"',
+                  "has-art", "data-art-cap"]:
+        assert token in board, token
+    # the drawing is never put into the page as markup: only an <img src>
+    for banned in ["innerHTML", "outerHTML", "insertAdjacentHTML", "DOMParser", "sanitizeSvg", "createElementNS"]:
+        assert banned not in board, banned
+    assert board.count("c.art.url") == 1
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    assert "object-fit: contain" in _rule(css, ".cb-frame.has-art img")
+
+
+def test_conti_panel_shows_art_next_to_the_photo_and_redraw():
+    conti = _js("pages/conti.js")
+    for token in ["artCaption(cut.art", 'alt: "장면 그림"', "src: cut.art.url", '"다시 그리기"', "S.actions.redraw([cut.id])",
+                  "function refreshArt", "data-art-cap", "artBusy("]:
+        assert token in conti, token
+    # edits feed the scenes that just went stale (one cut save, structure edits)
+    save = conti[conti.index("async function saveCut("):conti.index("// ---- structure edits")]
+    assert "artStale(res.art_stale)" in save
+    edit = conti[conti.index("async function editCuts("):conti.index("function showEdited(")]
+    assert "artStale(res.art_stale)" in edit
+    assert "S.actions.artBusy" in conti or "mine.actions.artBusy" in conti
+    for banned in ["c.art.url", "art.url)", "innerHTML"]:
+        assert banned not in conti, banned
+
+
+def test_conti_scene_tools_draw_and_auto_redraw():
+    js = _js("conti-scenes.js")
+    for token in ["/api/conti/art", "conti_art", "artToolLabel(", "artRedrawPlan(", "ART_DEBOUNCE_MS", "body.stale_only = true",
+                  '"Claude를 쓸 수 없어 장면 그림을 다시 그리지 못했어요"', "claude_missing", "llm_not_configured",
+                  "conti_busy", "conti_changed", 'type: "leave"', 'type: "done"', 'type: "stale"', 'type: "timer"',
+                  'type: "fail_ready"', 'type: "requeue"', "artStale:", "artBusy:", "redraw:", "clearTimeout(mine.art.timer)"]:
+        assert token in js, token
+    for banned in ["innerHTML", "outerHTML", "insertAdjacentHTML", "confirm(", "alert(", "prompt("]:
+        assert banned not in js, banned

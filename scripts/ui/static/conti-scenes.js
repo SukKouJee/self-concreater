@@ -1,19 +1,27 @@
-// 콘티 탭의 장면 도구 줄: 장면으로 합치기(미리보기 → 저장), 사진 설명 만들기, 사진 다시 고르기.
+// 콘티 탭의 장면 도구 줄: 장면으로 합치기(미리보기 → 저장), 사진 설명 만들기, 사진 다시 고르기, 장면 그림 그리기.
 // 서버: POST /api/conti/merge/preview·/apply (작업 kind conti_merge), GET /api/refs/describe-status,
-// POST /api/refs/describe (kind refs_describe), POST /api/conti/refs/pick (kind conti_refs), /api/jobs/<id>(/cancel).
+// POST /api/refs/describe (kind refs_describe), POST /api/conti/refs/pick (kind conti_refs),
+// POST /api/conti/art (kind conti_art), /api/jobs/<id>(/cancel).
 //
 // - 버튼은 작은 보조 버튼이다(화면의 주요 행동이 아니다). 작업 진행은 큰 배너 없이 한 줄(data-job-kind)로 보인다.
 //   머리말 상태 칩(status-chip.js)도 같은 작업을 보여 주고, 이 줄은 이 화면에만 있는 것(걸리는 시간, 장 수·멈추기,
 //   묶음 진행)을 더한다. 끝난 알림은 이 화면이 직접 띄우고, 상태 칩은 다른 화면에 있을 때만 띄운다.
 // - 합치기 미리보기는 저장 전에는 파일을 바꾸지 않는다. 저장하면 편집기가 새 응답으로 다시 그린다(opts.onMerged).
 // - 화면에 보이는 글은 모두 h()의 글자 노드로 넣는다.
+// - 장면 그림: 저장 응답이 옛 그림이 된 장면(art_stale)을 알려 주면 ART_DEBOUNCE_MS(4초) 기다렸다가(그 사이 또 고치면
+//   다시 4초) 그 장면만 다시 그린다(artRedrawPlan). 콘티당 작업은 하나라 도는 중에 고친 장면은 끝난 뒤 한 번 더.
+//   자동 시작이 Claude 준비 오류로 막히면 토스트 없이 한 줄만 보이고 이 화면에서 자동 시작을 멈춘다.
+//   화면을 떠나면 예약만 지운다(시작한 작업은 계속).
 // opts: { path, category, getData() -> GET /api/conti 응답, getHash(), isBusy() (컷 저장·편집 중),
 //         hasDrafts() (패널에 저장하지 않은 입력이 있음: 합치기를 막는다),
-//         onMerged(res) (합친 콘티 응답), onReload() (사진을 골랐거나 콘티가 밖에서 바뀜: 편집기 다시 불러오기) }
+//         onMerged(res) (합친 콘티 응답), onReload() (사진·그림이 저장됐거나 콘티가 밖에서 바뀜: 편집기 다시 불러오기,
+//         promise를 돌려줄 수 있음), onArtChange() (그림 작업이 시작·끝남, 다시 그릴 장면이 바뀜: 캡션 고치기) }
 import { h, fill } from "/static/dom.js";
 import { tag } from "/static/ui.js";
 import { sectionLabelName } from "/static/labels.js";
-import { aboutSec, describeHint, hasRepeats, mergeApplyCuts, mergeView, tagKind } from "/static/conti-utils.js";
+import {
+  aboutSec, artRedrawPlan, artToolLabel, describeHint, hasRepeats, mergeApplyCuts, mergeView, tagKind,
+} from "/static/conti-utils.js";
 
 const POLL_MS = 1000;
 const POLL_MAX_MS = 15000;
@@ -26,7 +34,9 @@ const MERGE_FIRST = "반복 컷을 먼저 장면으로 합쳐 주세요";
 const AFTER_DESCRIBE = "사진 설명이 생겼어요. 사진 다시 고르기를 누르면 장면에 맞는 사진이 붙어요";
 const STALE_MERGE = "미리보기를 만든 뒤 콘티가 바뀌었어요. 장면으로 합치기를 다시 눌러 주세요";
 const DRAFTS_FIRST = "저장하지 않은 입력이 있어요. 저장하거나 지운 뒤 합쳐 주세요";
-const KINDS = { merge: "conti_merge", describe: "refs_describe", pick: "conti_refs" };
+const ART_BLOCKED = "Claude를 쓸 수 없어 장면 그림을 다시 그리지 못했어요";
+const READY_ERRORS = new Set(["claude_missing", "llm_not_configured"]);
+const KINDS = { merge: "conti_merge", describe: "refs_describe", pick: "conti_refs", art: "conti_art" };
 
 let A = null;
 
@@ -64,6 +74,7 @@ function pollDelay(errors) {
 function stopTimers() {
   if (!A) return;
   for (const run of Object.values(A.runs)) if (run.timer) { clearTimeout(run.timer); run.timer = null; }
+  if (A.art.timer) { clearTimeout(A.art.timer); A.art.timer = null; }
 }
 
 // ---- jobs -----------------------------------------------------------------------------------
@@ -365,6 +376,149 @@ async function startPick() {
   }
 }
 
+// ---- 장면 그림 -----------------------------------------------------------------------------------
+// One drawing job per conti, started by the button, the panel's 다시 그리기 or the auto redraw (artRedrawPlan).
+
+function artChanged() {
+  if (A && typeof A.opts.onArtChange === "function") A.opts.onArtChange();
+}
+
+// Feeds the auto redraw plan: (re)starts its wait timer (ART_DEBOUNCE_MS after an edit, 0 after a job) and starts a
+// job when the plan says so.
+function feedArt(event) {
+  const mine = A;
+  if (!mine) return;
+  const r = artRedrawPlan(mine.art.plan, event);
+  mine.art.plan = r.state;
+  if (event.type === "leave" && mine.art.timer) { clearTimeout(mine.art.timer); mine.art.timer = null; }
+  if (r.delayMs !== null) {
+    if (mine.art.timer) clearTimeout(mine.art.timer);
+    mine.art.timer = setTimeout(() => {
+      mine.art.timer = null;
+      if (alive(mine)) feedArt({ type: "timer" });
+    }, r.delayMs);
+  }
+  if (r.start) startArt({ ids: r.start, auto: true });
+  artChanged();
+}
+
+function artDone(job) {
+  let done = 0;
+  for (const it of (job && job.items) || []) done += Number(it.done) || 0;
+  return done;
+}
+
+function adoptArt(job) {
+  const mine = A;
+  const run = mine.runs.art;
+  run.job = job;
+  if (isActive(job)) {
+    // every two scenes are saved as they come: show them and take the new hash so the next edit does not clash
+    const done = artDone(job);
+    if (run.seen !== null && done > run.seen) mine.opts.onReload();
+    run.seen = done;
+    paint();
+    return;
+  }
+  run.job = null;
+  run.seen = null;
+  run.stopping = false;
+  const s = job.summary || {};
+  if (job.status === "done") {
+    const drawn = s.drawn ?? 0;
+    // an auto redraw is quiet (the card caption tells); the buttons say what they did
+    if (!run.auto) mine.ctx.toast(drawn ? `장면 ${drawn}개를 그렸어요` : "새로 그린 장면이 없어요", "info");
+    run.warnings = (s.warnings || []).filter((w) => typeof w === "string" && w);
+    announce(drawn ? `장면 그림 ${drawn}개를 그렸어요` : "새로 그린 장면 그림이 없어요");
+  } else if (job.status === "stopped") {
+    run.note = "멈췄어요 · 그린 그림은 남아요";
+    announce(run.note);
+  } else {
+    const item = job.items && job.items[0];
+    run.error = (item && item.message) || job.message || "장면 그림을 그리지 못했어요";
+    announce(`장면 그림 실패: ${run.error}`);
+  }
+  run.auto = false;
+  paint();
+  // new pictures first, then scenes edited while it ran go with the new hash
+  Promise.resolve(mine.opts.onReload()).catch(() => {}).then(() => { if (alive(mine)) feedArt({ type: "done" }); });
+}
+
+// Another drawing job holds this conti (started in another tab): follow it; the plan goes on when it ends.
+async function followArt() {
+  const mine = A;
+  const job = await mine.ctx.api("GET", `/api/jobs/current?kind=${KINDS.art}`).then((r) => r.job, () => null);
+  if (!alive(mine)) return;
+  const run = mine.runs.art;
+  if (isActive(run.job)) return;
+  if (job && isActive(job) && job.items && job.items[0] && job.items[0].id === mine.opts.path) {
+    run.job = job;
+    run.seen = artDone(job);
+    poll("art", adoptArt);
+    paint();
+    artChanged();
+    return;
+  }
+  feedArt({ type: "done" });            // it ended in the meantime
+}
+
+// ids: these scenes only; staleOnly: scenes with no drawing or an old one; neither: every scene (전체 다시 그리기).
+async function startArt({ ids = null, staleOnly = false, auto = false } = {}) {
+  const mine = A;
+  const run = mine.runs.art;
+  if (!auto) {
+    if (run.starting || isActive(run.job)) return;
+    if (mine.opts.isBusy()) { run.error = "저장 중이에요. 잠시 뒤 다시 눌러 주세요"; paint(); return; }
+  }
+  run.starting = true;
+  run.error = "";
+  run.note = "";
+  paint();
+  artChanged();
+  const body = { path: mine.opts.path, hash: mine.opts.getHash() };
+  if (ids) body.ids = ids;
+  if (staleOnly) body.stale_only = true;
+  const post = (b) => mine.ctx.api("POST", "/api/conti/art", b);
+  try {
+    let data;
+    try {
+      data = await post(body);
+    } catch (e) {
+      if (!auto || e.error !== "conti_changed" || !alive(mine)) throw e;
+      // the file moved on (a drawing just saved, an outside edit): reload and try once more with the newest hash
+      const fresh = await mine.ctx.api("GET", `/api/conti?path=${enc(mine.opts.path)}`);
+      if (!alive(mine)) return;
+      mine.opts.onReload();
+      data = await post({ ...body, hash: fresh.hash });
+    }
+    if (!alive(mine)) return;
+    run.errors = 0;
+    run.warnings = [];
+    run.auto = auto;
+    run.seen = artDone(data.job);
+    adoptArt(data.job);
+    if (isActive(run.job)) poll("art", adoptArt);
+  } catch (e) {
+    if (!alive(mine) || e.error === "aborted") return;
+    if (e.error === "conti_busy") {
+      if (auto) feedArt({ type: "requeue", ids });
+      else run.error = e.message || "이 콘티의 장면 그림을 그리는 중이에요";
+      followArt();
+    } else if (auto && READY_ERRORS.has(e.error)) {
+      mine.art.blocked = true;
+      feedArt({ type: "fail_ready" });
+    } else if (auto) {
+      mine.ctx.toast(e.message || "장면 그림을 다시 그리지 못했어요", "error");
+      feedArt({ type: "done" });
+    } else {
+      run.error = e.message || "시작하지 못했어요";
+      if (e.error === "conti_changed") mine.opts.onReload();
+    }
+  } finally {
+    if (alive(mine)) { run.starting = false; paint(); artChanged(); }
+  }
+}
+
 // ---- paint ------------------------------------------------------------------------------------
 
 function progressLine(kind, text, stop) {
@@ -377,7 +531,7 @@ function paint() {
   const data = A.opts.getData();
   if (!data) return;
   const keep = A.root.contains(document.activeElement) ? document.activeElement.dataset.fk : null;
-  const { merge, describe, pick } = A.runs;
+  const { merge, describe, pick, art } = A.runs;
   const repeats = hasRepeats(data.cuts);
   const preview = mergePreview(merge.job);
   const hint = describeHint(A.status);
@@ -401,9 +555,22 @@ function paint() {
     b.addEventListener("click", startPick);
     buttons.push(b);
   }
+  const artLabel = artToolLabel(data.cuts);
+  if (artLabel) {
+    const missing = artLabel !== "전체 다시 그리기";
+    const b = h("button", {
+      type: "button", class: "btn btn-s", "data-fk": "art", disabled: art.starting || isActive(art.job) || repeats,
+      "aria-describedby": repeats ? "sa-merge-first" : false,
+    }, artLabel);
+    b.addEventListener("click", () => startArt({ staleOnly: missing }));
+    buttons.push(b);
+  }
   const notes = [];
   if (hint && !isActive(describe.job)) notes.push(h("p", { class: "sa-hint" }, hint.text));
-  if (repeats && buttons.some((b) => b.dataset.fk === "pick")) notes.push(h("p", { class: "sa-hint", id: "sa-merge-first" }, MERGE_FIRST));
+  if (repeats && buttons.some((b) => b.dataset.fk === "pick" || b.dataset.fk === "art")) {
+    notes.push(h("p", { class: "sa-hint", id: "sa-merge-first" }, MERGE_FIRST));
+  }
+  if (A.art.blocked) notes.push(h("p", { class: "sa-note", role: "status" }, ART_BLOCKED));
   fill(A.slots.row, ...buttons);
   fill(A.slots.notes, ...notes);
 
@@ -419,11 +586,19 @@ function paint() {
     const item = pick.job.items && pick.job.items[0];
     lines.push(progressLine(KINDS.pick, `Claude가 장면마다 맞는 사진을 고르는 중…${item && item.message ? ` ${item.message}` : ""}`, null));
   }
-  for (const run of [merge, describe, pick]) {
+  if (isActive(art.job)) {
+    const item = art.job.items && art.job.items[0];
+    const stop = h("button", { type: "button", class: "btn btn-s btn-ghost", "data-fk": "art-stop", disabled: art.stopping },
+      art.stopping ? "멈추는 중…" : "멈추기");
+    stop.addEventListener("click", () => cancel("art"));
+    lines.push(progressLine(KINDS.art, `Claude가 장면 그림을 그리는 중…${item && item.message ? ` ${item.message}` : ""}`, stop));
+  }
+  for (const run of [merge, describe, pick, art]) {
     if (run.error) lines.push(h("p", { class: "error", role: "alert" }, run.error));
     if (run.note) lines.push(h("p", { class: "sa-note", role: "status" }, run.note));
   }
   if (pick.warnings && pick.warnings.length) lines.push(h("ul", { class: "warn-list" }, ...pick.warnings.map((t) => h("li", {}, t))));
+  if (art.warnings && art.warnings.length) lines.push(h("ul", { class: "warn-list" }, ...art.warnings.map((t) => h("li", {}, t))));
   fill(A.slots.progress, ...lines);
   fill(A.slots.preview, preview ? mergeCard(preview) : null);
   A.root.hidden = !buttons.length && !lines.length && !notes.length && !preview;
@@ -437,7 +612,7 @@ function paint() {
 async function resume() {
   const mine = A;
   const ask = (kind) => mine.ctx.api("GET", `/api/jobs/current?kind=${kind}`).then((r) => r.job, () => null);
-  const [merge, describe, pick] = await Promise.all([ask(KINDS.merge), ask(KINDS.describe), ask(KINDS.pick)]);
+  const [merge, describe, pick, art] = await Promise.all([ask(KINDS.merge), ask(KINDS.describe), ask(KINDS.pick), ask(KINDS.art)]);
   if (!alive(mine)) return;
   const mineItem = (job) => !!job && !!job.items && !!job.items[0] && job.items[0].id === mine.opts.path;
   if (mineItem(merge) && !readHandled().includes(merge.id) && (isActive(merge) || mergePreview(merge))) {
@@ -452,10 +627,17 @@ async function resume() {
     mine.runs.pick.job = pick;
     poll("pick", adoptPick);
   }
+  if (mineItem(art) && isActive(art) && !isActive(mine.runs.art.job)) {
+    mine.runs.art.job = art;
+    mine.runs.art.seen = artDone(art);
+    poll("art", adoptArt);
+  }
   paint();
+  artChanged();
 }
 
-const freshRun = () => ({ job: null, timer: null, errors: 0, starting: false, stopping: false, saving: false, error: "", note: "", warnings: [], focus: false });
+const freshRun = () => ({ job: null, timer: null, errors: 0, starting: false, stopping: false, saving: false, error: "", note: "", warnings: [],
+  focus: false, auto: false, seen: null });
 
 export function mountSceneActions(ctx, opts) {
   stopTimers();
@@ -466,7 +648,10 @@ export function mountSceneActions(ctx, opts) {
   };
   const root = h("section", { class: "scene-actions", "aria-label": "장면 도구" }, live, slots.row, slots.notes, slots.progress, slots.preview);
   root.hidden = true;
-  A = { ctx, opts, root, live, slots, status: undefined, runs: { merge: freshRun(), describe: freshRun(), pick: freshRun() } };
+  A = {
+    ctx, opts, root, live, slots, status: undefined, runs: { merge: freshRun(), describe: freshRun(), pick: freshRun(), art: freshRun() },
+    art: { plan: { pending: [], running: false, disabled: false }, timer: null, blocked: false },
+  };
   const mine = A;
   loadStatus();
   resume();
@@ -474,6 +659,20 @@ export function mountSceneActions(ctx, opts) {
     el: root,
     // The conti changed (edit, merge, restore): the buttons follow it (repeats left or not).
     refresh: () => { if (alive(mine)) paint(); },
-    unmount: () => { if (A === mine) { stopTimers(); A = null; } },
+    // A save made these scenes' drawings old (the answer's art_stale): redraw them after the wait.
+    artStale: (ids) => { if (alive(mine) && Array.isArray(ids) && ids.length) feedArt({ type: "stale", ids }); },
+    // A drawing job runs on this conti, or the scene waits to be drawn again ("다시 그리는 중…").
+    artBusy: (id) => alive(mine) && (mine.runs.art.starting || isActive(mine.runs.art.job) || mine.art.plan.running
+      || mine.art.plan.pending.includes(id)),
+    // 다시 그리기 in the scene panel: these scenes now.
+    redraw: (ids) => { if (alive(mine)) startArt({ ids }); },
+    // leaving drops what was scheduled; a started job goes on (the status chip still shows it)
+    unmount: () => {
+      if (A !== mine) return;
+      feedArt({ type: "leave" });
+      clearTimeout(mine.art.timer);
+      stopTimers();
+      A = null;
+    },
   };
 }

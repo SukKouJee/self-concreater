@@ -60,6 +60,7 @@ def test_every_backend_kind_has_a_label_except_the_help_chat():
     assert labels["footage"] == {"label": "Claude가 촬영 영상을 맞추는 중", "name": "촬영 영상 맞추기", "claude": True}
     assert not labels["footage_clips"]["claude"] and not labels["srtfit"]["claude"] and not labels["caption_video"]["claude"]
     assert labels["refs_describe"]["label"] == "Claude가 사진 설명을 만드는 중"
+    assert labels["conti_art"] == {"label": "Claude가 장면 그림을 그리는 중", "name": "장면 그림", "claude": True}
 
 
 def test_elapsed_text():
@@ -171,6 +172,7 @@ def test_result_href_per_kind():
         'snap("conti", "done", { item: "drafts/2026-10-29 부루마블.md" })': "#/video/2026-10-29%20%EB%B6%80%EB%A3%A8%EB%A7%88%EB%B8%94/conti",
         'snap("conti_merge", "done", { item: "drafts/a-conti.md" })': "#/video/a/conti",
         'snap("conti_refs", "done", { item: "drafts/a-conti.md", summary: { path: "drafts/a-conti.md" } })': "#/video/a/conti",
+        'snap("conti_art", "done", { item: "drafts/a-conti.md", summary: { path: "drafts/a-conti.md" } })': "#/video/a/conti",
         'snap("srtfit", "done", { item: "drafts/sub/a-conti.md" })': "#/video/sub%2Fa/conti",
         'snap("caption_video", "done", { item: "drafts/a-conti.md" })': "#/video/a/conti",
         'snap("footage", "done", { item: "f1", summary: { path: "drafts/a-conti.md" } })': "#/video/a/conti",

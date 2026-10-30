@@ -283,3 +283,109 @@ def test_grid_move_by_rows_from_card_tops():
     assert run_js("m.gridMove([0, 0.4, 0.6, 260], 0, 'ArrowDown')") == 3  # sub-pixel tops count as one row
     assert run_js("m.gridMove([0, 200, 400], 0, 'ArrowDown')") == 1      # one column (phone)
     assert run_js("m.gridMove([0, 0], 0, 'Tab')") is None
+
+
+# ---- scene illustrations: auto redraw plan, what a scene shows, captions, tool button ----------
+
+ART_STEP = """
+const S0 = { pending: [], running: false, disabled: false };
+const run = (events) => { let st = S0; const out = [];
+  for (const e of events) { const r = m.artRedrawPlan(st, e); st = r.state; out.push({ start: r.start, delayMs: r.delayMs }); }
+  return { state: st, out }; };
+"""
+
+
+def art_js(body: str):
+    return run_js(f"(function(){{ {ART_STEP} {body} }})()")
+
+
+def test_art_debounce_constant():
+    assert run_js("m.ART_DEBOUNCE_MS") == 4000
+
+
+def test_art_redraw_stale_three_times_then_timer_starts_once():
+    r = art_js("return run([{type:'stale',ids:['a']},{type:'stale',ids:['b','a']},{type:'stale',ids:['c']},{type:'timer'}]);")
+    assert [o["delayMs"] for o in r["out"][:3]] == [4000, 4000, 4000]
+    assert all(o["start"] is None for o in r["out"][:3])
+    assert r["out"][3] == {"start": ["a", "b", "c"], "delayMs": None}
+    assert r["state"] == {"pending": [], "running": True, "disabled": False}
+
+
+def test_art_redraw_waits_while_running_then_runs_again_after_done():
+    r = art_js("return run([{type:'stale',ids:['a']},{type:'timer'},{type:'stale',ids:['b']},{type:'timer'},"
+               "{type:'done'},{type:'timer'}]);")
+    assert r["out"][1]["start"] == ["a"]
+    assert r["out"][2]["delayMs"] == 4000
+    assert r["out"][3] == {"start": None, "delayMs": None}          # running: wait
+    assert r["out"][4] == {"start": None, "delayMs": 0}             # done with pending: go now
+    assert r["out"][5]["start"] == ["b"]
+
+
+def test_art_redraw_done_without_pending_is_quiet():
+    r = art_js("return run([{type:'stale',ids:['a']},{type:'timer'},{type:'done'},{type:'timer'}]);")
+    assert r["out"][2] == {"start": None, "delayMs": None}
+    assert r["out"][3]["start"] is None
+    assert r["state"]["running"] is False
+
+
+def test_art_redraw_timer_with_nothing_pending_starts_nothing():
+    assert art_js("return run([{type:'timer'}]);")["out"] == [{"start": None, "delayMs": None}]
+
+
+def test_art_redraw_fail_ready_stops_auto_start():
+    r = art_js("return run([{type:'stale',ids:['a']},{type:'timer'},{type:'fail_ready'},{type:'stale',ids:['b']},"
+               "{type:'timer'}]);")
+    assert r["out"][3] == {"start": None, "delayMs": None}
+    assert r["out"][4]["start"] is None
+    assert r["state"] == {"pending": [], "running": False, "disabled": True}
+
+
+def test_art_redraw_leave_drops_pending_but_keeps_running():
+    r = art_js("return run([{type:'stale',ids:['a']},{type:'timer'},{type:'stale',ids:['b']},{type:'leave'}]);")
+    assert r["state"] == {"pending": [], "running": True, "disabled": False}
+    assert r["out"][3] == {"start": None, "delayMs": None}
+
+
+def test_art_redraw_requeue_keeps_ids_for_after_the_running_job():
+    # conti_busy: another drawing job is on this conti; the ids wait for it to end
+    r = art_js("return run([{type:'stale',ids:['a']},{type:'timer'},{type:'requeue',ids:['a']},{type:'timer'},"
+               "{type:'done'},{type:'timer'}]);")
+    assert r["out"][2] == {"start": None, "delayMs": None}
+    assert r["out"][3]["start"] is None
+    assert r["out"][4]["delayMs"] == 0
+    assert r["out"][5]["start"] == ["a"]
+
+
+def test_art_redraw_does_not_mutate_the_given_state():
+    r = art_js("const st = { pending: ['x'], running: false, disabled: false }; m.artRedrawPlan(st, {type:'stale',ids:['y']});"
+               " m.artRedrawPlan(st, {type:'timer'}); return st;")
+    assert r == {"pending": ["x"], "running": False, "disabled": False}
+
+
+def test_scene_visual_order():
+    art = "{url:'/files/workspace/conti-art/a/c1-1.svg',state:'fresh'}"
+    pinned = "{frame:'workspace/frames/p.jpg',match:'pinned'}"
+    photo = "{frame:'workspace/frames/q.jpg',match:'content'}"
+    assert run_js(f"m.sceneVisual({{art:{art},ref:{pinned}}}).kind") == "pinned"
+    assert run_js(f"m.sceneVisual({{art:{art},ref:null}}).kind") == "art"
+    assert run_js(f"m.sceneVisual({{art:{art},ref:{photo}}}).kind") == "art"
+    assert run_js(f"m.sceneVisual({{art:null,ref:{photo}}}).kind") == "photo"
+    assert run_js("m.sceneVisual({art:null,ref:null}).kind") == "sketch"
+    assert run_js("m.sceneVisual({}).kind") == "sketch"
+
+
+def test_art_caption():
+    assert run_js("m.artCaption({state:'fresh'}, false)") == "장면 그림"
+    assert run_js("m.artCaption({state:'fresh'}, true)") == "장면 그림"
+    assert run_js("m.artCaption({state:'stale'}, true)") == "다시 그리는 중…"
+    assert run_js("m.artCaption({state:'stale'}, false)") == "설명이 바뀌었어요"
+
+
+def test_art_tool_label():
+    a = "{url:'/files/x.svg',state:'fresh'}"
+    assert run_js(f"m.artToolLabel([{{id:'a',art:{a}}},{{id:'b',art:null}}])") == "장면 그림 그리기"
+    assert run_js(f"m.artToolLabel([{{id:'a',art:{a}}},{{id:'b',art:{a}}}])") == "전체 다시 그리기"
+    # a scene with a pinned photo is never drawn: it does not count as missing
+    assert run_js(f"m.artToolLabel([{{id:'a',art:{a}}},{{id:'b',art:null,ref_frame:'workspace/frames/p.jpg'}}])") == "전체 다시 그리기"
+    assert run_js("m.artToolLabel([{id:'b',art:null,ref_frame:'workspace/frames/p.jpg'}])") is None
+    assert run_js("m.artToolLabel([])") is None

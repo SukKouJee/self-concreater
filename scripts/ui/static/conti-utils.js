@@ -323,3 +323,64 @@ export function remapByCutId(map, before, after) {
     if (moved) map.set(moved.n, value);
   }
 }
+
+// ---- scene illustrations (장면 그림) ------------------------------------------------------------
+
+// A scene whose description was edited waits this long for more edits before it is drawn again.
+export const ART_DEBOUNCE_MS = 4000;
+
+// Auto redraw as a pure state machine. state = { pending: [ids], running, disabled } (never mutated).
+// Events: stale {ids} (an edit made these drawings old: wait ART_DEBOUNCE_MS again) · timer (the wait is over: start
+// the pending scenes unless a drawing job is running) · done (the job ended: pending scenes go at once) ·
+// requeue {ids} (the start found another job on this conti: wait for it) · fail_ready (Claude is not usable: stop
+// auto start on this screen) · leave (the screen is left: drop what was scheduled; a started job goes on).
+// Returns { state, start: ids to draw now | null, delayMs: (re)start the wait timer | null }.
+export function artRedrawPlan(state, event) {
+  const st = { pending: [...((state && state.pending) || [])], running: !!(state && state.running), disabled: !!(state && state.disabled) };
+  const add = (ids) => { for (const id of ids || []) if (!st.pending.includes(id)) st.pending.push(id); };
+  const type = event && event.type;
+  if (type === "stale") {
+    if (st.disabled) return { state: st, start: null, delayMs: null };
+    add(event.ids);
+    return { state: st, start: null, delayMs: st.pending.length ? ART_DEBOUNCE_MS : null };
+  }
+  if (type === "timer") {
+    if (st.running || st.disabled || !st.pending.length) return { state: st, start: null, delayMs: null };
+    const start = st.pending;
+    return { state: { ...st, pending: [], running: true }, start, delayMs: null };
+  }
+  if (type === "done") {
+    st.running = false;
+    return { state: st, start: null, delayMs: st.pending.length && !st.disabled ? 0 : null };
+  }
+  if (type === "requeue") {
+    if (!st.disabled) add(event.ids);
+    return { state: st, start: null, delayMs: null };
+  }
+  if (type === "fail_ready") return { state: { pending: [], running: false, disabled: true }, start: null, delayMs: null };
+  if (type === "leave") return { state: { ...st, pending: [] }, start: null, delayMs: null };
+  return { state: st, start: null, delayMs: null };
+}
+
+// What a scene shows: the photo the user pinned > the drawing > a matched photo > the shot sketch.
+export function sceneVisual(cut) {
+  const ref = cut && cut.ref;
+  if (ref && ref.match === "pinned") return { kind: "pinned", ref };
+  if (cut && cut.art && cut.art.url) return { kind: "art", art: cut.art };
+  if (ref) return { kind: "photo", ref };
+  return { kind: "sketch" };
+}
+
+// Caption under a drawing. busy: a drawing job runs on this conti or the scene waits to be drawn again.
+export function artCaption(art, busy) {
+  if (!art || art.state !== "stale") return "장면 그림";
+  return busy ? "다시 그리는 중…" : "설명이 바뀌었어요";
+}
+
+// Scene tool button: 장면 그림 그리기 while a scene that can have a drawing has none, else 전체 다시 그리기;
+// null when every scene has a pinned photo (nothing to draw).
+export function artToolLabel(cuts) {
+  const drawable = (Array.isArray(cuts) ? cuts : []).filter((c) => !c.ref_frame);
+  if (!drawable.length) return null;
+  return drawable.some((c) => !c.art) ? "장면 그림 그리기" : "전체 다시 그리기";
+}

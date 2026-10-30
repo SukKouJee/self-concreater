@@ -4,7 +4,7 @@
 import { h, filesUrl } from "/static/dom.js";
 import { chip, tag } from "/static/ui.js";
 import { sectionLabelName } from "/static/labels.js";
-import { aboutSec, cardStamp, parseView, refCaption, tagKind } from "/static/conti-utils.js";
+import { aboutSec, artCaption, cardStamp, parseView, refCaption, sceneVisual, tagKind } from "/static/conti-utils.js";
 
 const VIEW_KEY = "ytc.conti.view";
 
@@ -51,11 +51,21 @@ export function noMatch(onClear) {
   return h("div", { class: "cb-empty" }, h("p", { class: "muted" }, "찾는 장면이 없어요"), clear);
 }
 
-// One scene card. o: { selected, isTab, warn, dot (element or null), onOpen(), more (the ⋯ button) }
-// Frame: the scene photo when there is one, else the shot description; top left "01 · 0:00–0:10", top right length.
+// Caption under a scene drawing. data-art-cap lets the page change it in place when a drawing job starts or ends.
+function artCap(c, busy) {
+  const stale = c.art.state === "stale";
+  return h("span", { class: `cb-ref cb-art-cap${stale ? " is-stale" : ""}`, "data-art-cap": c.id }, artCaption(c.art, busy));
+}
+
+// One scene card. o: { selected, isTab, warn, dot (element or null), artBusy (a drawing job runs or the scene waits
+// to be drawn again), onOpen(), more (the ⋯ button) }
+// Frame: the pinned photo, else Claude's drawing, else a matched photo, else the shot description (sceneVisual);
+// top left "01 · 0:00–0:10", top right length. The drawing is only ever an <img src> (never markup in the page).
 export function sceneCard(c, o) {
-  const frame = h("span", { class: `cb-frame${c.ref ? " has-photo" : ""}` });
-  if (c.ref) frame.append(h("img", { src: filesUrl(c.ref.frame), alt: "", loading: "lazy" }));
+  const vis = sceneVisual(c);
+  const frame = h("span", { class: `cb-frame${vis.kind === "art" ? " has-art" : vis.ref ? " has-photo" : ""}` });
+  if (vis.kind === "art") frame.append(h("img", { src: c.art.url, alt: "장면 그림", loading: "lazy" }));
+  else if (vis.ref) frame.append(h("img", { src: filesUrl(c.ref.frame), alt: "", loading: "lazy" }));
   else frame.append(h("span", { class: "cb-shot" }, [c.size, c.angle].filter(Boolean).join(" · ")));
   frame.append(h("span", { class: "cb-stamp num" }, cardStamp(c)), h("span", { class: "cb-len" }, aboutSec(c.sec)));
   const top = h("span", { class: "cb-top" }, tag(sectionLabelName(c.label), tagKind(c.label)));
@@ -64,7 +74,7 @@ export function sceneCard(c, o) {
   const body = h("span", { class: "cb-body" }, top,
     h("span", { class: "cb-action" }, c.action || ""),
     h("span", { class: "cb-line" + (c.line ? "" : " muted") }, c.line ? `“${c.line}”` : "(대사 없음)"),
-    c.ref ? h("span", { class: "cb-ref" }, refCaption(c.ref)) : null);
+    vis.kind === "art" ? artCap(c, o.artBusy) : c.ref ? h("span", { class: "cb-ref" }, refCaption(c.ref)) : null);
   const open = h("button", {
     type: "button", class: "cb-open" + (o.selected ? " is-selected" : ""), "data-n": String(c.n), "data-id": c.id,
     "data-nav": `card:${c.id}`, "aria-current": o.selected ? "true" : false, tabindex: o.isTab ? "0" : "-1",

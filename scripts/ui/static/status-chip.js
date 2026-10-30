@@ -20,6 +20,7 @@ export const JOB_KINDS = {
   conti: { label: "Claude가 콘티를 만드는 중", name: "콘티 만들기", claude: true },
   conti_merge: { label: "Claude가 장면을 합치는 중", name: "장면 합치기", claude: true },
   conti_refs: { label: "Claude가 장면 사진을 고르는 중", name: "사진 고르기", claude: true },
+  conti_art: { label: "Claude가 장면 그림을 그리는 중", name: "장면 그림", claude: true },
   srtfit: { label: "자막 시간 맞추는 중", name: "자막 시간 맞추기", claude: false },
   caption_video: { label: "자막 영상 만드는 중", name: "자막 영상 만들기", claude: false },
   footage: { label: "Claude가 촬영 영상을 맞추는 중", name: "촬영 영상 맞추기", claude: true },   // footage_match asks Claude
@@ -99,7 +100,7 @@ export function finishedJobs(prev, next) {
 }
 
 const VIDEO_TAB = {
-  conti: "conti", conti_merge: "conti", conti_refs: "conti", srtfit: "conti", caption_video: "conti",
+  conti: "conti", conti_merge: "conti", conti_refs: "conti", conti_art: "conti", srtfit: "conti", caption_video: "conti",
   footage: "conti", footage_clips: "conti", polish: "plan", diagnose: "diagnose",
 };
 const SCREEN = {

@@ -646,6 +646,9 @@ a.chip-job:hover, button.chip-job:hover { background: color-mix(in srgb, var(--k
 .is-vertical .fig-box { width: 108px; height: 192px; }
 .is-wide .fig-box { width: 192px; height: 108px; }
 .fig-box svg, .fig-box img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.fig-box.is-art { background: #FFFFFF; }
+.fig-box.is-art img { object-fit: contain; }
+.art-fig figcaption { display: flex; align-items: center; justify-content: center; gap: var(--sp-2); flex-wrap: wrap; }
 .fig-box .muted { font-size: 12px; padding: var(--sp-2); text-align: center; }
 .panel-line { font-size: 18px; font-weight: 600; line-height: 1.5; margin-bottom: var(--sp-2); overflow-wrap: anywhere; }
 .cut-info .small { margin: 0 0 4px; }
@@ -734,6 +737,10 @@ a.chip-job:hover, button.chip-job:hover { background: color-mix(in srgb, var(--k
   background: var(--ink-2); color: var(--surface); font-size: 13px; font-weight: 500; text-align: center; overflow: hidden; }
 .cb-frame.has-photo { padding: 0; background: var(--border); }
 .cb-frame img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* scene drawings: black lines on white paper in both themes, shown whole */
+.cb-frame.has-art { padding: 0; background: #FFFFFF; }
+.cb-frame.has-art img { object-fit: contain; }
+.cb-art-cap.is-stale { color: var(--ink-2); font-weight: 500; }
 .cb-stamp, .cb-len { position: absolute; padding: 2px 7px; border-radius: 5px; background: rgba(21, 23, 28, .72); color: var(--on-rec);
   font-size: 11px; line-height: 16px; }
 .cb-stamp { top: 8px; left: 8px; font-family: var(--mono); }
