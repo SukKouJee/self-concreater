@@ -17,6 +17,7 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
+from functools import cached_property
 from pathlib import Path
 from typing import Any
 
@@ -223,15 +224,48 @@ class FileScratch:
         path = Path(value)
         return path if path.is_absolute() else self.root / path
 
+    @cached_property
+    def _real_root(self) -> Path:
+        return self.root.resolve()
+
     def key_of(self, value: str | Path) -> str:
-        """절대·상대 경로 → 키. resolve 기준으로 root 밖이면(`..`·심볼릭 링크 포함) ScriptError("bad_path")."""
+        """절대·상대 경로 → 키. resolve 기준으로 root 밖이면(`..`·심볼릭 링크 포함) ScriptError("bad_path").
+        예외 하나: `workspace/`나 `workspace/<이름>/`이 다른 곳(다른 드라이브)으로 이어진 링크·junction이면, 그 링크 아래를
+        가리키는 작업 폴더 안 경로(`..` 없이)는 resolve 결과가 root 밖이어도 그 키로 받는다. 링크 안에 심은 더 깊은 링크로
+        그 밖을 가리키면 여전히 bad_path다."""
+        path = self.arg_path(value)
+        outside = ScriptError("bad_path", f"작업 폴더 밖의 경로입니다: {value}")
         try:
-            rel = self.arg_path(value).resolve().relative_to(self.root.resolve()).as_posix()
-        except (OSError, ValueError) as e:
-            raise ScriptError("bad_path", f"작업 폴더 밖의 경로입니다: {value}") from e
+            real = path.resolve()
+            if not real.is_relative_to(self._real_root):
+                lexical = self._lexical_key(path)
+                if lexical is None or not self._under_linked_workspace(lexical, real):
+                    raise outside
+                return lexical
+        except OSError as e:
+            raise outside from e
+        rel = real.relative_to(self._real_root).as_posix()
         if rel == ".":
             raise ScriptError("bad_path", f"작업 폴더 자체는 파일이 아닙니다: {value}")
         return _keys.check(rel)
+
+    def _lexical_key(self, path: Path) -> str | None:
+        """resolve 없이 root 기준 상대 경로가 키 형식이면 그 키(`..`이 있거나 root 밖이면 None)."""
+        if ".." in path.parts:
+            return None
+        try:
+            key = path.relative_to(self.root).as_posix()
+            return _keys.check(key) if key != "." else None
+        except (ValueError, ScriptError):
+            return None
+
+    def _under_linked_workspace(self, key: str, real: Path) -> bool:
+        """`workspace/`·`workspace/<이름>/`을 resolve한 곳 아래에 real이 있는가(링크로 옮겨 둔 workspace)."""
+        parts = key.split("/")
+        if parts[0] != _keys.WORKSPACE.rstrip("/") or len(parts) < 2:
+            return False
+        mounts = [parts[0]] + (["/".join(parts[:2])] if len(parts) > 2 else [])
+        return any(real.is_relative_to((self.root / mount).resolve()) for mount in mounts)
 
     def workdir(self) -> Path:
         return self.root

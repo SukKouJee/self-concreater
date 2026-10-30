@@ -6,6 +6,7 @@ import hashlib
 import os
 import re
 import shutil
+import subprocess
 import threading
 from collections.abc import Callable
 from datetime import datetime, timedelta
@@ -472,6 +473,68 @@ def test_scratch_key_of(home: Path, tmp_path: Path) -> None:
         with pytest.raises(ScriptError) as e:
             s.key_of(bad)
         assert e.value.code == "bad_path"
+
+
+def _dir_link(link: Path, target: Path) -> None:
+    """폴더 링크. Windows는 관리자 권한이 필요 없는 junction(`mklink /J`), 그 밖은 심볼릭 링크."""
+    link.parent.mkdir(parents=True, exist_ok=True)
+    target.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        done = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True)
+        if done.returncode != 0:
+            pytest.skip(f"junction을 만들 수 없습니다: {done.stderr!r}")
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+@pytest.mark.parametrize("linked", ["workspace", "workspace/frames"])
+def test_scratch_key_of_accepts_in_root_keys_under_a_linked_workspace(home: Path, tmp_path: Path,
+                                                                      linked: str) -> None:
+    # Arrange: workspace(또는 workspace/frames)가 작업 폴더 밖(다른 드라이브 흉내)으로 이어진 링크
+    shutil.rmtree(home / linked, ignore_errors=True)
+    _dir_link(home / linked, tmp_path / "elsewhere" / linked.replace("/", "_"))
+    frame = home / "workspace" / "frames" / VID / "0001.jpg"
+    frame.parent.mkdir(parents=True, exist_ok=True)
+    frame.write_bytes(b"jpg")
+    attach = FileScratch(home).tmp_path("mission_submit_x.png")
+    attach.write_bytes(b"png")
+    s = FileScratch(home)
+    key = f"workspace/frames/{VID}/0001.jpg"
+
+    # Act / Assert
+    assert s.key_of(frame) == key
+    assert s.key_of(str(frame)) == key
+    assert s.key_of(key) == key
+    assert s.key_of(attach) == "workspace/tmp/mission_submit_x.png"
+    assert s.key_of(home / CONTI) == CONTI                       # 링크와 무관한 키는 그대로
+
+
+def test_scratch_key_of_still_rejects_escapes_through_a_linked_workspace(home: Path, tmp_path: Path) -> None:
+    shutil.rmtree(home / "workspace", ignore_errors=True)
+    _dir_link(home / "workspace", tmp_path / "elsewhere" / "ws")
+    secret = tmp_path / "secret"
+    _dir_link(home / "workspace" / "frames" / VID, secret)    # 링크 폴더 안에 심어 둔 더 깊은 링크
+    (secret / "a.jpg").write_bytes(b"x")
+    _dir_link(home / "drafts_out", tmp_path / "outside_drafts")  # 작업 폴더 최상위의 밖 링크
+    (tmp_path / "outside_drafts" / "a.md").write_bytes(b"x")
+    s = FileScratch(home)
+    for bad in [f"workspace/frames/{VID}/a.jpg", home / "workspace" / "frames" / VID / "a.jpg",
+                "workspace/../../x.md", home / "workspace" / ".." / ".." / "x.md",
+                "drafts_out/a.md", tmp_path / "elsewhere" / "ws" / "tmp" / "x.json"]:
+        with pytest.raises(ScriptError) as e:
+            s.key_of(bad)
+        assert e.value.code == "bad_path", bad
+
+
+def test_scratch_resolves_root_once(home: Path, monkeypatch) -> None:
+    s = FileScratch(home)
+    s.key_of(CONTI)
+    calls: list[Path] = []
+    real = Path.resolve
+    monkeypatch.setattr(Path, "resolve", lambda self, *a, **k: (calls.append(self), real(self, *a, **k))[1])
+    s.key_of(CONTI)
+    s.key_of(home / CONTI)
+    assert home not in calls
 
 
 # --- refstore 도우미 -----------------------------------------------------------------
