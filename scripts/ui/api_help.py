@@ -14,8 +14,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from scripts import draft, library, llm, motif, refstore, similarity, status
-from scripts.common import PLUGIN_ROOT, ScriptError, work_root
+from scripts import ctx, draft, keys, library, llm, motif, refstore, similarity, status
+from scripts.common import PLUGIN_ROOT, ScriptError
 from scripts.ui.api_draft import _library_templates
 from scripts.ui.jobs import Job, new_item
 from scripts.ui.server import Request, route
@@ -49,7 +49,7 @@ def read_help(page: str) -> dict[str, str]:
     path = HELP_DIR / f"{page}.md"
     if not path.is_file():
         raise ScriptError("help_not_found", f"도움말 파일이 없습니다: {page}")
-    fm, body = refstore.read_md(path)
+    fm, body = refstore.parse_md(path.read_bytes(), path)      # 플러그인 폴더의 파일이라 저장소 밖
     return {"page": page, "title": str(fm.get("title", page)), "markdown": body}
 
 
@@ -117,7 +117,7 @@ def gates(category: str, page: str) -> dict[str, Any]:
         templates = _library_templates()
         draft_sources["library_templates"] = None if templates is None else len(templates)
     return {
-        "has_profile": (work_root() / "profile.md").exists(),
+        "has_profile": ctx.here().store.exists(keys.PROFILE),
         "typify_result": motif.has_typify(category),
         "motif_allowed": [motif.TYPE_KO[t] for t in motif.allowed_types(category)],
         "diagnose": similarity.typify_gate(category),

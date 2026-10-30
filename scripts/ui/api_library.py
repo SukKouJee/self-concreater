@@ -138,7 +138,7 @@ def _my_techniques(req: Request) -> dict:
 @route("GET", "/api/library/my/drafts")
 def _my_drafts(req: Request) -> dict:
     category = _str(req.query, "category") or ""
-    refstore.existing_category_dir(category)              # 없는 카테고리는 category_not_found
+    refstore.require_category(category)                   # 없는 카테고리는 category_not_found
     return api_draft.list_drafts(category)
 
 

@@ -7,15 +7,13 @@
 """
 from __future__ import annotations
 
-import hashlib
 import math
 import re
 from datetime import date, datetime, timezone
-from pathlib import Path
 from typing import Any
 
-from scripts import refstore, videomd
-from scripts.common import ScriptError, work_root
+from scripts import ctx, keys, refstore, videomd
+from scripts.common import ScriptError
 from scripts.ui.server import Request, route
 
 ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
@@ -128,8 +126,7 @@ def _scene_frames(video_id: str) -> list[dict]:
     scenes = cuts.get("scenes") if isinstance(cuts, dict) else None
     if not isinstance(scenes, list):
         return []
-    root = work_root()
-    base = (root / "workspace" / "frames").resolve()
+    scratch, shared = ctx.here().scratch, ctx.here().shared
     out = []
     for scene in scenes:
         if not isinstance(scene, dict):
@@ -138,20 +135,21 @@ def _scene_frames(video_id: str) -> list[dict]:
         if not isinstance(frame, str) or not frame.startswith(FRAMES_PREFIX) or "\\" in frame or "\x00" in frame:
             continue
         try:
-            target = (root / frame).resolve()
-            if not target.is_relative_to(base) or not target.is_file():
+            # resolve 기반 탈출 검사: `..`·심볼릭 링크로 frames 밖을 가리키면 버린다(key_of가 resolve해서 키로 바꾼다)
+            real = scratch.key_of(frame)
+            if not real.startswith(FRAMES_PREFIX) or not shared.exists(real):
                 continue
             start, end = _finite(scene.get("start")), _finite(scene.get("end"))
-        except (OSError, ValueError, TypeError):
+        except (ScriptError, OSError, ValueError, TypeError):
             continue
         out.append({"frame": frame, "start": start, "end": end})
     return out
 
 
-def _summary(path: Path, fm: dict, frames: list[dict]) -> dict:
-    added = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+def _summary(key: str, mtime: float, fm: dict, frames: list[dict]) -> dict:
+    added = datetime.fromtimestamp(mtime, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     return {
-        "id": path.stem, "role": _text(fm.get("role")), "title": _text(fm.get("title")),
+        "id": keys.stem(key), "role": _text(fm.get("role")), "title": _text(fm.get("title")),
         "channel": _text(fm.get("channel")), "duration_sec": _duration(fm.get("duration_sec")),
         "format": _text(fm.get("format")), "hook_type": _text(fm.get("hook_type")),
         "narrative_type": _text(fm.get("narrative_type")),
@@ -189,16 +187,18 @@ def _youtube_url(value: Any) -> str | None:
 @route("GET", "/api/refs")
 def _list(req: Request) -> dict:
     category = _category(req)
-    folder = refstore.existing_category_dir(category) / "videos"
+    folder = refstore.require_category(category) + "videos/"
+    store = ctx.here().store
     videos = []
     skipped = 0
-    for path in sorted(folder.glob("*.md")) if folder.is_dir() else []:
-        if not ID_RE.fullmatch(path.stem):
+    for meta in store.list(folder, "*.md") if store.folder_exists(folder) else []:
+        stem = keys.stem(meta.key)
+        if not ID_RE.fullmatch(stem):
             skipped += 1                  # 상세가 400으로 거절할 id는 목록에도 싣지 않는다
             continue
         try:
-            fm, _ = refstore.read_md(path)
-            videos.append(_summary(path, fm, _scene_frames(path.stem)))
+            fm, _ = refstore.read(meta.key)
+            videos.append(_summary(meta.key, meta.mtime, fm, _scene_frames(stem)))
         except (ScriptError, ValueError, TypeError, AttributeError, OSError):
             skipped += 1                  # 한 파일이 깨졌다고 목록 전체를 막지 않는다
     return {"category": category, "videos": videos, "skipped": skipped}
@@ -209,32 +209,31 @@ def _detail(req: Request, video_id: str) -> dict:
     if not ID_RE.fullmatch(video_id):
         raise ScriptError("bad_request", f"잘못된 영상 id입니다: {video_id!r}")
     category = _category(req)
-    path = refstore.existing_category_dir(category) / "videos" / f"{video_id}.md"
-    if not path.is_file():
+    refstore.require_category(category)
+    key = keys.video_md(category, video_id)
+    store = ctx.here().store
+    if not store.exists(key):
         raise ScriptError("video_not_found", f"영상 md가 없습니다: {video_id}")
     try:
-        fm, body = refstore.read_md(path)
+        doc = store.read(key)
+        fm, body = doc.parsed
     except ScriptError:
         raise
     except (OSError, ValueError) as e:
         raise ScriptError("bad_md", f"영상 md를 읽지 못했습니다: {video_id}") from e
     frames = _scene_frames(video_id)
     try:
-        summary = _summary(path, fm, frames)
+        summary = _summary(key, store.stat(key).mtime, fm, frames)
         for f in frames:
             f["section"] = _section_at(summary["sections"], (f["start"] + f["end"]) / 2)
     except (ValueError, TypeError, AttributeError) as e:
         raise ScriptError("bad_md", f"영상 md의 값이 올바르지 않습니다({video_id}): 섹션 시작/끝은 숫자여야 합니다") from e
     video = {**summary, "url": _youtube_url(fm.get("url")), "pacing": _dict_or_none(fm.get("pacing")),
              "camera": _dict_or_none(fm.get("camera"))}
-    try:
-        md = path.relative_to(work_root()).as_posix()
-    except ValueError:
-        md = path.resolve().relative_to(work_root().resolve()).as_posix()
     vocab = {"label": videomd.LABELS, "body_sub": videomd.BODY_SUBS,
              "hook_type": videomd.HOOK_TYPES, "narrative_type": videomd.NARRATIVE_TYPES}
-    return {"video": video, "frames": frames, "body": _body_parts(body), "md": md,
-            "hash": hashlib.sha256(path.read_bytes()).hexdigest(), "vocab": vocab}
+    return {"video": video, "frames": frames, "body": _body_parts(body), "md": key,
+            "hash": doc.version, "vocab": vocab}
 
 
 @route("POST", r"/api/refs/(?P<video_id>[^/?]+)/labels")
@@ -242,17 +241,17 @@ def _labels(req: Request, video_id: str) -> dict:
     if not ID_RE.fullmatch(video_id):
         raise ScriptError("bad_request", f"잘못된 영상 id입니다: {video_id!r}")
     category = _category(req)
-    refstore.existing_category_dir(category)
+    refstore.require_category(category)
     body = req.json
     expected = body.get("hash")
     if not isinstance(expected, str) or not expected:
         raise ScriptError("bad_request", "hash가 필요합니다")
     changes = {k: body[k] for k in ("sections", "hook_type", "narrative_type") if k in body}
     result = videomd.relabel(video_id, category, changes, expected)
-    path = work_root() / videomd.video_md_key(video_id, category)
+    key = videomd.video_md_key(video_id, category)
     try:
-        fm, _ = refstore.read_md(path)
-        video: dict | None = _summary(path, fm, _scene_frames(video_id))
+        fm, _ = refstore.read(key)
+        video: dict | None = _summary(key, ctx.here().store.stat(key).mtime, fm, _scene_frames(video_id))
     except (ScriptError, ValueError, TypeError, AttributeError, OSError):
         video = None                      # 저장은 끝났다. 화면은 상세를 다시 불러온다
     return {**result, "video": video}

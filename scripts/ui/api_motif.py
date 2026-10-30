@@ -9,14 +9,13 @@
 from __future__ import annotations
 
 import json
-import os
 import re
-import tempfile
+import secrets
 from pathlib import Path
 from typing import Any
 
-from scripts import claude_cli, llm, motif, refstore
-from scripts.common import ScriptError, work_root, workspace_dir
+from scripts import claude_cli, ctx, keys, llm, motif, refstore
+from scripts.common import ScriptError
 from scripts.ui.jobs import Job, new_item
 from scripts.ui.server import Request, route
 
@@ -54,7 +53,7 @@ def _rules() -> list[Path]:
 def _category(value: Any) -> str:
     if not isinstance(value, str) or not value:
         raise ScriptError("bad_request", "category가 필요합니다")
-    refstore.existing_category_dir(value)             # 없는 카테고리는 category_not_found
+    refstore.require_category(value)                  # 없는 카테고리는 category_not_found
     return value
 
 
@@ -91,7 +90,7 @@ def _status(req: Request) -> dict:
     return {
         "category": category, "ref": counts["ref"], "stage": counts["stage"],
         "allowed_types": allowed, "allowed_ko": [motif.TYPE_KO[t] for t in allowed],
-        "has_profile": (work_root() / "profile.md").exists(),
+        "has_profile": ctx.here().store.exists(keys.PROFILE),
         "has_typify": motif.has_typify(category),      # context()의 typify가 None이 아닌 조건과 같다
         "cards": motif.card_details(category),
     }
@@ -170,14 +169,10 @@ def _save(req: Request) -> dict:
     star_at = _star_indexes(body.get("star", []), len(cards))
     job_id = body.get("job_id")
     allowed = _allowed(category)
-    tmp_dir = workspace_dir("tmp")
-    tmp_dir.mkdir(parents=True, exist_ok=True)
     with refstore.INDEX_LOCK:
-        fd, name = tempfile.mkstemp(prefix="motif_cards_", suffix=".json", dir=tmp_dir)   # 요청마다 고유한 파일
-        tmp = Path(name)
+        tmp = ctx.here().scratch.tmp_path(f"motif_cards_{secrets.token_hex(8)}.json")   # 요청마다 고유한 파일
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(cards, f, ensure_ascii=False)
+            tmp.write_bytes(refstore.text_bytes(json.dumps(cards, ensure_ascii=False)))
             ids = motif.add(category, tmp, allowed)["ids"]
         finally:
             tmp.unlink(missing_ok=True)

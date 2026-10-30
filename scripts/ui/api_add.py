@@ -39,8 +39,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from scripts import claude_cli, cuts, fetch, llm, refstore, shots, stt, timings, videomd
-from scripts.common import Progress, ScriptError, work_root, workspace_dir
+from scripts import claude_cli, cuts, fetch, keys, llm, refstore, shots, stt, timings, videomd
+from scripts import ctx as run_ctx      # 아래 함수들에 지역 변수 ctx(LLM에 넘길 입력)가 있어 별칭을 쓴다
+from scripts.common import Progress, ScriptError
 from scripts.ui.jobs import SINGLE_KINDS, STOP_MESSAGE, Job, JobCancelled, new_item
 from scripts.ui.progress import ItemTiming
 from scripts.ui.server import Request, route
@@ -130,11 +131,11 @@ def _saved_state(category: str, video_id: str, role: str) -> tuple[str, str | No
 
     프런트매터를 못 읽거나 role이 없으면 같은 role로 보고(exists) title은 None.
     """
-    path = refstore.category_dir(category) / "videos" / f"{video_id}.md"
-    if not path.is_file():
+    key = keys.video_md(category, video_id)               # 이름이 틀린 카테고리는 invalid_category
+    if not run_ctx.here().store.exists(key):
         return None
     try:
-        fm = refstore.read_md(path)[0]
+        fm = refstore.read(key)[0]
     except (ScriptError, OSError):
         return "exists", None
     title = fm.get("title")
@@ -226,30 +227,27 @@ def _fresh(items: list[dict], existing: list[dict]) -> list[dict]:
     return kept
 
 
-def _frame_files(frames: Any) -> list[Path]:
-    """frame 경로(작업 폴더 기준)를 파일 경로로 바꾼다. frames는 {"frame": path} 목록."""
-    root = work_root()
-    return [root / f["frame"] for f in (frames or []) if isinstance(f, dict) and f.get("frame")]
+def _frame_files(frames: Any) -> list[str]:
+    """첨부할 프레임의 키(작업 폴더 기준 경로 그대로). frames는 {"frame": path} 목록."""
+    return [f["frame"] for f in (frames or []) if isinstance(f, dict) and f.get("frame")]
 
 
-def _analysis_frames(cut_data: dict | None) -> list[Path]:
+def _analysis_frames(cut_data: dict | None) -> list[str]:
     """yt-analyze 0단계: 장면 프레임 최대 8장(처음·끝 포함, 나머지는 고르게)."""
     scenes = [s for s in (cut_data or {}).get("scenes", []) if s.get("frame")]
-    root = work_root()
-    return [root / scenes[i]["frame"] for i in cuts.pick_frame_scenes(len(scenes), ANALYZE_FRAME_CAP)]
+    return [scenes[i]["frame"] for i in cuts.pick_frame_scenes(len(scenes), ANALYZE_FRAME_CAP)]
 
 
 def _classify_shots(video_id: str, category: str) -> dict:
     """shots.context → Claude 분류 → tmp에 쓰고 shots.apply. apply가 invalid_shots면 한 번 다시 묻는다."""
     ctx = shots.context(video_id, category)
-    tmp = workspace_dir("tmp", f"shots_{video_id}.json")
+    tmp = run_ctx.here().scratch.tmp_path(f"shots_{video_id}.json")
 
     def apply(data: dict) -> dict:
         labels = data.get("labels")
         if not isinstance(labels, list) or not labels:
             raise ScriptError("invalid_shots", '샷 분류가 형식에 맞지 않습니다: {"labels": [...]} 배열이 없습니다')
-        tmp.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(json.dumps(labels, ensure_ascii=False), encoding="utf-8")
+        tmp.write_bytes(refstore.text_bytes(json.dumps(labels, ensure_ascii=False)))
         return shots.apply(video_id, category, tmp)
 
     try:
@@ -262,9 +260,8 @@ def _classify_shots(video_id: str, category: str) -> dict:
 
 
 def _write(video_id: str, opts: AddOptions, analysis: dict) -> dict:
-    path = workspace_dir("tmp", f"analysis_{video_id}.json")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(analysis, ensure_ascii=False, indent=1), encoding="utf-8")
+    path = run_ctx.here().scratch.tmp_path(f"analysis_{video_id}.json")
+    path.write_bytes(refstore.text_bytes(json.dumps(analysis, ensure_ascii=False, indent=1)))
     try:
         return videomd.write(video_id, opts.category, opts.role, path, opts.force or opts.refetch)
     finally:
@@ -752,7 +749,7 @@ class Collector:
         cut_times = cut_data["cuts"] if cut_data else []
         need_frames = bool(ctx.get("sparse") or screen)
         frames = _analysis_frames(cut_data) if need_frames else []
-        files = [*frames, *[work_root() / e for e in ctx.get("examples") or []]]
+        files = [*frames, *(ctx.get("examples") or [])]
         task = ANALYZE_TASK + (SCREEN_HINT if need_frames else "")
         if feedback:
             task += f"\n사용자 의견: {feedback}"
@@ -825,14 +822,13 @@ def _describe_batch(video_id: str, category: str) -> dict | None:
     ctx = shots.describe_context(video_id, category, limit=shots.DESC_BATCH)
     if not ctx["frames"]:
         return None
-    tmp = workspace_dir("tmp", f"desc_{video_id}.json")
+    tmp = run_ctx.here().scratch.tmp_path(f"desc_{video_id}.json")
 
     def apply(data: dict) -> dict:
         labels = data.get("labels")
         if not isinstance(labels, list) or not labels:
             raise ScriptError("invalid_shots", '사진 설명이 형식에 맞지 않습니다: {"labels": [...]} 배열이 없습니다')
-        tmp.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(json.dumps(labels, ensure_ascii=False), encoding="utf-8")
+        tmp.write_bytes(refstore.text_bytes(json.dumps(labels, ensure_ascii=False)))
         return shots.apply_desc(video_id, category, tmp)
 
     try:
@@ -922,7 +918,7 @@ def _category(body: dict) -> str:
     category = body.get("category")
     if not isinstance(category, str) or not category:
         raise ScriptError("bad_request", "category가 필요합니다")
-    refstore.existing_category_dir(category)
+    refstore.require_category(category)
     return category
 
 
@@ -1039,7 +1035,7 @@ def _shots_only(req: Request) -> dict:
 def _video_title(video_id: str, category: str) -> str | None:
     """카드에 보일 제목. 읽을 수 없으면 제목 없이 id만 보인다(작업에는 영향 없음)."""
     try:
-        title = refstore.read_md(videomd.video_md_key(video_id, category))[0].get("title")
+        title = refstore.read(videomd.video_md_key(video_id, category))[0].get("title")
     except (ScriptError, OSError):
         return None
     return title if isinstance(title, str) and title else None

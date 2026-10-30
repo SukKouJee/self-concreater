@@ -10,13 +10,12 @@
 from __future__ import annotations
 
 import json
-import os
-import tempfile
+import secrets
 from pathlib import Path
 from typing import Any
 
-from scripts import claude_cli, cluster, ctx, llm, refstore
-from scripts.common import ScriptError, workspace_dir
+from scripts import claude_cli, cluster, ctx, keys, llm, refstore
+from scripts.common import ScriptError
 from scripts.ui.jobs import Job, new_item
 from scripts.ui.server import Request, route
 
@@ -46,7 +45,7 @@ def _rules() -> list[Path]:
 def _category(value: Any) -> str:
     if not isinstance(value, str) or not value:
         raise ScriptError("bad_request", "category가 필요합니다")
-    refstore.existing_category_dir(value)             # 없는 카테고리는 category_not_found
+    refstore.require_category(value)                  # 없는 카테고리는 category_not_found
     return value
 
 
@@ -81,7 +80,7 @@ def _status(req: Request) -> dict:
     category = _category(req.query.get("category"))
     counts = refstore.count(category)
     stage, need = _stage(counts["ref"])
-    fm, _ = refstore.read_md(refstore.existing_category_dir(category) / "index.md")
+    fm, _ = refstore.read(keys.index_md(category))
     return {
         "category": category, "ref": counts["ref"], "mine": counts["mine"], "stage": stage, "need": need,
         "typified_at": fm.get("typified_at"), "applied": _overlay_names(_read_json(cluster.applied_key(category)), fm),
@@ -133,13 +132,9 @@ def _save(req: Request) -> dict:
     notes = body.get("notes")
     if not isinstance(notes, dict):
         raise ScriptError("bad_request", "notes는 JSON 객체여야 합니다")
-    tmp_dir = workspace_dir("tmp")
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(prefix="typify_notes_", suffix=".json", dir=tmp_dir)   # 요청마다 고유한 파일
-    tmp = Path(name)
+    tmp = ctx.here().scratch.tmp_path(f"typify_notes_{secrets.token_hex(8)}.json")   # 요청마다 고유한 파일
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(notes, f, ensure_ascii=False)
+        tmp.write_bytes(refstore.text_bytes(json.dumps(notes, ensure_ascii=False)))
         result = cluster.apply(category, tmp, expected_run_at=run_at, source=cluster.preview_key(category))
     finally:
         tmp.unlink(missing_ok=True)
