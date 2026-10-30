@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from scripts import claude_cli, conti, features, llm, refstore, similarity
+from scripts import claude_cli, conti, ctx, features, llm, refstore, similarity
 from scripts.common import ScriptError, work_root, workspace_dir
 from scripts.ui.api_refs import _body_parts
 from scripts.ui.jobs import Job, new_item
@@ -94,11 +94,11 @@ def _date(fm: dict, path: Path) -> str:
 
 
 def _diagnosed(category: str, name: str) -> dict | None:
-    path = similarity._diag_path(name)
-    if not path.exists():
+    key = similarity._diag_key(name)
+    if not ctx.here().store.exists(key):
         return None
     try:
-        fm, _ = refstore.read_md(path)
+        fm, _ = refstore.read(key)
     except (ScriptError, OSError, UnicodeDecodeError):
         return None
     if fm.get("category") != category:
@@ -199,14 +199,14 @@ def _mark_saved(req: Request, job_id: Any, category: str, target: str) -> None:
 
 
 def _record(category: str, name: str) -> dict:
-    path = similarity._diag_path(name)
+    key = similarity._diag_key(name)
     missing = ScriptError("diagnosis_not_found", f"진단 기록이 없습니다: mine/{name}.md")
-    if not path.exists():
+    if not ctx.here().store.exists(key):
         raise missing
-    fm, body = refstore.read_md(path)
+    fm, body = refstore.read(key)
     if fm.get("category") != category:
         raise missing
-    return {"name": name, "path": path.relative_to(work_root()).as_posix(),
+    return {"name": name, "path": key,
             "fm": {k: (str(fm.get(k)) if k == "date" else fm.get(k)) for k in RECORD_FIELDS},
             "body": _body_parts(body)}
 
@@ -254,12 +254,12 @@ def _intentional(req: Request) -> dict:
     record = _record(category, name)                  # 없는 기록·다른 카테고리는 diagnosis_not_found
     target = record["fm"]["target"]
     with WRITE_LOCK:
-        previous = list(refstore.read_md(similarity._diag_path(name))[0].get("intentional") or [])
+        previous = list(refstore.read(similarity._diag_key(name))[0].get("intentional") or [])
         result = similarity.intentional(category, name, key, off=not on)
         try:
             compare = _compare(category, _target_path(category, target))
         except ScriptError:
-            refstore.update_frontmatter(similarity._diag_path(name), {"intentional": previous})   # 되돌린다
+            refstore.update_frontmatter(similarity._diag_key(name), {"intentional": previous})   # 되돌린다
             raise
     return {**result, "compare": compare}
 

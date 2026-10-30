@@ -138,7 +138,7 @@ def _profile() -> dict | None:
     return {k: "\n".join(v).strip() for k, v in sections.items()}
 
 
-def _summary_line(path: Path) -> str:
+def _summary_line(path: str) -> str:
     _, body = refstore.read_md(path)
     lines = body.replace("\r\n", "\n").split("\n")
     idx = next((i for i, line in enumerate(lines) if line.strip() == "## 한 줄 요약"), None)

@@ -26,8 +26,8 @@ from typing import Any
 
 import numpy as np
 
-from scripts import features, refstore
-from scripts.common import ArgParser, ScriptError, run, work_root, workspace_dir
+from scripts import ctx, features, keys, refstore
+from scripts.common import ArgParser, ScriptError, run
 
 STRUCTURE_GAP = 0.1
 PACING_GAP = 0.3
@@ -38,11 +38,12 @@ FALLBACK_SCALE = {"structure": 0.5, "pacing": 0.7, "shots": 0.7}   # 다른 ref�
 # --- 대상 · 아키타입 ---------------------------------------------------------------
 
 def _load_typify(category: str) -> dict:
-    path = workspace_dir("typify", f"{category}.json")
-    if not path.exists():
+    objects = ctx.here().objects
+    key = keys.typify(category)
+    if not objects.exists(key):
         raise ScriptError("no_typify_result", f"유형화 결과가 없습니다. 먼저 /yt-typify {category}")
     try:
-        result = json.loads(path.read_text("utf-8"))
+        result = json.loads(objects.get(key).decode("utf-8"))
     except (OSError, ValueError) as e:                # 깨진 JSON은 유형화 결과가 없는 것으로 본다
         raise ScriptError("no_typify_result", f"유형화 결과를 읽을 수 없습니다. 다시 /yt-typify {category}") from e
     if not isinstance(result, dict) or not result.get("archetypes"):
@@ -64,27 +65,34 @@ def typify_gate(category: str) -> dict[str, bool | None]:
 
 
 def _names(category: str) -> dict:
-    fm, _ = refstore.read_md(refstore.existing_category_dir(category) / "index.md")
+    refstore.require_category(category)
+    fm, _ = refstore.read(keys.index_md(category))
     return {a["id"]: a.get("name") for a in fm.get("archetypes") or []}
 
 
-def _diag_path(name: str) -> Path:
-    return work_root() / "mine" / f"{name}.md"
+def _diag_key(name: str) -> str:
+    return keys.mine_md(name)
 
 
-def _target(path: Path) -> dict:
-    path = Path(path)
-    if not path.is_absolute():
-        path = work_root() / path
-    if not path.exists():
-        raise ScriptError("target_not_found", f"진단할 파일이 없습니다: {path}")
-    fm, _ = refstore.read_md(path)
+def _target(value: str | Path) -> dict:
+    """진단 대상(작업 폴더 기준 키·상대 경로 또는 절대 경로) → {name, fm, rel}. `rel`은 문서 키다."""
+    scratch = ctx.here().scratch
+    path = scratch.arg_path(value)
+    not_found = ScriptError("target_not_found", f"진단할 파일이 없습니다: {path}")
+    try:
+        key = scratch.key_of(path)
+    except ScriptError as e:                           # 작업 폴더 밖
+        raise not_found from e
+    if not keys.is_doc(key) or not ctx.here().store.exists(key):
+        raise not_found
+    fm, _ = refstore.read(key)
     if fm.get("role") == "ref":
         raise ScriptError("not_mine", "ref 영상은 진단 대상이 아닙니다. 내 영상은 /yt-add <cat> mine <링크>로 넣으세요.")
     if not fm.get("sections"):
         raise ScriptError("no_sections", "섹션 정보가 없어 비교할 수 없습니다.")
-    name = str(fm.get("id") or path.stem) if fm.get("role") == "mine" else path.stem
-    return {"name": name, "path": path, "fm": fm, "rel": path.relative_to(work_root()).as_posix()}
+    stem = keys.stem(key)
+    name = str(fm.get("id") or stem) if fm.get("role") == "mine" else stem
+    return {"name": name, "fm": fm, "rel": key}
 
 
 # --- 근접도 -----------------------------------------------------------------------
@@ -162,11 +170,11 @@ def gaps(target_fm: dict, archetype: dict, member_fms: list[dict]) -> list[dict]
 # --- compare ----------------------------------------------------------------------
 
 def _intentional(name: str) -> list[str]:
-    path = _diag_path(name)
-    return list(refstore.read_md(path)[0].get("intentional") or []) if path.exists() else []
+    key = _diag_key(name)
+    return list(refstore.read(key)[0].get("intentional") or []) if ctx.here().store.exists(key) else []
 
 
-def compare(category: str, target_path: Path) -> dict:
+def compare(category: str, target_path: str | Path) -> dict:
     typify = _load_typify(category)
     names = _names(category)
     target = _target(target_path)
@@ -206,10 +214,10 @@ def _pct(x: float | None) -> str:
     return "-" if x is None else f"{round(x * 100)}%"
 
 
-def _memo(path: Path) -> str:
-    if not path.exists():
+def _memo(key: str) -> str:
+    if not ctx.here().store.exists(key):
         return ""
-    body = refstore.read_md(path)[1].replace("\r\n", "\n")
+    body = refstore.read(key)[1].replace("\r\n", "\n")
     idx = body.find("## 내 메모")
     return body[idx + len("## 내 메모"):].lstrip("\n") if idx >= 0 else ""
 
@@ -239,7 +247,7 @@ def validate_notes(result: dict, notes: Any) -> dict:
             "actions": actions}
 
 
-def save(category: str, target_path: Path, notes_path: Path) -> dict:
+def save(category: str, target_path: str | Path, notes_path: Path) -> dict:
     result = compare(category, target_path)
     try:
         notes = json.loads(Path(notes_path).read_text("utf-8"))
@@ -248,8 +256,9 @@ def save(category: str, target_path: Path, notes_path: Path) -> dict:
     notes = validate_notes(result, notes)
     gap_notes, actions = notes["gaps"], notes["actions"]
 
-    path = _diag_path(result["target"]["name"])
-    old = refstore.read_md(path)[0] if path.exists() else {}
+    store = ctx.here().store
+    key = _diag_key(result["target"]["name"])
+    old = refstore.read(key)[0] if store.exists(key) else {}
     prox = {axis: v["proximity"] for axis, v in result["axes"].items()}
     history = list(old.get("history") or []) + [{"date": date.today().isoformat(),
                                                  "nearest": result["nearest"]["id"], **prox}]
@@ -276,25 +285,24 @@ def save(category: str, target_path: Path, notes_path: Path) -> dict:
     if result["intentional"]:
         lines += ["## 의도한 차이", *[f"- {k}" for k in result["intentional"]], ""]
     lines += ["## 내 메모", ""]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    refstore.write_atomic(path, refstore.join_frontmatter(fm, "\n".join(lines) + _memo(path)).encode("utf-8"))
+    store.write(key, refstore.join_frontmatter(fm, "\n".join(lines) + _memo(key)).encode("utf-8"))
     Path(notes_path).unlink(missing_ok=True)
-    return {"status": "saved", "path": path.relative_to(work_root()).as_posix(),
+    return {"status": "saved", "path": key,
             "nearest": fm["nearest"], "proximity": prox, "gaps": fm["gaps"]}
 
 
 def intentional(category: str, name: str, key: str, off: bool = False) -> dict:
-    refstore.existing_category_dir(category)
-    path = _diag_path(name)
-    if not path.exists():
+    refstore.require_category(category)
+    doc_key = _diag_key(name)
+    if not ctx.here().store.exists(doc_key):
         raise ScriptError("diagnosis_not_found", f"진단 기록이 없습니다: mine/{name}.md (먼저 진단)")
-    keys = list(refstore.read_md(path)[0].get("intentional") or [])
+    marked = list(refstore.read(doc_key)[0].get("intentional") or [])
     if off:
-        keys = [k for k in keys if k != key]
-    elif key not in keys:
-        keys.append(key)
-    refstore.update_frontmatter(path, {"intentional": keys})
-    return {"name": name, "intentional": keys}
+        marked = [k for k in marked if k != key]
+    elif key not in marked:
+        marked.append(key)
+    refstore.update_frontmatter(doc_key, {"intentional": marked})
+    return {"name": name, "intentional": marked}
 
 
 def main(argv: list[str]) -> Any:
@@ -317,8 +325,7 @@ def main(argv: list[str]) -> Any:
     if args.cmd == "compare":
         return compare(args.category, Path(args.target))
     if args.cmd == "save":
-        notes = Path(args.notes)
-        return save(args.category, Path(args.target), notes if notes.is_absolute() else work_root() / notes)
+        return save(args.category, Path(args.target), ctx.here().scratch.arg_path(args.notes))
     return intentional(args.category, args.name, args.key, args.off)
 
 

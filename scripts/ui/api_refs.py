@@ -249,7 +249,7 @@ def _labels(req: Request, video_id: str) -> dict:
         raise ScriptError("bad_request", "hash가 필요합니다")
     changes = {k: body[k] for k in ("sections", "hook_type", "narrative_type") if k in body}
     result = videomd.relabel(video_id, category, changes, expected)
-    path = videomd.video_md_path(video_id, category)
+    path = work_root() / videomd.video_md_key(video_id, category)
     try:
         fm, _ = refstore.read_md(path)
         video: dict | None = _summary(path, fm, _scene_frames(video_id))
@@ -267,8 +267,7 @@ def _trash(req: Request, video_id: str) -> dict:
     if not ID_RE.fullmatch(video_id):
         raise ScriptError("bad_request", f"잘못된 영상 id입니다: {video_id!r}")
     category = _category(req)
-    path = videomd.video_md_path(video_id, category)          # 없는 카테고리는 여기서 category_not_found
-    rel = path.relative_to(work_root()).as_posix()
+    rel = videomd.video_md_key(video_id, category)            # 없는 카테고리는 여기서 category_not_found
     # 검사와 이동 사이에 잠금은 없다(로컬 한 사람용이라 그 사이에 작업을 시작할 일은 드물다).
     # 수집은 카테고리가 달라도 같은 영상의 workspace 데이터를 쓸 수 있으니 하나라도 돌면 막는다.
     busy = bool(req.app.jobs.active("collect"))

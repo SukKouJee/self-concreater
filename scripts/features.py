@@ -11,9 +11,8 @@
 from __future__ import annotations
 
 import math
-from pathlib import Path
 
-from scripts import refstore
+from scripts import ctx, keys, refstore
 from scripts.videomd import BODY_SUBS, HOOK_TYPES, LABELS, NARRATIVE_TYPES, title_patterns
 
 AXES = ["structure", "hook", "narrative", "title", "pacing", "shots"]
@@ -25,15 +24,16 @@ TITLE_PATTERNS = ["number", "question", "bracket", "exclaim"]
 STRUCTURE_FIELDS = [f"share:{l}" for l in LABELS] + [f"sub:{s}" for s in BODY_SUBS] + ["sections", "duration"]
 
 
-def record(path: Path) -> dict:
-    fm, _ = refstore.read_md(path)
-    return {"id": str(fm.get("id") or path.stem), "fm": fm, "path": path}
+def record(key: str) -> dict:
+    """영상 md 키 → {id, fm, path}. `path`는 작업 폴더 기준 키 문자열이다."""
+    fm, _ = refstore.read(key)
+    return {"id": str(fm.get("id") or keys.stem(key)), "fm": fm, "path": key}
 
 
 def load_videos(category: str, role: str = "ref") -> list[dict]:
     """카테고리의 영상 중 role이 일치하는 것만 (유형화는 ref만. mine은 섞지 않는다)."""
-    videos = refstore.existing_category_dir(category) / "videos"
-    records = [record(p) for p in sorted(videos.glob("*.md"))]
+    prefix = refstore.require_category(category) + "videos/"
+    records = [record(meta.key) for meta in ctx.here().store.list(prefix, "*.md")]
     return sorted((r for r in records if r["fm"].get("role") == role), key=lambda r: r["id"])
 
 

@@ -17,7 +17,6 @@ notes JSON (apply 입력, Claude가 작성·사용자가 이름 확정)
 from __future__ import annotations
 
 import json
-import os
 from collections import Counter
 from datetime import date, datetime, timezone
 from itertools import combinations
@@ -26,8 +25,8 @@ from typing import Any
 
 import numpy as np
 
-from scripts import features, refstore
-from scripts.common import TEMPLATES_DIR, ArgParser, ScriptError, run as run_main, work_root, workspace_dir
+from scripts import ctx, features, keys, refstore
+from scripts.common import TEMPLATES_DIR, ArgParser, ScriptError, run as run_main
 
 NUMERIC_AXES = ["structure", "pacing", "shots"]
 CATEGORICAL_AXES = ["hook", "narrative", "title"]
@@ -194,7 +193,8 @@ def analyze_axis(axis: str, records: list[dict], t: dict) -> dict:
 # --- 아키타입 ---------------------------------------------------------------------
 
 def _previous_archetypes(category: str) -> list[dict]:
-    fm, _ = refstore.read_md(refstore.existing_category_dir(category) / "index.md")
+    refstore.require_category(category)
+    fm, _ = refstore.read(keys.index_md(category))
     return fm.get("archetypes") or []
 
 
@@ -239,20 +239,20 @@ def archetypes(structure: dict, records: list[dict], previous: list[dict]) -> li
 
 # --- run --------------------------------------------------------------------------
 
-def result_path(category: str) -> Path:
-    return workspace_dir("typify", f"{category}.json")
+def result_key(category: str) -> str:
+    return keys.typify(category)
 
 
-def applied_path(category: str) -> Path:
-    return workspace_dir("typify", f"{category}.applied.json")
+def applied_key(category: str) -> str:
+    return keys.typify(category, "applied")
 
 
-def preview_path(category: str) -> Path:
-    """UI 실행 결과. 저장(apply)하기 전까지 result_path를 건드리지 않는다."""
-    return workspace_dir("typify", f"{category}.preview.json")
+def preview_key(category: str) -> str:
+    """UI 실행 결과. 저장(apply)하기 전까지 result_key를 건드리지 않는다."""
+    return keys.typify(category, "preview")
 
 
-def run(category: str, out: Path | None = None) -> dict:
+def run(category: str, out: str | None = None) -> dict:
     t = _thresholds()
     records = features.load_videos(category)       # ref만
     n = len(records)
@@ -278,9 +278,8 @@ def run(category: str, out: Path | None = None) -> dict:
         "archetypes": archetypes(axes["structure"], records, _previous_archetypes(category)),
         "outliers": [{"id": v, "title": titles[v], "axes": a} for v, a in sorted(outliers.items())],
     }
-    path = out or result_path(category)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    ctx.here().objects.put(out or result_key(category),
+                           refstore.text_bytes(json.dumps(result, ensure_ascii=False, indent=2)))
     return result
 
 
@@ -404,13 +403,14 @@ def _applied_snapshot(result: dict, axis_notes: dict, names: dict, titles: dict)
     }
 
 
-def apply(category: str, notes_path: Path, expected_run_at: str | None = None, source: Path | None = None) -> dict:
-    path = source or result_path(category)
-    if not path.exists():
+def apply(category: str, notes_path: Path, expected_run_at: str | None = None, source: str | None = None) -> dict:
+    objects = ctx.here().objects
+    key = source or result_key(category)
+    if not objects.exists(key):
         if source is not None:
             raise ScriptError("typify_changed", "미리보기 뒤에 유형화가 다시 실행되었습니다. 다시 실행해 주세요")
         raise ScriptError("no_typify_result", f"유형화 결과가 없습니다. 먼저 run을 실행하세요: {category}")
-    result = json.loads(path.read_text("utf-8"))
+    result = json.loads(objects.get(key).decode("utf-8"))
     if expected_run_at is not None and result.get("run_at") != expected_run_at:
         raise ScriptError("typify_changed", "미리보기 뒤에 유형화가 다시 실행되었습니다. 다시 실행해 주세요")
     try:
@@ -420,9 +420,11 @@ def apply(category: str, notes_path: Path, expected_run_at: str | None = None, s
 
     axis_notes, names = validate_notes(result, notes)
 
-    index = refstore.existing_category_dir(category) / "index.md"
+    refstore.require_category(category)
+    index_key = keys.index_md(category)
+    store = ctx.here().store
     with refstore.INDEX_LOCK:
-        text = index.read_bytes().decode("utf-8-sig")
+        text = store.read(index_key).raw.decode("utf-8-sig")
         nl = "\r\n" if text.startswith("---\r\n") else "\n"
         fm, body = refstore.split_frontmatter(text)
         body = refstore.replace_section(body, "## 판정", render_judgement(result, axis_notes))
@@ -432,17 +434,16 @@ def apply(category: str, notes_path: Path, expected_run_at: str | None = None, s
         fm["typify_status"] = result["status"]
         fm["archetypes"] = [{"id": a["id"], "name": names[a["id"]], "members": a["members"]}
                             for a in result["archetypes"]]
-        refstore.write_atomic(
-            index, refstore.join_frontmatter(fm, body.replace("\r\n", "\n").replace("\n", nl), nl).encode("utf-8"))
+        store.write(
+            index_key, refstore.join_frontmatter(fm, body.replace("\r\n", "\n").replace("\n", nl), nl).encode("utf-8"))
     snapshot = _applied_snapshot(result, axis_notes, names, video_titles(category, result))
-    target = applied_path(category)
-    tmp = target.with_name(target.name + ".tmp")
-    tmp.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, target)                           # 읽는 쪽이 반쯤 쓴 파일을 보지 않게 한다
-    if source is not None and source != result_path(category):
-        os.replace(source, result_path(category))     # 저장된 미리보기를 확정 결과로 올린다
+    # put은 임시 파일 + 교체라 읽는 쪽이 반쯤 쓴 파일을 보지 않는다
+    objects.put(applied_key(category), refstore.text_bytes(json.dumps(snapshot, ensure_ascii=False, indent=2)))
+    if source is not None and source != result_key(category):
+        objects.put(result_key(category), objects.get(source))     # 저장된 미리보기를 확정 결과로 올린다
+        objects.delete(source)
     Path(notes_path).unlink(missing_ok=True)
-    return {"status": "applied", "index": index.relative_to(work_root()).as_posix(),
+    return {"status": "applied", "index": index_key,
             "archetypes": [{"id": a["id"], "name": names[a["id"]]} for a in result["archetypes"]]}
 
 
@@ -457,10 +458,7 @@ def main(argv: list[str]) -> Any:
 
     if args.cmd == "run":
         return run(args.category)
-    notes_path = Path(args.notes)
-    if not notes_path.is_absolute():
-        notes_path = work_root() / notes_path
-    return apply(args.category, notes_path)
+    return apply(args.category, ctx.here().scratch.arg_path(args.notes))
 
 
 if __name__ == "__main__":

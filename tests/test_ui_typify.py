@@ -200,7 +200,7 @@ def test_save_applied_has_titles(client, home):
     status, body = client.json("POST", "/api/typify/save", _save_body(job))
     assert status == 200, body
     assert body["applied"]["titles"] == job["items"][0]["preview"]["titles"]
-    assert not list(cluster.applied_path(CAT).parent.glob("*.tmp"))
+    assert not list((home / cluster.applied_key(CAT)).parent.glob("*.tmp"))
 
 
 def test_save_empty_name_is_invalid_notes(client, home):
@@ -216,7 +216,7 @@ def test_save_stale_run_at(client, home):
     standard_set(home)
     job = _run_preview(client)
     first = _save_body(job)
-    cluster.run(CAT, out=cluster.preview_path(CAT))       # 다른 실행이 미리보기를 대체
+    cluster.run(CAT, out=cluster.preview_key(CAT))       # 다른 실행이 미리보기를 대체
     status, body = client.json("POST", "/api/typify/save", first)
     assert status == 400 and body["error"] == "typify_changed"
 
@@ -242,33 +242,33 @@ def test_ui_run_leaves_saved_result_untouched_until_save(client, home):
     standard_set(home)
     job = _run_preview(client)
     assert job["status"] == "done"
-    assert not cluster.result_path(CAT).exists()          # 저장 전에는 확정 결과가 없다
-    assert cluster.preview_path(CAT).exists()
-    assert not cluster.applied_path(CAT).exists()
+    assert not (home / cluster.result_key(CAT)).exists()          # 저장 전에는 확정 결과가 없다
+    assert (home / cluster.preview_key(CAT)).exists()
+    assert not (home / cluster.applied_key(CAT)).exists()
 
 
 def test_ui_run_does_not_overwrite_existing_saved_result(client, home):
     standard_set(home)
     cluster.run(CAT)
-    saved = cluster.result_path(CAT).read_bytes()
+    saved = (home / cluster.result_key(CAT)).read_bytes()
     _run_preview(client)
-    assert cluster.result_path(CAT).read_bytes() == saved
+    assert (home / cluster.result_key(CAT)).read_bytes() == saved
 
 
 def test_save_promotes_preview_to_result(client, home):
     standard_set(home)
     job = _run_preview(client)
-    preview = cluster.preview_path(CAT).read_bytes()
+    preview = (home / cluster.preview_key(CAT)).read_bytes()
     status, body = client.json("POST", "/api/typify/save", _save_body(job))
     assert status == 200, body
-    assert cluster.result_path(CAT).read_bytes() == preview
-    assert not cluster.preview_path(CAT).exists()
+    assert (home / cluster.result_key(CAT)).read_bytes() == preview
+    assert not (home / cluster.preview_key(CAT)).exists()
 
 
 def test_save_without_preview_file_is_typify_changed(client, home):
     standard_set(home)
     job = _run_preview(client)
-    cluster.preview_path(CAT).unlink()
+    (home / cluster.preview_key(CAT)).unlink()
     status, body = client.json("POST", "/api/typify/save", _save_body(job))
     assert status == 400 and body["error"] == "typify_changed"
 

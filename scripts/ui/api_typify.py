@@ -15,7 +15,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from scripts import claude_cli, cluster, llm, refstore
+from scripts import claude_cli, cluster, ctx, llm, refstore
 from scripts.common import ScriptError, workspace_dir
 from scripts.ui.jobs import Job, new_item
 from scripts.ui.server import Request, route
@@ -57,12 +57,11 @@ def _stage(ref: int) -> tuple[str, int]:
     return ("formal" if ref >= formal else "preliminary"), 0
 
 
-def _read_json(path: Path) -> dict | None:
-    if not path.exists():
-        return None
+def _read_json(key: str) -> dict | None:
+    """작업 폴더 기준 키의 JSON. 없거나 깨졌으면 None."""
     try:
-        return json.loads(path.read_text("utf-8"))
-    except (OSError, json.JSONDecodeError):
+        return json.loads(ctx.here().objects.get(key).decode("utf-8"))
+    except (OSError, ValueError):
         return None                                   # 깨진 스냅숏이 화면 전체를 막지 않게 한다(다시 저장하면 새로 쓴다)
 
 
@@ -85,7 +84,7 @@ def _status(req: Request) -> dict:
     fm, _ = refstore.read_md(refstore.existing_category_dir(category) / "index.md")
     return {
         "category": category, "ref": counts["ref"], "mine": counts["mine"], "stage": stage, "need": need,
-        "typified_at": fm.get("typified_at"), "applied": _overlay_names(_read_json(cluster.applied_path(category)), fm),
+        "typified_at": fm.get("typified_at"), "applied": _overlay_names(_read_json(cluster.applied_key(category)), fm),
     }
 
 
@@ -95,7 +94,7 @@ def run_target(category: str) -> Any:
     def target(job: Job) -> None:
         job.update(0, state="running", step="cluster")
         job.check_cancelled()
-        result = cluster.run(category, out=cluster.preview_path(category))   # ref만 쓴다(mine은 cluster가 뺀다)
+        result = cluster.run(category, out=cluster.preview_key(category))   # ref만 쓴다(mine은 cluster가 뺀다)
         job.update(0, step="claude")
         job.check_cancelled()
         notes, _ = llm.ask_validated(
@@ -141,7 +140,7 @@ def _save(req: Request) -> dict:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(notes, f, ensure_ascii=False)
-        result = cluster.apply(category, tmp, expected_run_at=run_at, source=cluster.preview_path(category))
+        result = cluster.apply(category, tmp, expected_run_at=run_at, source=cluster.preview_key(category))
     finally:
         tmp.unlink(missing_ok=True)
-    return {**result, "applied": _read_json(cluster.applied_path(category))}
+    return {**result, "applied": _read_json(cluster.applied_key(category))}

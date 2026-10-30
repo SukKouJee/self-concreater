@@ -277,8 +277,8 @@ NOTES = {
 
 
 def preview_arg():
-    """cluster.run(out=)·apply(source=)에 넘기는 미리보기 위치(옮기기 전 Path, 옮긴 뒤 키)."""
-    return cluster.preview_path(CAT)
+    """cluster.run(out=)·apply(source=)에 넘기는 미리보기 위치(키)."""
+    return cluster.preview_key(CAT)
 
 
 def notes_file(home: Path, data: dict = NOTES) -> Path:
@@ -449,3 +449,32 @@ def test_similarity_load_typify_messages(home: Path) -> None:
         similarity.compare(CAT, Path(target))
     assert exc.value.code == "no_typify_result" and "읽을 수 없습니다" in exc.value.message
     assert similarity.typify_gate(CAT) == {"available": False, "preliminary": None}
+
+
+# --- 저장소 이전 뒤에 새로 생기는 동작 (옮기기 전 코드에서는 통과하지 않는다) ------------------
+
+def test_similarity_target_outside_work_folder_or_not_md_is_target_not_found(shome: Path, tmp_path_factory: pytest.TempPathFactory) -> None:
+    outside = tmp_path_factory.mktemp("outside") / "mine.md"
+    outside.write_bytes((shome / "refs" / f"ref_{CAT}" / "videos" / "a00.md").read_bytes())
+    (shome / "notes.txt").write_text("x", encoding="utf-8")
+    for target in (outside, Path("notes.txt"), Path("../outside.md")):
+        with pytest.raises(ScriptError) as exc:
+            similarity.compare(CAT, target)
+        assert exc.value.code == "target_not_found"
+        assert exc.value.message.startswith("진단할 파일이 없습니다: ")
+
+
+def test_relabel_write_conflict_after_the_early_check_is_ref_changed(vhome: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import filestore
+    path, h0 = _written(vhome)
+    original = filestore.FileDocStore.write
+
+    def racing(self, key, data, **kwargs):          # 확인과 쓰기 사이에 사용자가 파일을 고친다
+        path.write_bytes(path.read_bytes() + "사용자 메모\n".encode("utf-8"))
+        return original(self, key, data, **kwargs)
+
+    monkeypatch.setattr(filestore.FileDocStore, "write", racing)
+    with pytest.raises(ScriptError) as exc:
+        videomd.relabel(VID, VCAT, {"hook_type": "question"}, h0)
+    assert exc.value.code == "ref_changed"
+    assert path.read_bytes().endswith("사용자 메모\n".encode("utf-8")) and b"question" not in path.read_bytes()

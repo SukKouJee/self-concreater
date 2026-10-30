@@ -1039,7 +1039,7 @@ def _shots_only(req: Request) -> dict:
 def _video_title(video_id: str, category: str) -> str | None:
     """카드에 보일 제목. 읽을 수 없으면 제목 없이 id만 보인다(작업에는 영향 없음)."""
     try:
-        title = refstore.read_md(videomd.video_md_path(video_id, category))[0].get("title")
+        title = refstore.read_md(videomd.video_md_key(video_id, category))[0].get("title")
     except (ScriptError, OSError):
         return None
     return title if isinstance(title, str) and title else None

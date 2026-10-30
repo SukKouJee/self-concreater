@@ -12,6 +12,11 @@ def home(monkeypatch, tmp_path):
     return tmp_path
 
 
+def key_of(home, path):
+    """write_video가 돌려준 경로 -> 작업 폴더 기준 문서 키."""
+    return path.relative_to(home).as_posix()
+
+
 def test_load_refs_excludes_mine(home):
     standard_set(home, n_a=3, n_b=0)
     write_video(home, "mine1", role="mine")
@@ -29,7 +34,7 @@ def test_sequence_collapses_and_marks_sub():
 
 def test_structure_vector_shares(home):
     path = write_video(home, "v1", skeleton=SKELETON_B)
-    rec = features.record(path)
+    rec = features.record(key_of(home, path))
     vec = dict(zip(features.STRUCTURE_FIELDS, features.structure_vec(rec["fm"])))
     assert vec["share:hook"] == pytest.approx(5 / 60)
     assert vec["share:intro"] == pytest.approx(10 / 60)
@@ -40,26 +45,26 @@ def test_structure_vector_shares(home):
 
 
 def test_hook_vector_onehot_plus_length(home):
-    rec = features.record(write_video(home, "v1", skeleton=SKELETON_A, hook="question"))
+    rec = features.record(key_of(home, write_video(home, "v1", skeleton=SKELETON_A, hook="question")))
     vec = features.hook_vec(rec["fm"])
     assert vec[: len(features.HOOK_TYPES)] == [1.0, 0.0, 0.0, 0.0]
     assert vec[-1] == pytest.approx(0.3)      # 훅 3초 / 10
 
 
 def test_title_vector(home):
-    rec = features.record(write_video(home, "v1", title="[ASMR] 버블티 비교?"))
+    rec = features.record(key_of(home, write_video(home, "v1", title="[ASMR] 버블티 비교?")))
     vec = dict(zip(["number", "question", "bracket", "exclaim", "length"], features.title_vec(rec["fm"])))
     assert vec["question"] == 1.0 and vec["bracket"] == 1.0 and vec["number"] == 0.0
 
 
 def test_title_vector_recomputes_patterns_from_title(home):
     # title_pattern을 손으로 지워도 제목에서 다시 계산한다(사용자가 제목을 고친 경우 반영)
-    rec = features.record(write_video(home, "v1", title="라면 5봉지!"))
+    rec = features.record(key_of(home, write_video(home, "v1", title="라면 5봉지!")))
     assert features.title_vec(rec["fm"])[0] == 1.0
 
 
 def test_pacing_vector_and_missing(home):
-    rec = features.record(write_video(home, "v1", avg_cut=2.0))
+    rec = features.record(key_of(home, write_video(home, "v1", avg_cut=2.0)))
     assert features.pacing_vec(rec["fm"]) == pytest.approx([math.log(2.0), math.log(1.0), math.log(2.0)])
     rec["fm"]["pacing"] = {"avg_cut_sec": None, "by_section": {}}
     assert features.pacing_vec(rec["fm"]) is None

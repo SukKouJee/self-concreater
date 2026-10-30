@@ -163,14 +163,16 @@ def _updated(raw: bytes, updates: dict[str, Any], remove: Iterable[str]) -> tupl
     return fm, join_frontmatter(fm, body, nl).encode("utf-8")
 
 
-def update_frontmatter(target: str | Path, updates: dict[str, Any], remove: Iterable[str] = ()) -> dict:
+def update_frontmatter(target: str | Path, updates: dict[str, Any], remove: Iterable[str] = (), *,
+                       expect_version: str | None = None) -> dict:
     """`updates`를 적용한 뒤 `remove`의 키를 지운다(없는 키는 무시). 본문은 그대로 둔다.
-    `target`은 문서 키(str) 또는 Path(과도기: 작업 폴더 밖이면 그 경로를 그대로 고친다)."""
+    `target`은 문서 키(str) 또는 Path(과도기: 작업 폴더 밖이면 그 경로를 그대로 고친다).
+    `expect_version`(문서 키에만): 쓰는 순간 바이트의 sha256이 다르면 `VersionConflict`."""
     key = _key_of(target)
     if key is not None:
         store = ctx.here().store
         fm, data = _updated(store.read(key).raw, updates, remove)
-        store.write(key, data)
+        store.write(key, data, expect_version=expect_version)
         return fm
     path = Path(target)
     fm, data = _updated(path.read_bytes(), updates, remove)

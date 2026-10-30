@@ -244,7 +244,7 @@ def test_apply_writes_applied_snapshot(home):
 
     cluster.apply(CAT, notes(home, NOTES))
 
-    snap = json.loads(cluster.applied_path(CAT).read_text("utf-8"))
+    snap = json.loads((home / cluster.applied_key(CAT)).read_text("utf-8"))
     assert snap["run_at"] == result["run_at"] and snap["status"] == "formal" and snap["ref"] == result["ref"]
     assert snap["applied_at"]
     assert snap["axes"]["structure"]["note"] == NOTES["axes"]["structure"]
@@ -268,7 +268,7 @@ def test_video_titles_covers_result_ids_and_applied_snapshot(home):
     assert ids <= set(titles) and all(isinstance(t, str) for t in titles.values())
 
     cluster.apply(CAT, notes(home, NOTES))
-    assert json.loads(cluster.applied_path(CAT).read_text("utf-8"))["titles"] == titles
+    assert json.loads((home / cluster.applied_key(CAT)).read_text("utf-8"))["titles"] == titles
 
 
 @pytest.mark.parametrize("bad", [
@@ -294,7 +294,7 @@ def test_apply_rejects_stale_run_at(home):
 
     assert exc.value.code == "typify_changed"
     assert index.read_bytes() == before
-    assert not cluster.applied_path(CAT).exists()
+    assert not (home / cluster.applied_key(CAT)).exists()
 
 
 @pytest.mark.parametrize("broken", [
@@ -321,35 +321,35 @@ def test_validate_notes_returns_axis_notes_and_names(home):
 
 def test_run_with_out_leaves_result_path_untouched(home):
     standard_set(home)
-    out = cluster.preview_path(CAT)
-    result = cluster.run(CAT, out=out)
+    out = home / cluster.preview_key(CAT)
+    result = cluster.run(CAT, out=cluster.preview_key(CAT))
     assert out.name == f"{CAT}.preview.json"
     assert json.loads(out.read_text("utf-8"))["run_at"] == result["run_at"]
-    assert not cluster.result_path(CAT).exists()
+    assert not (home / cluster.result_key(CAT)).exists()
 
 
 def test_apply_with_source_promotes_preview(home):
     standard_set(home)
-    cluster.run(CAT, out=cluster.preview_path(CAT))
-    preview = cluster.preview_path(CAT).read_bytes()
-    cluster.apply(CAT, notes(home, NOTES), source=cluster.preview_path(CAT))
-    assert cluster.result_path(CAT).read_bytes() == preview
-    assert not cluster.preview_path(CAT).exists()
+    cluster.run(CAT, out=cluster.preview_key(CAT))
+    preview = (home / cluster.preview_key(CAT)).read_bytes()
+    cluster.apply(CAT, notes(home, NOTES), source=cluster.preview_key(CAT))
+    assert (home / cluster.result_key(CAT)).read_bytes() == preview
+    assert not (home / cluster.preview_key(CAT)).exists()
 
 
 def test_apply_with_source_failure_keeps_preview(home):
     standard_set(home)
-    cluster.run(CAT, out=cluster.preview_path(CAT))
+    cluster.run(CAT, out=cluster.preview_key(CAT))
     with pytest.raises(ScriptError):
-        cluster.apply(CAT, notes(home, {**NOTES, "archetypes": []}), source=cluster.preview_path(CAT))
-    assert cluster.preview_path(CAT).exists() and not cluster.result_path(CAT).exists()
+        cluster.apply(CAT, notes(home, {**NOTES, "archetypes": []}), source=cluster.preview_key(CAT))
+    assert (home / cluster.preview_key(CAT)).exists() and not (home / cluster.result_key(CAT)).exists()
 
 
 def test_cli_run_and_apply_without_preview(home):
     standard_set(home)
     cluster.run(CAT)
     cluster.apply(CAT, notes(home, NOTES))
-    assert cluster.result_path(CAT).exists() and not cluster.preview_path(CAT).exists()
+    assert (home / cluster.result_key(CAT)).exists() and not (home / cluster.preview_key(CAT)).exists()
 
 
 @pytest.mark.parametrize("axes_over,archetypes", [

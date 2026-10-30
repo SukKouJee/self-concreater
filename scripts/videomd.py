@@ -20,7 +20,6 @@ relabel: 사용자가 고친 섹션 라벨·유형만 프런트매터에 저장�
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import threading
@@ -28,8 +27,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from scripts import refstore
-from scripts.common import ArgParser, ScriptError, move_to_trash, run, work_root, workspace_dir
+from scripts import ctx, keys, refstore
+from scripts.stores import VersionConflict
+from scripts.common import ArgParser, ScriptError, run
 from scripts.fetch import check_duplicates, load_raw, speech_density
 
 # 설계서 5절 고정 라벨. 바꾸면 schema_version을 올리고 마이그레이션을 쓴다
@@ -72,28 +72,29 @@ def fmt_time(sec: float) -> str:
 
 
 def load_cuts(video_id: str) -> dict | None:
-    path = workspace_dir("cuts", f"{video_id}.json")
-    return json.loads(path.read_text("utf-8")) if path.exists() else None
+    try:
+        raw = ctx.here().shared.get(keys.cuts(video_id))
+    except FileNotFoundError:
+        return None
+    return json.loads(raw.decode("utf-8"))
 
 
-def video_md_path(video_id: str, category: str) -> Path:
-    return refstore.existing_category_dir(category) / "videos" / f"{video_id}.md"
-
-
-def _rel(path: Path) -> str:
-    return path.relative_to(work_root()).as_posix()
+def video_md_key(video_id: str, category: str) -> str:
+    """영상 md 키 `refs/ref_<cat>/videos/<id>.md`. 카테고리가 없으면 category_not_found."""
+    refstore.require_category(category)
+    return keys.video_md(category, video_id)
 
 
 # --- context ----------------------------------------------------------------------
 
 def examples(category: str) -> list[str]:
     """사용자가 고친(reviewed: true) ref 영상 md, 최근 수정순 최대 3개."""
-    videos = refstore.existing_category_dir(category) / "videos"
+    metas = ctx.here().store.list(refstore.require_category(category) + "videos/", "*.md")
     picked = []
-    for path in sorted(videos.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True):
-        fm = refstore.read_md(path)[0]
+    for meta in sorted(metas, key=lambda m: m.mtime, reverse=True):
+        fm = refstore.read(meta.key)[0]
         if fm.get("reviewed") is True and fm.get("role") == "ref":
-            picked.append(_rel(path))
+            picked.append(meta.key)
         if len(picked) == MAX_EXAMPLES:
             break
     return picked
@@ -126,7 +127,7 @@ def context(video_id: str, category: str) -> dict:
         "avg_cut_sec": cuts["avg_cut_sec"] if cuts else None,
         "scenes": scenes,
         "examples": examples(category),
-        "md_exists": video_md_path(video_id, category).exists(),
+        "md_exists": ctx.here().store.exists(video_md_key(video_id, category)),
         "vocab": {
             "label": LABELS, "body_sub": BODY_SUBS, "hook_type": HOOK_TYPES,
             "narrative_type": NARRATIVE_TYPES, "technique_kind": TECHNIQUE_KINDS,
@@ -259,10 +260,14 @@ def render_body(analysis: dict, cuts: dict | None, memo: str) -> str:
     return "\n".join(parts) + "\n" + memo
 
 
-def _existing_memo(path: Path) -> str:
-    if not path.exists():
+def _existing_memo(target: str | Path) -> str:
+    """기존 문서의 '## 내 메모' 아래 내용. 문서 키(str)가 정석이고, Path는 conti.py가 옮겨질 때까지의 과도기 인자다(Task 7에서 삭제)."""
+    if isinstance(target, Path):
+        if not target.exists():
+            return ""
+    elif not ctx.here().store.exists(target):
         return ""
-    _, body = refstore.read_md(path)
+    _, body = refstore.read_md(target)
     return memo_from_body(body)
 
 
@@ -279,8 +284,9 @@ def memo_from_body(body: str) -> str:
 
 def drop_video_techniques(category: str, video_id: str) -> None:
     """다시 분석할 때 그 영상의 예전 기법 출처를 뺀다. 출처가 하나도 안 남은 항목은 지운다."""
-    path = refstore.existing_category_dir(category) / "techniques.md"
-    fm, body = refstore.read_md(path)
+    refstore.require_category(category)
+    key = keys.techniques_md(category)
+    fm, body = refstore.read(key)
     link = f"[{video_id}](videos/{video_id}.md)"
     kept = []
     for line in body.split("\n"):
@@ -291,13 +297,14 @@ def drop_video_techniques(category: str, video_id: str) -> None:
                 continue
             line = f"{head} — {', '.join(remaining)}"
         kept.append(line)
-    path.write_bytes(refstore.join_frontmatter(fm, "\n".join(kept)).encode("utf-8"))
+    ctx.here().store.write(key, refstore.join_frontmatter(fm, "\n".join(kept)).encode("utf-8"))
 
 
 def append_techniques(category: str, video_id: str, techniques: list[dict]) -> tuple[int, int]:
     """techniques.md의 종류별 섹션에 추가. 같은 이름이 있으면 출처 링크만 붙인다."""
-    path = refstore.existing_category_dir(category) / "techniques.md"
-    fm, body = refstore.read_md(path)
+    refstore.require_category(category)
+    key = keys.techniques_md(category)
+    fm, body = refstore.read(key)
     lines = body.split("\n")
     link = f"[{video_id}](videos/{video_id}.md)"
     added = merged = 0
@@ -322,18 +329,19 @@ def append_techniques(category: str, video_id: str, techniques: list[dict]) -> t
         lines.insert(insert_at, f"{prefix}: {t['desc']} — {link}")
         added += 1
 
-    path.write_bytes(refstore.join_frontmatter(fm, "\n".join(lines)).encode("utf-8"))
+    ctx.here().store.write(key, refstore.join_frontmatter(fm, "\n".join(lines)).encode("utf-8"))
     return added, merged
 
 
 # --- write ------------------------------------------------------------------------
 
 def write(video_id: str, category: str, role: str, analysis_path: Path, force: bool = False) -> dict:
-    path = video_md_path(video_id, category)
-    if path.exists() and not force:
-        return {"id": video_id, "status": "exists", "md": _rel(path)}
+    store = ctx.here().store
+    key = video_md_key(video_id, category)
+    if store.exists(key) and not force:
+        return {"id": video_id, "status": "exists", "md": key}
     check_duplicates(video_id, category, role)
-    rewriting = path.exists()
+    rewriting = store.exists(key)
 
     raw = load_raw(video_id)
     cuts = load_cuts(video_id)
@@ -369,11 +377,11 @@ def write(video_id: str, category: str, role: str, analysis_path: Path, force: b
         "schema_version": SCHEMA_VERSION,
     }
     # 다시 쓸 때는 기존 파일의 줄바꿈 방식(CRLF/LF)을 따르고 '## 내 메모'는 그대로 옮긴다
-    nl = "\r\n" if path.exists() and path.read_bytes().startswith(b"---\r\n") else "\n"
-    memo = _existing_memo(path).replace("\r\n", "\n")
+    # Doc.nl이 아니라 디스크 바이트 그대로 본다: BOM이 붙은 CRLF 파일은 지금도 LF로 다시 쓴다(바이트 보존)
+    nl = "\r\n" if store.exists(key) and store.read(key).raw.startswith(b"---\r\n") else "\n"
+    memo = _existing_memo(key).replace("\r\n", "\n")
     body = render_body(analysis, cuts, memo).replace("\n", nl)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(refstore.join_frontmatter(fm, body, nl).encode("utf-8"))
+    store.write(key, refstore.join_frontmatter(fm, body, nl).encode("utf-8"))
 
     if rewriting:
         drop_video_techniques(category, video_id)
@@ -383,7 +391,7 @@ def write(video_id: str, category: str, role: str, analysis_path: Path, force: b
     return {
         "id": video_id,
         "status": "written",
-        "md": _rel(path),
+        "md": key,
         "written_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "sections": len(sections),
         "techniques_added": added,
@@ -397,10 +405,6 @@ def write(video_id: str, category: str, role: str, analysis_path: Path, force: b
 
 VIDEO_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _RELABEL_LOCK = threading.Lock()
-
-
-def _file_hash(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _stale() -> ScriptError:
@@ -456,13 +460,15 @@ def relabel(video_id: str, category: str, changes: dict, expected_hash: str) -> 
     """섹션 라벨/sub, hook_type, narrative_type 교정을 프런트매터에 저장한다. 들어온 키만 바꾼다."""
     if not VIDEO_ID_RE.fullmatch(video_id):
         raise ScriptError("bad_request", f"잘못된 영상 id입니다: {video_id!r}")
-    path = video_md_path(video_id, category)
-    if not path.is_file():
+    store = ctx.here().store
+    key = video_md_key(video_id, category)
+    if not store.exists(key):
         raise ScriptError("video_not_found", f"영상 md가 없습니다: {video_id}")
     with _RELABEL_LOCK:
-        if _file_hash(path) != expected_hash:
+        doc = store.read(key)
+        if doc.version != expected_hash:
             raise _stale()
-        fm, _ = refstore.read_md(path)
+        fm, _ = doc.parsed
 
         updates: dict[str, Any] = {}
         if "sections" in changes:
@@ -477,9 +483,8 @@ def relabel(video_id: str, category: str, changes: dict, expected_hash: str) -> 
                 if value != fm.get(field):
                     updates[field] = value
 
-        rel = _rel(path)
         if not updates:
-            return {"id": video_id, "md": rel, "hash": expected_hash, "changed": [],
+            return {"id": video_id, "md": key, "hash": expected_hash, "changed": [],
                     "reviewed": bool(fm.get("reviewed")), "pacing_stale": False}
         pacing_stale = False
         changed = list(updates)
@@ -495,26 +500,30 @@ def relabel(video_id: str, category: str, changes: dict, expected_hash: str) -> 
                 except (KeyError, TypeError, ValueError) as e:
                     raise ScriptError("bad_md", "섹션 시작/끝 또는 컷 값이 숫자가 아니어서 pacing을 다시 계산할 수 없습니다") from e
         updates["reviewed"] = True
-        if _file_hash(path) != expected_hash:   # 쓰기 직전 재확인(경쟁 구간 축소)
-            raise _stale()
-        refstore.update_frontmatter(path, updates)
-        return {"id": video_id, "md": rel, "hash": _file_hash(path), "changed": changed, "reviewed": True,
+        try:                                    # 쓰는 순간 바이트가 expected_hash와 같을 때만 쓴다
+            refstore.update_frontmatter(key, updates, expect_version=expected_hash)
+        except VersionConflict as e:
+            raise _stale() from e
+        return {"id": video_id, "md": key, "hash": store.read(key).version, "changed": changed, "reviewed": True,
                 "pacing_stale": pacing_stale}
 
 
 # --- 삭제(휴지통) -------------------------------------------------------------------
 
-def video_data(video_id: str) -> list[Path]:
-    """영상 하나의 분석 데이터(workspace/) 중 있는 것: 자막·메타(raw), 컷, 장면 프레임 폴더, 샷 분류."""
-    paths = [workspace_dir("raw", f"{video_id}.json"), workspace_dir("cuts", f"{video_id}.json"),
-             workspace_dir("frames", video_id), workspace_dir("shots", f"{video_id}.json")]
-    return [p for p in paths if p.exists()]
+def video_data(video_id: str) -> list[str]:
+    """영상 하나의 분석 데이터(workspace/) 중 있는 것의 키: 자막·메타(raw), 컷, 장면 프레임 폴더(끝 `/` 없이), 샷 분류."""
+    shared = ctx.here().shared
+    frames = keys.frames_dir(video_id)
+    found = [k for k in (keys.raw(video_id), keys.cuts(video_id)) if shared.exists(k)]
+    if shared.folder_exists(frames):
+        found.append(frames.removesuffix("/"))
+    return found + [k for k in (keys.shots(video_id),) if shared.exists(k)]
 
 
 def _typified_ids(category: str) -> set[str]:
     """저장된 유형화 결과에 들어간 영상 id(대표·이상치·축별 묶음 포함). 결과가 없거나 깨졌으면 빈 집합."""
     try:
-        result = json.loads(workspace_dir("typify", f"{category}.json").read_text("utf-8"))
+        result = json.loads(ctx.here().objects.get(keys.typify(category)).decode("utf-8"))
         ids = {v for a in result.get("archetypes") or [] for v in a.get("members") or []}
         ids |= {o.get("id") for o in result.get("outliers") or []}
         ids |= {v for res in (result.get("axes") or {}).values() for c in res.get("clusters") or []
@@ -530,15 +539,17 @@ def trash_video(video_id: str, category: str) -> dict:
     그 영상의 출처를 뺀다(다시 분석할 때와 같다). 유형화 결과는 건드리지 않고 typified로 알린다."""
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", video_id):
         raise ScriptError("bad_request", f"잘못된 영상 id입니다: {video_id!r}")
-    path = video_md_path(video_id, category)
-    if not path.is_file():
+    store = ctx.here().store
+    key = video_md_key(video_id, category)
+    if not store.exists(key):
         raise ScriptError("video_not_found", f"영상 md가 없습니다: {video_id}")
-    elsewhere = [p for p in (work_root() / "refs").glob(f"ref_*/videos/{video_id}.md") if p.resolve() != path.resolve()]
+    elsewhere = [k for k in (f"{prefix}videos/{video_id}.md" for prefix in store.folders("refs/", "ref_*"))
+                 if k != key and store.exists(k)]
     data = [] if elsewhere else video_data(video_id)
-    result = move_to_trash([path, *data], last=path)
+    result = ctx.here().trash.move([key, *data], last=key)
     # 여기부터는 옮긴 뒤의 정리다. 실패해도 삭제는 끝났으니 오류 대신 표시만 남긴다.
     techniques_stale = False
-    if (path.parent.parent / "techniques.md").is_file():
+    if store.exists(keys.techniques_md(category)):
         try:
             drop_video_techniques(category, video_id)
         except (ScriptError, OSError):
@@ -554,9 +565,9 @@ def trash_video(video_id: str, category: str) -> dict:
 def main(argv: list[str]) -> Any:
     parser = ArgParser(prog="python -m scripts.videomd")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    ctx = sub.add_parser("context")
-    ctx.add_argument("video_id")
-    ctx.add_argument("--category", required=True)
+    cx = sub.add_parser("context")
+    cx.add_argument("video_id")
+    cx.add_argument("--category", required=True)
     wr = sub.add_parser("write")
     wr.add_argument("video_id")
     wr.add_argument("--category", required=True)
@@ -579,9 +590,7 @@ def main(argv: list[str]) -> Any:
     if args.cmd == "context":
         return context(args.video_id, args.category)
     if args.cmd == "relabel":
-        changes_path = Path(args.changes)
-        if not changes_path.is_absolute():
-            changes_path = work_root() / changes_path
+        changes_path = ctx.here().scratch.arg_path(args.changes)
         try:
             changes = json.loads(changes_path.read_text("utf-8"))
         except (OSError, ValueError) as e:
@@ -590,9 +599,7 @@ def main(argv: list[str]) -> Any:
             raise ScriptError("invalid_labels", "changes json은 객체여야 합니다")
         return relabel(args.video_id, args.category, changes, args.hash)
     # 실행기(ytc)는 플러그인 폴더에서 돌므로 상대 경로는 작업 폴더 기준으로 푼다
-    analysis = Path(args.analysis)
-    if not analysis.is_absolute():
-        analysis = work_root() / analysis
+    analysis = ctx.here().scratch.arg_path(args.analysis)
     return write(args.video_id, args.category, args.role, analysis, args.force)
 
 

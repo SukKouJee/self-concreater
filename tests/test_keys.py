@@ -34,8 +34,8 @@ def rel(path: Path) -> str:
 
 def test_category_keys_match_module_paths(home: Path) -> None:
     assert keys.category("travel") == rel(common.category_dir("travel")) + "/"
-    assert keys.video_md("travel", VID) == rel(videomd.video_md_path(VID, "travel"))
-    assert keys.video_md("travel", "-C8U1fizcms") == rel(videomd.video_md_path("-C8U1fizcms", "travel"))
+    assert keys.video_md("travel", VID) == videomd.video_md_key(VID, "travel")
+    assert keys.video_md("travel", "-C8U1fizcms") == videomd.video_md_key("-C8U1fizcms", "travel")
     assert keys.index_md("travel") == rel(refstore.existing_category_dir("travel") / "index.md")
     assert keys.techniques_md("travel") == rel(refstore.existing_category_dir("travel") / "techniques.md")
     assert keys.REFS == "refs/"
@@ -90,7 +90,7 @@ def test_conti_output_keys_reject_non_conti_key() -> None:
 
 def test_other_doc_keys_match_module_paths(home: Path) -> None:
     root = common.work_root()
-    assert keys.mine_md("my-jeju-vlog") == rel(similarity._diag_path("my-jeju-vlog"))
+    assert keys.mine_md("my-jeju-vlog") == similarity._diag_key("my-jeju-vlog")
     assert keys.mission_md("2026-10-30") == rel(mission._mission_path("2026-10-30"))
     assert keys.review_md("2026-W44") == rel(root / "reviews" / "2026-W44.md")             # mission.py review_save
     assert keys.report_html("travel", "2026-10-30") == rel(root / "reports" / "travel-2026-10-30.html")  # report.py
@@ -110,9 +110,9 @@ def test_workspace_keys_match_module_paths(home: Path) -> None:
     assert keys.cuts(VID) == rel(common.workspace_dir("cuts", f"{VID}.json"))           # cuts.py·videomd.load_cuts
     assert keys.frames_dir(VID) == rel(common.workspace_dir("frames", VID)) + "/"         # cuts.py
     assert keys.shots(VID) == rel(common.workspace_dir("shots", f"{VID}.json"))   # shots.py
-    assert keys.typify("travel") == rel(cluster.result_path("travel"))
-    assert keys.typify("travel", "applied") == rel(cluster.applied_path("travel"))
-    assert keys.typify("travel", "preview") == rel(cluster.preview_path("travel"))
+    assert keys.typify("travel") == cluster.result_key("travel")
+    assert keys.typify("travel", "applied") == cluster.applied_key("travel")
+    assert keys.typify("travel", "preview") == cluster.preview_key("travel")
     with pytest.raises(ValueError):
         keys.typify("travel", "other")
     fid = "0123456789ab-10-20"

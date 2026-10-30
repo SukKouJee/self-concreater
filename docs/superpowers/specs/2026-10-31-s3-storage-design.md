@@ -90,6 +90,8 @@ class Doc:
     def parsed(self) -> tuple[dict, str]: ...   # refstore.parse_md(raw, label). 파싱 오류는 지금과 같은 ScriptError
     @property
     def nl(self) -> str: ...             # raw(BOM 제거)가 b"---\r\n"으로 시작하면 "\r\n" 아니면 "\n"
+                                         # 주의: videomd.write는 일부러 Doc.nl을 쓰지 않는다. 지금 규칙은 BOM을 떼지 않고
+                                         # raw.startswith(b"---\r\n")로 본다(BOM+CRLF 파일은 LF로 다시 씀). 바이트 보존을 위해 그대로 둔다.
 
 class VersionConflict(Exception):        # 모듈이 자기 ScriptError 코드(conti_changed, ref_changed …)로 바꿔 던진다
     pass
