@@ -7,11 +7,13 @@ from __future__ import annotations
 import base64
 import json
 import os
+import posixpath
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
 
+from scripts import ctx
 from scripts.claude_cli import parse_result_text
 from scripts.common import ScriptError, scrub
 
@@ -40,41 +42,45 @@ def check() -> None:
     _api_key()
 
 
-def _skipped(path: Path) -> dict[str, Any]:
-    return {"type": "text", "text": f"[건너뜀: {path.name} — 크기/개수 한도 초과, 내용을 추측하지 마세요]"}
+def _skipped(name: str) -> dict[str, Any]:
+    return {"type": "text", "text": f"[건너뜀: {name} — 크기/개수 한도 초과, 내용을 추측하지 마세요]"}
 
 
-def _file_blocks(files: list[Path] | None) -> list[dict[str, Any]]:
+def _file_blocks(files: list[str] | None) -> list[dict[str, Any]]:
+    """files는 저장소 키. 실제 파일은 `ctx.local_file`로 열어 읽는다(서버판은 임시 다운로드)."""
     blocks: list[dict[str, Any]] = []
     images = 0
-    for f in files or []:
-        path = Path(f)
-        suffix = path.suffix.lower()
+    here = ctx.here()
+    for key in files or []:
+        name = posixpath.basename(key)
+        suffix = posixpath.splitext(name)[1].lower()
         if suffix in IMAGE_TYPES:
             if images >= MAX_IMAGES:
-                blocks.append(_skipped(path))
+                blocks.append(_skipped(name))
                 continue
             try:
-                if path.stat().st_size > MAX_IMAGE_BYTES:
-                    blocks.append(_skipped(path))
-                    continue
-                data = base64.b64encode(path.read_bytes()).decode("ascii")
+                with here.local_file(key) as path:
+                    if path.stat().st_size > MAX_IMAGE_BYTES:
+                        blocks.append(_skipped(name))
+                        continue
+                    data = base64.b64encode(path.read_bytes()).decode("ascii")
             except OSError as e:
-                raise ScriptError("llm_failed", f"파일을 읽지 못했습니다: {path.name} ({e.__class__.__name__})") from e
+                raise ScriptError("llm_failed", f"파일을 읽지 못했습니다: {name} ({e.__class__.__name__})") from e
             images += 1
-            blocks.append({"type": "text", "text": f"[이미지: {path.name}]"})
+            blocks.append({"type": "text", "text": f"[이미지: {name}]"})
             blocks.append({"type": "image", "source": {"type": "base64", "media_type": IMAGE_TYPES[suffix], "data": data}})
         elif suffix in TEXT_SUFFIXES:
             try:
-                text = path.read_text(encoding="utf-8", errors="replace")[:MAX_TEXT_CHARS]
+                with here.local_file(key) as path:
+                    text = path.read_text(encoding="utf-8", errors="replace")[:MAX_TEXT_CHARS]
             except OSError as e:
-                raise ScriptError("llm_failed", f"파일을 읽지 못했습니다: {path.name} ({e.__class__.__name__})") from e
-            blocks.append({"type": "text", "text": f"[파일: {path.name}]\n{text}"})
+                raise ScriptError("llm_failed", f"파일을 읽지 못했습니다: {name} ({e.__class__.__name__})") from e
+            blocks.append({"type": "text", "text": f"[파일: {name}]\n{text}"})
     return blocks
 
 
 def _build_body(
-    rules: list[Path], payload: dict, task: str, schema: dict | None, files: list[Path] | None, options: dict,
+    rules: list[Path], payload: dict, task: str, schema: dict | None, files: list[str] | None, options: dict,
 ) -> dict[str, Any]:
     system = "\n\n".join(Path(p).read_text(encoding="utf-8") for p in rules)
     text = f"## 입력\n```json\n{json.dumps(payload, ensure_ascii=False, indent=2)}\n```\n\n## 할 일\n{task}"
@@ -137,7 +143,7 @@ def ask(
     task: str,
     *,
     schema: dict | None = None,
-    files: list[Path] | None = None,
+    files: list[str] | None = None,
     timeout: int = 600,
     options: dict | None = None,
 ) -> dict:

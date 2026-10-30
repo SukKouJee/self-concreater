@@ -104,7 +104,7 @@ def test_other_doc_keys_match_module_paths(home: Path) -> None:
     assert keys.report_html("travel", "2026-10-30") == rel(root / "reports" / "travel-2026-10-30.html")  # report.py
     assert keys.PROFILE == rel(root / "profile.md")                                       # motif·mission
     assert keys.CONFIG == rel(root / llm.CONFIG_FILE)
-    assert keys.LIBRARY_CONFIG == rel(library.config_path())
+    assert keys.LIBRARY_CONFIG == library.CONFIG_FILE == "library.json"
     assert (keys.GITIGNORE, keys.GIT_DIR) == (".gitignore", ".git/")                      # refstore.scaffold
     assert (keys.DRAFTS, keys.MINE, keys.MISSIONS, keys.REVIEWS, keys.REPORTS) == (
         "drafts/", "mine/", "missions/", "reviews/", "reports/")

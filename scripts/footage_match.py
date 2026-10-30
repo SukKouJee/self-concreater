@@ -377,10 +377,9 @@ def _montage_key(base: str, montage: Any) -> str | None:
         return None
 
 
-def _image_files(scenes: list[_Scene]) -> list[Path]:
-    """llm에 첨부할 사진 경로(과도기: llm이 키 목록을 받게 되면 키로 바꾼다)."""
-    objects = ctx.here().objects
-    return [Path(objects.display_path(s.image)) for s in scenes]
+def _image_files(scenes: list[_Scene]) -> list[str]:
+    """llm에 첨부할 사진의 저장소 키."""
+    return [s.image for s in scenes]
 
 
 def _scene_pool(usable: list[dict], transcripts: dict[str, list[dict]],

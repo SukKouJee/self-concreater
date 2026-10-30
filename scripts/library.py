@@ -37,11 +37,11 @@ from typing import Any, Iterator
 
 import yaml
 
-from scripts import claude_cli, conti, llm, motif, refstore
-from scripts.common import DATA_NOTICE, ArgParser, ScriptError, mask_credentials, run, scrub, work_root, workspace_dir
+from scripts import claude_cli, conti, ctx, keys, llm, motif, refstore
+from scripts.common import DATA_NOTICE, ArgParser, ScriptError, mask_credentials, run, scrub
 from scripts.videomd import HOOK_TYPES, LABELS, NARRATIVE_TYPES, TECHNIQUE_KINDS
 
-CONFIG_FILE = "library.json"
+CONFIG_FILE = keys.LIBRARY_CONFIG
 GIT_TIMEOUT = 60
 PREVIEW_TTL_SEC = 30 * 60
 MAX_FILE_BYTES = 64 * 1024
@@ -50,7 +50,7 @@ KINDS = ("technique", "template")
 KIND_DIR = {"technique": "techniques", "template": "templates"}
 LIMITS = {"name": 80, "title": 100, "note": 200, "summary": 120, "author": 40}
 
-_CATEGORY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+_CATEGORY_RE = keys.CATEGORY_RE
 _ID_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*-\d{8}-[0-9a-f]{6}$")
 _PREVIEW_RE = re.compile(r"^[0-9a-f]{12}$")
 _CRED_PASSWORD_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://[^/@\s]*:[^/@\s]*@")
@@ -91,20 +91,17 @@ def _fail(code: str, message: str, **details: Any) -> ScriptError:
 
 # --- 설정(library.json) · 경로 --------------------------------------------------------
 
-def config_path() -> Path:
-    return work_root() / CONFIG_FILE
-
-
 def clone_dir() -> Path:
-    return workspace_dir("library")
+    """공용 라이브러리 git clone 위치. git이 실제 폴더를 필요로 해서 로컬 전용이다(`scratch.local_path`)."""
+    return ctx.here().scratch.local_path("library")
 
 
 def _read_config() -> dict[str, Any] | None:
-    path = config_path()
-    if not path.is_file():
+    objects = ctx.here().objects
+    if not objects.exists(CONFIG_FILE):
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(objects.get(CONFIG_FILE).decode("utf-8"))
     except (OSError, ValueError) as e:
         raise _fail("library_config", f"{CONFIG_FILE}을 읽지 못했습니다(올바른 JSON이어야 합니다): {e}") from e
     if not isinstance(data, dict) or not isinstance(data.get("remote"), str) or not isinstance(data.get("author"), str):
@@ -115,7 +112,7 @@ def _read_config() -> dict[str, Any] | None:
 
 
 def _write_config(cfg: dict[str, Any]) -> None:
-    refstore.write_atomic(config_path(), (json.dumps(cfg, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+    ctx.here().objects.put(CONFIG_FILE, (json.dumps(cfg, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
 
 
 def _require_connected() -> tuple[dict[str, Any], Path]:
@@ -357,7 +354,7 @@ def _exclusive() -> Iterator[None]:
     if not _THREAD_LOCK.acquire(blocking=False):
         raise busy
     try:
-        path = workspace_dir("library.lock")
+        path = ctx.here().scratch.local_path("library.lock")
         path.parent.mkdir(parents=True, exist_ok=True)
         fd = _take_lock(path, busy)
         try:
@@ -756,11 +753,11 @@ def _ledger_ids(key: Any) -> list[dict[str, Any]]:
 
 
 def my_techniques(category: str) -> list[dict[str, Any]]:
-    cat = refstore.existing_category_dir(category)
-    path = cat / "techniques.md"
-    if not path.is_file():
+    refstore.require_category(category)
+    key = keys.techniques_md(category)
+    if not ctx.here().store.exists(key):
         return []
-    _, body = refstore.read_md(path)
+    _, body = refstore.read(key)
     items = motif.parse_techniques(body)
     counts: dict[tuple[str, str], int] = {}
     for it in items:
@@ -778,7 +775,7 @@ def my_techniques(category: str) -> list[dict[str, Any]]:
 def preview_path(preview_id: str) -> Path:
     if not isinstance(preview_id, str) or not _PREVIEW_RE.match(preview_id):
         raise _fail("invalid_preview", f"미리보기 id 형식이 아닙니다: {preview_id!r}")
-    return workspace_dir("tmp", f"library_preview_{preview_id}.json")
+    return ctx.here().scratch.tmp_path(f"library_preview_{preview_id}.json")
 
 
 def _content_hash(payload: Any) -> str:
@@ -787,7 +784,6 @@ def _content_hash(payload: Any) -> str:
 
 def _save_preview(data: dict[str, Any]) -> None:
     path = preview_path(data["preview_id"])
-    path.parent.mkdir(parents=True, exist_ok=True)
     refstore.write_atomic(path, json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"))
 
 
@@ -886,15 +882,14 @@ def _rhythm(shots: list[dict[str, Any]]) -> str:
 
 
 def preview_template(draft_path: str | Path) -> dict[str, Any]:
-    root = work_root()
-    path = Path(draft_path)
-    path = path if path.is_absolute() else root / path
-    drafts = (root / "drafts").resolve()
+    outside = _fail("invalid_draft_path", "작업 폴더의 drafts/ 안에 있는 기획안만 틀로 올릴 수 있습니다")
     try:
-        rel = path.resolve().relative_to(drafts)
-    except ValueError as e:
-        raise _fail("invalid_draft_path", "작업 폴더의 drafts/ 안에 있는 기획안만 틀로 올릴 수 있습니다") from e
-    parsed = conti.parse_draft(path)
+        key = ctx.here().scratch.key_of(draft_path)               # resolve 기준: `..`·심볼릭 링크로 밖을 가리키면 거절
+    except ScriptError as e:
+        raise outside from e
+    if not key.startswith(keys.DRAFTS):
+        raise outside
+    parsed = conti.parse_draft(key)
     fm = parsed["fm"]
     if fm.get("hook_type") not in HOOK_TYPES or fm.get("narrative_type") not in NARRATIVE_TYPES:
         raise _fail("invalid_draft", "기획안 프런트매터의 hook_type·narrative_type이 올바르지 않습니다")
@@ -926,7 +921,6 @@ def preview_template(draft_path: str | Path) -> dict[str, Any]:
     }
     body = {"summaries": ["" for _ in sections],
             "rhythms": [_rhythm(s["shots"]) if s["shots"] else "" for s in sections]}
-    key = "drafts/" + rel.as_posix()
     data = _shell("template", category, key, fields, body)
     data["source"] = key
     data["hash"] = _content_hash([_hash_fields(fields), body["rhythms"]])
@@ -979,7 +973,7 @@ def summarize_template(preview_id: str) -> dict[str, Any]:
     data = load_preview(preview_id)
     if data["kind"] != "template":
         raise _fail("invalid_preview", "기획안 틀 미리보기만 요약할 수 있습니다")
-    parsed = conti.parse_draft(work_root() / data["source"])
+    parsed = conti.parse_draft(data["source"])
     secs = parsed["sections"]
     labels = [s["label"] for s in secs]
     if len(secs) != len(data["fm"]["sections"]):
@@ -1305,7 +1299,7 @@ def _load_edits(value: str | None) -> dict[str, Any] | None:
     try:
         if value.startswith("@"):
             edits_path = Path(value[1:])
-            text = (edits_path if edits_path.is_absolute() else work_root() / edits_path).read_text(encoding="utf-8")
+            text = ctx.here().scratch.arg_path(edits_path).read_text(encoding="utf-8")
         else:
             text = value
         data = json.loads(text)

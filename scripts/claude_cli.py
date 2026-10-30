@@ -8,7 +8,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from scripts.common import PLUGIN_ROOT, ScriptError, work_root
+from scripts import ctx
+from scripts.common import PLUGIN_ROOT, ScriptError
 
 SKILLS_DIR = PLUGIN_ROOT / "skills"
 
@@ -41,20 +42,14 @@ def check() -> None:
     find_claude()
 
 
-def _display_path(path: Path) -> str:
-    try:
-        return Path(path).relative_to(work_root()).as_posix()
-    except ValueError:
-        return str(path)
-
-
-def _build_prompt(rules: list[Path], payload: dict, task: str, files: list[Path] | None = None) -> str:
+def _build_prompt(rules: list[Path], payload: dict, task: str, files: list[str] | None = None) -> str:
+    """files는 저장소 키(작업 폴더 기준 상대 경로). claude는 cwd(= scratch.workdir())에서 이 상대 경로로 Read한다."""
     rule_texts = [Path(p).read_text(encoding="utf-8") for p in rules]
     body = json.dumps(payload, ensure_ascii=False, indent=2)
     if not files:
         parts = [*rule_texts, f"## 입력\n```json\n{body}\n```\n\n## 할 일\n{task}\n\n출력은 JSON 하나만."]
         return "\n\n".join(parts)
-    listing = "\n".join(f"- {_display_path(f)}" for f in files)
+    listing = "\n".join(f"- {key}" for key in files)
     parts = [
         *rule_texts,
         f"## 입력\n```json\n{body}\n```",
@@ -104,7 +99,7 @@ def ask(
     *,
     schema: dict | None = None,
     tools: list[str] | None = None,
-    files: list[Path] | None = None,
+    files: list[str] | None = None,
     timeout: int = 600,
     options: dict | None = None,  # 엔진 공통 인터페이스용(claude-cli는 model 등을 쓰지 않는다)
 ) -> dict:
@@ -123,7 +118,7 @@ def ask(
             text=True,
             encoding="utf-8",
             errors="replace",
-            cwd=work_root(),
+            cwd=ctx.here().scratch.workdir(),
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as e:

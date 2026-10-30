@@ -12,10 +12,10 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable
 
-from scripts import claude_cli, llm_anthropic
-from scripts.common import ScriptError, work_root
+from scripts import claude_cli, ctx, keys, llm_anthropic
+from scripts.common import ScriptError
 
-CONFIG_FILE = "yt-coach.json"
+CONFIG_FILE = keys.CONFIG
 DEFAULT_ENGINE = "claude-cli"
 ENV_ENGINE = "YTC_LLM_ENGINE"
 
@@ -30,11 +30,11 @@ def _not_configured(message: str) -> ScriptError:
 
 
 def _read_llm_section() -> dict[str, Any]:
-    path = work_root() / CONFIG_FILE
-    if not path.is_file():
+    objects = ctx.here().objects
+    if not objects.exists(CONFIG_FILE):
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(objects.get(CONFIG_FILE).decode("utf-8"))
     except (OSError, ValueError) as e:
         raise _not_configured(f"{CONFIG_FILE}을 읽지 못했습니다(올바른 JSON이어야 합니다): {e}") from e
     if not isinstance(data, dict):
@@ -78,21 +78,30 @@ def check() -> dict[str, Any]:
     return {"engine": cfg["engine"], "ready": True}
 
 
+def _file_keys(files: list[str | Path] | None) -> list[str] | None:
+    """첨부 목록을 키로. str은 이미 키, Path(과도기: api_add·api_mission이 아직 넘긴다)는 resolve 검사를 거쳐 키로 바꾼다."""
+    if files is None:
+        return None
+    scratch = ctx.here().scratch
+    return [f if isinstance(f, str) else scratch.key_of(f) for f in files]
+
+
 def ask(
     rules: list[Path],
     payload: dict,
     task: str,
     *,
     schema: dict | None = None,
-    files: list[Path] | None = None,
+    files: list[str | Path] | None = None,
     timeout: int = 600,
     max_tokens: int | None = None,
 ) -> dict:
+    """files: 첨부할 파일의 저장소 키(작업 폴더 기준 상대 경로). 과도기: 작업 폴더 안 Path도 받아 키로 바꾼다."""
     engine, cfg = _engine()
     options = {k: v for k, v in cfg.items() if k != "engine"}
     if max_tokens is not None:              # 호출 단위 덮어쓰기(config의 max_tokens보다 우선)
         options["max_tokens"] = max_tokens
-    return engine.ask(rules, payload, task, schema=schema, files=files, timeout=timeout, options=options)
+    return engine.ask(rules, payload, task, schema=schema, files=_file_keys(files), timeout=timeout, options=options)
 
 
 def ask_validated(
