@@ -16,6 +16,7 @@
   --kind-combo-bg: #EFE8FB; --kind-combo-fg: #4E2C93;
   --sec-hook-bg: #FBE6E4; --sec-hook-fg: #8E231E;
   --sec-check-bg: #FBF0DC; --sec-check-fg: #7A4800;
+  --warn-bg: #FBF0DC; --warn-fg: #7A4800; --warn-line: #E0A33A;   /* attention, not error (typify outliers) */
   --radius-card: 10px; --radius-ctl: 8px;
   --font: 'Noto Sans KR', 'Malgun Gothic', 'Apple SD Gothic Neo', system-ui, sans-serif;
   --mono: 'JetBrains Mono', ui-monospace, Consolas, monospace;
@@ -173,7 +174,8 @@ a.chip-job:hover, button.chip-job:hover { background: color-mix(in srgb, var(--k
   border-right: 1px solid var(--border); display: flex; flex-direction: column; gap: 20px; }
 .content { flex: 1; min-width: 0; }
 .main { min-width: 0; padding: var(--sp-5) var(--sp-6) 48px; max-width: 1044px; }
-.main:focus { outline: none; }
+/* <main> is focused by script after a route change: the global :focus-visible ring would frame the whole page */
+.main:focus, .main:focus-visible { outline: none; box-shadow: none; }
 .menu-group { display: flex; flex-direction: column; }
 .menu-label { font-size: 12px; font-weight: 700; color: var(--muted); padding: 0 10px 6px; margin: 0; letter-spacing: 0; }
 .menu-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
@@ -896,16 +898,43 @@ a.chip-job:hover, button.chip-job:hover { background: color-mix(in srgb, var(--k
 .badge.verdict-weak { color: var(--ink); border-color: var(--s4); background: color-mix(in srgb, var(--s4) 18%, transparent); }
 .badge.verdict-untypable { color: var(--muted); border-color: var(--axis); }
 .badge.verdict-insufficient { color: var(--muted); border-color: var(--axis); border-style: dashed; }
-.archetype-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: var(--sp-4); }
-.archetype-grid > .card { margin: 0; display: flex; flex-direction: column; gap: var(--sp-2); }
+/* Cards share the grid's rows (subgrid): 4 head rows, 7 profile rows, representative, members = 13.
+   So the profile lines of side-by-side cards stay level even when names or skeletons wrap differently. */
+.archetype-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: var(--sp-4); }
+.archetype-grid > .card { margin: 0; min-width: 0; display: grid; grid-row: span 13; grid-template-rows: subgrid; row-gap: var(--sp-2); align-content: start; }
 .archetype .card-head { margin-bottom: 0; }
 .archetype .card-head h3 { margin: 0; }
 .arch-name { margin: 0; font-weight: 600; }
 .archetype .sec-band { height: 12px; margin: 0; }
+.ratio-legend { list-style: none; margin: var(--sp-1) 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 2px var(--sp-3); font-size: 12px; color: var(--ink2); font-variant-numeric: tabular-nums; }
+.ratio-legend li { display: inline-flex; align-items: center; gap: var(--sp-1); }
+.ratio-legend .lb-dot { width: 8px; height: 8px; }
+.arch-profile { margin: 0; grid-row: span 7; display: grid; grid-template-rows: subgrid; row-gap: 0; font-size: 13px; }
+.arch-row { display: grid; grid-template-columns: 5.5em 1fr; gap: var(--sp-2); padding: 5px 0; border-top: 1px solid var(--grid); }
+.arch-row:last-child { border-bottom: 1px solid var(--grid); }
+.arch-row dt { color: var(--muted); }
+.arch-row dd { margin: 0; color: var(--ink); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.arch-row dd.muted { color: var(--muted); }
+.arch-rep { margin: 0; }
+.archetype .skeleton, .archetype .arch-ratio, .arch-rep, .arch-members { align-self: start; }   /* short rows sit at the top of a shared row */
+.outlier-tag { display: inline-flex; align-items: center; gap: 2px; font-size: 11px; font-weight: 700; line-height: 18px; padding: 0 6px;
+  border-radius: 4px; border: 1px solid var(--warn-line); background: var(--warn-bg); color: var(--warn-fg); white-space: nowrap; vertical-align: 1px; }
+.outlier-box { background: var(--warn-bg); border: 1px solid var(--warn-line); border-left-width: 4px; border-radius: var(--radius); padding: var(--sp-4) var(--sp-5); }
+.outlier-box h2 { display: flex; align-items: center; gap: var(--sp-2); color: var(--warn-fg); }
+.outlier-icon { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--warn-fg); color: var(--warn-bg); font-size: 13px; font-weight: 800; flex-shrink: 0; }
+.outlier-lead { margin: var(--sp-2) 0; color: var(--ink); font-size: 14px; }
+.outlier-box .outlier-list { font-size: 14px; }
+.outlier-box .outlier-list li + li { margin-top: var(--sp-1); }
+.outlier-axes { color: var(--warn-fg); font-weight: 600; }
 .skeleton { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-2); font-size: 13px; }
 .skel-chip { display: inline-flex; align-items: center; gap: var(--sp-1); }
 .skel-arrow { color: var(--muted); margin-left: var(--sp-1); }
 .member-list, .outlier-list { margin: 0; padding-left: var(--sp-5); font-size: 14px; overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .archetype-grid { grid-template-columns: minmax(0, 1fr); }
+  .archetype-grid > .card { padding: var(--sp-4); }
+  .outlier-box { padding: var(--sp-3) var(--sp-4); }
+}
 .member-more > summary { cursor: pointer; color: var(--link); font-size: 13px; margin: var(--sp-1) 0; }   /* typify: more members */
 .preview-actions { margin-top: var(--sp-5); display: flex; flex-direction: column; gap: var(--sp-2); }
 .typify-body { margin-top: var(--sp-4); }

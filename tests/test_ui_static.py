@@ -407,6 +407,33 @@ def test_typify_page_contract_and_safety():
         assert bad not in js, bad
 
 
+def test_typify_outliers_before_archetypes_and_tagged_in_lists():
+    js = (STATIC_DIR / "pages" / "typify.js").read_text(encoding="utf-8")
+    for view in ("function appliedView", "function previewView"):
+        body = js[js.index(view):]
+        body = body[:body.index("\n}\n")]
+        assert body.index("outlierList(") < body.index("archetypeSection("), view
+    assert '"이상치"' in js                       # small tag next to outlier videos in archetype lists
+    assert "outlier-tag" in js and "outlier-box" in js
+    assert "profileRows" in js and "ratioLegend" in js and "MEMBERS_SHOWN = 3" in js
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    assert "minmax(340px, 1fr)" in css
+    assert ".outlier-box" in css and ".outlier-tag" in css
+    for bad in ["innerHTML", "insertAdjacentHTML", "outerHTML"]:
+        assert bad not in js, bad
+    utils = (STATIC_DIR / "typify-utils.js").read_text(encoding="utf-8")
+    assert "innerHTML" not in utils
+
+
+def test_main_has_no_ring_on_programmatic_focus():
+    css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
+    # the global :focus-visible ring (box-shadow) also matches a script-focused <main>; it is turned off there only
+    assert ".main:focus-visible" in css
+    rule = css[css.index(".main:focus-visible"):]
+    rule = rule[:rule.index("}")]
+    assert "box-shadow: none" in rule
+
+
 def test_typify_page_served(client):
     status, headers, raw = client.call("GET", "/static/pages/typify.js")
     assert status == 200
@@ -1577,9 +1604,10 @@ def test_typify_uses_menu_name_and_korean_section_names():
     assert 'from "/static/labels.js"' in js
     assert '"유형화")' not in js and 'h("h1", { id: "typify-title" }, "유형")' in js
     assert "ref ${" not in js and "내 영상(mine)" not in js and '"ref 부족"' not in js
-    for fn, end in (("function skeletonChips(", "function ratioBand("), ("function ratioBand(", "function refLink(")):
-        part = js[js.index(fn):js.index(end)]
-        assert "skelName(" in part, fn                      # "body/story" -> "본문(이야기)" on screen and in names
+    chips = js[js.index("function skeletonChips("):js.index("function ratioBlock(")]
+    assert "skelName(" in chips                             # "body/story" -> "본문(이야기)" on screen and in names
+    block = js[js.index("function ratioBlock("):js.index("function refLink(")]
+    assert "ratioLegend(ratio, skeleton)" in block          # the legend takes the subtype from the skeleton
 
 
 def test_report_picker_is_chips_and_tabs_match_the_kit():
@@ -1611,7 +1639,7 @@ def test_fix1_typify_humanizes_text_and_folds_long_member_lists():
     assert 'h("span", { class: "md-text" }, humanizeLabels(res.note' in js
     card = js[js.index("function archetypeCard("):js.index("function titleMap(")]
     assert "MEMBERS_SHOWN" in card and '"details"' in card and "더 보기" in card
-    assert re.search(r"const MEMBERS_SHOWN = 5;", js)
+    assert re.search(r"const MEMBERS_SHOWN = 3;", js)
 
 
 def test_fix1_library_uses_the_tested_repo_name():
@@ -1687,7 +1715,7 @@ def test_final_m6_lost_focus_goes_to_main_after_a_route():
     route = app[app.index("async function route()"):app.index("// ---- leaving with unsaved input")]
     assert "if (token === state.navToken) keepFocus();" in route
     assert 'tabindex="-1"' in (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-    assert ".main:focus { outline: none; }" in _js("app.css")
+    assert ".main:focus, .main:focus-visible { outline: none; box-shadow: none; }" in _js("app.css")
 
 
 def test_final_m7_conti_editor_names_scenes():

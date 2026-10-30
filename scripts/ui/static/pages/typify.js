@@ -3,19 +3,17 @@
 //   미리보기 단계에서는 파일이 바뀌지 않는다. 저장은 사용자가 누른 뒤에만, 미리보기의 run_at과 함께 보낸다.
 import { h, fill } from "/static/dom.js";
 import { humanizeLabels, sectionName } from "/static/labels.js";
+import { AXIS_NAMES, legendText, outlierText, profileRows, ratioLegend } from "/static/typify-utils.js";
 
 const POLL_MS = 1000;
 const POLL_MAX_MS = 15000;
 const HANDLED_KEY = "ytc.typify.handled";
 const ACTIVE = new Set(["running", "awaiting"]);
 const AXIS_ORDER = ["structure", "hook", "narrative", "title", "pacing", "shots"];
-const AXIS_NAMES = {
-  structure: "구조", hook: "훅", narrative: "서사", title: "제목", pacing: "컷 속도", shots: "샷",
-};
 const VERDICT_TEXT = {
   typable: "유형 있음", weak: "약한 경향", untypable: "유형 없음", insufficient: "데이터 부족",
 };
-const MEMBERS_SHOWN = 5;   // archetype member links shown before "N개 더 보기"
+const MEMBERS_SHOWN = 3;   // member links shown (besides the representative) before "N개 더 보기"
 const STEP_TEXT = { cluster: "계산 중", claude: "Claude 해석 중" };
 const CHANGED_TEXT = "미리보기를 만든 뒤 유형화가 다시 실행되었습니다. 다시 실행해 주세요. 고친 근거·이름은 같은 축·아키타입이 있으면 다시 실행한 미리보기에도 유지됩니다.";
 
@@ -29,15 +27,7 @@ function skelName(label) {
   const [base, sub] = String(label).split("/").map((s) => s.trim());
   return sectionName(base, sub);
 }
-const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
 const refHref = (id) => `#/refs/${encodeURIComponent(id)}`;
-
-function fmtDuration(sec) {
-  const n = num(sec);
-  if (n === null) return null;
-  const total = Math.round(n);
-  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
-}
 
 function readHandled() {
   try {
@@ -523,37 +513,47 @@ function skeletonChips(skeleton) {
   return list;
 }
 
-function ratioBand(ratio) {
-  const entries = Object.entries(ratio || {}).filter(([, v]) => num(v) !== null && v > 0);
-  if (!entries.length) return null;
-  const total = entries.reduce((s, [, v]) => s + v, 0);
-  const text = entries.map(([k, v]) => `${skelName(k)} ${Math.round((v / total) * 100)}%`).join(" · ");
-  const band = h("div", { class: "sec-band", role: "img", "aria-label": `평균 비율: ${text}` });
-  for (const [label, v] of entries) {
-    const seg = h("span", { class: `lb-${baseLabel(label)}`, title: `${skelName(label)} ${Math.round((v / total) * 100)}%` });
-    seg.style.width = `${(v / total) * 100}%`;
+// Mean section band with a legend that gives each part's share; the legend is the text version of the band.
+function ratioBlock(ratio, skeleton) {
+  const legend = ratioLegend(ratio, skeleton);
+  if (!legend.length) return h("div", { class: "arch-ratio" });
+  const total = legend.reduce((sum, e) => sum + e.pct, 0);
+  const band = h("div", { class: "sec-band", "aria-hidden": "true" });
+  for (const e of legend) {
+    const seg = h("span", { class: `lb-${baseLabel(e.label)}`, title: `${e.name} ${e.pct}%` });
+    seg.style.width = `${(e.pct / total) * 100}%`;
     band.append(seg);
   }
-  return band;
+  const items = legend.map((e) => h("li", {},
+    h("span", { class: `lb-dot lb-${baseLabel(e.label)}`, "aria-hidden": "true" }), `${e.name} ${e.pct}%`));
+  return h("div", { class: "arch-ratio" }, band,
+    h("ul", { class: "ratio-legend", "aria-label": `평균 비율: ${legendText(legend)}` }, ...items));
 }
 
-function refLink(id, titles) {
-  return h("a", { href: refHref(id) }, titles.get(id) || id);
+const outlierTag = () => h("span", { class: "outlier-tag" }, h("span", { "aria-hidden": "true" }, "! "), "이상치");
+
+function refLink(id, titles, outliers) {
+  const link = h("a", { href: refHref(id) }, titles.get(id) || id);
+  return outliers && outliers.has(id) ? h("span", {}, link, " ", outlierTag()) : link;
 }
 
-function archetypeCard(a, titles, editable) {
+// Same seven lines in every card; on wide screens each line is a row of the shared card grid, so the
+// lines of side-by-side cards stay level.
+function profileList(a) {
+  return h("dl", { class: "arch-profile" }, ...profileRows(a).map((r) =>
+    h("div", { class: "arch-row" }, h("dt", {}, r.label),
+      h("dd", { class: r.value === "—" ? "muted" : null }, r.value))));
+}
+
+function archetypeCard(a, titles, editable, outliers) {
   const titleId = `arch-${a.id}`;
   const card = h("article", { class: "card archetype", "aria-labelledby": titleId });
-  const mean = [];
-  const dur = fmtDuration(a.mean_duration);
-  if (dur) mean.push(`평균 길이 ${dur}`);
-  const cut = num(a.pacing && a.pacing.avg_cut_sec);
-  if (cut !== null) mean.push(`평균 컷 ${cut.toFixed(1)}초`);
   const head = h("div", { class: "card-head" }, h("h3", { id: titleId }, `${a.id} · ${a.size}개`));
   const nameValue = editable ? (S.notes.names[a.id] || "") : (a.name || "");
   if (a.prev_name && a.prev_name === nameValue) head.append(h("span", { class: "badge" }, "이전 이름 그대로"));
   card.append(head);
 
+  // Every card keeps the same children (empty ones too): they are the rows of the shared card grid.
   if (editable) {
     const inputId = `arch-name-${a.id}`;
     const input = h("input", { id: inputId, type: "text", required: true, "aria-label": `${a.id} 아키타입 이름`, "data-arch": a.id });
@@ -568,25 +568,26 @@ function archetypeCard(a, titles, editable) {
   } else {
     card.append(h("p", { class: "arch-name" }, humanizeLabels(nameValue)));
   }
-  const chips = skeletonChips(a.skeleton);
-  const band = ratioBand(a.mean_ratio);
-  if (chips) card.append(chips);
-  if (band) card.append(band);
-  if (mean.length) card.append(h("p", { class: "muted small" }, mean.join(" · ")));
-  if (a.representative && a.representative.id) {
-    card.append(h("p", { class: "small" }, "대표 영상 ", refLink(a.representative.id, titles)));
-  }
-  const members = a.members || [];
+  card.append(skeletonChips(a.skeleton) || h("div", { class: "skeleton" }));
+  card.append(ratioBlock(a.mean_ratio, a.skeleton));
+  card.append(profileList(a));
+
+  const rep = a.representative && a.representative.id;
+  card.append(rep ? h("p", { class: "small arch-rep" }, "대표 영상 ", refLink(rep, titles, outliers))
+    : h("p", { class: "small arch-rep muted" }, "대표 영상 없음"));
+  const members = (a.members || []).filter((id) => id !== rep);
+  const list = h("div", { class: "arch-members" });
   if (members.length) {
-    const item = (id) => h("li", {}, refLink(id, titles));
-    card.append(h("ul", { class: "member-list", "aria-label": `${a.id} 구성 영상` }, ...members.slice(0, MEMBERS_SHOWN).map(item)));
+    const item = (id) => h("li", {}, refLink(id, titles, outliers));
+    list.append(h("ul", { class: "member-list", "aria-label": `${a.id} 구성 영상` }, ...members.slice(0, MEMBERS_SHOWN).map(item)));
     const rest = members.slice(MEMBERS_SHOWN);
     if (rest.length) {
       // a disclosure keeps long archetypes short; its list continues the one above
-      card.append(h("details", { class: "member-more" }, h("summary", {}, `${rest.length}개 더 보기`),
+      list.append(h("details", { class: "member-more" }, h("summary", {}, `${rest.length}개 더 보기`),
         h("ul", { class: "member-list", "aria-label": `${a.id} 구성 영상 나머지` }, ...rest.map(item))));
     }
   }
+  card.append(list);
   return card;
 }
 
@@ -600,20 +601,19 @@ function titleMap(result, known) {
   return titles;
 }
 
-function outlierAxes(o) {
-  const names = (o.axes || []).map((axis) => AXIS_NAMES[axis] || humanizeLabels(String(axis)));
-  return names.length ? names.join("·") : "일부 축";
-}
+const outlierIds = (outliers) => new Set((outliers || []).map((o) => o && o.id).filter(Boolean));
 
+// Shown above the archetypes in a warning box: icon + heading text, not colour alone.
 function outlierList(outliers, titles) {
   if (!outliers || !outliers.length) return null;
-  return h("section", { class: "typify-sec", "aria-labelledby": "typify-outliers" },
-    h("h2", { id: "typify-outliers" }, "이상치"),
+  return h("section", { class: "typify-sec outlier-box", "aria-labelledby": "typify-outliers" },
+    h("h2", { id: "typify-outliers" }, h("span", { class: "outlier-icon", "aria-hidden": "true" }, "!"), `이상치 ${outliers.length}개`),
+    h("p", { class: "outlier-lead" }, "다른 영상들과 멀리 떨어져 있어 유형을 만들 때 덜 반영된 영상입니다. 일부러 다르게 만든 영상인지 확인해 보세요."),
     h("ul", { class: "outlier-list" },
-      ...outliers.map((o) => h("li", {}, refLink(o.id, titles), h("span", { class: "muted" }, ` — ${outlierAxes(o)}에서 혼자 떨어짐`)))));
+      ...outliers.map((o) => h("li", {}, refLink(o.id, titles), h("span", { class: "outlier-axes" }, ` — ${outlierText(o)}`)))));
 }
 
-function archetypeSection(list, titles, editable) {
+function archetypeSection(list, titles, editable, outliers) {
   if (!list.length) {
     return h("section", { class: "typify-sec", "aria-labelledby": "typify-arch" },
       h("h2", { id: "typify-arch" }, "아키타입"),
@@ -621,7 +621,7 @@ function archetypeSection(list, titles, editable) {
   }
   return h("section", { class: "typify-sec", "aria-labelledby": "typify-arch" },
     h("h2", { id: "typify-arch" }, "아키타입"),
-    h("div", { class: "archetype-grid" }, ...list.map((a) => archetypeCard(a, titles, editable))));
+    h("div", { class: "archetype-grid" }, ...list.map((a) => archetypeCard(a, titles, editable, outlierIds(outliers)))));
 }
 
 function appliedView(applied) {
@@ -630,8 +630,8 @@ function appliedView(applied) {
     h("p", { class: "muted small" }, `저장된 결과 · ${String(applied.applied_at || "").slice(0, 10)} 저장`),
     h("section", { class: "typify-sec", "aria-labelledby": "typify-axes" },
       h("h2", { id: "typify-axes" }, "축별 판정"), axisRows(applied.axes || {}, false)),
-    archetypeSection(applied.archetypes || [], titles, false),
     outlierList(applied.outliers, titles),
+    archetypeSection(applied.archetypes || [], titles, false, applied.outliers),
   ];
 }
 
@@ -654,8 +654,8 @@ function previewView() {
       h("a", { href: "#/refs" }, "레퍼런스 목록"), "에서 영상 라벨을 고친 뒤 다시 실행하세요"),
     h("section", { class: "typify-sec", "aria-labelledby": "typify-axes" },
       h("h2", { id: "typify-axes" }, "축별 판정"), axisRows(result.axes, true)),
-    archetypeSection(result.archetypes, titles, true),
     outlierList(result.outliers, titles),
+    archetypeSection(result.archetypes, titles, true, result.outliers),
     h("div", { class: "preview-actions" }, h("div", { class: "btn-row" }, saveBtn, discardBtn), S.nodes.hint, S.nodes.alerts),
   ];
 }
