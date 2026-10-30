@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import os
 import posixpath
 import secrets
 import threading
@@ -60,15 +61,16 @@ def _bad_path() -> ScriptError:
 def _target_key(category: str, value: Any) -> str:
     """작업 폴더 안 refs/ref_<cat>/videos/*.md 또는 drafts/*.md(콘티 제외)만 허용하고 그 문서 키를 돌려준다.
     탈출 검사는 resolve 기준(`scratch.key_of`: `..`·심볼릭 링크·작업 폴더 밖 절대 경로·다른 드라이브). 풀린 키의
-    폴더가 두 허용 폴더 중 하나와 정확히 같아야 한다(하위 폴더·다른 카테고리 안 됨). 확장자는 `.md` 그대로(대소문자 구분)."""
+    폴더가 두 허용 폴더 중 하나와 같아야 한다(하위 폴더·다른 카테고리 안 됨. Windows는 대소문자 무시). 확장자는 `.md` 그대로(대소문자 구분)."""
     if not isinstance(value, str) or not value.strip():
         raise _bad_path()
     try:
         key = ctx.here().scratch.key_of(value)
     except ScriptError as e:
         raise _bad_path() from e
-    folder = posixpath.dirname(key) + "/"
-    if (posixpath.splitext(key)[1] != ".md" or folder not in (keys.videos_dir(category), keys.DRAFTS)
+    folder = os.path.normcase(posixpath.dirname(key) + "/")      # Windows는 폴더 이름 대소문자 무시(예전 WindowsPath 비교)
+    allowed = {os.path.normcase(keys.videos_dir(category)), os.path.normcase(keys.DRAFTS)}
+    if (posixpath.splitext(key)[1] != ".md" or folder not in allowed
             or keys.stem(key).endswith(conti.CONTI_SUFFIX)):
         raise _bad_path()
     return key

@@ -784,7 +784,7 @@ def test_big_conti_edit_and_get_are_fast(client, home, draft_md):
     src = big_conti(home, draft_md)
     # 처음 한 번(id 붙이기 · 이력 기준선 · 막 만든 프레임 파일 첫 열기)은 재지 않는다. 막 만든 파일을 처음 열 때
     # 백신 검사로 파일마다 수 ms가 걸려 HTTP 클라이언트의 5초 제한을 넘을 수 있어 서버를 거치지 않고 부른다.
-    assert len(api_conti.conti_view(src)["cuts"]) == 450
+    assert len(api_conti.conti_view(rel(home, src))["cuts"]) == 450
     t0 = time.perf_counter()
     view = _view(client, home, src)
     get_sec = time.perf_counter() - t0

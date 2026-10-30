@@ -24,7 +24,7 @@ GOLDEN = Path(__file__).parent / "fixtures" / "golden" / "ui_b"
 DRAFT_KEY = "drafts/2026-10-30-제주-한달살기.md"
 CONTI_KEY = "drafts/2026-10-30-제주-한달살기-conti.md"
 FID = "0123456789ab-100-200"
-BASE_MTIME = 1_700_000_000
+BASE_MTIME = int(datetime.datetime(2023, 11, 15, 12, 0).timestamp())   # 지역 시각 정오: 날짜가 시간대와 무관
 
 
 def golden(name: str, value, root: Path) -> None:
@@ -234,6 +234,8 @@ def test_footage_frame_serving_stays_inside_the_fid_folder(cw):
         assert code == 404, rel
     code, _, _ = client.call("GET", f"/api/footage/frame/bad-fid/frames/0001.jpg")
     assert code == 404
+    code, _, _ = client.call("GET", f"/api/footage/frame/{FID}/frames/%000001.jpg")
+    assert code == 404
 
 
 def test_report_list_ignores_other_names_and_folders(client, wf):
@@ -306,6 +308,24 @@ def test_diagnose_target_bypass_is_bad_path(diag, target):
     assert (code, data) == (400, BAD), target
 
 
+def test_diagnose_target_with_nul_is_bad_path(diag):
+    _, dclient = diag
+    assert _compare(dclient, "drafts/\x00idea.md") == (400, BAD)       # 예전에는 resolve가 ValueError(500)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows 폴더 이름은 대소문자를 가리지 않는다")
+def test_diagnose_target_mixed_case_folders_on_windows(diag):
+    home, dclient = diag
+    (home / "drafts").rename(home / "Drafts")
+    (home / "refs" / f"ref_{CAT}").rename(home / "refs" / f"ref_{CAT.capitalize()}")
+    code, data = _compare(dclient, "drafts/idea.md")
+    assert code == 200, data
+    assert data["target"]["path"] == "Drafts/idea.md"
+    code, data = _compare(dclient, f"refs/ref_{CAT}/videos/m1.md")
+    assert code == 200, data
+    assert data["target"]["path"] == f"refs/ref_{CAT.capitalize()}/videos/m1.md"
+
+
 def test_diagnose_target_absolute_outside_is_bad_path(diag, tmp_path_factory):
     diag, dclient = diag
     outside = tmp_path_factory.mktemp("outside")
@@ -359,3 +379,10 @@ def test_mission_stale_copies_removed_by_mtime_only(client, wf, monkeypatch):
     code, data = client.json("POST", "/api/mission/feedback", {"date": "2026-10-30", "note": "했어요", "difficulty": "right"})
     assert code == 200, data
     assert sorted(p.name for p in tmp.iterdir()) == ["mission_submit_dir", "mission_submit_new.png", "other_old.json"]
+
+
+def test_footage_frame_key_rejects_nul_and_escape(cw):
+    from scripts.ui import api_footage
+    assert api_footage._frame_key(FID, "frames/\x000001.jpg") is None
+    assert api_footage._frame_key(FID, "../x.jpg") is None
+    assert api_footage._frame_key(FID, "frames/0001.jpg") == f"workspace/footage/{FID}/frames/0001.jpg"

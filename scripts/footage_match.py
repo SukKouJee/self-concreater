@@ -432,7 +432,7 @@ class _Batches:
     def stopped(self) -> bool:
         return self.error is not None and self.error.code in FATAL_CODES
 
-    def run(self, payload: dict, task: str, offer: _Offer, files: list[Path] | None) -> bool:
+    def run(self, payload: dict, task: str, offer: _Offer, files: list[str] | None) -> bool:
         """한 묶음을 묻는다. -> 답을 받았으면 True."""
         if self.stopped:
             self.failed |= offer.cut_ids

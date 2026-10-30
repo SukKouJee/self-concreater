@@ -235,10 +235,8 @@ def _stale(key: str, outputs: list[str]) -> bool:
     return any(c.objects.exists(out) and mtime > c.objects.stat(out).mtime for out in outputs)
 
 
-def conti_view(path: str | Path) -> dict:
-    """GET /api/conti 응답. 불러올 때 id를 붙이고 밖에서 고친 내용을 이력에 남긴다(편집과 겹치지 않게 잠금 안에서).
-    path: 콘티 md 키(또는 작업 폴더 안 Path: resolve 검사를 거쳐 키로)."""
-    key = path if isinstance(path, str) else run_ctx.here().scratch.key_of(path)
+def conti_view(key: str) -> dict:
+    """GET /api/conti 응답(key: 콘티 md 키). 불러올 때 id를 붙이고 밖에서 고친 내용을 이력에 남긴다(편집과 겹치지 않게 잠금 안에서)."""
     _, fm, digest = conti_history.baseline_state(key)
     return view_of(key, fm, digest)
 
