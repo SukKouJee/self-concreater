@@ -86,9 +86,12 @@ def ask(
     schema: dict | None = None,
     files: list[Path] | None = None,
     timeout: int = 600,
+    max_tokens: int | None = None,
 ) -> dict:
     engine, cfg = _engine()
     options = {k: v for k, v in cfg.items() if k != "engine"}
+    if max_tokens is not None:              # 호출 단위 덮어쓰기(config의 max_tokens보다 우선)
+        options["max_tokens"] = max_tokens
     return engine.ask(rules, payload, task, schema=schema, files=files, timeout=timeout, options=options)
 
 

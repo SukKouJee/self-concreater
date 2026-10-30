@@ -213,6 +213,25 @@ def ref_auto_of(value: Any) -> dict | None:
     return {"frame": frame, "match": "content"}
 
 
+ART_DIR = ("workspace", "conti-art")
+_ART_BASIS_RE = re.compile(r"[0-9a-f]{8}")
+
+
+def art_of(value: Any) -> dict | None:
+    """컷의 art(장면 그림) 정리. 형식이 맞으면 {"file", "basis"}, 아니면 None.
+    file은 workspace/conti-art/ 아래 .svg 상대 경로(슬래시, `..`·드라이브·역슬래시 없음), basis는 소문자 hex 8자."""
+    if not isinstance(value, dict):
+        return None
+    file, basis = value.get("file"), value.get("basis")
+    if not isinstance(file, str) or not isinstance(basis, str) or not _ART_BASIS_RE.fullmatch(basis):
+        return None
+    if not file.startswith("/".join(ART_DIR) + "/") or not file.endswith(".svg") or "\\" in file or ":" in file:
+        return None
+    if any(part in ("", ".", "..") for part in file.split("/")):
+        return None
+    return {"file": file, "basis": basis}
+
+
 def validate(data: dict, sections: list[dict]) -> tuple[list[dict], list[dict]]:
     """(script, cuts) — script에 섹션 시간을 붙이고, cuts에 번호·시작·끝을 붙인다."""
     script = data.get("script") or []
@@ -256,6 +275,9 @@ def validate(data: dict, sections: list[dict]) -> tuple[list[dict], list[dict]]:
         auto = ref_auto_of(c.get("ref_auto"))
         if auto:
             out_cuts[-1]["ref_auto"] = auto
+        art = art_of(c.get("art"))
+        if art:
+            out_cuts[-1]["art"] = art
     for s in sections:
         mine = [c for c in out_cuts if c["section"] == s["idx"]]
         total, length = sum(c["sec"] for c in mine), s["end"] - s["start"]
@@ -629,6 +651,10 @@ def _trusted_ref_auto(cuts: list[dict], category: str | None) -> list[dict]:
     검증 없이 믿지 않는다. 화면의 만들기 작업이 고른 값은 후보에서 나왔으므로 그대로 남는다)."""
     from scripts import conti_refs          # conti_refs가 이 모듈을 쓰므로 함수 안에서 불러온다
 
+    # art(장면 그림)도 같은 원칙: 파일이 실제로 있을 때만 남긴다
+    root = work_root()
+    cuts = [{k: v for k, v in c.items() if k != "art"} if c.get("art") and not (root / c["art"]["file"]).is_file() else c
+            for c in cuts]
     if not any(c.get("ref_auto") for c in cuts):
         return cuts
     known = {c["frame"] for c in conti_refs.candidates(category)}

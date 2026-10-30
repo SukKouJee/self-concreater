@@ -1189,6 +1189,38 @@ def test_validate_drops_malformed_ref_auto(value):
     assert "ref_auto" not in cuts[0]
 
 
+ART = {"file": "workspace/conti-art/x/abc12345-0a1b2c3d.svg", "basis": "0a1b2c3d"}
+
+
+def test_validate_keeps_valid_art_and_drops_bad():
+    _, cuts = conti.validate(with_cuts(c0={"art": {**ART, "extra": 1}}), SECTIONS)
+    assert cuts[0]["art"] == ART
+    for bad in ({**ART, "file": "../x.svg"}, {**ART, "file": "C:/x.svg"}, {**ART, "basis": "zz"},
+                {**ART, "file": "workspace/frames/a.svg"}, {**ART, "file": "workspace/conti-art/../x.svg"},
+                {**ART, "file": r"workspace\conti-art\x.svg"}, {**ART, "file": "workspace/conti-art/x.png"}, ART["file"], None):
+        _, cuts = conti.validate(with_cuts(c0={"art": bad}), SECTIONS)
+        assert "art" not in cuts[0], bad
+
+
+def test_conti_without_art_unchanged():
+    _, cuts = conti.validate(with_cuts(), SECTIONS)
+    assert all("art" not in c for c in cuts)
+    assert set(cuts[0]) == {"n", "id", "section", "size", "angle", "sec", "start", "end", "action", "line", "caption", "sfx", "guide"}
+
+
+def test_cli_save_keeps_art_only_if_file_exists(draft_md, home):
+    f = home / ART["file"]
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text("<svg/>", encoding="utf-8")
+    ghost = {"file": "workspace/conti-art/x/ghost-0a1b2c3d.svg", "basis": "0a1b2c3d"}
+    data = with_cuts(c0={"art": ART}, c1={"art": ghost})
+    rel = draft_md.relative_to(home).as_posix()
+    saved = conti.main(["save", rel, "--conti", conti_file(home, data).relative_to(home).as_posix()])
+    stored, _ = refstore.read_md(home / saved["path"])
+    assert stored["cuts"][0]["art"] == ART
+    assert all("art" not in c for c in stored["cuts"][1:])
+
+
 SECTIONS = [{"idx": 0, "label": "hook", "start": 0, "end": 2}, {"idx": 1, "label": "body", "start": 2, "end": 6},
             {"idx": 2, "label": "outro", "start": 6, "end": 8}]
 

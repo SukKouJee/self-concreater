@@ -131,6 +131,23 @@ def test_ask_without_files_keeps_tools_off_and_prompt_unchanged(home, monkeypatc
     assert kw["input"] == claude_cli._build_prompt([rule], {"k": 1}, "할일")
 
 
+def test_ask_max_tokens_overrides_config(home, monkeypatch):
+    _write_config(home, {"llm": {"engine": "claude-cli", "max_tokens": 8000}})
+    seen = []
+
+    class FakeEngine:
+        @staticmethod
+        def ask(rules, payload, task, **kw):
+            seen.append(kw["options"])
+            return {}
+
+    monkeypatch.setitem(llm.ENGINES, "claude-cli", FakeEngine)
+    llm.ask([], {}, "t", max_tokens=16000)
+    llm.ask([], {}, "t")
+    assert seen[0]["max_tokens"] == 16000
+    assert seen[1]["max_tokens"] == 8000
+
+
 # ---- ask_validated ----------------------------------------------------------------
 
 def _scripted_ask(monkeypatch, replies):
