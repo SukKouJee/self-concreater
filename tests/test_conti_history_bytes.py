@@ -100,6 +100,29 @@ def test_corrupt_version_file_is_history_corrupt(saved, home):
     assert e.value.code == "history_corrupt" and "0001.json" in e.value.message
 
 
+def test_invalid_utf8_version_file_is_history_corrupt(saved, home):
+    (folder(home, saved) / "0001.json").write_bytes(b"\xff\xfe{}")
+    with pytest.raises(ScriptError) as e:
+        ch.get_version(saved, 1)
+    assert e.value.code == "history_corrupt" and "0001.json" in e.value.message
+
+
+@pytest.mark.parametrize("call", [
+    lambda p: ch.list_versions(p),
+    lambda p: ch.get_version(p, 1),
+    lambda p: ch.name(p, "이름", None),
+    lambda p: ch.restore(p, 1, None),
+])
+def test_conti_path_outside_work_folder_is_bad_path(saved, home, tmp_path_factory, call):
+    """작업 폴더 밖 콘티 경로를 직접 부르면(이전엔 경로 이름만 봤다) 이제 bad_path로 거절한다."""
+    outside = tmp_path_factory.mktemp("outside") / "drafts" / "x-conti.md"
+    outside.parent.mkdir()
+    outside.write_text("---\n---\n", encoding="utf-8")
+    with pytest.raises(ScriptError) as e:
+        call(outside)
+    assert e.value.code == "bad_path"
+
+
 def test_cache_does_not_mix_work_folders_with_equal_stamp(saved, home, tmp_path_factory, monkeypatch):
     """두 작업 폴더에 같은 키·같은 크기·같은 수정 시각의 버전 파일이 있어도 서로 섞이지 않는다."""
     path = folder(home, saved) / "0001.json"

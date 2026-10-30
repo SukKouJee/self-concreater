@@ -134,7 +134,6 @@ def test_examples_are_reviewed_refs_newest_first_max_three(home: Path) -> None:
     now = time.time()
     for i, vid in enumerate(["a1", "b1", "c1", "d1", "e1"]):
         path = write_video(home, vid)
-        fm, body = refstore.read(doc_key(path))
         refstore.update_frontmatter(doc_key(path), {"reviewed": vid != "e1", "role": "mine" if vid == "d1" else "ref"})
         os.utime(path, (now + i * 10, now + i * 10))
     assert videomd.examples(CAT) == [f"refs/ref_{CAT}/videos/{v}.md" for v in ("c1", "b1", "a1")]

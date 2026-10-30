@@ -34,8 +34,8 @@ def rel(path: Path) -> str:
 
 def test_category_keys_match_module_paths(home: Path) -> None:
     assert keys.category("travel") == rel(common.category_dir("travel")) + "/"
-    assert keys.video_md("travel", VID) == videomd.video_md_key(VID, "travel")
-    assert keys.video_md("travel", "-C8U1fizcms") == videomd.video_md_key("-C8U1fizcms", "travel")
+    assert keys.video_md("travel", VID) == "refs/ref_travel/videos/Q8PSsikq8PA.md"                 # 리터럴(모듈 함수와 순환하지 않게)
+    assert keys.video_md("travel", "-C8U1fizcms") == "refs/ref_travel/videos/-C8U1fizcms.md"
     assert keys.index_md("travel") == rel(common.category_dir("travel") / "index.md")
     assert keys.techniques_md("travel") == rel(common.category_dir("travel") / "techniques.md")
     assert keys.REFS == "refs/"
@@ -62,15 +62,17 @@ def test_conti_keys_match_module_paths(home: Path) -> None:
     assert keys.draft_md(STEM) == DRAFT
     assert keys.conti_md(DRAFT) == rel(conti.conti_path(draft_path)) == CONTI
     outputs = conti.conti_outputs(conti_path)                         # 픽스처에 산출물이 모두 있다(키)
-    assert outputs == [CONTI, keys.conti_html(CONTI), keys.srt(CONTI, "captions"), keys.srt(CONTI, "lines"),
-                       keys.captions_mp4(CONTI), keys.remaining_html(CONTI), keys.footage_csv(CONTI)]
+    base = f"drafts/{STEM}"                                           # srt·mp4·csv는 `-conti`를 뺀 이름에 붙는다
+    assert outputs == [f"{base}-conti.md", f"{base}-conti.html", f"{base}-captions.srt", f"{base}-lines.srt",
+                       f"{base}-captions.mp4", f"{base}-remaining.html", f"{base}-footage.csv"]
+    assert keys.conti_html(CONTI) == f"{base}-conti.html" and keys.footage_csv(CONTI) == f"{base}-footage.csv"
     assert [s for _, s in conti.SRT_TRACKS.values()] == ["captions", "lines"]
     assert keys.cut_files_dir(CONTI) == CONTI.replace("-conti.md", "-cuts/")
     history = f"workspace/conti_history/{conti_path.stem}/"                           # 콘티 이름(stem)만 쓴다
     assert keys.history_dir(CONTI) == keys.history_dir(conti_path.as_posix()) == history
     assert keys.history_version(CONTI, 1) == f"{history}0001.json"
     assert keys.history_version(CONTI, 12345) == f"{history}12345.json"
-    assert keys.footage_match(CONTI) == footage_match.state_key(conti_path)
+    assert keys.footage_match(CONTI) == f"workspace/footage_match/{STEM}-conti.json"
     data = b"<svg/>"
     sha6 = hashlib.sha1(data).hexdigest()[:6]
     art = Path(*conti.ART_DIR, conti_path.stem, f"c1-0123abcd-{sha6}.svg")              # conti_art.py 그대로
@@ -98,13 +100,13 @@ def test_html_of_replaces_md_suffix_like_with_suffix() -> None:
 
 def test_other_doc_keys_match_module_paths(home: Path) -> None:
     root = common.work_root()
-    assert keys.mine_md("my-jeju-vlog") == similarity._diag_key("my-jeju-vlog")
-    assert keys.mission_md("2026-10-30") == mission._mission_key("2026-10-30") == "missions/2026-10-30.md"
+    assert keys.mine_md("my-jeju-vlog") == "mine/my-jeju-vlog.md"
+    assert keys.mission_md("2026-10-30") == "missions/2026-10-30.md"
     assert keys.review_md("2026-W44") == rel(root / "reviews" / "2026-W44.md")             # mission.py review_save
     assert keys.report_html("travel", "2026-10-30") == rel(root / "reports" / "travel-2026-10-30.html")  # report.py
     assert keys.PROFILE == rel(root / "profile.md")                                       # motif·mission
-    assert keys.CONFIG == rel(root / llm.CONFIG_FILE)
-    assert keys.LIBRARY_CONFIG == library.CONFIG_FILE == "library.json"
+    assert keys.CONFIG == rel(root / "yt-coach.json")
+    assert keys.LIBRARY_CONFIG == "library.json"
     assert (keys.GITIGNORE, keys.GIT_DIR) == (".gitignore", ".git/")                      # refstore.scaffold
     assert (keys.DRAFTS, keys.MINE, keys.MISSIONS, keys.REVIEWS, keys.REPORTS) == (
         "drafts/", "mine/", "missions/", "reviews/", "reports/")
@@ -118,14 +120,14 @@ def test_workspace_keys_match_module_paths(home: Path) -> None:
     assert keys.cuts(VID) == rel(common.workspace_dir("cuts", f"{VID}.json"))           # cuts.py·videomd.load_cuts
     assert keys.frames_dir(VID) == rel(common.workspace_dir("frames", VID)) + "/"         # cuts.py
     assert keys.shots(VID) == rel(common.workspace_dir("shots", f"{VID}.json"))   # shots.py
-    assert keys.typify("travel") == cluster.result_key("travel")
-    assert keys.typify("travel", "applied") == cluster.applied_key("travel")
-    assert keys.typify("travel", "preview") == cluster.preview_key("travel")
+    assert keys.typify("travel") == "workspace/typify/travel.json"
+    assert keys.typify("travel", "applied") == "workspace/typify/travel.applied.json"
+    assert keys.typify("travel", "preview") == "workspace/typify/travel.preview.json"
     with pytest.raises(ValueError):
         keys.typify("travel", "other")
     fid = "0123456789ab-10-20"
     assert footage.valid_fid(fid)
-    assert keys.footage_dir(fid) == footage.footage_key(fid) == f"workspace/footage/{fid}/"
+    assert keys.footage_dir(fid) == f"workspace/footage/{fid}/"
     assert keys.TRASH == "workspace/trash/"
 
 

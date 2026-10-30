@@ -63,7 +63,10 @@ class DocStore:                 # 경로 대신 "문서 키"
     put(key, doc, *, expect_version)   # 낙관적 잠금, 본문·내 메모 보존 규칙은 여기서 강제
     list(prefix) -> list[DocMeta]
     delete(key)                 # 휴지통으로
-# 키 예: refs/travel/videos/Q8PSsikq8PA, drafts/2026-10-25-부루마블-1, drafts/…/conti, mine/…, missions/2026-10-31
+# 키 = 작업 폴더 기준 POSIX 상대 경로 문자열 그대로(S3 설계 ADR-1). 확장자와 `ref_` 접두사를 포함한다.
+# 키 예: refs/ref_travel/videos/Q8PSsikq8PA.md, drafts/2026-10-25-부루마블-1.md, drafts/2026-10-25-부루마블-1-conti.md,
+#       mine/<이름>.md, missions/2026-10-31.md, workspace/frames/<영상ID>/0003.jpg
+# 키 함수는 scripts/keys.py 한 곳. 서버판 PgStore·S3ObjectStore가 키를 행·객체 이름으로 바꾸는 변환은 S5에서 그 안에 둔다.
 ```
 
 - 로컬판 `FileStore`: 키 → 지금과 똑같은 파일 경로. **작업 폴더 구조와 파일 내용은 바뀌지 않는다.**
@@ -187,7 +190,7 @@ trash/{uid}/{date}/…                                           30일 뒤 삭�
 | S0 준비 | `v1.0.0` 태그, `release/v1` 브랜치, 7절 결정, CLAUDE.md 범위 수정 | 결정 사항이 이 문서에 기록됨 |
 | S1 모노레포 재배치 | `core/ local/ web/ server/` 이동만(동작 변경 없음), import 경로 정리, `bin/ytc`·플러그인 경로 수정 | 플러그인 재설치 후 커맨드 12개·`ytc ui` 정상, pytest 통과 |
 | S2 Ctx 도입 | `Ctx`·contextvar, `work_root()`가 Ctx를 보게 변경, 로컬판 시작 지점에서 설정 | 동작 동일, `work_root()` 호출 수 측정 스크립트 추가. 측정(2026-10-31, `python -m scripts.count_work_root`): `work_root(` 100 · `workspace_dir(` 42 · `category_dir(` 4, 합계 146곳 / 36개 모듈(많은 순 conti 12, mission 12, videomd 10, common 8, ui/api_diagnose 8). 로컬판 시작 지점은 `common.run`과 UI 요청 스레드가 `ctx.use()`로 호출 동안만 설정하고, 작업 스레드는 `copy_context()`로 이어받는다 |
-| S3 저장소 인터페이스 | `DocStore`·`ObjectStore`·`SharedCache` 정의, `FileStore` 구현, 모듈별로 파일 입출력 이전(refstore → videomd → motif → draft → conti·conti_history → mission → similarity → report …) | `work_root()` 직접 호출 0, 경로 문자열은 FileStore 안에만, 테스트 통과 |
+| S3 저장소 인터페이스 | `DocStore`·`ObjectStore`·`SharedCache` 정의, `FileStore` 구현, 모듈별로 파일 입출력 이전(refstore → videomd → motif → draft → conti·conti_history → mission → similarity → report …) | **완료(2026-10-31).** 허용 목록 밖 `work_root(`·`workspace_dir(`·`category_dir(`·`existing_category_dir(`·`move_to_trash(` 호출 0, 경로 문자열 상수·`ctx.root` 접근 0(`tests/test_no_direct_paths.py`가 AST로 강제). 측정(`python -m scripts.count_work_root`): 허용 목록(allowed) 6곳(common 3 · ctx 1 · ui/__main__ 2), 그 밖(outside) 0곳. S2 측정 146곳 → 0 |
 | S4 콘티 그림 분리 | 콘티 HTML이 그림을 박지 않고 별도 파일을 참조(로컬판에도 적용, 인쇄용 단일 파일은 옵션) | 콘티 HTML 수백 KB 수준, 화면·인쇄 동일 |
 | S5 PG·S3 구현 | 스키마·마이그레이션(Alembic), RLS, `PgStore`, `S3ObjectStore`, `storage_objects`·`doc_versions`, docker-compose(PG + MinIO) | core 테스트를 FileStore·PgStore 두 구현으로 같이 돌려 통과 |
 | S6 서버 API·인증 | ASGI 앱, 로그인, 요청별 Ctx, 기존 핸들러 연결, presigned 업로드·다운로드 | 사용자 2명이 서로 데이터를 못 보는 것을 테스트로 확인 |

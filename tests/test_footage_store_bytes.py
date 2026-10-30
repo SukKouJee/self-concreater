@@ -67,6 +67,19 @@ def test_unreadable_record_bytes(home, tmp_path):
     assert not list((home / "workspace" / "footage" / out["fid"]).glob("frames/*"))
 
 
+def test_locked_file_retry_leaves_no_footage_folder(home, sample_video, monkeypatch):
+    """잠김(retry)은 캐시하지 않고, 빈 `workspace/footage/<fid>/` 폴더도 남기지 않는다(저장소 이전으로 생긴 의도된 차이)."""
+    def locked(path, size):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(footage, "_read_pyav", locked)
+    before = tree_snapshot.tree(home)
+    out = footage.process_file(sample_video, run_stt=False)
+    assert out["status"] == "retry"
+    assert not (home / "workspace" / "footage" / out["fid"]).exists()
+    assert tree_snapshot.tree(home) == before
+
+
 def test_corrupt_cache_is_redone_and_cached_result_reads_it(home, sample_video):
     first = footage.process_file(sample_video, run_stt=False)
     path = home / "workspace" / "footage" / first["fid"] / "scenes.json"

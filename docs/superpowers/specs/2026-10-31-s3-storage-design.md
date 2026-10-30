@@ -2,7 +2,7 @@
 
 작성일: 2026-10-31 / 기준: `feat/s3-store` (S2 `scripts/ctx.py` 완료 후)
 상위 설계: `2026-10-31-multiuser-server-design.md` §2.1·§2.2·§6 S3
-상태: 제안. 이 문서 결정에 맞춰 상위 설계 §2.1의 키 예시를 고친다(ADR-1).
+상태: 완료(2026-10-31). 상위 설계 §2.1의 키 예시를 이 문서 ADR-1에 맞춰 고쳤다. 게이트: `tests/test_no_direct_paths.py`, `count_work_root`의 `outside == 0`.
 
 ## 0. 목표와 완료 정의
 
