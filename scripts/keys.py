@@ -6,9 +6,14 @@
 from __future__ import annotations
 
 import posixpath
+import re
 from typing import Literal
 
-from scripts.common import _CATEGORY_RE, ScriptError
+from scripts.common import ScriptError
+
+CATEGORY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+# Windows 예약 장치 이름: 확장자가 붙어도(`con.md`) 대소문자와 상관없이 파일을 만들 수 없다
+_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 
 # 작업 폴더 최상위
 REFS = "refs/"
@@ -33,18 +38,29 @@ Kind = Literal["doc", "shared", "object"]
 
 # --- 검사 ---------------------------------------------------------------------------------
 
+def _bad_part(part: str) -> bool:
+    return (part in ("", ".", "..") or part.endswith((".", " "))
+            or part.split(".", 1)[0].upper() in _RESERVED)
+
+
 def check(key: str) -> str:
-    """상대 POSIX 경로인지 본다(폴더 키의 끝 `/` 하나는 허용). 빈 조각·`.`·`..`·`\\`·`:`·NUL은 ScriptError("bad_path")."""
+    """상대 POSIX 경로인지 본다(폴더 키의 끝 `/` 하나는 허용). 빈 조각·`.`·`..`·`\\`·`:`·NUL, 점·공백으로 끝나는 조각,
+    Windows 예약 이름(CON·PRN·AUX·NUL·COM1~9·LPT1~9, 확장자 무관)은 ScriptError("bad_path")."""
     body = key[:-1] if key.endswith("/") else key
     if (not body or "\\" in key or ":" in key or "\x00" in key
-            or any(part in ("", ".", "..") for part in body.split("/"))):
+            or any(_bad_part(part) for part in body.split("/"))):
         raise ScriptError("bad_path", f"잘못된 경로입니다: {key!r}")
     return key
 
 
+def is_doc(key: str) -> bool:
+    """md 문서 키인가. Windows glob(`*.md`)처럼 대소문자를 가리지 않는다(`Idea.MD`도 문서)."""
+    return key.lower().endswith(".md")
+
+
 def kind(key: str) -> Kind:
     """키가 속한 저장소: md는 문서(DocStore), 영상 ID 기준 캐시는 shared, 나머지는 object."""
-    if key.endswith(".md"):
+    if is_doc(key):
         return "doc"
     if key.startswith(SHARED_PREFIXES):
         return "shared"
@@ -54,7 +70,7 @@ def kind(key: str) -> Kind:
 # --- 카테고리 ------------------------------------------------------------------------------
 
 def category(cat: str) -> str:
-    if not _CATEGORY_RE.match(cat):
+    if not CATEGORY_RE.match(cat):
         raise ScriptError(
             "invalid_category",
             f"카테고리 이름은 영문 소문자·숫자·-·_만 쓸 수 있습니다: {cat!r}",
@@ -98,7 +114,7 @@ def draft_md(name: str) -> str:
 
 def conti_md(draft_key: str) -> str:
     """기획안 키 → 같은 폴더의 `<이름>-conti.md`(`conti.conti_path`)."""
-    if not draft_key.endswith(".md"):
+    if not is_doc(draft_key):
         raise ValueError(f"기획안 md 키가 아닙니다: {draft_key!r}")
     return posixpath.join(posixpath.dirname(draft_key), f"{stem(draft_key)}{CONTI_SUFFIX}.md")
 
@@ -106,7 +122,7 @@ def conti_md(draft_key: str) -> str:
 def _conti_base(conti_key: str) -> tuple[str, str]:
     """콘티 키 → (폴더, `-conti` 뺀 이름). 콘티 키가 아니면 ValueError."""
     s = stem(conti_key)
-    if not conti_key.endswith(".md") or not s.endswith(CONTI_SUFFIX):
+    if not is_doc(conti_key) or not s.endswith(CONTI_SUFFIX):
         raise ValueError(f"콘티 md 키가 아닙니다: {conti_key!r}")
     return posixpath.dirname(conti_key), s[: -len(CONTI_SUFFIX)]
 

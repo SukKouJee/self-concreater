@@ -399,16 +399,18 @@ def test_trash_route_refuses_while_category_is_collecting(client, home, monkeypa
 
 
 def test_trash_video_rolls_back_a_moved_folder(client, home, monkeypatch):  # noqa: F811
-    from scripts import common, videomd
+    import shutil
+
+    from scripts import videomd
     data = _data(home, "a00")
-    real_move = common.shutil.move
+    real_move = shutil.move
 
     def move(src, dst):
         if str(src).endswith(".md"):
             raise PermissionError("locked")
         return real_move(src, dst)
 
-    monkeypatch.setattr(common.shutil, "move", move)
+    monkeypatch.setattr(shutil, "move", move)
     with pytest.raises(refstore.ScriptError) as e:
         videomd.trash_video("a00", CAT)
     assert e.value.code == "trash_failed"

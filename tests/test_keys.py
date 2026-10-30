@@ -133,7 +133,8 @@ def test_check_accepts_relative_posix_keys(key: str) -> None:
 
 @pytest.mark.parametrize("key", [
     "", "/", "/abs.md", "C:/x.md", "c:x.md", "a\\b.md", "a//b.md", "./a.md", "a/./b.md", "a/../b.md", "../a.md",
-    "a/..", "a\x00b.md", "a//",
+    "a/..", "a\x00b.md", "a//", "drafts/a.", "drafts/a ", "drafts/a. /b.md", "CON", "drafts/con.md", "nul.txt",
+    "workspace/frames/Aux/0001.jpg", "drafts/COM1.md", "lpt9.json", "prn", "drafts/Com3.tar.gz/",
 ])
 def test_check_rejects_bad_keys(key: str) -> None:
     with pytest.raises(ScriptError) as e:
@@ -146,7 +147,27 @@ def test_check_rejects_bad_keys(key: str) -> None:
     (f"workspace/raw/{VID}.json", "shared"), (f"workspace/cuts/{VID}.json", "shared"),
     (f"workspace/frames/{VID}/0001.jpg", "shared"), (f"workspace/shots/{VID}.json", "shared"),
     (f"drafts/{STEM}-conti.html", "object"), ("workspace/typify/travel.json", "object"), ("yt-coach.json", "object"),
-    ("workspace/rawx/a.json", "object"), ("reports/a-b.html", "object"),
+    ("workspace/rawx/a.json", "object"), ("reports/a-b.html", "object"), ("drafts/Idea.MD", "doc"),
+    ("refs/ref_travel/videos/X.Md", "doc"), ("drafts/a.mdx", "object"),
 ])
 def test_kind_picks_store(key: str, kind: str) -> None:
     assert keys.kind(key) == kind
+
+
+def test_is_doc_ignores_case() -> None:
+    assert keys.is_doc("drafts/a.md") and keys.is_doc("drafts/A.MD") and keys.is_doc("x.mD")
+    assert not keys.is_doc("drafts/a.mdx") and not keys.is_doc("drafts/md") and not keys.is_doc("refs/ref_a/")
+
+
+@pytest.mark.parametrize("key", [
+    "drafts/console.md", "drafts/auxiliary.md", "workspace/frames/COM10/0001.jpg", "drafts/a.b.md",
+    "workspace/frames/-C8U1fizcms/0001.jpg", "drafts/nul-x.md", ".gitignore",
+])
+def test_check_keeps_lookalikes_of_reserved_names(key: str) -> None:
+    assert keys.check(key) == key
+
+
+def test_every_fixture_key_passes_check() -> None:
+    from tests.helpers.tree_snapshot import FIXTURE
+    rels = [p.relative_to(FIXTURE).as_posix() for p in FIXTURE.rglob("*")]
+    assert rels and all(keys.check(r) == r for r in rels)

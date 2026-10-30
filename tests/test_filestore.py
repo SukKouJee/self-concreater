@@ -239,7 +239,7 @@ def test_stat_matches_os_stat(home: Path) -> None:
 
 def test_list_order_matches_sorted_glob(home: Path) -> None:
     videos = home / "refs" / "ref_travel" / "videos"
-    for name in ["b.md", "A.md", "a2.md", "C.md", "_z.md", "Z9.md", "note.txt"]:
+    for name in ["b.md", "A.md", "a2.md", "C.md", "_z.md", "Z9.md", "Up.MD", "note.txt"]:
         (videos / name).write_bytes(b"---\na: 1\n---\n")
     (videos / "dir.md").mkdir()
 
@@ -249,6 +249,10 @@ def test_list_order_matches_sorted_glob(home: Path) -> None:
     assert [m.key for m in metas] == want
     assert "refs/ref_travel/videos/dir.md" not in want
     assert all(m.mtime == (home / m.key).stat().st_mtime for m in metas)
+    store = FileDocStore(home)
+    for m in metas:                                            # 목록에 나온 키는 모두 문서로 다시 읽힌다(대문자 .MD 포함)
+        assert store.exists(m.key) and store.read(m.key).raw == (home / m.key).read_bytes()
+        assert store.stat(m.key) == m
     objs = FileObjectStore(home).list("drafts/", "*.srt")
     assert [m.key for m in objs] == [p.relative_to(home).as_posix() for p in sorted((home / "drafts").glob("*.srt"))]
     assert FileDocStore(home).list("refs/ref_none/videos/") == []
@@ -392,6 +396,8 @@ def test_object_store_rejects_md_keys(home: Path) -> None:
     with pytest.raises(ValueError):
         FileObjectStore(home).get(CONTI)
     with pytest.raises(ValueError):
+        FileObjectStore(home).get("drafts/Idea.MD")
+    with pytest.raises(ValueError):
         FileObjectStore(home).put(CONTI, b"x")
 
 
@@ -484,3 +490,10 @@ def test_write_atomic_survives_concurrent_writers(tmp_path: Path) -> None:
     assert [p.name for p in tmp_path.iterdir()] == ["same.md"]
     assert target.read_bytes() in {f"writer {i}".encode() * 100 for i in range(6)}
     assert all(isinstance(e, PermissionError) for e in errors)
+
+
+def test_write_locks_are_bounded_and_stable(tmp_path: Path) -> None:
+    from scripts import filestore
+    locks = {id(filestore._write_lock(tmp_path / f"f{i}.md")) for i in range(2000)}
+    assert len(locks) <= filestore.LOCK_STRIPES
+    assert filestore._write_lock(tmp_path / "a.md") is filestore._write_lock(tmp_path / "x" / ".." / "a.md")

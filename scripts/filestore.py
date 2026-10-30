@@ -1,6 +1,7 @@
 """파일 저장소(S3 설계 §4): 로컬판의 DocStore·ObjectStore·SharedCache·Scratch·Trash.
 
-작업 폴더 경로(`Path`)는 이 모듈에서만 만든다: 모두 `root / key`(키 검증 후). 키를 만드는 곳은 `scripts.keys`.
+작업 폴더 경로(`Path`)는 이 모듈에서만 만든다: 모두 `root / key`(키 검증 후). 키를 만드는 곳은 `scripts.keys`
+(여기서는 `_keys`로 부른다: `Trash.move`의 인자 이름 `keys`와 겹치지 않게).
 - 읽기는 `path.read_bytes()`, 쓰기는 `refstore.write_atomic`(임시 파일 + 교체). 바이트는 손대지 않는다.
 - 목록 순서는 `sorted(Path(root/prefix).glob(pattern))`와 같다(Windows는 대소문자 무시 정렬. 문자열 정렬로 바꾸지 않는다).
 - `local_path`/`write_path`는 진짜 경로를 그대로 준다(복사 없음).
@@ -19,19 +20,20 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from scripts import keys, refstore
+from scripts import keys as _keys
+from scripts import refstore
 from scripts.common import ScriptError
 from scripts.stores import Doc, Meta, VersionConflict
 
-_write_locks: dict[str, threading.Lock] = {}
-_write_locks_guard = threading.Lock()
+LOCK_STRIPES = 64
+_write_locks = [threading.Lock() for _ in range(LOCK_STRIPES)]
 
 
 def _write_lock(path: Path) -> threading.Lock:
-    """같은 파일(절대 경로 기준)의 읽기-비교-쓰기를 한 번에 하나씩. 저장소 객체가 달라도 같은 잠금."""
+    """같은 파일(절대 경로 기준)의 읽기-비교-쓰기를 한 번에 하나씩. 저장소 객체가 달라도 같은 잠금.
+    잠금은 고정 개수(줄무늬)라 파일이 많아도 늘지 않는다. 다른 파일이 같은 잠금을 나눠 쓰면 잠깐 기다릴 뿐이다."""
     name = os.path.normcase(os.path.abspath(path))
-    with _write_locks_guard:
-        return _write_locks.setdefault(name, threading.Lock())
+    return _write_locks[hash(name) % LOCK_STRIPES]
 
 
 def _meta(root: Path, path: Path) -> Meta:
@@ -42,7 +44,7 @@ def _meta(root: Path, path: Path) -> Meta:
 def _prefix(prefix: str) -> str:
     if not prefix.endswith("/"):
         raise ValueError(f"접두사는 '/'로 끝나야 합니다: {prefix!r}")
-    return keys.check(prefix)
+    return _keys.check(prefix)
 
 
 class _FileBase:
@@ -50,7 +52,7 @@ class _FileBase:
         self.root = Path(root)
 
     def _path(self, key: str) -> Path:
-        return self.root / keys.check(key)
+        return self.root / _keys.check(key)
 
     def _list(self, prefix: str, pattern: str) -> builtins.list[Meta]:
         folder = self.root / _prefix(prefix)
@@ -64,7 +66,7 @@ class FileDocStore(_FileBase):
     """사용자 md 문서. 키는 `.md`로 끝나야 한다(아니면 ValueError)."""
 
     def _doc_path(self, key: str) -> Path:
-        if not key.endswith(".md"):
+        if not _keys.is_doc(key):
             raise ValueError(f"문서 키는 .md로 끝나야 합니다: {key!r}")
         return self._path(key)
 
@@ -117,7 +119,7 @@ class FileObjectStore(_FileBase):
     """사용자별 바이너리·JSON·HTML. 키가 `.md`로 끝나면 ValueError(문서는 FileDocStore)."""
 
     def _obj_path(self, key: str) -> Path:
-        if key.endswith(".md"):
+        if _keys.is_doc(key):
             raise ValueError(f"md 문서는 DocStore로 다룹니다: {key!r}")
         return self._path(key)
 
@@ -170,7 +172,7 @@ class FileSharedCache(FileObjectStore):
     """영상 ID 기준 캐시. 키는 `workspace/{raw,cuts,frames,shots}/` 아래만."""
 
     def _obj_prefix(self, prefix: str) -> str:
-        if not prefix.startswith(keys.SHARED_PREFIXES):
+        if not prefix.startswith(_keys.SHARED_PREFIXES):
             raise ValueError(f"공유 캐시 키가 아닙니다: {prefix!r}")
         return prefix
 
@@ -185,12 +187,12 @@ class FileScratch:
         self.root = Path(root)
 
     def tmp_path(self, name: str) -> Path:
-        path = self.root / keys.check(f"workspace/tmp/{name}")
+        path = self.root / _keys.check(f"workspace/tmp/{name}")
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 
     def local_path(self, *parts: str) -> Path:
-        return self.root / keys.check("/".join(("workspace", *parts)))
+        return self.root / _keys.check("/".join(("workspace", *parts)))
 
     def arg_path(self, value: str | Path) -> Path:
         path = Path(value)
@@ -204,7 +206,7 @@ class FileScratch:
             raise ScriptError("bad_path", f"작업 폴더 밖의 경로입니다: {value}") from e
         if rel == ".":
             raise ScriptError("bad_path", f"작업 폴더 자체는 파일이 아닙니다: {value}")
-        return keys.check(rel)
+        return _keys.check(rel)
 
     def workdir(self) -> Path:
         return self.root
@@ -260,7 +262,7 @@ class FileTrash:
         self.root = Path(root)
 
     def _path(self, key: str) -> Path:
-        return self.root / keys.check(key).removesuffix("/")
+        return self.root / _keys.check(key).removesuffix("/")
 
-    def move(self, keys: builtins.list[str], last: str) -> dict[str, Any]:  # 인자 이름은 Trash 프로토콜과 같게
+    def move(self, keys: builtins.list[str], last: str) -> dict[str, Any]:
         return move_paths(self.root, [self._path(k) for k in keys], self._path(last))

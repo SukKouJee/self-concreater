@@ -712,15 +712,15 @@ def test_trash_missing_conti(draft_md, home):
 def test_trash_rolls_back_when_a_file_is_locked(saved, draft_md, home, monkeypatch):
     video = draft_md.with_name(f"{draft_md.stem}-captions.mp4")
     video.write_bytes(b"x")
-    from scripts import common
-    real_move = common.shutil.move
+    import shutil
+    real_move = shutil.move
 
     def move(src, dst):
         if str(src).endswith(".mp4"):
             raise PermissionError("locked")
         return real_move(src, dst)
 
-    monkeypatch.setattr(common.shutil, "move", move)
+    monkeypatch.setattr(shutil, "move", move)
     with pytest.raises(ScriptError) as e:
         conti.trash(saved)
     assert e.value.code == "trash_failed"
