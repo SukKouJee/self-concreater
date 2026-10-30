@@ -100,7 +100,12 @@ class FileDocStore(_FileBase):
         path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0))
         try:
-            with os.fdopen(fd, "wb") as f:
+            try:
+                f = os.fdopen(fd, "wb")
+            except BaseException:
+                os.close(fd)                         # fdopen이 실패하면 원시 fd가 남는다
+                raise
+            with f:
                 f.write(data)
         except BaseException:
             path.unlink(missing_ok=True)             # 반쯤 쓴 파일을 남기지 않는다
