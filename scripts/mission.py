@@ -23,8 +23,8 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-from scripts import motif, refstore
-from scripts.common import ArgParser, ScriptError, run, work_root
+from scripts import ctx, keys, motif, refstore
+from scripts.common import ArgParser, ScriptError, run
 
 KINDS = ["관찰", "분석", "기획", "촬영", "편집", "업로드"]
 STAGES = ["관찰", "모방", "제작", "변형"]
@@ -38,12 +38,13 @@ def _today(value: str | None) -> str:
     return value or Date.today().isoformat()
 
 
-def _missions_dir() -> Path:
-    return work_root() / "missions"
+def _mission_key(day: str) -> str:
+    return keys.mission_md(day)
 
 
 def _mission_path(day: str) -> Path:
-    return _missions_dir() / f"{day}.md"
+    """과도기(Task 12에서 api_mission과 함께 삭제): 아직 Path를 쓰는 호출부용."""
+    return ctx.here().scratch.arg_path(keys.mission_md(day))
 
 
 def _load_json(path: Path, code: str) -> Any:
@@ -75,24 +76,23 @@ def recommend(recent: list[dict], base: int) -> dict:
 
 # --- context ----------------------------------------------------------------------
 
-def _mission_record(path: Path) -> dict:
-    fm, body = refstore.read_md(path)
+def _mission_record(target: str | Path) -> dict:
+    """미션 md 한 건의 요약. `target`은 문서 키(str) 또는 작업 폴더 안 Path(과도기)."""
+    key = target if isinstance(target, str) else ctx.here().scratch.key_of(target)
+    fm, body = refstore.read(key)
     title = re.search(r"^### (.+?) \(\d+분", body, re.M)
-    return {"date": str(fm.get("date") or path.stem), "title": title.group(1) if title else None,
+    return {"date": str(fm.get("date") or keys.stem(key)), "title": title.group(1) if title else None,
             "kind": fm.get("kind"), "status": fm.get("status"), "difficulty": fm.get("difficulty"),
             "minutes": fm.get("minutes"), "skip_reason": fm.get("skip_reason"), "source": fm.get("source")}
 
 
 def _missions_between(start: str, end: str) -> list[dict]:
-    folder = _missions_dir()
-    if not folder.is_dir():
-        return []
     records = []
-    for p in sorted(folder.glob("*.md")):
-        if not start <= p.stem <= end:
+    for meta in ctx.here().store.list(keys.MISSIONS, "*.md"):
+        if not start <= keys.stem(meta.key) <= end:
             continue
         try:
-            records.append(_mission_record(p))
+            records.append(_mission_record(meta.key))
         except ScriptError as e:
             if e.code != "bad_frontmatter":
                 raise
@@ -102,35 +102,33 @@ def _missions_between(start: str, end: str) -> list[dict]:
 
 def _starred() -> list[dict]:
     found = []
-    for cat_dir in sorted((work_root() / "refs").glob("ref_*")):
-        _, body = refstore.read_md(cat_dir / "index.md")
+    for folder in ctx.here().store.folders(keys.REFS, "ref_*"):
+        _, body = refstore.read(folder + "index.md")
         for card in motif.parse_cards(body):
             if card["starred"]:
-                found.append({"category": cat_dir.name.removeprefix("ref_"), "id": card["id"],
+                found.append({"category": keys.category_name(folder), "id": card["id"],
                               "type": card["type"], "title": card["title"]})
     return found
 
 
 def _drafts(limit: int = 3) -> list[dict]:
-    folder = work_root() / "drafts"
-    paths = sorted(folder.glob("*.md"), reverse=True)[:limit] if folder.is_dir() else []
+    metas = list(reversed(ctx.here().store.list(keys.DRAFTS, "*.md")))[:limit]       # 이름 역순(Windows는 대소문자 무시)
     out = []
-    for p in paths:
-        fm, _ = refstore.read_md(p)
-        out.append({"path": p.relative_to(work_root()).as_posix(), "title": fm.get("title"),
+    for meta in metas:
+        fm, _ = refstore.read(meta.key)
+        out.append({"path": meta.key, "title": fm.get("title"),
                     "status": fm.get("status"), "category": fm.get("category")})
     return out
 
 
 def _diagnosis_gaps() -> list[dict]:
-    folder = work_root() / "mine"
     out = []
-    for p in sorted(folder.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True) if folder.is_dir() else []:
-        fm, _ = refstore.read_md(p)
+    for meta in sorted(ctx.here().store.list(keys.MINE, "*.md"), key=lambda m: m.mtime, reverse=True):
+        fm, _ = refstore.read(meta.key)
         intentional = set(fm.get("intentional") or [])
         gaps = [g for g in fm.get("gaps") or [] if g not in intentional]
         if gaps:
-            out.append({"name": p.stem, "category": fm.get("category"), "date": str(fm.get("date")),
+            out.append({"name": keys.stem(meta.key), "category": fm.get("category"), "date": str(fm.get("date")),
                         "nearest": fm.get("nearest"), "gaps": gaps})
     return out
 
@@ -142,7 +140,7 @@ def context(date: str | None = None) -> dict:
     yesterday = (Date.fromisoformat(day) - timedelta(days=1)).isoformat()
     history = _missions_between(since, yesterday)
     base = base_minutes(profile)
-    today = _mission_path(day)
+    today = _mission_key(day)
     return {
         "date": day,
         "profile": profile,
@@ -153,7 +151,7 @@ def context(date: str | None = None) -> dict:
         "drafts": _drafts(),
         "gaps": _diagnosis_gaps(),
         "history": history,
-        "today": _mission_record(today) if today.exists() else None,
+        "today": _mission_record(today) if ctx.here().store.exists(today) else None,
         "kinds": KINDS,
     }
 
@@ -199,12 +197,13 @@ def save(mission_path: Path, date: str | None = None, replace: bool = False) -> 
     data = validate_mission(_load_json(mission_path, "invalid_mission"))
     minutes = data["minutes"]
 
-    path = _mission_path(day)
+    store = ctx.here().store
+    key = _mission_key(day)
     swapped_from = None
-    if path.exists():
+    if store.exists(key):
         if not replace:
             raise ScriptError("mission_exists", f"{day} 미션이 이미 있습니다. 바꾸려면 swap(--replace)")
-        swapped_from = _mission_record(path)["title"]
+        swapped_from = _mission_record(key)["title"]
 
     profile = motif._profile()
     fm = {"date": day, "stage": (profile or {}).get("성장 단계") or "관찰", "kind": data["kind"],
@@ -221,39 +220,38 @@ def save(mission_path: Path, date: str | None = None, replace: bool = False) -> 
         *([f"- 결과물: {data['deliverable']}"] if data["deliverable"] else []), "",
         "## 제출", "", "## 피드백", "",
     ])
-    path.parent.mkdir(parents=True, exist_ok=True)
-    refstore.write_atomic(path, refstore.join_frontmatter(fm, body).encode("utf-8"))
+    store.write(key, refstore.join_frontmatter(fm, body).encode("utf-8"))
     Path(mission_path).unlink(missing_ok=True)
-    return {"status": "saved", "path": path.relative_to(work_root()).as_posix(), "swapped_from": swapped_from}
+    return {"status": "saved", "path": key, "swapped_from": swapped_from}
 
 
-def _require_mission(day: str) -> Path:
-    path = _mission_path(day)
-    if not path.exists():
+def _require_mission(day: str) -> str:
+    key = _mission_key(day)
+    if not ctx.here().store.exists(key):
         raise ScriptError("no_mission", f"{day} 미션이 없습니다. 먼저 /yt-mission today")
-    return path
+    return key
 
 
 def submit(file: str, difficulty: str, feedback: str, date: str | None = None, note: str | None = None) -> dict:
     day = _today(date)
     if difficulty not in DIFFICULTIES:
         raise ScriptError("usage", f"difficulty는 {', '.join(DIFFICULTIES)} 중 하나입니다")
-    path = _require_mission(day)
-    fm, body = refstore.read_md(path)
+    key = _require_mission(day)
+    fm, body = refstore.read(key)
     name = _line((Path(file.replace(chr(92), "/")).name or file) if file else "")
     lines = [*([f"- 한 일: {_line(note)}"] if _line(note) else []),
              *([f"- 파일: {name}"] if name else []), f"- 난이도: {difficulty}"]
     body = refstore.replace_section(body, "## 제출", "\n".join(lines))
     body = refstore.replace_section(body, "## 피드백", refstore.escape_headings(feedback.strip()))
     fm.update({"status": "submitted", "difficulty": difficulty, "skip_reason": None})
-    refstore.write_atomic(path, refstore.join_frontmatter(fm, body).encode("utf-8"))
+    ctx.here().store.write(key, refstore.join_frontmatter(fm, body).encode("utf-8"))
     return {"status": "submitted", "date": day, "difficulty": difficulty}
 
 
 def skip(reason: str, date: str | None = None) -> dict:
     day = _today(date)
-    path = _require_mission(day)
-    refstore.update_frontmatter(path, {"status": "skipped", "skip_reason": _line(reason) or None})
+    key = _require_mission(day)
+    refstore.update_frontmatter(key, {"status": "skipped", "skip_reason": _line(reason) or None})
     return {"status": "skipped", "date": day}
 
 
@@ -276,8 +274,8 @@ def week(week_id: str | None = None) -> dict:
     missions = _missions_between(s, e)
     statuses = Counter(m["status"] for m in missions)
     cards = 0
-    for cat_dir in (work_root() / "refs").glob("ref_*"):
-        _, body = refstore.read_md(cat_dir / "index.md")
+    for folder in ctx.here().store.folders(keys.REFS, "ref_*"):
+        _, body = refstore.read(folder + "index.md")
         cards += sum(1 for d in re.findall(r"^- 만든 날: (\S+)", body, re.M) if s <= d <= e)
     diagnoses = [d for d in _diagnosis_gaps() if s <= d["date"] <= e]
     return {
@@ -356,11 +354,12 @@ def _memo_tail(body: str) -> str | None:
 def review_save(week_id: str, review_path: Path) -> dict:
     data = validate_review(_load_json(review_path, "invalid_review"))
     stats = week(week_id)
-    path = work_root() / "reviews" / f"{stats['week']}.md"
+    store = ctx.here().store
+    key = keys.review_md(stats["week"])
     old_fm: dict = {}
     nl, memo = "\n", f"{MEMO_HEADING}\n"
-    if path.exists():
-        text = path.read_bytes().decode("utf-8-sig")
+    if store.exists(key):
+        text = store.read(key).raw.decode("utf-8-sig")
         try:
             old_fm, old_body = refstore.split_frontmatter(text)
         except ScriptError as e:
@@ -382,10 +381,9 @@ def review_save(week_id: str, review_path: Path) -> dict:
              "## 다음 주 방향", *[f"- {n}" for n in data["next_week"]], "",
              "## 프로필 변경 제안", *proposal_lines, ""]
     body = ("\n".join(lines) + "\n" + memo).replace("\n", nl)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    refstore.write_atomic(path, refstore.join_frontmatter(fm, body, nl).encode("utf-8"))
+    store.write(key, refstore.join_frontmatter(fm, body, nl).encode("utf-8"))
     Path(review_path).unlink(missing_ok=True)
-    return {"status": "saved", "path": path.relative_to(work_root()).as_posix()}
+    return {"status": "saved", "path": key}
 
 
 def profile_update(updates_path: Path, date: str | None = None) -> dict:
@@ -395,10 +393,10 @@ def profile_update(updates_path: Path, date: str | None = None) -> dict:
         raise ScriptError("invalid_profile_update", f"프로필에 없는 섹션입니다: {', '.join(unknown)}")
     if "성장 단계" in updates and str(updates["성장 단계"]).strip() not in STAGES:
         raise ScriptError("invalid_profile_update", f"성장 단계는 {', '.join(STAGES)} 중 하나입니다")
-    path = work_root() / "profile.md"
-    if not path.exists():
+    store = ctx.here().store
+    if not store.exists(keys.PROFILE):
         raise ScriptError("no_profile", "profile.md가 없습니다. 먼저 /yt-init")
-    text = path.read_bytes().decode("utf-8-sig")
+    text = store.read(keys.PROFILE).raw.decode("utf-8-sig")
     nl = "\r\n" if "\r\n" in text else "\n"
     fm, body = refstore.split_frontmatter(text)
     body = body.replace("\r\n", "\n")
@@ -406,18 +404,16 @@ def profile_update(updates_path: Path, date: str | None = None) -> dict:
         # 값 안의 '## ' 줄이 섹션 구조를 깨지 않도록 막는다
         body = refstore.replace_section(body, f"## {section}", refstore.escape_headings(str(value).strip()))
     fm["updated"] = _today(date)
-    refstore.write_atomic(path, refstore.join_frontmatter(fm, body.replace("\n", nl), nl).encode("utf-8"))
+    store.write(keys.PROFILE, refstore.join_frontmatter(fm, body.replace("\n", nl), nl).encode("utf-8"))
     Path(updates_path).unlink(missing_ok=True)
-    review_dir = work_root() / "reviews"
     return {"status": "updated", "sections": list(updates), "updated": fm["updated"],
-            "reviews": sorted(p.stem for p in review_dir.glob("*.md")) if review_dir.is_dir() else []}
+            "reviews": sorted(keys.stem(m.key) for m in store.list(keys.REVIEWS, "*.md"))}
 
 
 # --- CLI --------------------------------------------------------------------------
 
 def _work_path(value: str) -> Path:
-    p = Path(value)
-    return p if p.is_absolute() else work_root() / p
+    return ctx.here().scratch.arg_path(value)
 
 
 def main(argv: list[str]) -> Any:
