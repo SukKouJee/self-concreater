@@ -56,7 +56,7 @@ def test_requirements_server_extends_base_and_lists_server_deps() -> None:
     active = [ln for ln in lines if ln and not ln.startswith("#")]
     assert active[0] == "-r requirements.txt"
     names = {ln.split("[")[0].split(">")[0].split("=")[0].split("<")[0].split("~")[0].strip().lower() for ln in active[1:]}
-    assert names == {"starlette", "uvicorn", "authlib", "itsdangerous", "httpx", "psycopg", "psycopg_pool",
+    assert names == {"starlette", "uvicorn", "authlib", "joserfc", "itsdangerous", "httpx", "psycopg", "psycopg_pool",
                      "alembic", "sqlalchemy", "boto3"}
     assert all(any(op in ln for op in (">=", "~=", "==")) for ln in active[1:]), "버전 범위 없는 항목"
 

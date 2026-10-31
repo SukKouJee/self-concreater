@@ -3,6 +3,7 @@
 starlette>=1.10,<2
 uvicorn>=0.54,<1
 authlib>=1.9,<2
+joserfc>=1.7,<2
 itsdangerous>=2.2,<3
 httpx>=0.28,<1
 psycopg[binary]>=3.3,<4

@@ -16,6 +16,11 @@
   button:disabled { opacity: .6; cursor: default; }
   .muted { color: #5b6475; font-size: 14px; }
   .error { color: #b42318; font-size: 14px; margin-top: 10px; }
+  a.google { display: block; box-sizing: border-box; width: 100%; padding: 9px; border: 1px solid #c9ced8; border-radius: 8px;
+             background: #fff; color: #1d2330; text-align: center; text-decoration: none; font-weight: 600; }
+  a.google:hover { background: #f1f3f6; }
+  a.google:focus-visible, button:focus-visible, input:focus-visible { outline: 3px solid #2f5bea; outline-offset: 2px; }
+  .or { margin: 18px 0 12px; text-align: center; color: #5b6475; font-size: 13px; }
 </style>
 </head>
 <body>
@@ -24,6 +29,8 @@
   <p class="muted">초대받은 계정으로 로그인하세요.</p>
   <p id="offline" class="error" role="alert" hidden>서버에 연결할 수 없습니다. 잠시 뒤 새로고침하세요</p>
   <p id="no-method" class="muted" hidden>아직 쓸 수 있는 로그인 방법이 없습니다. 관리자에게 문의하세요.</p>
+  <a id="google-login" class="google" href="/auth/google" hidden>Google 계정으로 로그인</a>
+  <p id="or" class="or" hidden>또는</p>
   <form id="dev-form" hidden>
     <label for="dev-email">개발용 로그인(이메일)</label>
     <input id="dev-email" name="email" type="email" autocomplete="email" required>

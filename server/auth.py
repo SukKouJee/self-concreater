@@ -1,4 +1,4 @@
-"""서버판 인증: 세션 쿠키 내용·검사, CSRF, 사용자 조회(서버 설계 §4.2). Google OIDC는 T12가 더한다.
+"""서버판 인증: 세션 쿠키 내용·검사, CSRF, 사용자 조회, Google 로그인 허용 판정(서버 설계 §4.2).
 
 - 세션은 Starlette `SessionMiddleware`(itsdangerous 서명 쿠키 `ytc_session`, 14일, `HttpOnly; SameSite=Lax`, https면 `Secure`).
   내용은 `{uid, epoch, iat}`뿐이다. 서명은 위조를 막고, **요청마다** `users`를 다시 읽어 `disabled`·`session_epoch`를 확인한다
@@ -6,6 +6,10 @@
 - CSRF(`csrf_error`): POST·PUT·DELETE·PATCH는 ① `Origin`이 `YTC_PUBLIC_URL`의 출처와 같아야 하고(없으면 `Sec-Fetch-Site: same-origin`)
   ② `Content-Type: application/json`이어야 한다. 단순 폼 교차 전송이 둘 다에 걸린다. SameSite=Lax가 한 겹 더.
 - 사용자 조회(`PgUsers`)는 `Db.public_tx()`(app.user_id 없이, `users`는 RLS 없음)로 한다. 로그인 전이라 사용자 id가 없다.
+- Google 로그인 허용(`admit_google`, T12): 이메일 인증된 Google 계정이고, 그 이메일이 `users`에 있고(초대제: 관리자 `add-user`,
+  모르는 이메일로 계정을 만들지 않는다), 비활성이 아니고, `google_sub`가 비었으면 이번 sub로 고정(`pin_google_sub`, 비어 있을 때만
+  UPDATE), 이미 있으면 같아야 한다. 같은 sub가 다른 사용자 행에 있으면(UNIQUE) 거부. 거부는 `LoginDenied(reason)`.
+  프로토콜 검증(state·서명·클레임)은 `server.oidc`.
 """
 from __future__ import annotations
 
@@ -15,7 +19,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Final, Protocol
 
+from psycopg.errors import UniqueViolation
+
 from server.db import Db
+from server.oidc import GoogleClaims
 
 SESSION_COOKIE: Final = "ytc_session"
 SESSION_MAX_AGE: Final = 14 * 24 * 60 * 60
@@ -35,17 +42,27 @@ class UserRow:
     email: str
     disabled: bool
     session_epoch: int
+    google_sub: str | None = None
+
+
+class LoginDenied(Exception):
+    """로그인 거부. reason: email_unverified · not_invited · disabled · sub_mismatch · sub_taken(그 sub가 다른 사용자에게 고정)."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 class UserDirectory(Protocol):
     def by_id(self, user_id: uuid.UUID) -> UserRow | None: ...
     def by_email(self, email: str) -> UserRow | None: ...
+    def pin_google_sub(self, user_id: uuid.UUID, sub: str) -> UserRow | None: ...
 
 
 class PgUsers:
     """`users` 행 조회(앱 롤은 users에 SELECT만). 캐시하지 않는다: 비활성·epoch 변경이 다음 요청부터 바로 먹는다."""
 
-    _COLUMNS: Final = "id, email, disabled, session_epoch"
+    _COLUMNS: Final = "id, email, disabled, session_epoch, google_sub"
 
     def __init__(self, db: Db) -> None:
         self._db = db
@@ -55,13 +72,49 @@ class PgUsers:
             row = conn.execute(f"SELECT {self._COLUMNS} FROM users WHERE {where} = %s", (value,)).fetchone()
         if row is None:
             return None
-        return UserRow(uuid.UUID(str(row[0])), str(row[1]), bool(row[2]), int(row[3]))
+        return _row(row)
 
     def by_id(self, user_id: uuid.UUID) -> UserRow | None:
         return self._one("id", user_id)
 
     def by_email(self, email: str) -> UserRow | None:
         return self._one("email", email.strip().lower())
+
+    def pin_google_sub(self, user_id: uuid.UUID, sub: str) -> UserRow | None:
+        """`google_sub`가 비었을 때만 sub를 넣고(경합해도 먼저 넣은 쪽이 남는다) 그 뒤의 행을 돌려준다. 이미 있으면 바꾸지 않는다
+        (호출부가 비교한다). 없는 사용자면 None. 같은 sub가 다른 사용자에게 있으면 LoginDenied("sub_taken")."""
+        try:
+            with self._db.public_tx() as conn:
+                conn.execute("UPDATE users SET google_sub = %s WHERE id = %s AND google_sub IS NULL", (sub, user_id))
+                row = conn.execute(f"SELECT {self._COLUMNS} FROM users WHERE id = %s", (user_id,)).fetchone()
+        except UniqueViolation as e:
+            raise LoginDenied("sub_taken") from e
+        return None if row is None else _row(row)
+
+
+def _row(row: tuple[Any, ...]) -> UserRow:
+    return UserRow(uuid.UUID(str(row[0])), str(row[1]), bool(row[2]), int(row[3]),
+                   None if row[4] is None else str(row[4]))
+
+
+def admit_google(users: UserDirectory, claims: GoogleClaims) -> UserRow:
+    """검증된 Google ID 토큰 → 로그인할 사용자 행(초대·비활성·sub 고정 판정, 모듈 머리말). 아니면 LoginDenied."""
+    if not claims.email_verified:
+        raise LoginDenied("email_unverified")
+    row = users.by_email(claims.email)
+    if row is None:
+        raise LoginDenied("not_invited")
+    if row.disabled:
+        raise LoginDenied("disabled")
+    if row.google_sub is None:
+        row = users.pin_google_sub(row.id, claims.sub)
+        if row is None:
+            raise LoginDenied("not_invited")          # deleted between the two reads
+    if row.google_sub != claims.sub:
+        raise LoginDenied("sub_mismatch")
+    if row.disabled:
+        raise LoginDenied("disabled")
+    return row
 
 
 # ---- 세션 --------------------------------------------------------------------------
@@ -121,3 +174,21 @@ def csrf_error(method: str, headers: Mapping[str, str], public_origin: str) -> t
     if media != JSON_TYPE:
         return 403, dict(BAD_CONTENT_TYPE)
     return None
+
+
+# ---- 로그인 실패 화면 문구 ------------------------------------------------------------
+
+# reason -> (status, message). `{email}`은 Google이 알려 준 이메일(화면에서 HTML 이스케이프).
+LOGIN_REFUSALS: Final[dict[str, tuple[int, str]]] = {
+    "state": (400, "로그인 요청이 만료되었거나 맞지 않습니다. 처음부터 다시 로그인하세요."),
+    "cancelled": (400, "Google 로그인이 취소되었습니다. 다시 로그인하려면 아래 버튼을 누르세요."),
+    "token_rejected": (400, "Google 로그인을 마치지 못했습니다. 처음부터 다시 로그인하세요."),
+    "idp_unavailable": (502, "Google에 연결하지 못했습니다. 잠시 뒤 다시 로그인하세요."),
+    "bad_id_token": (400, "Google 로그인 정보를 확인하지 못했습니다. 처음부터 다시 로그인하세요."),
+    "email_unverified": (403, "Google 계정의 이메일 인증이 끝나지 않았습니다({email}). 이메일 인증을 마친 뒤 다시 로그인하세요."),
+    "not_invited": (403, "초대되지 않은 계정입니다({email}). 이 이메일로 초대해 달라고 관리자에게 요청하세요."),
+    "disabled": (403, "쓸 수 없게 된 계정입니다({email}). 관리자에게 문의하세요."),
+    "sub_mismatch": (403, "이 이메일({email})은 다른 Google 계정에 연결되어 있습니다. 처음 로그인한 Google 계정으로 로그인하거나 "
+                          "관리자에게 문의하세요."),
+    "sub_taken": (403, "이 Google 계정은 다른 이메일의 사용자에게 연결되어 있습니다({email}). 관리자에게 문의하세요."),
+}

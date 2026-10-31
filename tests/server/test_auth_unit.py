@@ -17,7 +17,8 @@ SECRET = "s" * 32
 
 
 def _env(**over: str) -> dict[str, str]:
-    env = {"YTC_PUBLIC_URL": "https://ytc.example.com", "YTC_SESSION_SECRET": SECRET}
+    env = {"YTC_PUBLIC_URL": "https://ytc.example.com", "YTC_SESSION_SECRET": SECRET,
+           "YTC_GOOGLE_CLIENT_ID": "cid.apps.googleusercontent.com", "YTC_GOOGLE_CLIENT_SECRET": "google-secret-x"}
     env.update(over)
     return env
 
@@ -192,3 +193,39 @@ def test_session_invalid_when_disabled_epoch_bumped_expired_or_other_user():
     assert not auth.session_valid(claim, _user(), now=now)
     assert not auth.session_valid(claim, user, now=now + auth.SESSION_MAX_AGE + 1)
     assert not auth.session_valid(claim, user, now=now - 3600)      # issued in the future (clock/forgery)
+
+
+# ---- Google OIDC 설정(T12) ------------------------------------------------------------
+
+GOOGLE = {"YTC_GOOGLE_CLIENT_ID": "cid.apps.googleusercontent.com", "YTC_GOOGLE_CLIENT_SECRET": "google-secret-x"}
+
+
+def test_google_settings_and_redirect_uri_come_from_env():
+    s = AuthSettings.from_env(_env(**GOOGLE, YTC_PUBLIC_URL="https://YTC.example.com:8443/"))
+    assert s.google is not None and s.google.client_id == "cid.apps.googleusercontent.com"
+    assert s.google.redirect_uri == "https://ytc.example.com:8443/auth/google/callback"
+    assert "google-secret-x" not in repr(s)
+
+
+@pytest.mark.parametrize("only", ["YTC_GOOGLE_CLIENT_ID", "YTC_GOOGLE_CLIENT_SECRET"])
+def test_google_needs_both_id_and_secret(only):
+    env = {"YTC_PUBLIC_URL": "http://localhost:8080", "YTC_SESSION_SECRET": SECRET, "YTC_ENV": "dev", only: GOOGLE[only]}
+    with pytest.raises(ScriptError) as e:
+        AuthSettings.from_env(env)
+    assert e.value.code == "config_missing"
+    missing = ({"YTC_GOOGLE_CLIENT_ID", "YTC_GOOGLE_CLIENT_SECRET"} - {only}).pop()
+    assert missing in e.value.message
+
+
+def test_production_without_any_login_method_refuses_to_start():
+    env = _env()
+    for key in GOOGLE:
+        env.pop(key, None)
+    with pytest.raises(ScriptError) as e:
+        AuthSettings.from_env(env)
+    assert e.value.code == "config_missing" and "YTC_GOOGLE_CLIENT_ID" in e.value.message
+
+
+def test_outside_production_google_is_optional():
+    s = AuthSettings.from_env({"YTC_PUBLIC_URL": "http://localhost:8080", "YTC_SESSION_SECRET": SECRET, "YTC_ENV": "dev"})
+    assert s.google is None and not s.dev_login

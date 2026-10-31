@@ -35,7 +35,8 @@ class FakeUsers:
         self.rows: dict[uuid.UUID, auth.UserRow] = {}
 
     def add(self, email: str, **over: Any) -> auth.UserRow:
-        row = auth.UserRow(uuid.uuid4(), email, over.get("disabled", False), over.get("session_epoch", 0))
+        row = auth.UserRow(uuid.uuid4(), email, over.get("disabled", False), over.get("session_epoch", 0),
+                           over.get("google_sub"))
         self.rows[row.id] = row
         return row
 
@@ -47,6 +48,17 @@ class FakeUsers:
 
     def by_email(self, email: str) -> auth.UserRow | None:
         return next((r for r in self.rows.values() if r.email == email.strip().lower()), None)
+
+    def pin_google_sub(self, user_id: uuid.UUID, sub: str) -> auth.UserRow | None:
+        """PgUsers와 같은 의미: 비어 있을 때만 채운다, 다른 사용자가 이미 가진 sub면 LoginDenied(sub_taken)."""
+        row = self.rows.get(user_id)
+        if row is None:
+            return None
+        if row.google_sub is None:
+            if any(r.google_sub == sub for r in self.rows.values()):
+                raise auth.LoginDenied("sub_taken")
+            row = self.rows[user_id] = replace(row, google_sub=sub)
+        return row
 
 
 class _Conn:
@@ -148,7 +160,7 @@ def test_login_page_and_script_need_no_session(client):
     js = client.get("/auth/login.js")
     assert js.status_code == 200 and js.headers["content-type"].startswith("text/javascript")
     assert "innerHTML" not in js.text
-    assert client.get("/auth/methods").json() == {"dev_login": True}
+    assert client.get("/auth/methods").json() == {"dev_login": True, "google": False}
 
 
 def test_healthz_needs_no_session(client, backend):
@@ -190,7 +202,7 @@ def test_dev_login_route_absent_when_not_enabled(users, backend):
     app = asgi.create_app(_settings(YTC_DEV_LOGIN="0"), backend, users=users)   # type: ignore[arg-type]
     users.add("a@example.com")
     with TestClient(app, base_url=ORIGIN, headers={"Origin": ORIGIN}) as c:
-        assert c.get("/auth/methods").json() == {"dev_login": False}
+        assert c.get("/auth/methods").json() == {"dev_login": False, "google": False}
         r = _login(c, "a@example.com")
         assert r.status_code == 404 and "set-cookie" not in r.headers
 

@@ -135,7 +135,8 @@ def test_server_settings_include_llm_and_refuse_unknown_model() -> None:
     from server.config import ServerSettings
 
     env = {"YTC_DB_DSN": "host=x", "YTC_S3_ENDPOINT": "http://m", "YTC_S3_ACCESS_KEY": "a", "YTC_S3_SECRET_KEY": "b",
-           "YTC_PUBLIC_URL": "https://ytc.example.com", "YTC_SESSION_SECRET": "s" * 40}
+           "YTC_PUBLIC_URL": "https://ytc.example.com", "YTC_SESSION_SECRET": "s" * 40,
+           "YTC_GOOGLE_CLIENT_ID": "cid.apps.googleusercontent.com", "YTC_GOOGLE_CLIENT_SECRET": "gs"}
     assert ServerSettings.from_env(env).llm.model == llm_anthropic.DEFAULT_MODEL
     with pytest.raises(ScriptError) as e:
         ServerSettings.from_env({**env, "YTC_LLM_MODEL": "gpt-x"})

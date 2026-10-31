@@ -1,5 +1,6 @@
-// Server edition login screen. GET /auth/methods says which sign-in methods the server offers; the dev form
-// (POST /auth/dev, JSON) appears only when the server allows it (YTC_DEV_LOGIN outside production).
+// Server edition login screen. GET /auth/methods says which sign-in methods the server offers: the Google link
+// (GET /auth/google, a plain navigation) when a Google client is configured, and the dev form (POST /auth/dev, JSON)
+// only when the server allows it (YTC_DEV_LOGIN outside production). Both are static markup in login.html; this only unhides.
 const $ = (id) => document.getElementById(id);
 
 async function start() {
@@ -14,9 +15,18 @@ async function start() {
     $("offline").hidden = false;
     return;
   }
-  if (!methods.dev_login) {
+  if (!methods.google && !methods.dev_login) {
     $("no-method").hidden = false;
     return;
+  }
+  if (methods.google) {
+    $("google-login").hidden = false;
+  }
+  if (!methods.dev_login) {
+    return;
+  }
+  if (methods.google) {
+    $("or").hidden = false;
   }
   const form = $("dev-form");
   form.hidden = false;

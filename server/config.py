@@ -6,7 +6,10 @@
 - `LlmSettings`(T11, §4.4·§5.2·§6): 엔진은 `anthropic-api`만, `YTC_LLM_MODEL`(기본 `llm_anthropic.DEFAULT_MODEL`)은
   가격표(`server.usage.PRICES`)에 있어야 시작한다, `YTC_LLM_MAX_TOKENS`(호출당 상한, 기본 16000 = 코드가 요청하는 최댓값),
   `YTC_DAILY_USD`(기본 1.00), `YTC_MEDIA_SLOTS`(2), `YTC_LLM_SLOTS`(4). 사용자 `yt-coach.json`의 `llm` 절은 무시한다(ADR-S10).
-- `ServerSettings`: 앱이 쓰는 설정 묶음(storage + auth + llm). Google OIDC(T12)는 그 Task가 더한다.
+- `GoogleSettings`(T12, §4.2): `YTC_GOOGLE_CLIENT_ID`·`YTC_GOOGLE_CLIENT_SECRET`(둘 다 있거나 둘 다 없거나). 리디렉션 URI는
+  `YTC_PUBLIC_URL` + `/auth/google/callback`. 없으면 Google 로그인을 내놓지 않는다. production은 로그인 방법이 하나는 있어야 하는데
+  dev 로그인은 production에서 못 쓰므로 Google 설정이 없으면 시작하지 않는다(`config_missing`).
+- `ServerSettings`: 앱이 쓰는 설정 묶음(storage + auth + llm).
 연결 풀: 앱 요청 스레드(anyio 기본 40)와 작업 스레드가 같은 풀을 나눠 쓴다. 풀이 모자라면 `YTC_DB_POOL_MAX`·
 `YTC_S3_MAX_POOL_CONNECTIONS`를 올린다(boto3 기본 10, 넘으면 "Connection pool is full" 경고 후 연결을 버린다).
 """
@@ -38,6 +41,8 @@ LLM_ENGINE: Final = "anthropic-api"
 DEFAULT_LLM_MAX_TOKENS: Final = 16000          # largest per-call request in the code (conti_art.MAX_TOKENS)
 DEFAULT_DAILY_USD: Final = Decimal("1.00")
 MAX_DAILY_USD: Final = Decimal("999999.99")    # users.daily_usd_limit numeric(8,2)
+GOOGLE_CALLBACK_PATH: Final = "/auth/google/callback"
+GOOGLE_ENV: Final = ("YTC_GOOGLE_CLIENT_ID", "YTC_GOOGLE_CLIENT_SECRET")
 DEFAULT_MEDIA_SLOTS: Final = 2
 DEFAULT_LLM_SLOTS: Final = 4
 
@@ -131,11 +136,32 @@ def _flag(env: Mapping[str, str], name: str) -> bool:
 
 
 @dataclass(frozen=True)
+class GoogleSettings:
+    """Google OAuth 클라이언트(웹 애플리케이션 유형). redirect_uri는 Cloud Console의 '승인된 리디렉션 URI'와 글자까지 같아야 한다."""
+
+    client_id: str
+    client_secret: str = field(repr=False)
+    redirect_uri: str = ""
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str], public_origin: str) -> GoogleSettings | None:
+        client_id, secret = ((env.get(name) or "").strip() for name in GOOGLE_ENV)
+        if not client_id and not secret:
+            return None
+        for name, value in zip(GOOGLE_ENV, (client_id, secret), strict=True):
+            if not value:
+                raise ScriptError("config_missing", f"서버 설정 {name}이(가) 없습니다. Google 로그인에는 "
+                                                    f"{GOOGLE_ENV[0]}와 {GOOGLE_ENV[1]}가 함께 필요합니다.")
+        return cls(client_id=client_id, client_secret=secret, redirect_uri=public_origin + GOOGLE_CALLBACK_PATH)
+
+
+@dataclass(frozen=True)
 class AuthSettings:
     env: str
     public_origin: str                                  # CSRF Origin 비교 기준
     session_secret: str = field(repr=False)
     dev_login: bool = False
+    google: GoogleSettings | None = None
 
     @property
     def production(self) -> bool:
@@ -162,7 +188,11 @@ class AuthSettings:
                                                 "개발·시험에서만 YTC_ENV=dev와 함께 켜세요.")
         if name == PRODUCTION and not origin.startswith("https://"):
             raise ScriptError("config_invalid", "YTC_ENV=production에서는 YTC_PUBLIC_URL이 https여야 합니다(세션 쿠키 Secure).")
-        return cls(env=name, public_origin=origin, session_secret=secret, dev_login=dev)
+        google = GoogleSettings.from_env(env, origin)
+        if name == PRODUCTION and google is None:
+            raise ScriptError("config_missing", f"서버 설정 {GOOGLE_ENV[0]}·{GOOGLE_ENV[1]}이(가) 없습니다. "
+                                                "YTC_ENV=production에는 로그인 방법(Google)이 있어야 합니다. deploy/server/.env에 넣으세요.")
+        return cls(env=name, public_origin=origin, session_secret=secret, dev_login=dev, google=google)
 
 
 def _usd(env: Mapping[str, str], name: str, default: Decimal) -> Decimal:

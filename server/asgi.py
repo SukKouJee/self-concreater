@@ -4,7 +4,7 @@
 1. 경로는 **퍼센트 인코딩 그대로**(`scope["raw_path"]`, 쿼리 제외)를 쓴다. stdlib 서버의 `urlsplit(self.path).path`와 같아서
    기능 가드(`feature_guard`)와 라우팅(`match`, 그룹만 디코딩)이 같은 문자열을 본다(`/api/%6Cibrary`는 가드에도 라우트에도 안 걸려 404).
 2. `/healthz`(인증 없음, PG·MinIO 확인) → CSRF(안전하지 않은 메서드: Origin + JSON, `auth.csrf_error`) → `/auth/*`
-   (로그인 화면, dev 로그인, 로그아웃) → 세션 확인(**요청마다** users의 disabled·session_epoch, Ctx를 만들기 전) →
+   (로그인 화면, Google 로그인 시작·콜백, dev 로그인, 로그아웃) → 세션 확인(**요청마다** users의 disabled·session_epoch, Ctx를 만들기 전) →
    서버가 덮어쓰는 기본 라우트(`/`, `/api/ping`, `/api/shutdown` 404, `/files/<key>`) → `match` → 기능 가드(서버판은 §8 전부 끔)
    → 본문(10MB, `parse_json_body`) → 작업 스레드에서 `edition("server")` + `ctx.use(Ctx(user_id, backend))` 안에서 `call`.
    핸들러가 시작한 작업 스레드는 `copy_context()`로 Ctx·판 문맥을 이어받는다(JobManager.start).
@@ -17,10 +17,13 @@
 """
 from __future__ import annotations
 
+import html
 import json
 import logging
 import os
+import string
 import sys
+import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import asynccontextmanager
@@ -43,7 +46,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from scripts import ctx
 from scripts.common import ScriptError
 from scripts.ui import server as ui
-from server import auth, files
+from server import auth, files, oidc
 from server.backend import ServerBackend
 from server.config import DEFAULT_ENV, PRODUCTION, AuthSettings, LlmSettings, ServerSettings
 from server.jobs_registry import Registry, install_runtime, uninstall_runtime
@@ -85,15 +88,19 @@ class _User:
     email: str
 
 
+auth_log = logging.getLogger("ytc.auth")
+
+
 class _ServerApp:
     """요청 처리기. Starlette 라우트 하나(`/{path:path}`)가 모든 요청을 여기로 보낸다."""
 
     def __init__(self, settings: AuthSettings, backend: ServerBackend, users: auth.UserDirectory,
-                 registry: Registry) -> None:
+                 registry: Registry, google: oidc.GoogleOidc | None = None) -> None:
         self.settings = settings
         self.backend = backend
         self.users = users
         self.registry = registry
+        self.google = google
 
     # ---- 응답 --------------------------------------------------------------------
 
@@ -249,7 +256,11 @@ class _ServerApp:
         if method == "GET" and path == "/auth/login.js":
             return self._reply(ui.Response(200, _web("login.js"), "text/javascript; charset=utf-8"), path)
         if method == "GET" and path == "/auth/methods":
-            return self._reply({"dev_login": self.settings.dev_login}, path)
+            return self._reply({"dev_login": self.settings.dev_login, "google": self.google is not None}, path)
+        if method == "GET" and path == "/auth/google" and self.google is not None:
+            return self._google_start(request, self.google, path)
+        if method == "GET" and path == oidc.CALLBACK_PATH and self.google is not None:
+            return await self._google_callback(request, self.google, path)
         if method == "POST" and path == "/auth/dev" and self.settings.dev_login:
             return await self._dev_login(request, path)
         if method == "POST" and path == "/auth/logout":
@@ -271,6 +282,43 @@ class _ServerApp:
             return self._json(403, dict(auth.LOGIN_DENIED), path)
         auth.start_session(request.session, row)
         return self._reply({"ok": True, "email": row.email}, path)
+
+    # ---- Google OIDC -------------------------------------------------------------
+
+    def _google_start(self, request: StarletteRequest, google: oidc.GoogleOidc, path: str) -> StarletteResponse:
+        """대기 로그인 하나(이전 것은 덮어쓴다: 쿠키가 쌓이지 않고 마지막 시도만 유효)를 세션에 두고 Google로.
+        요청의 쿼리(next·redirect_uri 등)는 읽지 않는다: 돌아올 주소는 설정값, 로그인 뒤에는 항상 `/`."""
+        pending = oidc.new_pending(int(time.time()))
+        request.session[oidc.PENDING_KEY] = pending.to_session()
+        return self._redirect(google.authorization_url(pending), path)
+
+    async def _google_callback(self, request: StarletteRequest, google: oidc.GoogleOidc,
+                               path: str) -> StarletteResponse:
+        pending = oidc.PendingLogin.from_session(request.session.pop(oidc.PENDING_KEY, None))   # one use only
+        email: str | None = None
+        try:
+            if pending is None:
+                raise oidc.OidcError("state")             # no login started in this browser (or already used)
+            code = oidc.check_callback(pending, dict(request.query_params), int(time.time()))
+            claims = await google.login(code, pending)
+            email = claims.email
+            row = await anyio.to_thread.run_sync(auth.admit_google, self.users, claims)
+        except oidc.OidcError as e:
+            auth_log.warning("google login refused: %s", e.reason)
+            return self._refusal(e.reason, None, path)
+        except auth.LoginDenied as e:
+            auth_log.warning("google login refused: %s", e.reason)
+            return self._refusal(e.reason, email, path)
+        auth.start_session(request.session, row)         # drops everything else in the session
+        auth_log.info("google login: user %s", row.id)
+        return self._redirect("/", path)
+
+    def _refusal(self, reason: str, email: str | None, path: str) -> StarletteResponse:
+        status, message = auth.LOGIN_REFUSALS[reason]
+        text = message.format(email=email or "")
+        page = string.Template(_web("message.html").decode("utf-8")).substitute(
+            title=html.escape("로그인하지 못했습니다"), message=html.escape(text))
+        return self._reply(ui.Response(status, page.encode("utf-8"), "text/html; charset=utf-8"), path)
 
     # ---- /healthz ----------------------------------------------------------------
 
@@ -318,11 +366,15 @@ def _file_chunks(part: ui.FileSlice) -> Iterator[bytes]:
 
 def create_app(settings: AuthSettings, backend: ServerBackend, *, users: auth.UserDirectory | None = None,
                registry: Registry | None = None, close_backend: bool = False,
-               runtime: LlmSettings | None = None) -> Starlette:
+               runtime: LlmSettings | None = None, google: oidc.GoogleOidc | None = None) -> Starlette:
     """설정·저장소로 앱을 만든다. users 기본값은 PG(`auth.PgUsers`). close_backend면 종료 때 저장소를 닫는다.
-    runtime을 주면 지금 전역 자원 슬롯·수집 잠금·LLM 고정을 설치하고 종료 때 걷는다(`jobs_registry.install_runtime`)."""
+    runtime을 주면 지금 전역 자원 슬롯·수집 잠금·LLM 고정을 설치하고 종료 때 걷는다(`jobs_registry.install_runtime`).
+    google 기본값은 설정에 Google 클라이언트가 있으면 실제 Google(`oidc.GoogleOidc`), 없으면 Google 로그인 없음.
+    테스트는 가짜 IdP 전송 계층을 넣은 GoogleOidc를 준다."""
     ui.register_routes()
-    handler = _ServerApp(settings, backend, users or auth.PgUsers(backend.db), registry or Registry())
+    if google is None and settings.google is not None:
+        google = oidc.GoogleOidc(settings.google)
+    handler = _ServerApp(settings, backend, users or auth.PgUsers(backend.db), registry or Registry(), google)
     if runtime is not None:
         install_runtime(runtime, backend.db)
 
