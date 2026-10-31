@@ -85,6 +85,27 @@
   `docker compose --profile admin run --rm -v /경로/작업폴더:/import:ro admin import /import --user you@gmail.com`
   먼저 `--dry-run`으로 보고서를 본다. 같은 폴더를 다시 가져와도 변경은 0건이다.
 
+## 카테고리·프로필 만들어 주기(사용자가 요청할 때)
+
+서버판 화면에는 카테고리와 프로필을 만드는 곳이 없다. 화면은 "관리자에게 문의하세요"라고 안내하므로, 관리자가 아래처럼
+준비한 폴더를 그 사용자 계정으로 가져온다(가져오기는 새 파일만 더하고, 이미 있는 것은 바꾸지 않는다).
+
+1. 저장소 체크아웃 폴더에서 빈 준비 폴더를 만들고 카테고리를 만든다(이름은 영문 소문자·숫자·`-`·`_`):
+   ```
+   YT_COACH_HOME=/tmp/friend-setup python -m scripts.refstore scaffold
+   YT_COACH_HOME=/tmp/friend-setup python -m scripts.refstore init travel
+   ```
+   카테고리가 여러 개면 `init`을 이름마다 한 번씩 돌린다. 준비 폴더의 `.gitignore`는 지운다(서버 계정에 이미 있으면 충돌로 보고된다).
+2. 프로필이 필요하면 `templates/profile.md`를 `/tmp/friend-setup/profile.md`로 복사하고, 사용자에게 받은 내용
+   (관심 주제, 포맷, 하루 시간, 성장 단계 등)을 채운다. 프런트매터의 `created`·`updated`는 오늘 날짜(`2026-11-03`)로 적는다.
+   이미 프로필이 있는 사용자는 서버의 것을 덮어쓰지 않도록 `profile.md`를 넣지 않는다.
+3. 가져오기(먼저 `--dry-run`으로 `conflicts`가 없는지 본다):
+   ```
+   docker compose --profile admin run --rm -v /tmp/friend-setup:/import:ro admin import /import --user friend@example.com --dry-run
+   docker compose --profile admin run --rm -v /tmp/friend-setup:/import:ro admin import /import --user friend@example.com
+   ```
+4. 사용자에게 새로고침하라고 알린다. 머리말의 카테고리 선택에 새 카테고리가 보인다.
+
 ## 백업
 
 백업할 것은 두 가지다: PostgreSQL(문서·사용자·사용량)과 MinIO 버킷(콘티 HTML·리포트·프레임 등). 둘 다 같은 시점 근처에 받는다.

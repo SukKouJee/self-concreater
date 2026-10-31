@@ -42,6 +42,7 @@ from typing import Any
 from scripts import claude_cli, cuts, fetch, keys, llm, refstore, shots, stt, timings, videomd
 from scripts import ctx as run_ctx      # 아래 함수들에 지역 변수 ctx(LLM에 넘길 입력)가 있어 별칭을 쓴다
 from scripts.common import Progress, ScriptError
+from scripts.edition import ed
 from scripts.ui.jobs import SINGLE_KINDS, STOP_MESSAGE, Job, JobCancelled, new_item
 from scripts.ui.progress import ItemTiming
 from scripts.ui.server import Request, route
@@ -76,6 +77,7 @@ MSG_NOTHING_TO_DESCRIBE = "설명할 레퍼런스 사진이 없어요"
 MSG_EXISTS = "이미 분석됨"
 MSG_BLOCKED = "차단으로 중단"
 MSG_CLAUDE_STOP = "Claude(LLM 엔진)를 쓸 수 없어 중단"
+MSG_CLAUDE_STOP_SERVER = "AI를 지금 쓸 수 없어 중단"
 MSG_SKIPPED = "건너뜀"
 MSG_ALREADY = "이미 있음"
 MSG_NO_TRANSCRIPT_SKIP = "자막이 없어 건너뜀"
@@ -187,8 +189,12 @@ class AddOptions:
         return cls(**item["opts"])
 
 
+def _claude_stop() -> str:
+    return ed(MSG_CLAUDE_STOP, MSG_CLAUDE_STOP_SERVER)
+
+
 def _stop_message(code: str) -> str:
-    return MSG_CLAUDE_STOP if code in CLAUDE_CODES else MSG_BLOCKED
+    return _claude_stop() if code in CLAUDE_CODES else MSG_BLOCKED
 
 
 def _summary(items: list[dict], stage_text: str | None) -> dict:
@@ -801,7 +807,7 @@ def run_shots_only(category: str) -> Callable[[Job], None]:
                 clock.fail(SHOTS_ROW)
                 job.update(index, state="failed", message=e.message)
                 if e.code in CLAUDE_CODES:
-                    job.skip_rest(index + 1, MSG_CLAUDE_STOP)
+                    job.skip_rest(index + 1, _claude_stop())
                     job.finish("stopped", _summary(job.items, None), e.message)
                     return
                 continue
@@ -892,7 +898,7 @@ def run_describe(category: str) -> Callable[[Job], None]:
                 job.update(index, state="failed", step="done", message=e.message)
                 left[index] = 0
                 if e.code in CLAUDE_CODES:
-                    job.skip_rest(index + 1, MSG_CLAUDE_STOP)
+                    job.skip_rest(index + 1, _claude_stop())
                     job.finish("stopped", {**_summary(job.items, None), "described": described}, e.message)
                     return
                 continue

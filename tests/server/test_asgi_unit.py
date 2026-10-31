@@ -333,7 +333,7 @@ def test_features_report_server_edition_with_everything_off(client, alice):
 def test_disabled_features_answer_403(client, alice, method, path, feature):
     r = client.request(method, path, json={} if method == "POST" else None)
     assert r.status_code == 403 and r.json() == {"error": "feature_disabled", "feature": feature,
-                                                 "message": ui.FEATURE_TEXT[feature]}
+                                                 "message": ui.FEATURE_TEXT_SERVER[feature]}
 
 
 @pytest.mark.parametrize("path", ["/api/%6Cibrary/status", "/api/footage%2Fprocess", "/api/Library/status"])
@@ -380,6 +380,14 @@ def test_root_serves_the_shell_when_logged_in(client, alice):
     assert r.status_code == 200 and b"/static/app.js" in r.content
     assert "set-cookie" not in r.headers or "ytc_key" not in r.headers["set-cookie"]
     assert client.get("/static/app.js").status_code == 200
+
+
+def test_root_marks_the_shell_as_server_edition(client, alice):
+    # the page knows its edition before /api/features answers (or if it fails); the local file stays as it is
+    local = (ui.STATIC_DIR / "index.html").read_bytes()
+    assert b'<html lang="ko">' in local and b"data-edition" not in local
+    r = client.get("/")
+    assert r.content == local.replace(b'<html lang="ko">', b'<html lang="ko" data-edition="server">', 1)
 
 
 # ---- request context in the worker thread ---------------------------------------------------

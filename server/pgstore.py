@@ -250,14 +250,18 @@ class PgDocStore:
 
 # --- 휴지통 ---------------------------------------------------------------------------------
 
+TRASH_FAILED_MESSAGE = "파일을 옮기지 못했습니다. 잠시 뒤 다시 시도해 주세요."
+
+
 def trash_s3_key(uid: uuid.UUID, stamp: str, key: str) -> str:
     """휴지통 객체 이름 `trash/{uid}/{stamp}/{key}`(`trash_items.s3_key` CHECK와 같은 꼴)."""
     return f"trash/{uid}/{stamp}/{key}"
 
 
 def _trash_failed(cause: BaseException) -> ScriptError:
-    """FileTrash(`filestore.move_paths`)와 같은 코드·문구."""
-    return ScriptError("trash_failed", f"파일을 옮기지 못했습니다(다른 프로그램이 열어 두었는지 확인하세요): {cause}.")
+    """FileTrash(`filestore.move_paths`)와 같은 코드. 문구는 서버판용: 내 PC의 다른 프로그램 이야기·내부 원인은 빼고(로그에만)."""
+    log.warning("trash_failed: %s: %s", type(cause).__name__, cause)
+    return ScriptError("trash_failed", TRASH_FAILED_MESSAGE)
 
 
 @dataclass

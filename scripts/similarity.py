@@ -28,6 +28,7 @@ import numpy as np
 
 from scripts import ctx, features, keys, refstore
 from scripts.common import ArgParser, ScriptError, run
+from scripts.edition import ed
 
 STRUCTURE_GAP = 0.1
 PACING_GAP = 0.3
@@ -41,11 +42,11 @@ def _load_typify(category: str) -> dict:
     objects = ctx.here().objects
     key = keys.typify(category)
     if not objects.exists(key):
-        raise ScriptError("no_typify_result", f"유형화 결과가 없습니다. 먼저 /yt-typify {category}")
+        raise ScriptError("no_typify_result", ed(f"유형화 결과가 없습니다. 먼저 /yt-typify {category}", "유형화 결과가 없습니다. 먼저 유형 화면에서 유형화를 실행하세요"))
     try:
         result = json.loads(objects.get(key).decode("utf-8"))
     except (OSError, ValueError) as e:                # 깨진 JSON은 유형화 결과가 없는 것으로 본다
-        raise ScriptError("no_typify_result", f"유형화 결과를 읽을 수 없습니다. 다시 /yt-typify {category}") from e
+        raise ScriptError("no_typify_result", ed(f"유형화 결과를 읽을 수 없습니다. 다시 /yt-typify {category}", "유형화 결과를 읽을 수 없습니다. 유형 화면에서 유형화를 다시 실행하세요")) from e
     if not isinstance(result, dict) or not result.get("archetypes"):
         raise ScriptError("no_archetype", "비교할 아키타입이 없습니다(구조가 비슷한 ref 묶음이 아직 없음).")
     return result
@@ -87,7 +88,7 @@ def _target(value: str | Path) -> dict:
         raise not_found
     fm, _ = refstore.read(key)
     if fm.get("role") == "ref":
-        raise ScriptError("not_mine", "ref 영상은 진단 대상이 아닙니다. 내 영상은 /yt-add <cat> mine <링크>로 넣으세요.")
+        raise ScriptError("not_mine", ed("ref 영상은 진단 대상이 아닙니다. 내 영상은 /yt-add <cat> mine <링크>로 넣으세요.", "ref 영상은 진단 대상이 아닙니다. 내 영상은 레퍼런스 화면에서 '내 영상'으로 넣으세요."))
     if not fm.get("sections"):
         raise ScriptError("no_sections", "섹션 정보가 없어 비교할 수 없습니다.")
     stem = keys.stem(key)
@@ -187,7 +188,7 @@ def compare(category: str, target_path: str | Path) -> dict:
             others = [fm for vid, fm in by_id.items() if vid not in arc["members"]]
             scored.append((arc, member_fms, proximities(target["fm"], member_fms, others)))
     if not scored:
-        raise ScriptError("no_archetype", "아키타입 구성 영상을 찾을 수 없습니다. /yt-typify를 다시 실행하세요.")
+        raise ScriptError("no_archetype", ed("아키타입 구성 영상을 찾을 수 없습니다. /yt-typify를 다시 실행하세요.", "아키타입 구성 영상을 찾을 수 없습니다. 유형 화면에서 유형화를 다시 실행하세요."))
     arc, member_fms, axes = min(scored, key=lambda s: s[2]["structure"]["distance"])
 
     intentional = _intentional(target["name"])

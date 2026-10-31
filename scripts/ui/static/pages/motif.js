@@ -4,6 +4,7 @@
 //   데스크톱은 오른쪽 패널, 폰은 바텀시트(모달)로 열리고, "이 카드로 새 영상 시작"이 기획안 만들기로 이어진다.
 //   미리보기 단계에서는 index.md가 바뀌지 않는다. 저장은 사용자가 누른 뒤에만, 고른 카드만 보낸다.
 import { h, fill, filesUrl } from "/static/dom.js";
+import { t } from "/static/copy.js";
 import { chip, tag } from "/static/ui.js";
 import {
   FILTERS, evidenceItems, filterCards, kindCounts, lockedReason, madeFrom, oneLine, tagKind,
@@ -18,7 +19,6 @@ const MAX_TOPIC = 100;
 const TYPE_KO = { flow: "흐름", combo: "조합", technique: "기법", angle: "각도" };
 const LIB_IDS_KEY = "ytc.motif.library_ids";      // set by the library screen ("모티브 재료로 쓰기"); chosen per run, not saved
 const MAX_LIB = 10;
-const CATALOG_HINT = "기법 모음 정리(같은 기법 합치기)는 Claude에게 “기법 모음 정리해줘”라고 말하면 돼요";
 const THUMBS = 3;                                  // evidence thumbnails on a card
 const DETAIL_ID = "motif-detail";
 const SHEET = "(max-width: 900px)";               // below this the 380px panel no longer fits beside the grid
@@ -130,7 +130,7 @@ async function load() {
   const mine = S;
   const cat = mine.category;
   if (!cat) {
-    fill(mine.el, h("h1", { class: "motif-h1" }, "모티브"), h("p", { class: "muted" }, "카테고리가 없습니다. 홈에서 먼저 카테고리를 만드세요."));
+    fill(mine.el, h("h1", { class: "motif-h1" }, "모티브"), h("p", { class: "muted" }, t("page.noCategory")));
     return;
   }
   fill(mine.el, h("h1", { class: "motif-h1" }, "모티브"), h("p", { class: "muted", role: "status" }, "불러오는 중…"));
@@ -478,7 +478,7 @@ function render() {
   if (d.ref === 0) {
     notes.push(h("span", {}, "먼저 레퍼런스를 넣어 주세요 ", h("a", { href: "#/add" }, "레퍼런스 넣기")));
   }
-  if (!d.has_profile) notes.push("프로필이 없어 카드가 일반적으로 나옵니다 — Claude에게 “처음 설정해줘”라고 말하면 만들 수 있어요");
+  if (!d.has_profile) notes.push(t("motif.profileNote"));
   if (d.stage === 3 && !d.has_typify) {
     notes.push(h("span", {}, "유형화를 먼저 하면 흐름·조합 카드가 나옵니다 ", h("a", { href: "#/typify" }, "유형화 하러 가기")));
   }
@@ -487,7 +487,8 @@ function render() {
 
   S.nodes.body = h("div", { class: "motif-body" });
   S.nodes.list = h("section", { class: "motif-sec", "aria-labelledby": "motif-list-title" });
-  kids.push(S.nodes.body, S.nodes.list, h("p", { class: "muted hint motif-foot" }, CATALOG_HINT));
+  const catalogHint = t("motif.catalogHint");
+  kids.push(S.nodes.body, S.nodes.list, catalogHint ? h("p", { class: "muted hint motif-foot" }, catalogHint) : null);
   fill(S.el, ...kids);
   renderRunBox();
   renderBody();

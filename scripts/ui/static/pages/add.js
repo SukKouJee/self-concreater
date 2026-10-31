@@ -2,6 +2,7 @@
 // 링크 입력(입력이 멈추면 줄마다 상태 확인) → 1초 폴링 진행 표시 → 영상별 확인 카드 → 마무리 요약.
 // 서버 작업(kind "collect")이 이미 있으면 칸을 마운트할 때 그 작업을 이어서 보여 준다.
 import { h, filesUrl } from "/static/dom.js";
+import { t } from "/static/copy.js";
 import {
   STATUS_TEXT, splitLinks, removeLine, startLabel, summaryText, needsAttention, itemCategory, reviewItems, queueLine, saveAllPlan,
   staleIds,
@@ -733,7 +734,7 @@ function renderQueue(p, job) {
     all.addEventListener("click", saveAll);
     p.head.replaceChildren(
       h("div", { class: "review-head-line" }, h("h2", {}, `확인 대기 ${items.length}개`), all),
-      h("p", { class: "muted review-notice" }, "저장하지 않은 결과는 UI 서버를 끄면 사라져요"),
+      h("p", { class: "muted review-notice" }, t("add.unsaved")),
       ...(stopped ? [h("p", { class: "muted review-notice" }, "작업이 멈췄어요. 확인 대기 영상은 저장하거나 건너뛸 수 있어요")] : []));
   }
   const seen = new Set();
@@ -1005,7 +1006,7 @@ function renderForm() {
   S.f = null;
   paintTitle();
   if (!S.category) {
-    S.formEl.append(h("p", { class: "muted" }, "먼저 ", h("a", { href: "#/home" }, "홈"), "에서 작업 폴더와 카테고리를 만들어 주세요."));
+    S.formEl.append(h("p", { class: "muted" }, "먼저 ", h("a", { href: "#/home" }, "홈"), t("add.noCategory.after")));
     return;
   }
 

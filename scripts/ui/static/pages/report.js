@@ -3,6 +3,7 @@
 //   탭 2 "주간 회고": 주 고르기 → 숫자(Claude 없음) → "회고 쓰기"(Claude 1회) → 편집 → "저장" → 프로필 반영(체크한 섹션만).
 //   Claude는 "회고 쓰기"/"다시 쓰기" 클릭 때만 부른다. 저장·프로필 반영은 각각 버튼 클릭 뒤에만.
 import { h, fill } from "/static/dom.js";
+import { t } from "/static/copy.js";
 import { renderMarkdown } from "/static/md.js";
 
 const POLL_MS = 1000;
@@ -205,7 +206,7 @@ function renderReport(focusSel) {
   const category = S.ctx.category;
   const kids = [h("h2", {}, category ? `${category} 리포트` : "카테고리 리포트")];
   if (!category) {
-    kids.push(h("p", { class: "muted" }, "카테고리를 먼저 만들어 주세요."));
+    kids.push(h("p", { class: "muted" }, t("report.noCategory")));
     fill(box, ...kids);
     return;
   }
@@ -776,7 +777,7 @@ function profileArea(saved, data) {
   if (!names.length) return h("section", { class: "card", "aria-label": "프로필 반영" }, h("h3", {}, "프로필 반영"), h("p", { class: "muted" }, "이 회고에는 프로필 변경 제안이 없습니다"));
   if (!data.profile || !data.profile.exists) {
     return h("section", { class: "card", "aria-label": "프로필 반영" }, h("h3", {}, "프로필 반영"),
-      h("p", { class: "muted" }, "프로필이 없어 제안을 반영할 수 없습니다. Claude에게 “처음 설정해줘”라고 말하면 프로필을 먼저 만들어요"));
+      h("p", { class: "muted" }, t("report.noProfile")));
   }
   const approved = (Array.isArray(saved.fm.approved) ? saved.fm.approved : []).concat(V.applied || []);
   const current = data.profile.sections || {};

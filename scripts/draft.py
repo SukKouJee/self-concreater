@@ -24,6 +24,7 @@ from typing import Any
 from scripts import conti, ctx, keys, motif, refstore
 from scripts.features import SHOT_SIZES
 from scripts.common import DATA_NOTICE, ArgParser, ScriptError, run
+from scripts.edition import ed
 from scripts.videomd import BODY_SUBS, HOOK_TYPES, LABELS, NARRATIVE_TYPES, fmt_time, title_patterns
 
 _ARCHETYPE_RE = re.compile(r"^A\d+$")
@@ -99,7 +100,7 @@ def context(category: str, source: str, topic: str | None = None) -> dict:
         arc = next((a for a in archetypes if a["id"] == source), None)
         text = _block(index_body, rf"^### {source}\. ")
         if not arc or not text:
-            raise ScriptError("source_not_found", f"아키타입이 없습니다: {source} (먼저 /yt-typify)")
+            raise ScriptError("source_not_found", ed(f"아키타입이 없습니다: {source} (먼저 /yt-typify)", f"아키타입이 없습니다: {source} (먼저 유형 화면에서 유형화를 실행하세요)"))
         src = {"kind": "archetype", "id": source, "title": arc.get("name"), "text": text}
     else:
         card = next((c for c in motif.parse_cards(index_body) if c["id"] == source), None)

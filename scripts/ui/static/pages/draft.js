@@ -5,6 +5,7 @@
 // 미리보기 단계에서는 drafts/가 바뀌지 않는다. 저장은 사용자가 누른 뒤에만, 고친 draft 그대로 보낸다.
 // 작업 폴링·재진입·handled·job_id·aborted 처리는 pages/motif.js와 같은 방식이다.
 import { h, fill } from "/static/dom.js";
+import { t } from "/static/copy.js";
 import { hookName, narrativeName, sectionLabelName, sectionName } from "/static/labels.js";
 import { renderMarkdown } from "/static/md.js";
 import { videoHref, videoId } from "/static/video-utils.js";
@@ -150,7 +151,7 @@ async function load() {
   if (mine.mode === "view") { await loadView(mine); return; }
   const cat = mine.category;
   if (!cat) {
-    fill(mine.el, h("h1", {}, "기획안"), h("p", { class: "muted" }, "카테고리가 없습니다. 홈에서 먼저 카테고리를 만드세요."));
+    fill(mine.el, h("h1", {}, "기획안"), h("p", { class: "muted" }, t("page.noCategory")));
     return;
   }
   fill(mine.el, h("h1", {}, "기획안"), h("p", { class: "muted", role: "status" }, "불러오는 중…"));
@@ -358,7 +359,7 @@ function trashControls(mine, d) {
     : "기획안을 휴지통으로 옮깁니다";
   const panel = h("div", { class: "inline-confirm", id: "dr-trash", hidden: true },
     h("p", { class: "warn-text" }, what),
-    h("p", { class: "muted hint" }, "잘못 지웠으면 Claude에게 “휴지통에서 되살려줘”라고 말하세요."),
+    h("p", { class: "muted hint" }, t("trash.restoreHint")),
     h("div", { class: "btn-row" }, yes, no));
   const open = (on) => {
     panel.hidden = !on;

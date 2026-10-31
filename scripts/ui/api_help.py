@@ -7,6 +7,8 @@
 - 질문 하나 = 항목 하나(id "chat"). 답은 항목 `preview={"answer": md}`로 두고 항목·작업 모두 `done`으로 끝낸다. 저장 단계는 없다.
 - Claude에게는 도움말 md, 메뉴, 줄인 상황(`situation`, 카테고리마다 화면별 실제 문턱 `gates`), 단계 규칙만 준다. md 본문·대본·`## 내 메모`·작업 폴더 경로·라이브러리 원격은 보내지 않는다.
 - 규칙 파일 `_chatbot.md`는 허용 목록 밖이라 조회 API로는 나가지 않는다.
+- 서버판은 `docs/help/server/<이름>.md`가 있으면 그것을 쓴다(작업 폴더·터미널 같은 내 PC 전용 설명을 뺀 판). 없으면 공통 파일.
+  로컬판은 언제나 `docs/help/<이름>.md` 그대로다.
 """
 from __future__ import annotations
 
@@ -16,11 +18,13 @@ from typing import Any
 
 from scripts import ctx, draft, keys, library, llm, motif, refstore, similarity, status
 from scripts.common import PLUGIN_ROOT, ScriptError
+from scripts.edition import is_server
 from scripts.ui.api_draft import _library_templates
 from scripts.ui.jobs import Job, new_item
 from scripts.ui.server import Request, disabled_features, route
 
 HELP_DIR: Path = PLUGIN_ROOT / "docs" / "help"
+SERVER_HELP_DIR: Path = HELP_DIR / "server"
 SCREEN_PAGES: tuple[str, ...] = ("home", "refs", "library", "typify", "report", "motif", "draft", "conti",
                                  "diagnose", "mission", "guide")
 GUIDE_PAGES: tuple[str, ...] = ("guide-shorts", "guide-long")
@@ -42,11 +46,32 @@ MENU: list[dict[str, str]] = [
 ]
 
 
+# 메뉴 route → 그 화면 전체를 끄는 기능(app.js PAGE_FEATURES와 같은 뜻)
+MENU_FEATURES: dict[str, str] = {"#/library": "library"}
+
+
+def chat_menu() -> list[dict[str, str]]:
+    """챗봇에 주는 메뉴. 서버판에서는 꺼진 기능의 화면을 뺀다(없는 화면으로 안내하지 않게). 로컬판은 MENU 그대로."""
+    if not is_server():
+        return MENU
+    off = disabled_features()
+    return [item for item in MENU if MENU_FEATURES.get(item["route"]) not in off]
+
+
+def help_file(name: str) -> Path:
+    """판에 맞는 도움말 파일: 서버판은 `server/<name>.md`가 있으면 그것, 아니면(로컬판 포함) `<name>.md`."""
+    if is_server():
+        variant = SERVER_HELP_DIR / f"{name}.md"
+        if variant.is_file():
+            return variant
+    return HELP_DIR / f"{name}.md"
+
+
 def read_help(page: str) -> dict[str, str]:
     """허용 목록의 도움말 한 장을 `{"page", "title", "markdown"}`로 돌려준다(markdown은 프런트매터를 뗀 본문)."""
     if page not in SCREEN_PAGES and page not in GUIDE_PAGES:
         raise ScriptError("help_not_found", f"도움말 페이지가 없습니다: {page}")
-    path = HELP_DIR / f"{page}.md"
+    path = help_file(page)
     if not path.is_file():
         raise ScriptError("help_not_found", f"도움말 파일이 없습니다: {page}")
     fm, body = refstore.parse_md(path.read_bytes(), path)      # 플러그인 폴더의 파일이라 저장소 밖
@@ -76,7 +101,7 @@ CATEGORY_KEYS = ("category", "ref", "mine", "stage", "stage_text", "steps", "cur
 
 
 def _rules() -> list[Path]:
-    return [HELP_DIR / "_chatbot.md"]          # 허용 목록 밖이라 읽기 API로는 나가지 않는다
+    return [help_file("_chatbot")]             # 허용 목록 밖이라 읽기 API로는 나가지 않는다
 
 
 # 사용자가 손으로 고치던 index.md·유형화 json이 깨져 있어도 챗봇은 답해야 한다(화면 API는 그대로 오류를 낸다).
@@ -224,7 +249,7 @@ def _chat(req: Request) -> dict[str, Any]:
     payload = {
         "screen": {"page": screen["page"], "title": screen["title"], "markdown": screen["markdown"]},
         "guide": {name: read_help(name)["markdown"] for name in GUIDE_PAGES},
-        "menu": MENU,
+        "menu": chat_menu(),
         "situation": situation(category, page),
         "stage_rules": _stage_rules(),
         "history": history,

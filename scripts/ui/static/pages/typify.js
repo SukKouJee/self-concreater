@@ -2,6 +2,7 @@
 //   상태(ref 수·단계·저장된 결과) → "유형화 실행"(작업: 계산 → Claude 해석) → 미리보기(편집) → 저장.
 //   미리보기 단계에서는 파일이 바뀌지 않는다. 저장은 사용자가 누른 뒤에만, 미리보기의 run_at과 함께 보낸다.
 import { h, fill } from "/static/dom.js";
+import { t } from "/static/copy.js";
 import { humanizeLabels, sectionName } from "/static/labels.js";
 import { AXIS_NAMES, legendText, outlierText, profileRows, ratioLegend } from "/static/typify-utils.js";
 
@@ -83,7 +84,7 @@ async function load() {
   const mine = S;
   const cat = mine.category;
   if (!cat) {
-    fill(mine.el, h("h1", {}, "유형"), h("p", { class: "muted" }, "카테고리가 없습니다. 홈에서 먼저 카테고리를 만드세요."));
+    fill(mine.el, h("h1", {}, "유형"), h("p", { class: "muted" }, t("page.noCategory")));
     return;
   }
   fill(mine.el, h("h1", {}, "유형"), h("p", { class: "muted", role: "status" }, "불러오는 중…"));
