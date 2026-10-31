@@ -6,7 +6,8 @@
 - server: deploy/server/docker-compose.yml 전체(postgres·minio·버킷·migrate·app)를 YTC_ENV=test + dev 로그인 + 비밀번호 로그인으로 띄우고
   admin add-user 2명 -> dev 로그인 -> /healthz·/api/status -> 기획안 저장·읽기 -> 두 사용자 격리 1건 ->
   add-user --password-stdin -> POST /auth/password(틀림 401·맞음 200) ->
-  admin make-admin -> 관리 API(/api/me, 사용자 목록에 해시 없음, 일반 사용자 403, 다른 사람 모든 기기 로그아웃, 자기 비활성 409, 감사 기록) ->
+  admin make-admin -> 관리 API(/api/me, 사용자 목록에 해시 없음, 일반 사용자 403, 다른 사람 모든 기기 로그아웃, 자기 비활성 409, 감사 기록,
+  최근 로그인, 사용자 추가 -> 고치기(이메일·이름) -> 검색 -> 상세 -> 삭제(입력 이메일 확인, MinIO 정리) -> 감사 필터 -> 서버 정보) ->
   (Chrome이 있으면) 로그인 화면의 비밀번호 폼(틀림 문구·맞으면 /로 이동)과 /files의 HTML이 FILES_CSP(sandbox allow-same-origin) 아래서
   이미지를 그리는지 -> 게시 포트로 보낸 X-Forwarded-For를 믿지 않는지(IP별 실패 제한 429) -> down -v.
   Chrome은 YTC_CHROME 또는 흔한 설치 경로에서 찾는다. 없으면 그 점검만 건너뛴다고 출력한다(--no-browser로 끌 수도 있다).
@@ -14,6 +15,7 @@
 - 임시 작업 폴더와 가짜 API 키만 쓴다(실제 Claude 호출 없음). 표준 라이브러리만 쓴다.
 - `--with-youtube`: tests/fixtures/links.txt의 첫 링크 1개로 `scripts.fetch`와 `scripts.cuts`(360p 다운로드·장면 분석)를
   컨테이너 안에서 돌려 yt-dlp가 JS 런타임 없이 되는지 본다(LLM 호출 없음, 네트워크 사용). 기본은 끔.
+- 다른 스택이 front 대역(기본 172.31.254)을 쓰고 있으면 `YTC_SMOKE_FRONT_NET=172.31.253`처럼 다른 앞 세 자리를 준다.
 - 종료 코드 0이면 통과. 끝나면 항상 `docker compose down -v`로 정리한다(이미지는 남긴다).
 """
 from __future__ import annotations
@@ -536,6 +538,7 @@ def smoke_server(project: str, image: str, with_browser: bool) -> None:
         env_file = Path(tmp) / "smoke.env"
         env_file.write_text("\n".join([
             "YTC_ENV=test", "YTC_DEV_LOGIN=1", "YTC_PASSWORD_LOGIN=1", f"YTC_PUBLIC_URL={base}", f"YTC_PORT={port}", f"YTC_IMAGE={image}",
+            *([f"YTC_FRONT_NET={os.environ['YTC_SMOKE_FRONT_NET']}"] if os.environ.get("YTC_SMOKE_FRONT_NET") else []),
             f"YTC_SESSION_SECRET={secrets.token_urlsafe(48)}",
             f"YTC_DB_OWNER_PASSWORD={secrets.token_urlsafe(24)}", f"YTC_DB_APP_PASSWORD={secrets.token_urlsafe(24)}",
             f"YTC_S3_ACCESS_KEY=smoke{secrets.token_hex(4)}", f"YTC_S3_SECRET_KEY={secrets.token_urlsafe(24)}",
@@ -641,6 +644,37 @@ def smoke_server(project: str, image: str, with_browser: bool) -> None:
             status, audit, _ = alice.request("GET", "/api/admin/audit?limit=10")
             actions = [e["action"] for e in audit.get("entries", [])] if status == 200 else []
             check(actions == ["logout_all", "set_admin"], f"감사 기록(최신순): {actions}")
+            alice_row = next((u for u in listed.get("users", []) if u.get("email") == "alice@example.com"), {})
+            check(bool(alice_row.get("last_login_at")), "로그인하면 최근 로그인(last_login_at)이 남는다")
+
+            # 0004: add -> edit -> delete through the admin API (the database refuses a wrong typed email too)
+            dave_pw = secrets.token_urlsafe(18)
+            status, made_dave, _ = alice.request("POST", "/api/admin/users", {
+                "email": "Dave@Example.com", "display_name": "데이브", "password": dave_pw})
+            dave_id = made_dave.get("id", "")
+            check(status == 200 and made_dave.get("email") == "dave@example.com" and dave_pw not in json.dumps(made_dave),
+                  "관리 API 사용자 추가(이메일 소문자, 응답에 비밀번호 없음)")
+            status, edited, _ = alice.request("POST", f"/api/admin/users/{dave_id}/update",
+                                              {"email": "dave2@example.com", "display_name": "데이브 2"})
+            check(status == 200 and edited.get("changed") == ["email", "display_name"] and edited.get("sessions_ended") is True,
+                  "관리 API 사용자 고치기(이메일·이름, 이메일을 바꾸면 세션이 끊김)")
+            status, found, _ = alice.request("GET", "/api/admin/users?q=dave2&sort=last_login&order=desc&per_page=10")
+            check(status == 200 and found.get("total") == 1 and found["users"][0].get("display_name") == "데이브 2",
+                  "사용자 목록 검색·정렬·쪽(q=dave2)")
+            status, detail, _ = alice.request("GET", f"/api/admin/users/{dave_id}")
+            check(status == 200 and detail.get("user", {}).get("email") == "dave2@example.com", "사용자 상세")
+            status, body, _ = alice.request("POST", f"/api/admin/users/{dave_id}/delete", {"confirm_email": "dave@example.com"})
+            check(status == 400 and body.get("error") == "confirm_mismatch", "삭제: 입력한 이메일이 다르면 400 confirm_mismatch")
+            status, gone, _ = alice.request("POST", f"/api/admin/users/{dave_id}/delete", {"confirm_email": "dave2@example.com"})
+            check(status == 200 and gone.get("storage", {}).get("ok") is True, "관리 API 사용자 삭제(MinIO 정리 포함)")
+            status, found, _ = alice.request("GET", "/api/admin/users?q=dave")
+            check(status == 200 and found.get("total") == 0, "지운 사용자는 목록에 없다")
+            status, audit, _ = alice.request("GET", "/api/admin/audit?action=delete_user")
+            entries = audit.get("entries", []) if status == 200 else []
+            check(len(entries) == 1 and entries[0].get("target_email") == "dave2@example.com",
+                  "감사 기록 필터(action=delete_user): 지운 사용자의 이메일이 남는다")
+            status, overview, _ = alice.request("GET", "/api/admin/overview")
+            check(status == 200 and overview.get("counts", {}).get("users") == len(users) + 1, "서버 정보(사용자 수)")
 
             chrome = find_chrome() if with_browser else None
             if not with_browser:
