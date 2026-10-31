@@ -16,9 +16,15 @@ import re
 from collections.abc import Callable, Iterable
 from functools import lru_cache
 from pathlib import PureWindowsPath
+from typing import Literal
 
 from scripts import keys as _keys
 from scripts.stores import Meta
+
+
+ImportOutcome = Literal["new", "same", "replaced", "conflict", "skipped"]
+"""관리 가져오기(`import_raw`) 결과: 새로 넣음 / 같은 내용이라 그대로 / 덮어씀 / 다른 내용이 있어 건드리지 않음(conflict) /
+공유 캐시에 이미 있어 건너뜀(skipped)."""
 
 
 @lru_cache(maxsize=256)

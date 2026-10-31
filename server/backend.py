@@ -14,6 +14,7 @@ import hashlib
 import re
 import threading
 import uuid
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Final
@@ -165,8 +166,47 @@ def _shared_rows(conn: Conn, vids: builtins.list[str]) -> builtins.list[tuple[st
     return [(str(k), str(s)) for k, s in rows]
 
 
-def export_tree(backend: ServerBackend, user_id: uuid.UUID | str, *, trash: bool = True) -> ExportedTree:
-    """한 사용자(인증된 uid)의 데이터를 작업 폴더 모양으로 꺼낸다(RLS 경로 `user_tx(uid)`).
+@dataclass(frozen=True)
+class TreePlan:
+    """내보낼 트리의 계획: 키 목록과 폴더는 바로 알고, **바이트는 키마다 읽는다**(`items()`·`hashes()`·`write()`는 한 번에 한 파일만
+    메모리에 둔다). 문서는 키 단위로 따로 읽으므로(트랜잭션 하나의 스냅샷이 아니다) 내보내는 도중 다른 곳에서 지운 키는
+    FileNotFoundError가 난다."""
+
+    folders: frozenset[str]
+    _loaders: dict[str, Callable[[], bytes]]
+
+    @property
+    def names(self) -> builtins.list[str]:
+        return sorted(self._loaders)
+
+    def read(self, name: str) -> bytes:
+        return self._loaders[name]()
+
+    def items(self) -> Iterator[tuple[str, bytes]]:
+        for name in self.names:
+            yield name, self.read(name)
+
+    def hashes(self) -> dict[str, str]:
+        """`{키: sha256}`(키 순서). 파일을 하나씩 읽어 해시만 남긴다."""
+        return {name: hashlib.sha256(data).hexdigest() for name, data in self.items()}
+
+    def write(self, dest: Path) -> None:
+        """dest(비어 있거나 없는 폴더) 아래에 같은 상대 경로로 파일마다 읽어 쓴다."""
+        dest = Path(dest)
+        for folder in sorted(self.folders):
+            dest.joinpath(*folder.rstrip("/").split("/")).mkdir(parents=True, exist_ok=True)
+        for name, data in self.items():
+            path = dest.joinpath(*name.split("/"))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+
+    def collect(self) -> ExportedTree:
+        """전부 메모리로(작은 트리·테스트용). 파일 순서는 계획 순서(문서 → 객체·공유 → 휴지통)."""
+        return ExportedTree(files={name: loader() for name, loader in self._loaders.items()}, folders=self.folders)
+
+
+def plan_tree(backend: ServerBackend, user_id: uuid.UUID | str, *, trash: bool = True) -> TreePlan:
+    """한 사용자(인증된 uid)의 데이터를 작업 폴더 모양으로 꺼낼 계획을 세운다(RLS 경로 `user_tx(uid)`).
 
     - 문서(`docs.raw`)·객체(MinIO `users/{uid}/…`)는 그 키로.
     - 공유 캐시는 그 사용자의 영상 md(`refs/ref_*/videos/<vid>.md`)가 있는 영상의 raw·cuts·shots·frames만
@@ -175,24 +215,53 @@ def export_tree(backend: ServerBackend, user_id: uuid.UUID | str, *, trash: bool
     - `trash=True`면 휴지통 항목을 `workspace/trash/<stamp>/<키>`로.
     """
     uid = ServerBackend._uid(user_id)
-    files: dict[str, bytes] = {}
     with backend.db.user_tx(uid) as conn:
-        docs = conn.execute("SELECT key, raw FROM docs WHERE user_id = %s ORDER BY key", (uid,)).fetchall()
+        doc_keys = [str(r[0]) for r in conn.execute("SELECT key FROM docs WHERE user_id = %s ORDER BY key",
+                                                    (uid,)).fetchall()]
         objs = conn.execute("SELECT key, s3_key FROM objects WHERE user_id = %s ORDER BY key", (uid,)).fetchall()
         folder_rows = conn.execute("SELECT prefix FROM folders WHERE user_id = %s", (uid,)).fetchall()
-        doc_keys = [str(k) for k, _ in docs]
         shared = _shared_rows(conn, _video_ids(doc_keys))
-        trashed = conn.execute("SELECT stamp, key, kind, raw, s3_key FROM trash_items WHERE user_id = %s "
+        trashed = conn.execute("SELECT stamp, key, kind, s3_key FROM trash_items WHERE user_id = %s "
                                "ORDER BY stamp, key", (uid,)).fetchall() if trash else []
-    for key, raw in docs:
-        files[_keys.check(str(key))] = bytes(raw)
+
+    def doc_loader(key: str) -> Callable[[], bytes]:
+        def load() -> bytes:
+            with backend.db.user_tx(uid) as conn:
+                row = conn.execute("SELECT raw FROM docs WHERE user_id = %s AND key = %s", (uid, key)).fetchone()
+            if row is None:
+                raise FileNotFoundError(key)
+            return bytes(row[0])
+        return load
+
+    def trash_doc_loader(stamp: str, key: str) -> Callable[[], bytes]:
+        def load() -> bytes:
+            with backend.db.user_tx(uid) as conn:
+                row = conn.execute("SELECT raw FROM trash_items WHERE user_id = %s AND stamp = %s AND key = %s",
+                                   (uid, stamp, key)).fetchone()
+            if row is None or row[0] is None:
+                raise FileNotFoundError(f"{stamp}/{key}")
+            return bytes(row[0])
+        return load
+
+    def object_loader(s3_key: str) -> Callable[[], bytes]:
+        return lambda: backend.bucket.get(s3_key)
+
+    loaders: dict[str, Callable[[], bytes]] = {}
+    for key in doc_keys:
+        loaders[_keys.check(key)] = doc_loader(key)
     for key, s3_key in [*((str(k), str(s)) for k, s in objs), *shared]:
-        files[_keys.check(key)] = backend.bucket.get(s3_key)
-    for stamp, key, kind, raw, s3_key in trashed:
+        loaders[_keys.check(key)] = object_loader(s3_key)
+    for stamp, key, kind, s3_key in trashed:
         name = _keys.check(f"{_keys.TRASH}{stamp}/{key}")
-        files[name] = bytes(raw) if kind == "doc" else backend.bucket.get(str(s3_key))
+        loaders[name] = trash_doc_loader(str(stamp), str(key)) if kind == "doc" else object_loader(str(s3_key))
     folders = {str(r[0]) for r in folder_rows}
-    for key in files:
-        folders.update(ancestors(key))
+    for name in loaders:
+        folders.update(ancestors(name))
     folders = {f for f in folders if not f.startswith(_keys.SHARED_PREFIXES)}   # cache folders are not the user's
-    return ExportedTree(files=files, folders=frozenset(folders))
+    return TreePlan(folders=frozenset(folders), _loaders=loaders)
+
+
+def export_tree(backend: ServerBackend, user_id: uuid.UUID | str, *, trash: bool = True) -> ExportedTree:
+    """`plan_tree(...).collect()`: 한 사용자의 트리를 전부 메모리로. 큰 트리는 `plan_tree`의 `items()`/`write()`/`hashes()`로
+    파일마다 읽는다."""
+    return plan_tree(backend, user_id, trash=trash).collect()

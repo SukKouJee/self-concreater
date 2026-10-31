@@ -312,7 +312,14 @@ media 대기 p95가 5분을 넘거나, 앱 재시작으로 작업을 잃는 일�
    미션·진단 mtime 정렬이 바뀌지 않게), object → `S3ObjectStore.import_raw`, shared → 이미 있으면(sha 같음/다름 모두) 건너뜀, 없으면 넣음.
    빈 폴더 → `folders`. 같은 sha면 건너뜀(재실행 안전), 다르면 `--overwrite` 없이는 `conflict`로 보고만.
 4. 출력 JSON: `{"user", "docs": n, "objects": n, "shared_new": n, "shared_skipped": n, "skipped": {...}, "conflicts": [...]}`.
-5. 검증: 가져온 뒤 같은 프로세스에서 로컬 `Ctx(root=폴더)`와 서버 `Ctx(user, backend)`로 `status.overview()`를 각각 계산해
+5. 구현(T9): 쓰기 메서드는 `import_raw(key, raw, mtime_ns, *, overwrite, dry_run) -> new|same|replaced|conflict|skipped`(PgDocStore·S3ObjectStore·S3SharedCache,
+   키마다 트랜잭션 하나라 중간에 멈춰도 재실행하면 이어진다). 출력 JSON은 위 4번에 `dry_run`·`folders`(새 폴더 수)·`unchanged`·`excluded`(걸린 제외 규칙)·
+   `changes`(docs+objects+shared_new+folders, 재실행 0)·`verify`를 더한다. `skipped`는 `bad_key`·`too_large`(객체 64MB 초과)·`not_regular`(링크 등).
+   읽을 수 없는 파일은 건너뛰지 않고 `import_unreadable`로 멈춘다(재실행하면 이어서). `--no-verify`로 검증을 끈다. `add-user`·`disable-user`·`usage`는
+   `YTC_DB_OWNER_DSN`만 쓰고 가져오기만 저장소 설정 전부를 쓴다. `--overwrite`는 내 메모 가드를 거치지 않는다(원본 폴더로 되돌리는 명시적 동작).
+   서버 `Meta.mtime`은 `mtime_ns/1e9`라 로컬 `st_mtime`과 마지막 자리가 달라, 검증의 JSON 비교는 실수 1ms 허용.
+   `export_tree`는 `plan_tree(...)`(키·폴더 먼저, 바이트는 키마다 읽는 `items()`·`hashes()`·`write()`)의 `collect()`다.
+6. 검증: 가져온 뒤 같은 프로세스에서 로컬 `Ctx(root=폴더)`와 서버 `Ctx(user, backend)`로 `status.overview()`를 각각 계산해
    `work_root`·라벨을 뺀 JSON이 같은지 비교, 다르면 종료 코드 1. 실데이터(레퍼런스 20·모티브 22·기획안 6·콘티 이력)는 수동 확인 1회.
 
 ## 8. 비활성 기능과 화면
@@ -411,7 +418,7 @@ media 대기 p95가 5분을 넘거나, 앱 재시작으로 작업을 잃는 일�
 | T6 | `PgDocStore` + 계약 테스트(File·Pg) | server/pgstore, tests/contract | 계약 doc 항목 전부 |
 | T7 | `S3ObjectStore`·`S3SharedCache`(PG 인덱스 + MinIO, write_path 폴더) + 계약 | server/s3store | 계약 object·shared 항목 |
 | T8 | `ServerScratch`·`PgTrash`·`ServerBackend` + `export_tree` + 동등성 시나리오 | server | test_equivalence |
-| T9 | S9: `admin add-user/disable-user/import/usage`, import 검증(status 비교) | server/admin | 픽스처 작업 폴더 가져오기 → 동등, 재실행 0건 |
+| T9 | S9: `admin add-user/disable-user/import/usage`, import 검증(status 비교), `plan_tree`(키마다 읽는 내보내기) | server/admin·pgstore·s3store·backend | 픽스처 작업 폴더 가져오기 → `export_tree` 바이트 동일·status 동일, 재실행 0건 |
 | T10 | ASGI 앱: 어댑터, 세션, dev 로그인, CSRF, 요청별 Ctx, 사용자별 Registry, `/files` 프록시, 서버 기능 가드, api.js 401 처리 | server/asgi·auth·files·jobs_registry | 격리 테스트, 라우트 전수 스모크 |
 | T11 | 자원·한도: media/llm 슬롯 설치, fetch 전역 제한, advisory lock, `UsageMeter`(가격표·일 한도·오류 문구), media 슬롯 수 측정 | server/usage·jobs_registry | 한도 초과 테스트(가짜 usage), 두 사용자 동시 수집이 서로 job_running을 내지 않음 |
 | T12 | Google OIDC: authlib 로그인·콜백·허용 목록·sub 고정·로그아웃·epoch, login.html | server/auth | 콜백을 가짜 IdP 토큰으로 단위 테스트(서명 검증 경로 포함), 실제 Google 1회 수동 |
@@ -429,4 +436,5 @@ T3은 서버 작업과 독립이라 먼저 끝내 개인판을 바로 쓸 수 �
 | 핸들러의 숨은 로컬 가정(Path 인자, `FileSlice`, `scratch.workdir`, 절대 경로 출력, tmp 핸드오프) 이 서버 백엔드에서 500 | 비활성 표(§8) + 라우트 전수 스모크(§10-4) |
 | 서버 IP YouTube 차단·yt-dlp JS 런타임 요구 | `YT_PROXY`, 전역 fetch 간격, 공유 캐시, T3에서 실제 링크로 이미지 확인 |
 | LLM 비용 초과(호출 하나가 한도를 넘김, 가격표 오류) | 호출 전 검사 + `max_tokens` 상한 + 가격표에 없는 모델 시작 거부 + `admin usage` |
+| 공유 캐시 오염(T7 리뷰, T9): 공유 캐시는 "먼저 쓴 쪽이 이긴다". `admin import`가 shared 키를 넣으면, 틀린·악의적인 작업 폴더(`workspace/raw/<vid>.json`·`frames/`가 다른 영상 내용)가 모든 사용자의 그 영상 분석에 섞인다. 수집 경로도 같은 구조(첫 수집자의 raw가 고정) | 가져오기는 운영자만 실행(`ytc_owner` 필요)하고 신뢰하는 지인의 폴더만 올린다. 이미 있는 shared 키는 `--overwrite`로도 덮지 않는다(`skipped`). 영상 md는 사용자 것이라 교정은 md에서 하고 캐시는 원본 데이터로만 쓴다. 후속(S10): raw `id`와 키의 영상 id 일치 검사, `shared_objects.created_by` 기준 점검·삭제 명령 |
 | 인증 우회·세션 탈취 | 초대제 + sub 고정 + Secure/HttpOnly/Lax 쿠키 + Origin·JSON 강제 + RLS. dev 로그인은 production에서 시작 거부 |

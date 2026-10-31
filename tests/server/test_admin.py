@@ -1,0 +1,452 @@
+"""server.admin(서버 설계 §7, T9): 걷기·제외(PG 없이), add-user·disable-user·usage·import(PG 16 + MinIO가 없으면 skip).
+
+가져오기 검증의 핵심: 픽스처 작업 폴더를 새 사용자에게 올린 뒤 `export_tree`가 원본과 바이트까지 같고(제외한 `library.json`만 빠짐),
+`status.overview()`가 FileStore Ctx와 ServerBackend Ctx에서 같으며(`work_root` 제외), 다시 실행하면 변경 0이다.
+"""
+from __future__ import annotations
+
+import os
+import uuid
+from pathlib import Path
+from typing import Any
+
+import psycopg
+import pytest
+
+from scripts import ctx as ctx_mod
+from scripts import keys, status
+from scripts.common import ScriptError
+from scripts.ctx import Ctx
+from server import admin
+from server.backend import ServerBackend, export_tree, plan_tree
+from tests.helpers.pg import Stack, TestDb, pg_user
+from tests.helpers.tree_snapshot import copy_workfolder, tree
+
+EMAIL = "Fresh@Example.com"
+LOWER = "fresh@example.com"
+VID = "Q8PSsikq8PA"
+
+
+# --- 걷기(PG 없이) ---------------------------------------------------------------------------
+
+def _touch(root: Path, rel: str, data: bytes = b"x") -> None:
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+
+
+def test_walk_uses_posix_relative_keys_and_applies_exclusions(tmp_path: Path) -> None:
+    for rel in ("profile.md", "refs/ref_a/index.md", "workspace/raw/abc.json", "workspace/tmp/x.json",
+                "workspace/trash/20260101-000000/a.md", "workspace/library/r/a.md", "workspace/ui.lock",
+                "workspace/ui.log", "workspace/timings.json", "workspace/.last_fetch", "workspace/library.lock",
+                ".git/HEAD", "library.json", "drafts/한글 이름.md"):
+        _touch(tmp_path, rel)
+
+    walked = admin.walk_workfolder(tmp_path)
+
+    assert [f.key for f in walked.files] == ["drafts/한글 이름.md", "profile.md", "refs/ref_a/index.md",
+                                             "workspace/raw/abc.json"]
+    assert set(walked.excluded) == {"workspace/tmp/", "workspace/trash/", "workspace/library/", ".git/", "library.json",
+                                    "workspace/ui.lock", "workspace/ui.log", "workspace/timings.json",
+                                    "workspace/.last_fetch", "workspace/library.lock"}
+    assert walked.bad_key == [] and walked.too_large == [] and walked.not_regular == []
+
+
+def test_walk_reports_bad_keys_and_empty_folders_and_size_limit(tmp_path: Path,
+                                                                monkeypatch: pytest.MonkeyPatch) -> None:
+    _touch(tmp_path, "mine/CON.md")                  # Windows reserved name -> keys.check fails
+    _touch(tmp_path, "drafts/ok-conti.html", b"12345")
+    _touch(tmp_path, "drafts/note.md", b"x" * 50)
+    (tmp_path / "refs" / "ref_empty" / "videos").mkdir(parents=True)
+    (tmp_path / "reports").mkdir()
+    monkeypatch.setattr(admin, "MAX_OBJECT_BYTES", 4)
+
+    walked = admin.walk_workfolder(tmp_path)
+
+    assert walked.bad_key == ["mine/CON.md"]
+    assert walked.too_large == ["drafts/ok-conti.html"]
+    assert [f.key for f in walked.files] == ["drafts/note.md"]          # a doc has no 64MB object limit
+    assert walked.folders == ["refs/ref_empty/videos/", "reports/"]
+
+
+def test_walk_skips_symlinks(tmp_path: Path) -> None:
+    _touch(tmp_path, "real/a.md")
+    try:
+        (tmp_path / "link.md").symlink_to(tmp_path / "real" / "a.md")
+        (tmp_path / "linkdir").symlink_to(tmp_path / "real", target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not available")
+
+    walked = admin.walk_workfolder(tmp_path)
+
+    assert [f.key for f in walked.files] == ["real/a.md"]
+    assert sorted(walked.not_regular) == ["link.md", "linkdir/"]
+
+
+def test_walk_records_original_mtime_ns(tmp_path: Path) -> None:
+    _touch(tmp_path, "profile.md")
+    os.utime(tmp_path / "profile.md", ns=(1_700_000_000_123_456_700, 1_700_000_000_123_456_700))
+
+    (only,) = admin.walk_workfolder(tmp_path).files
+
+    assert only.mtime_ns == (tmp_path / "profile.md").stat().st_mtime_ns
+
+
+@pytest.mark.parametrize("bad", ["nope", "a@b", "a b@c.com", ""])
+def test_add_user_rejects_malformed_email_before_touching_the_db(bad: str) -> None:
+    with pytest.raises(ScriptError) as e:
+        admin.add_user({}, bad, None, None, False)
+    assert e.value.code == "bad_email"
+
+
+@pytest.mark.parametrize("bad", ["abc", "-1", "1.234", "1000000", "NaN"])
+def test_add_user_rejects_bad_daily_limit(bad: str) -> None:
+    with pytest.raises(ScriptError) as e:
+        admin.add_user({}, "a@example.com", None, bad, False)
+    assert e.value.code == "bad_limit"
+
+
+def test_admin_commands_need_the_owner_dsn() -> None:
+    with pytest.raises(ScriptError) as e:
+        admin.main(["disable-user", "a@example.com"], {})
+    assert e.value.code == "config_missing"
+
+
+# --- PG ---------------------------------------------------------------------------------------
+
+@pytest.fixture
+def env(migrated_db: TestDb, pg_stack: Stack, s3_bucket: Any) -> dict[str, str]:
+    return {"YTC_DB_DSN": migrated_db.app_dsn, "YTC_DB_OWNER_DSN": migrated_db.owner_dsn,
+            "YTC_S3_ENDPOINT": pg_stack.s3_endpoint, "YTC_S3_ACCESS_KEY": pg_stack.s3_access_key,
+            "YTC_S3_SECRET_KEY": pg_stack.s3_secret_key, "YTC_S3_BUCKET": s3_bucket.name}
+
+
+def _user_row(env: dict[str, str], email: str) -> tuple[Any, ...]:
+    with psycopg.connect(env["YTC_DB_OWNER_DSN"]) as conn:
+        row = conn.execute("SELECT id, email, display_name, is_admin, disabled, session_epoch, daily_usd_limit "
+                           "FROM users WHERE email = %s", (email,)).fetchone()
+    assert row is not None
+    return tuple(row)
+
+
+def test_add_user_creates_lowercased_row_with_options(env: dict[str, str]) -> None:
+    out = admin.main(["add-user", EMAIL, "--name", "지수", "--daily-limit", "2.50", "--admin"], env)
+
+    assert out["email"] == LOWER and out["is_admin"] is True and out["daily_usd_limit"] == 2.5
+    row = _user_row(env, LOWER)
+    assert str(row[0]) == out["id"] and row[2] == "지수" and row[3] is True and row[4] is False and float(row[6]) == 2.5
+
+
+def test_add_user_twice_is_user_exists(env: dict[str, str]) -> None:
+    admin.main(["add-user", LOWER], env)
+
+    with pytest.raises(ScriptError) as e:
+        admin.main(["add-user", EMAIL], env)
+
+    assert e.value.code == "user_exists"
+
+
+def test_disable_user_disables_and_bumps_session_epoch(env: dict[str, str]) -> None:
+    admin.main(["add-user", LOWER], env)
+    before = _user_row(env, LOWER)
+
+    out = admin.main(["disable-user", EMAIL], env)
+
+    after = _user_row(env, LOWER)
+    assert before[4] is False and after[4] is True
+    assert out["session_epoch"] == after[5] == before[5] + 1
+
+
+def test_disable_unknown_user_is_user_not_found(env: dict[str, str]) -> None:
+    with pytest.raises(ScriptError) as e:
+        admin.main(["disable-user", "ghost@example.com"], env)
+    assert e.value.code == "user_not_found"
+
+
+def test_usage_is_empty_without_records(env: dict[str, str]) -> None:
+    assert admin.main(["usage"], env) == {"days": 7, "rows": [], "total_usd": 0.0}
+
+
+def test_usage_sums_by_user_and_day_in_seoul_time(env: dict[str, str]) -> None:
+    a = admin.main(["add-user", "a@example.com"], env)["id"]
+    b = admin.main(["add-user", "b@example.com"], env)["id"]
+    rows = [(a, "now() - interval '1 hour'", 100, 10, "0.010000", True),
+            (a, "now() - interval '2 hours'", 50, 5, "0.005000", False),
+            (b, "now() - interval '1 hour'", 7, 3, "0.250000", True),
+            (a, "now() - interval '30 days'", 1, 1, "9.000000", True)]
+    with psycopg.connect(env["YTC_DB_OWNER_DSN"]) as conn:
+        for uid, at, tin, tout, cost, ok in rows:
+            conn.execute(f"INSERT INTO llm_usage (user_id, at, job_kind, model, input_tokens, output_tokens, cost_usd, ok) "
+                         f"VALUES (%s, {at}, 'analyze', 'm', %s, %s, %s, %s)", (uuid.UUID(uid), tin, tout, cost, ok))
+
+    week = admin.main(["usage", "--days", "7"], env)
+
+    by_user: dict[str, dict[str, Any]] = {}
+    for r in week["rows"]:
+        by_user.setdefault(r["email"], {"calls": 0, "failed": 0, "in": 0, "cost": 0.0})
+        by_user[r["email"]]["calls"] += r["calls"]
+        by_user[r["email"]]["failed"] += r["failed"]
+        by_user[r["email"]]["in"] += r["input_tokens"]
+        by_user[r["email"]]["cost"] += r["cost_usd"]
+    # the two a-rows may straddle midnight (KST), so compare per user rather than per day
+    assert by_user["a@example.com"]["calls"] == 2 and by_user["a@example.com"]["failed"] == 1
+    assert by_user["a@example.com"]["in"] == 150 and round(by_user["a@example.com"]["cost"], 6) == 0.015
+    assert by_user["b@example.com"]["cost"] == 0.25
+    assert round(week["total_usd"], 6) == 0.265            # the 30-day-old row is outside --days 7
+    assert admin.main(["usage", "--days", "60"], env)["total_usd"] == pytest.approx(9.265)
+
+
+def test_usage_rejects_zero_days(env: dict[str, str]) -> None:
+    with pytest.raises(ScriptError) as e:
+        admin.main(["usage", "--days", "0"], env)
+    assert e.value.code == "bad_days"
+
+
+# --- import -----------------------------------------------------------------------------------
+
+@pytest.fixture
+def source(tmp_path: Path) -> Path:
+    return copy_workfolder(tmp_path / "work")
+
+
+def _import(env: dict[str, str], folder: Path, *extra: str, user: str = LOWER) -> dict[str, Any]:
+    return admin.main(["import", str(folder), "--user", user, *extra], env)
+
+
+def _uid(env: dict[str, str], email: str = LOWER) -> uuid.UUID:
+    return uuid.UUID(str(_user_row(env, email)[0]))
+
+
+def _backend(request: pytest.FixtureRequest) -> ServerBackend:
+    backend = request.getfixturevalue("pg_backend")
+    assert isinstance(backend, ServerBackend)
+    return backend
+
+
+def test_import_unknown_user_is_user_not_found(env: dict[str, str], source: Path) -> None:
+    with pytest.raises(ScriptError) as e:
+        _import(env, source)
+    assert e.value.code == "user_not_found"
+
+
+def test_import_missing_folder(env: dict[str, str], tmp_path: Path) -> None:
+    admin.main(["add-user", LOWER], env)
+    with pytest.raises(ScriptError) as e:
+        _import(env, tmp_path / "nope")
+    assert e.value.code == "folder_not_found"
+
+
+def test_import_fixture_is_byte_identical_and_status_matches_then_rerun_changes_nothing(
+        request: pytest.FixtureRequest, env: dict[str, str], source: Path) -> None:
+    admin.main(["add-user", LOWER], env)
+    uid = _uid(env)
+    backend = _backend(request)
+
+    report = _import(env, source)
+
+    expected = {k: v for k, v in tree(source).items() if k != keys.LIBRARY_CONFIG}
+    assert plan_tree(backend, uid).hashes() == expected                               # byte-identical
+    assert export_tree(backend, uid).hashes() == expected
+    assert report["excluded"] == [keys.LIBRARY_CONFIG]
+    assert report["skipped"] == {"bad_key": [], "too_large": [], "not_regular": []} and report["conflicts"] == []
+    assert report["docs"] + report["objects"] + report["shared_new"] == len(expected)
+    assert report["shared_new"] == 5 and report["docs"] > 0 and report["objects"] > 0
+    assert report["verify"] == {"ok": True, "differing": []}
+    # status overview: FileStore Ctx vs ServerBackend Ctx, only the label differs
+    with ctx_mod.use(Ctx(root=source)):
+        local = status.overview()
+    with ctx_mod.use(Ctx(user_id=str(uid), backend=backend)):
+        server = status.overview()
+    assert local["work_root"] == str(source) and server["work_root"] == f"ytc:{LOWER}"
+    assert admin._same({**local, "work_root": ""}, {**server, "work_root": ""})
+    assert [r["path"] for r in local["recent"]] == [r["path"] for r in server["recent"]]       # same order
+    assert local["categories"] and local["recent"]                                   # not a vacuous comparison
+
+    again = _import(env, source)
+
+    assert (again["changes"], again["docs"], again["objects"], again["shared_new"], again["folders"]) == (0, 0, 0, 0, 0)
+    assert again["conflicts"] == [] and again["verify"]["ok"] is True
+    assert again["unchanged"]["docs"] + again["unchanged"]["objects"] + again["shared_skipped"] == len(expected)
+    assert plan_tree(backend, uid).hashes() == expected
+
+
+def test_import_preserves_original_mtime(request: pytest.FixtureRequest, env: dict[str, str], source: Path) -> None:
+    stamps = {"profile.md": 1_600_000_000_000_000_100, "reports/travel-2026-10-30.html": 1_600_000_100_000_000_200,
+              f"workspace/raw/{VID}.json": 1_600_000_200_000_000_300}
+    for rel, ns in stamps.items():
+        os.utime(source / rel, ns=(ns, ns))
+    on_disk = {rel: (source / rel).stat().st_mtime_ns for rel in stamps}      # the file system may round (NTFS: 100ns)
+    assert all(abs(on_disk[rel] - ns) < 1000 for rel, ns in stamps.items())
+    admin.main(["add-user", LOWER], env)
+    uid = _uid(env)
+    backend = _backend(request)
+
+    _import(env, source)
+
+    assert backend.store(str(uid)).stat("profile.md").mtime_ns == on_disk["profile.md"]
+    assert backend.objects(str(uid)).stat("reports/travel-2026-10-30.html").mtime_ns ==         on_disk["reports/travel-2026-10-30.html"]
+    assert backend.shared(str(uid)).stat(f"workspace/raw/{VID}.json").mtime_ns == on_disk[f"workspace/raw/{VID}.json"]
+
+
+def test_dry_run_reports_counts_and_writes_nothing(request: pytest.FixtureRequest, env: dict[str, str],
+                                                   source: Path) -> None:
+    admin.main(["add-user", LOWER], env)
+    uid = _uid(env)
+    backend = _backend(request)
+    (source / "reviews" / "archive" / "deep").mkdir(parents=True)
+
+    plan = _import(env, source, "--dry-run")
+
+    assert plan["dry_run"] is True and plan["docs"] > 0 and plan["objects"] > 0 and plan["folders"] >= 1
+    assert "verify" not in plan
+    assert plan_tree(backend, uid).names == []
+    assert backend.shared(str(uid)).exists(f"workspace/raw/{VID}.json") is False
+
+    done = _import(env, source)
+
+    assert {k: done[k] for k in ("docs", "objects", "shared_new", "folders")} == \
+        {k: plan[k] for k in ("docs", "objects", "shared_new", "folders")}
+
+
+def test_empty_folders_become_folders(request: pytest.FixtureRequest, env: dict[str, str], source: Path) -> None:
+    (source / "reviews" / "archive" / "deep").mkdir(parents=True)
+    admin.main(["add-user", LOWER], env)
+    uid = _uid(env)
+
+    report = _import(env, source, "--no-verify")
+
+    store = _backend(request).store(str(uid))
+    assert report["folders"] == 1 and "verify" not in report                 # only the leaf is a folder to create (parents are implied)
+    assert store.folder_exists("reviews/archive/deep/")
+    assert "reviews/archive/" in store.folders("reviews/", "*")
+    assert _import(env, source, "--no-verify")["folders"] == 0
+
+
+def test_different_content_is_a_conflict_until_overwrite(request: pytest.FixtureRequest, env: dict[str, str],
+                                                         source: Path) -> None:
+    admin.main(["add-user", LOWER], env)
+    uid = _uid(env)
+    backend = _backend(request)
+    _import(env, source)
+    server_profile = backend.store(str(uid)).read("profile.md").raw
+    (source / "profile.md").write_bytes(server_profile + "\n수정\n".encode())
+    (source / "reports" / "travel-2026-10-30.html").write_bytes(b"<html>changed</html>")
+
+    held = _import(env, source, "--no-verify")
+
+    assert sorted(c["key"] for c in held["conflicts"]) == ["profile.md", "reports/travel-2026-10-30.html"]
+    assert {c["kind"] for c in held["conflicts"]} == {"doc", "object"} and held["changes"] == 0
+    assert backend.store(str(uid)).read("profile.md").raw == server_profile
+
+    forced = _import(env, source, "--overwrite")
+
+    assert forced["conflicts"] == [] and forced["docs"] == 1 and forced["objects"] == 1
+    assert backend.store(str(uid)).read("profile.md").raw == (source / "profile.md").read_bytes()
+    assert backend.objects(str(uid)).get("reports/travel-2026-10-30.html") == b"<html>changed</html>"
+    assert forced["verify"]["ok"] is True
+    assert _import(env, source)["changes"] == 0
+
+
+def test_shared_cache_first_writer_wins_even_with_overwrite(request: pytest.FixtureRequest, env: dict[str, str],
+                                                            source: Path) -> None:
+    admin.main(["add-user", LOWER], env)
+    admin.main(["add-user", "second@example.com"], env)
+    backend = _backend(request)
+    _import(env, source, "--no-verify")
+    original = (source / "workspace" / "raw" / f"{VID}.json").read_bytes()
+    (source / "workspace" / "raw" / f"{VID}.json").write_bytes(b'{"id": "poison"}')
+
+    second = _import(env, source, "--overwrite", "--no-verify", user="second@example.com")
+
+    assert second["shared_new"] == 0 and second["shared_skipped"] == 5 and second["conflicts"] == []
+    assert backend.shared(str(_uid(env))).get(f"workspace/raw/{VID}.json") == original
+
+
+def test_import_verify_failure_is_an_error_carrying_the_report(env: dict[str, str], source: Path) -> None:
+    admin.main(["add-user", LOWER], env)
+    uid = _uid(env)
+    raw = b"# extra"
+    with psycopg.connect(env["YTC_DB_OWNER_DSN"]) as conn:        # data the folder does not have: not a fresh account
+        conn.execute("INSERT INTO docs (user_id, key, raw, version, size, mtime_ns) VALUES (%s, %s, %s, %s, %s, 1)",
+                     (uid, "refs/ref_extra/index.md", raw, "0" * 64, len(raw)))
+        conn.execute("INSERT INTO folders (user_id, prefix) VALUES (%s, 'refs/'), (%s, 'refs/ref_extra/')", (uid, uid))
+
+    with pytest.raises(ScriptError) as e:
+        _import(env, source)
+
+    assert e.value.code == "import_verify_failed"
+    report = e.value.details["report"]
+    assert report["verify"]["ok"] is False and "categories" in report["verify"]["differing"]
+    assert report["docs"] > 0                                      # the import itself went through
+
+
+def test_two_users_import_independently(request: pytest.FixtureRequest, env: dict[str, str], source: Path) -> None:
+    admin.main(["add-user", LOWER], env)
+    admin.main(["add-user", "other@example.com"], env)
+    backend = _backend(request)
+
+    _import(env, source)
+
+    assert plan_tree(backend, _uid(env, "other@example.com")).names == []
+    assert backend.store(str(_uid(env))).exists("profile.md")
+
+
+def test_import_rejects_a_user_with_unusable_folder_content_by_reading_error(
+        env: dict[str, str], source: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    admin.main(["add-user", LOWER], env)
+    original = Path.read_bytes
+
+    def broken(self: Path) -> bytes:
+        if self.name == "profile.md":
+            raise PermissionError("denied")
+        return original(self)
+
+    monkeypatch.setattr(Path, "read_bytes", broken)
+
+    with pytest.raises(ScriptError) as e:
+        _import(env, source)
+
+    assert e.value.code == "import_unreadable" and "profile.md" in e.value.message
+
+
+# --- plan_tree: 키마다 읽기(m-009) ----------------------------------------------------------------
+
+def test_plan_tree_reads_bytes_per_key_not_at_planning_time(request: pytest.FixtureRequest, env: dict[str, str],
+                                                            source: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    admin.main(["add-user", LOWER], env)
+    uid = _uid(env)
+    backend = _backend(request)
+    _import(env, source)
+    gets: list[str] = []
+    real_get = backend.bucket.get
+
+    def counting(s3_key: str) -> bytes:
+        gets.append(s3_key)
+        return real_get(s3_key)
+
+    monkeypatch.setattr(backend.bucket, "get", counting)
+
+    plan = plan_tree(backend, uid)
+    assert gets == [] and len(plan.names) > 10                    # names and folders are known without any download
+    streamed = iter(plan.items())
+    first_name, first_bytes = next(streamed)
+    assert first_name == plan.names[0] and first_bytes == (source / first_name).read_bytes()
+    downloads_after_first = len(gets)
+    assert downloads_after_first <= 1                              # only the first key was read so far
+    assert dict(streamed) | {first_name: first_bytes} == {n: (source / n).read_bytes() for n in plan.names}
+    assert plan.collect().files == export_tree(backend, uid).files
+
+
+def test_plan_tree_write_streams_to_disk(request: pytest.FixtureRequest, env: dict[str, str], source: Path,
+                                         tmp_path: Path) -> None:
+    admin.main(["add-user", LOWER], env)
+    _import(env, source)
+
+    plan_tree(_backend(request), _uid(env)).write(tmp_path / "out")
+
+    assert tree(tmp_path / "out") == {k: v for k, v in tree(source).items() if k != keys.LIBRARY_CONFIG}
+
+
+def test_pg_user_helper_users_are_visible_to_admin_usage(env: dict[str, str], migrated_db: TestDb) -> None:
+    pg_user(migrated_db.owner_dsn, "helper@example.com")
+    assert admin.main(["usage"], env)["rows"] == []

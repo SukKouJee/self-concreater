@@ -33,7 +33,8 @@ from scripts import keys as _keys
 from scripts.common import ScriptError
 from scripts.stores import Meta
 from server.db import Conn, Db
-from server.keyindex import ancestors, check_prefix, matcher, meta, not_found, sha256_hex, windows_order
+from server.keyindex import (ImportOutcome, ancestors, check_prefix, matcher, meta, not_found, sha256_hex,
+                             windows_order)
 
 MAX_OBJECT_BYTES: Final = 64 * 1024 * 1024        # §3.5: old conti HTML (46MB) fits
 DELETE_BATCH: Final = 1000                          # S3 DeleteObjects limit
@@ -203,7 +204,11 @@ class _S3Store:
     def _row(self, conn: Conn, key: str) -> tuple[int, int] | None:
         raise NotImplementedError
 
-    def _upsert(self, conn: Conn, key: str, data: bytes, s3_key: str) -> None:
+    def _sha(self, conn: Conn, key: str) -> str | None:
+        raise NotImplementedError
+
+    def _upsert(self, conn: Conn, key: str, data: bytes, s3_key: str, mtime_ns: int | None = None) -> None:
+        """행 upsert. `mtime_ns`가 있으면 그 값을 **그대로** 쓴다(가져오기). 없으면 지금 시각(다시 쓸 때 줄지 않음)."""
         raise NotImplementedError
 
     def _delete_rows(self, conn: Conn, keys: builtins.list[str]) -> builtins.list[str]:
@@ -260,6 +265,41 @@ class _S3Store:
                 if not existed:
                     self._discard(s3_key, e)
                 raise
+
+    # 이미 있는 키를 가져올 때 덮어쓰지 않고 건너뛴다(공유 캐시: 먼저 쓴 쪽이 이긴다, 설계 §12)
+    _import_keeps_existing: bool = False
+
+    def import_raw(self, key: str, data: bytes, mtime_ns: int, *, overwrite: bool = False,
+                   dry_run: bool = False) -> ImportOutcome:
+        """관리 가져오기(Protocol 밖, `server.admin import`): 원본 mtime을 그대로 넣는다. 같은 내용(sha256)이면 `same`,
+        다르면 `overwrite`일 때만 덮어쓴다(`replaced`), 아니면 `conflict`(공유 캐시는 항상 `skipped`).
+        `dry_run`이면 판정만 한다. 쓰기 순서·고아 처리는 `put`과 같다."""
+        key = self._key(key)
+        data = bytes(data)
+        _check_size(key, len(data))
+        s3_key = self._s3_key(key)
+        with self._tx() as conn:
+            self._lock(conn, key)
+            current = self._sha(conn, key)
+            if current == sha256_hex(data):
+                return "same"
+            if current is not None and self._import_keeps_existing:
+                return "skipped"
+            if current is not None and not overwrite:
+                return "conflict"
+            outcome: ImportOutcome = "new" if current is None else "replaced"
+            if dry_run:
+                return outcome
+            self._bucket.put(s3_key, data)
+            try:
+                with conn.transaction():
+                    self._upsert(conn, key, data, s3_key, mtime_ns)
+                    self._touch_folders(conn, ancestors(key))
+            except BaseException as e:
+                if current is None:
+                    self._discard(s3_key, e)
+                raise
+        return outcome
 
     def _discard(self, s3_key: str, cause: BaseException) -> None:
         """행을 못 넣은 새 객체를 지운다. 이것도 실패하면 원래 예외에 고아 객체를 적어 둔다(S10 점검)."""
@@ -409,12 +449,17 @@ class S3ObjectStore(_S3Store):
                            (self._uid, key)).fetchone()
         return None if row is None else (int(row[0]), int(row[1]))
 
-    def _upsert(self, conn: Conn, key: str, data: bytes, s3_key: str) -> None:
+    def _sha(self, conn: Conn, key: str) -> str | None:
+        row = conn.execute("SELECT sha256 FROM objects WHERE user_id = %s AND key = %s", (self._uid, key)).fetchone()
+        return None if row is None else str(row[0])
+
+    def _upsert(self, conn: Conn, key: str, data: bytes, s3_key: str, mtime_ns: int | None = None) -> None:
+        stamp = "EXCLUDED.mtime_ns" if mtime_ns is not None else "GREATEST(EXCLUDED.mtime_ns, objects.mtime_ns + 1)"
         conn.execute(
             "INSERT INTO objects (user_id, key, size, sha256, mtime_ns, s3_key) VALUES (%s, %s, %s, %s, %s, %s) "
             "ON CONFLICT (user_id, key) DO UPDATE SET size = EXCLUDED.size, sha256 = EXCLUDED.sha256, "
-            "mtime_ns = GREATEST(EXCLUDED.mtime_ns, objects.mtime_ns + 1), s3_key = EXCLUDED.s3_key",
-            (self._uid, key, len(data), sha256_hex(data), _now_ns(), s3_key))
+            f"mtime_ns = {stamp}, s3_key = EXCLUDED.s3_key",
+            (self._uid, key, len(data), sha256_hex(data), _now_ns() if mtime_ns is None else mtime_ns, s3_key))
 
     def _delete_rows(self, conn: Conn, keys: builtins.list[str]) -> builtins.list[str]:
         if not keys:
@@ -452,6 +497,7 @@ class S3SharedCache(_S3Store):
     키·접두사는 `workspace/{raw,cuts,frames,shots}/` 아래만(아니면 ValueError). `created_by`는 처음 쓴 사용자."""
 
     _lock_class = _LOCK_SHARED
+    _import_keeps_existing = True
 
     def _check_prefix(self, prefix: str) -> str:
         if not prefix.startswith(_keys.SHARED_PREFIXES):
@@ -472,13 +518,18 @@ class S3SharedCache(_S3Store):
         row = conn.execute("SELECT size, mtime_ns FROM shared_objects WHERE key = %s", (key,)).fetchone()
         return None if row is None else (int(row[0]), int(row[1]))
 
-    def _upsert(self, conn: Conn, key: str, data: bytes, s3_key: str) -> None:
+    def _sha(self, conn: Conn, key: str) -> str | None:
+        row = conn.execute("SELECT sha256 FROM shared_objects WHERE key = %s", (key,)).fetchone()
+        return None if row is None else str(row[0])
+
+    def _upsert(self, conn: Conn, key: str, data: bytes, s3_key: str, mtime_ns: int | None = None) -> None:
+        stamp = "EXCLUDED.mtime_ns" if mtime_ns is not None             else "GREATEST(EXCLUDED.mtime_ns, shared_objects.mtime_ns + 1)"
         conn.execute(
             "INSERT INTO shared_objects (key, size, sha256, mtime_ns, s3_key, created_by) "
             "VALUES (%s, %s, %s, %s, %s, %s) "
             "ON CONFLICT (key) DO UPDATE SET size = EXCLUDED.size, sha256 = EXCLUDED.sha256, "
-            "mtime_ns = GREATEST(EXCLUDED.mtime_ns, shared_objects.mtime_ns + 1), s3_key = EXCLUDED.s3_key",
-            (key, len(data), sha256_hex(data), _now_ns(), s3_key, self._uid))
+            f"mtime_ns = {stamp}, s3_key = EXCLUDED.s3_key",
+            (key, len(data), sha256_hex(data), _now_ns() if mtime_ns is None else mtime_ns, s3_key, self._uid))
 
     def _delete_rows(self, conn: Conn, keys: builtins.list[str]) -> builtins.list[str]:
         if not keys:

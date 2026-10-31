@@ -34,7 +34,8 @@ from scripts import refstore
 from scripts.common import ScriptError
 from scripts.stores import Doc, Meta, VersionConflict
 from server.db import Conn, Db
-from server.keyindex import ancestors, check_prefix, matcher, meta, not_found, sha256_hex, windows_order
+from server.keyindex import (ImportOutcome, ancestors, check_prefix, matcher, meta, not_found, sha256_hex,
+                             windows_order)
 from server.s3store import S3Bucket, lock_user_object, user_s3_key
 
 log = logging.getLogger(__name__)
@@ -133,6 +134,40 @@ class PgDocStore:
                 raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), key)
             self._upsert_folders(conn, ancestors(key))
         return version
+
+    def import_raw(self, key: str, data: bytes, mtime_ns: int, *, overwrite: bool = False,
+                   dry_run: bool = False) -> ImportOutcome:
+        """관리 가져오기(Protocol 밖, `server.admin import`): 원본 mtime을 **그대로** 넣는다(미션·진단의 mtime 정렬, `api_refs`의
+        "added"가 바뀌지 않게). 같은 내용(sha256)이면 건드리지 않고 `same`, 다르면 `overwrite`일 때만 덮어쓴다(`replaced`),
+        아니면 `conflict`. 사용자가 고른 원본 폴더로 되돌리는 일이라 내 메모 가드(`check_memo`)는 거치지 않는다.
+        `dry_run`이면 같은 판정만 하고 쓰지 않는다."""
+        key = self._doc_key(key)
+        data = bytes(data)
+        version = sha256_hex(data)
+        with self._tx() as conn:
+            while True:
+                row = conn.execute("SELECT version FROM docs WHERE user_id = %s AND key = %s FOR UPDATE",
+                                   (self._uid, key)).fetchone()
+                if row is not None and str(row[0]) == version:
+                    return "same"
+                if row is not None and not overwrite:
+                    return "conflict"
+                outcome: ImportOutcome = "new" if row is None else "replaced"
+                if dry_run:
+                    return outcome
+                if row is None:
+                    inserted = conn.execute(
+                        "INSERT INTO docs (user_id, key, raw, version, size, mtime_ns) VALUES (%s, %s, %s, %s, %s, %s) "
+                        "ON CONFLICT (user_id, key) DO NOTHING RETURNING 1",
+                        (self._uid, key, data, version, len(data), mtime_ns)).fetchone()
+                    if inserted is None:        # another writer got there first: look again (and lock) its row
+                        continue
+                else:
+                    conn.execute("UPDATE docs SET raw = %s, version = %s, size = %s, mtime_ns = %s "
+                                 "WHERE user_id = %s AND key = %s",
+                                 (data, version, len(data), mtime_ns, self._uid, key))
+                self._upsert_folders(conn, ancestors(key))
+                return outcome
 
     def _insert(self, conn: Conn, key: str, data: bytes, version: str) -> bool:
         row = conn.execute("INSERT INTO docs (user_id, key, raw, version, size, mtime_ns) "
