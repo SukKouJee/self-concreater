@@ -255,3 +255,9 @@ def test_operations_notes_cover_backup_restore_passwords_digest_and_users() -> N
     text = (SERVER_DIR / "OPERATIONS.md").read_text(encoding="utf-8")
     for needle in ("pg_dump", "mc", "mirror", "pg_restore", "복원 순서", "처음 초기화될 때만", "imagetools", "add-user", "import"):
         assert needle in text, needle
+
+
+def test_docs_explain_that_logout_is_per_browser_and_how_to_sign_out_everywhere() -> None:
+    for path in (ROOT / "deploy" / "server" / "OPERATIONS.md", ROOT / "README.md"):
+        text = path.read_text(encoding="utf-8")
+        assert "logout-all" in text and "이 브라우저" in text, path

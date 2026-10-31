@@ -136,9 +136,10 @@ def test_add_user_rejects_bad_daily_limit(bad: str) -> None:
     assert e.value.code == "bad_limit"
 
 
-def test_admin_commands_need_the_owner_dsn() -> None:
+@pytest.mark.parametrize("command", ["disable-user", "logout-all"])
+def test_admin_commands_need_the_owner_dsn(command: str) -> None:
     with pytest.raises(ScriptError) as e:
-        admin.main(["disable-user", "a@example.com"], {})
+        admin.main([command, "a@example.com"], {})
     assert e.value.code == "config_missing"
 
 
@@ -191,6 +192,40 @@ def test_disable_unknown_user_is_user_not_found(env: dict[str, str]) -> None:
     with pytest.raises(ScriptError) as e:
         admin.main(["disable-user", "ghost@example.com"], env)
     assert e.value.code == "user_not_found"
+
+
+def test_logout_all_bumps_session_epoch_and_keeps_the_user_enabled(env: dict[str, str]) -> None:
+    admin.main(["add-user", LOWER], env)
+    before = _user_row(env, LOWER)
+
+    out = admin.main(["logout-all", EMAIL], env)
+
+    after = _user_row(env, LOWER)
+    assert after[4] is False                                  # still allowed to sign in again
+    assert out == {"id": str(before[0]), "email": LOWER, "disabled": False, "session_epoch": before[5] + 1}
+    assert after[5] == before[5] + 1
+
+
+def test_logout_all_unknown_user_is_user_not_found(env: dict[str, str]) -> None:
+    with pytest.raises(ScriptError) as e:
+        admin.main(["logout-all", "ghost@example.com"], env)
+    assert e.value.code == "user_not_found"
+
+
+def test_logout_all_invalidates_a_session_issued_before_it(env: dict[str, str]) -> None:
+    from server.auth import SessionClaim, UserRow, session_valid
+    admin.main(["add-user", LOWER], env)
+
+    def user() -> UserRow:
+        row = _user_row(env, LOWER)
+        return UserRow(id=row[0], email=row[1], disabled=row[4], session_epoch=row[5])
+
+    claim = SessionClaim(user().id, user().session_epoch, 1000)
+    assert session_valid(claim, user(), now=1001)
+
+    admin.main(["logout-all", LOWER], env)
+
+    assert not session_valid(claim, user(), now=1001)
 
 
 def test_usage_is_empty_without_records(env: dict[str, str]) -> None:

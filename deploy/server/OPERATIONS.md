@@ -14,6 +14,8 @@
 - 초대: `docker compose --profile admin run --rm admin add-user friend@gmail.com [--daily-limit 2.00]`
   초대된 이메일만 Google로 로그인할 수 있다.
 - 끄기: `... admin disable-user friend@gmail.com` (이미 나간 세션도 다음 요청에서 끊긴다)
+- 모든 기기에서 로그아웃: `... admin logout-all friend@gmail.com`. 화면의 로그아웃은 이 브라우저의 쿠키만 지우므로,
+  기기를 잃어버렸을 때는 이 명령으로 세션을 모두 끊는다(`session_epoch` 증가, 계정은 그대로라 다시 로그인하면 된다).
 - 사용량: `... admin usage --days 7`
 - 내 PC의 작업 폴더 가져오기(읽기 전용으로 붙인다):
   `docker compose --profile admin run --rm -v /경로/작업폴더:/import:ro admin import /import --user you@gmail.com`

@@ -2,6 +2,7 @@
 
 - `add-user <email> [--name N] [--daily-limit USD] [--admin]`: 초대. 이메일은 소문자로 저장.
 - `disable-user <email>`: 비활성 + `session_epoch` 증가(이미 나간 세션 쿠키가 다음 요청에서 죽는다).
+- `logout-all <email>`: `session_epoch`만 증가(모든 기기의 세션이 끊기고, 다시 로그인하면 된다. 기기 분실 등).
 - `import <작업 폴더> --user <email> [--dry-run] [--overwrite] [--overwrite-memo] [--no-verify]`: 로컬 작업 폴더를 그 사용자 계정으로 올린다.
 - `usage [--days N]`: 사용자·날짜(Asia/Seoul)별 LLM 사용량 합계(`llm_usage`, 아직 기록이 없으면 빈 목록).
 
@@ -310,6 +311,17 @@ def disable_user(env: Mapping[str, str], email: str) -> dict[str, Any]:
     return {"id": str(row[0]), "email": address, "disabled": True, "session_epoch": int(row[1])}
 
 
+def logout_all(env: Mapping[str, str], email: str) -> dict[str, Any]:
+    """그 사용자의 모든 세션을 끊는다(`session_epoch` 증가). 비활성으로 만들지 않는다."""
+    address = _email(email)
+    with _owner_tx(env) as conn:
+        row = conn.execute("UPDATE users SET session_epoch = session_epoch + 1 "
+                           "WHERE email = %s RETURNING id, session_epoch, disabled", (address,)).fetchone()
+    if row is None:
+        raise ScriptError("user_not_found", f"없는 사용자입니다: {address}")
+    return {"id": str(row[0]), "email": address, "disabled": bool(row[2]), "session_epoch": int(row[1])}
+
+
 def usage(env: Mapping[str, str], days: int) -> dict[str, Any]:
     if days < 1:
         raise ScriptError("bad_days", "--days는 1 이상이어야 합니다")
@@ -394,6 +406,8 @@ def _parser() -> ArgParser:
     add.add_argument("--admin", action="store_true")
     dis = sub.add_parser("disable-user")
     dis.add_argument("email")
+    out = sub.add_parser("logout-all", help="그 사용자의 모든 기기 세션을 끊는다(계정은 그대로)")
+    out.add_argument("email")
     imp = sub.add_parser("import")
     imp.add_argument("folder")
     imp.add_argument("--user", required=True)
@@ -415,6 +429,8 @@ def main(argv: list[str], env: Mapping[str, str] | None = None) -> dict[str, Any
         return add_user(environ, args.email, args.name, args.daily_limit, args.admin)
     if args.command == "disable-user":
         return disable_user(environ, args.email)
+    if args.command == "logout-all":
+        return logout_all(environ, args.email)
     if args.command == "import":
         return import_workfolder(environ, args.folder, args.user, dry_run=args.dry_run, overwrite=args.overwrite,
                                  overwrite_memo=args.overwrite_memo, verify=args.verify)

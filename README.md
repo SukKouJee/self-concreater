@@ -123,6 +123,7 @@ docker compose --profile admin run --rm admin add-user friend@gmail.com --daily-
 |---|---|
 | `add-user <이메일> [--name N] [--daily-limit USD] [--admin]` | 초대(이미 있으면 `user_exists` 오류) |
 | `disable-user <이메일>` | 비활성. 로그인 중이던 세션도 끊김 |
+| `logout-all <이메일>` | 계정은 그대로 두고 모든 기기의 세션을 끊음(기기 분실 등). 다시 로그인하면 됨 |
 | `import <폴더> --user <이메일> [--dry-run] [--overwrite] [--overwrite-memo]` | 내 PC 작업 폴더를 그 사용자 계정으로 올림. 다시 실행해도 안전하고, 서버에서 고친 `## 내 메모`는 `--overwrite-memo`가 없으면 지키며 올린 뒤 목록을 비교해 확인 |
 | `usage [--days N]` | 사용자별 LLM 사용량 집계 |
 
@@ -132,6 +133,7 @@ docker compose --profile admin run --rm -v C:/내/작업폴더:/import:ro admin 
 
 - LLM 비용: 운영자 키 하나를 같이 씁니다. 사용자당 하루(한국 시간) 한도 `YTC_DAILY_USD`(기본 1.00), 넘으면 안내 문구와 함께 막힙니다. 서버 전체 동시 작업은 영상 `YTC_MEDIA_SLOTS`(2)·Claude `YTC_LLM_SLOTS`(4)입니다.
 - 서버 v1에서 꺼진 기능: 공용 라이브러리, 자막 영상 만들기, 촬영 영상 처리, 자막 시간 맞추기(srtfit). 촬영 영상은 내 PC 판에서 처리한 뒤 `import`로 옮깁니다.
+- 화면의 로그아웃은 이 브라우저의 쿠키만 지웁니다. 다른 기기까지 모두 로그아웃하려면(기기 분실 등) 관리자가 `logout-all <이메일>`을 실행합니다.
 - 앱이 다시 시작되면 진행 중이던 작업은 멈춥니다(저장된 문서는 그대로).
 - 유튜브가 서버 IP를 막으면 `.env`의 `YT_PROXY`를 채웁니다.
 - 참고: MinIO 공식 이미지가 중단돼 Chainguard 빌드(`cgr.dev/chainguard/minio`)를 다이제스트로 고정해 씁니다. 갱신 방법은 서버 설계 §9.3.

@@ -49,7 +49,7 @@
 │   ├── auth.py              세션, CSRF, dev 로그인, Google 로그인 허용(초대·sub 고정)
 │   ├── oidc.py              Google OIDC 프로토콜(state·nonce·PKCE, ID 토큰 검증)
 │   ├── files.py             /files 프록시(Range)
-│   ├── admin.py             CLI: add-user · disable-user · import · usage
+│   ├── admin.py             CLI: add-user · disable-user · logout-all · import · usage
 │   ├── migrations/ alembic.ini
 │   └── web/login.html
 ├── deploy/
@@ -252,7 +252,7 @@ CREATE POLICY own ON <t> USING (user_id = nullif(current_setting('app.user_id', 
 | 로그인 | Google OIDC Authorization Code + PKCE(S256) + nonce, scope `openid email profile`. `/auth/login`(방법 목록) → `GET /auth/google`(302) → Google → `GET /auth/google/callback` → `/` |
 | 허용 | `email_verified=true`이고 `users`에 있는 이메일만(초대제, `admin add-user`). 처음이면 `google_sub` 저장, 이후 sub가 다르면 거부. `disabled`면 거부 |
 | 세션 | Starlette `SessionMiddleware`(itsdangerous 서명 쿠키 `ytc_session`), 내용 `{uid, epoch, iat}`. `HttpOnly; Secure; SameSite=Lax; Path=/`, 만료 14일. 요청마다 users 조회로 `disabled`·`session_epoch` 확인(사용자 수십 명, 캐시 불필요) |
-| 로그아웃 | `POST /auth/logout` → 세션 비움. 전체 무효화는 `admin disable-user` 또는 epoch 증가 |
+| 로그아웃 | `POST /auth/logout` → 이 브라우저의 세션만 비움. 전체 무효화는 `admin logout-all`(epoch 증가, 계정 유지) 또는 `admin disable-user` |
 | CSRF | 안전하지 않은 메서드(POST·PUT·DELETE)는 ① `Origin`이 `YTC_PUBLIC_URL`의 출처와 같아야 하고(없으면 `Sec-Fetch-Site: same-origin` 요구) ② `Content-Type: application/json` 필수(api.js가 이미 항상 보냄 → 단순 폼 교차 전송 불가). SameSite=Lax가 한 겹 더 |
 | 보안 헤더 | 기존 `nosniff`, `no-store`, `Referrer-Policy` + `Strict-Transport-Security`(HTTPS일 때), `Content-Security-Policy: default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'` (정적 JS가 인라인 스크립트를 쓰면 T10에서 확인 후 조정), SVG CSP 유지 |
 | dev 로그인 | `YTC_DEV_LOGIN=1`일 때만 `POST /auth/dev {"email"}`(users에 있는 이메일). `YTC_ENV=production`이면 설정 자체를 시작 시 거부 |
