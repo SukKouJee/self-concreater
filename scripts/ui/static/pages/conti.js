@@ -914,7 +914,7 @@ function srtFitBox() {
   const err = h("p", { class: "error field-error", role: "alert" }, S.fitError || "");
   err.hidden = !S.fitError;
 
-  return h("div", { class: "srtfit" },
+  return h("div", { class: "srtfit", "data-feature": "srtfit" },
     h("div", { class: "field" }, h("label", { for: inputId }, "편집한 영상 파일 경로"), input),
     h("p", { class: "muted hint", id: "srtfit-hint" }, FIT_HINT),
     h("div", { class: "btn-row" }, caption, line), err, status);
@@ -1031,7 +1031,7 @@ function cvActive() {
 
 function captionVideoBox() {
   const busy = cvActive() || !!S.cvStarting;
-  const box = h("div", { class: "capvideo" }, h("h2", { class: "capvideo-title" }, "움직이는 자막 영상"));
+  const box = h("div", { class: "capvideo", "data-feature": "caption_video" }, h("h2", { class: "capvideo-title" }, "움직이는 자막 영상"));
   if (S.data && S.data.outputs_stale && S.data.outputs_stale.video) box.append(h("p", { class: "stale-note", role: "status" }, STALE_TEXT));
   if (S.cvReady === null || S.cvReady === undefined) {
     box.append(h("p", { class: "muted srt-note" }, "설치 상태를 확인하는 중…"));

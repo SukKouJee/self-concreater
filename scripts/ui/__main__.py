@@ -1,4 +1,4 @@
-"""UI 서버 실행기: `ytc ui [--port N] [--no-open] [--detach] [--stop]`.
+"""UI 서버 실행기: `ytc ui [--port N] [--host H] [--no-open] [--foreground|--detach|--stop]`.
 
 - 작업 폴더(YT_COACH_HOME 또는 현재 폴더)당 서버는 하나다. 살아 있는 `workspace/ui.lock`이 있으면
   새로 띄우지 않고 `{"status": "running", "url"}`를 돌려준다(`--no-open`이 아니면 브라우저도 연다).
@@ -6,6 +6,7 @@
 - `--detach`: 같은 명령을 분리 프로세스로 띄운다(출력은 `workspace/ui.log`). 자식은 항상 `--no-open`으로 띄우고
   브라우저는 부모가 연다. lock이 생길 때까지 최대 15초 기다린 뒤 `{"status": "started", "url", "pid"}`(pid는 lock의 서버 pid).
   Windows에서는 Claude Code를 닫아도 서버가 살도록 Job 이탈(CREATE_BREAKAWAY_FROM_JOB)을 먼저 시도한다.
+- `--foreground`: 기본 동작(전경)을 명시한다. `--host`는 127.0.0.1이 기본이고, 다른 값은 컨테이너 안(`YTC_IN_CONTAINER=1`)에서만 된다.
 - `--stop`: lock의 서버에 `POST /api/shutdown` → `{"status": "stopped"}`, 없으면 `{"status": "not_running"}`.
 """
 from __future__ import annotations
@@ -108,8 +109,8 @@ def _stop(root: Path) -> dict:
     return {"status": "stopped"}
 
 
-def _serve(root: Path, port: int, open_browser: bool) -> None:
-    srv, app = server.make_app(root, port)
+def _serve(root: Path, port: int, open_browser: bool, host: str = server.HOST) -> None:
+    srv, app = server.make_app(root, port, host)
     try:
         info = server.write_lock(app)
         emit({"status": "started", "url": info["url"]})
@@ -127,8 +128,10 @@ def _serve(root: Path, port: int, open_browser: bool) -> None:
 def main(argv: list[str]) -> dict | None:
     parser = ArgParser(prog="ytc ui")
     parser.add_argument("--port", type=int, default=0)
+    parser.add_argument("--host", default=server.HOST)   # 127.0.0.1 밖은 컨테이너 안(YTC_IN_CONTAINER=1)에서만
     parser.add_argument("--no-open", action="store_true")
     mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--foreground", action="store_true")   # 기본 동작을 명시한다(컨테이너 CMD)
     mode.add_argument("--detach", action="store_true")
     mode.add_argument("--stop", action="store_true")
     args = parser.parse_args(argv)
@@ -142,7 +145,7 @@ def main(argv: list[str]) -> dict | None:
         return {"status": "running", "url": live["url"]}
     if args.detach:
         return _detach(root, args.port, not args.no_open)
-    _serve(root, args.port, not args.no_open)
+    _serve(root, args.port, not args.no_open, args.host)
     return None
 
 

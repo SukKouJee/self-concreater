@@ -55,6 +55,23 @@ STREAM_CHUNK = 1024 * 1024
 MAX_OPEN_RANGE = 8 * 1024 * 1024   # 끝을 정하지 않은 Range(bytes=N-)에 한 번에 내주는 상한
 VIDEO_SUFFIXES = frozenset({".mp4", ".m4v", ".mov", ".mkv", ".webm"})   # /files에서 Range로 나눠 보내는 영상
 PING_TIMEOUT = 1.0
+CONTAINER_ENV = "YTC_IN_CONTAINER"   # 1이면 컨테이너 안: 0.0.0.0 바인딩을 허용한다(게시 포트가 localhost로만 열린다)
+DISABLE_ENV = "YTC_DISABLE"          # 쉼표로 나눈 비활성 기능 이름(FEATURE_PREFIXES의 키)
+EDITION = "local"
+
+# 비활성화할 수 있는 기능: 막는 API 경로 접두사와 사용자에게 보일 문구(서버 설계 8절).
+FEATURE_PREFIXES: dict[str, tuple[str, ...]] = {
+    "library": ("/api/library",),
+    "caption_video": ("/api/conti/caption-video", "/api/captions/check"),
+    "srtfit": ("/api/conti/srt-fit",),
+    "footage": ("/api/footage",),
+}
+FEATURE_TEXT: dict[str, str] = {
+    "library": "공용 라이브러리는 서버판에서 아직 쓸 수 없습니다",
+    "caption_video": "자막 영상 만들기는 내 PC 판에서만 됩니다",
+    "srtfit": "자막 시간 맞추기는 내 PC 판에서만 됩니다(영상 파일 필요)",
+    "footage": "촬영 영상 처리는 내 PC 판에서 하고, 결과는 가져오기로 옮기세요",
+}
 
 # 라우트 모듈: Task 5/6이 여기에 이름을 더한다(예: "scripts.ui.api_add").
 ROUTE_MODULES: list[str] = ["scripts.ui.api_add", "scripts.ui.api_conti", "scripts.ui.api_refs", "scripts.ui.api_typify",
@@ -259,6 +276,21 @@ def range_response(path: Path, size: int, ctype: str, header: str | None, open_c
                     file=FileSlice(path, start, end - start + 1, chunk))
 
 
+def disabled_features() -> dict[str, str]:
+    """env `YTC_DISABLE`에 든 기능 → 문구. 모르는 이름은 무시한다. 비어 있으면 모두 켜짐(로컬판 기본)."""
+    names = {n.strip() for n in os.environ.get(DISABLE_ENV, "").split(",")}
+    return {name: FEATURE_TEXT[name] for name in FEATURE_PREFIXES if name in names}
+
+
+def feature_guard(path: str) -> tuple[int, dict] | None:
+    """비활성 기능의 API 경로면 403 `feature_disabled` 응답, 아니면 None. 어댑터도 같은 함수를 쓴다."""
+    off = disabled_features()
+    for name in off:
+        if any(path == prefix or path.startswith(prefix + "/") for prefix in FEATURE_PREFIXES[name]):
+            return 403, {"error": "feature_disabled", "feature": name, "message": off[name]}
+    return None
+
+
 NOT_FOUND = (404, {"error": "not_found", "message": "없는 경로입니다"})
 
 
@@ -304,6 +336,16 @@ def _api_ping(req: Request) -> dict:
     return {"ok": True, "pid": os.getpid(), "root": str(req.app.root)}
 
 
+@route("GET", "/api/features")
+def _api_features(req: Request) -> dict:
+    return {"edition": EDITION, "disabled": disabled_features()}
+
+
+@route("GET", "/healthz", auth=False)
+def _healthz(req: Request) -> dict:
+    return {"ok": True}
+
+
 @route("GET", "/api/status")
 def _status(req: Request) -> dict:
     return status.overview(req.query.get("category") or None)
@@ -323,6 +365,57 @@ def _shutdown(req: Request) -> dict:
         # 응답을 먼저 보내도록 다른 스레드에서 끈다
         threading.Thread(target=srv.shutdown, daemon=True).start()
     return {"status": "stopping"}
+
+
+# ---- 매칭·호출(stdlib 핸들러와 서버판 ASGI 어댑터가 함께 쓴다) -----------------------
+
+STD_HEADERS: tuple[tuple[str, str], ...] = (
+    ("Cache-Control", "no-store"),
+    ("X-Content-Type-Options", "nosniff"),
+    ("Referrer-Policy", "no-referrer"),
+)
+
+
+def match(method: str, path: str) -> tuple[Route, dict[str, str]] | None:
+    """(method, 경로) → (Route, URL 디코딩된 그룹). 없으면 None."""
+    for rt in ROUTES:
+        if rt.method != method:
+            continue
+        m = rt.pattern.fullmatch(path)
+        if m:
+            return rt, {k: unquote(v) for k, v in m.groupdict().items() if v is not None}
+    return None
+
+
+def normalize(result: Any) -> Response:
+    """핸들러 결과(dict | (status, dict) | Response) → 표준 헤더가 붙은 Response. 호출자 객체는 바꾸지 않는다."""
+    if isinstance(result, Response):
+        return Response(result.status, result.body, result.content_type, [*STD_HEADERS, *result.headers], result.file)
+    code, payload = result if isinstance(result, tuple) else (200, result)
+    try:
+        body = json.dumps(payload, ensure_ascii=False, allow_nan=False, default=str).encode("utf-8")
+    except (ValueError, TypeError) as e:
+        code = 500
+        body = json.dumps({"error": "internal", "message": f"응답을 만들지 못했습니다: {type(e).__name__}"},
+                          ensure_ascii=False).encode("utf-8")
+    return Response(code, body, "application/json; charset=utf-8", list(STD_HEADERS))
+
+
+def error_result(exc: Exception) -> tuple[int, dict]:
+    """ScriptError → 400, 그 밖의 예외 → 500(스택은 stderr)."""
+    if isinstance(exc, ScriptError):
+        return 400, {"error": exc.code, "message": exc.message, **exc.details}
+    traceback.print_exception(exc, file=sys.stderr)
+    return 500, {"error": "internal", "message": f"{type(exc).__name__}: {exc}"}
+
+
+def call(rt: Route, req: Request, groups: dict[str, str]) -> Response:
+    """핸들러를 부르고 결과·예외를 Response로 정규화한다."""
+    try:
+        result = rt.handler(req, **groups)
+    except Exception as e:  # noqa: BLE001 - 모든 실패를 JSON으로 돌려준다
+        result = error_result(e)
+    return normalize(result)
 
 
 # ---- HTTP 처리 ---------------------------------------------------------------
@@ -352,13 +445,10 @@ class _Handler(BaseHTTPRequestHandler):
         app = self.server.app
         try:
             result = self._handle(method, app)
-        except ScriptError as e:
-            result = (400, {"error": e.code, "message": e.message, **e.details})
-        except Exception as e:  # noqa: BLE001 - 모든 실패를 JSON 500으로 돌려준다
-            traceback.print_exc(file=sys.stderr)
-            result = (500, {"error": "internal", "message": f"{type(e).__name__}: {e}"})
+        except Exception as e:  # noqa: BLE001 - 요청 읽기 실패(bad_json 등)도 JSON으로 돌려준다
+            result = error_result(e)
         self._drain_body()
-        self._send(result)
+        self._send(result if isinstance(result, Response) else normalize(result))
 
     def _drain_body(self) -> None:
         # 읽지 않은 본문을 남긴 채 응답하면 Windows가 연결을 RST로 끊으므로 비운다(거부 응답 포함)
@@ -382,7 +472,7 @@ class _Handler(BaseHTTPRequestHandler):
             return 403, {"error": "bad_origin", "message": "다른 사이트에서 온 요청은 받지 않습니다"}
 
         parts = urlsplit(self.path)
-        found = self._match(method, parts.path)
+        found = match(method, parts.path)
         if found is None:
             return NOT_FOUND
         rt, groups = found
@@ -390,6 +480,9 @@ class _Handler(BaseHTTPRequestHandler):
             given = self.headers.get(HEADER) or _cookie(self.headers.get("Cookie"), cookie_name(app.port))
             if not token_ok(given, app.token):
                 return 403, BAD_TOKEN
+        blocked = feature_guard(parts.path)
+        if blocked is not None:
+            return blocked
         req = Request(
             method=method,
             path=parts.path,
@@ -398,17 +491,7 @@ class _Handler(BaseHTTPRequestHandler):
             headers={k.lower(): v for k, v in self.headers.items()},
             app=app,
         )
-        return rt.handler(req, **groups)
-
-    @staticmethod
-    def _match(method: str, path: str) -> tuple[Route, dict[str, str]] | None:
-        for rt in ROUTES:
-            if rt.method != method:
-                continue
-            m = rt.pattern.fullmatch(path)
-            if m:
-                return rt, {k: unquote(v) for k, v in m.groupdict().items() if v is not None}
-        return None
+        return call(rt, req, groups)
 
     def _read_json(self) -> dict[str, Any]:
         raw_len = self.headers.get("Content-Length") or "0"
@@ -430,24 +513,10 @@ class _Handler(BaseHTTPRequestHandler):
             raise ScriptError("bad_json", "요청 본문은 JSON 객체여야 합니다")
         return data
 
-    def _send(self, result: Any) -> None:
-        if isinstance(result, Response):
-            resp = result
-        else:
-            code, payload = result if isinstance(result, tuple) else (200, result)
-            try:
-                body = json.dumps(payload, ensure_ascii=False, allow_nan=False, default=str).encode("utf-8")
-            except (ValueError, TypeError) as e:
-                code = 500
-                body = json.dumps({"error": "internal", "message": f"응답을 만들지 못했습니다: {type(e).__name__}"},
-                                  ensure_ascii=False).encode("utf-8")
-            resp = Response(code, body, "application/json; charset=utf-8")
+    def _send(self, resp: Response) -> None:
         self.send_response(resp.status)
         self.send_header("Content-Type", resp.content_type)
         self.send_header("Content-Length", str(resp.file.length if resp.file else len(resp.body)))
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "no-referrer")
         for key, value in resp.headers:
             self.send_header(key, value)
         self.end_headers()
@@ -491,15 +560,18 @@ class _Server(ThreadingHTTPServer):
             super().finish_request(request, client_address)
 
 
-def make_app(root: Path, port: int = 0) -> tuple[ThreadingHTTPServer, App]:
-    """127.0.0.1에 바인딩한 서버와 App을 만든다(아직 serve하지 않음). YT_COACH_HOME을 root로 맞춘다."""
+def make_app(root: Path, port: int = 0, host: str = HOST) -> tuple[ThreadingHTTPServer, App]:
+    """host(기본 127.0.0.1)에 바인딩한 서버와 App을 만든다(아직 serve하지 않음). YT_COACH_HOME을 root로 맞춘다.
+    127.0.0.1이 아닌 host는 컨테이너 안(env YTC_IN_CONTAINER=1)에서만 허용한다. Host 헤더 검사는 host와 무관하게 그대로다."""
+    if host != HOST and os.environ.get(CONTAINER_ENV) != "1":
+        raise ScriptError("host_not_allowed", f"--host {host}는 컨테이너 안({CONTAINER_ENV}=1)에서만 쓸 수 있습니다")
     root = Path(root).resolve()
     os.environ["YT_COACH_HOME"] = str(root)
     register_routes()
     try:
-        srv = _Server((HOST, port), _Handler)
+        srv = _Server((host, port), _Handler)
     except OSError as e:
-        raise ScriptError("port_unavailable", f"{HOST}:{port}에 서버를 열 수 없습니다: {e}") from e
+        raise ScriptError("port_unavailable", f"{host}:{port}에 서버를 열 수 없습니다: {e}") from e
     app = App(root=root, token=secrets.token_urlsafe(24), port=srv.server_address[1], server=srv,
               jobs=JobManager())
     srv.app = app

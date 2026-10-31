@@ -21,6 +21,7 @@
 // Rule: after EVERY await in mount/handlers, `if (!ctx.isCurrent()) return;` before touching the DOM.
 import { api, showBanner } from "/static/api.js";
 import { h } from "/static/dom.js";
+import { loadFeatures, watchFeatures } from "/static/features.js";
 import { createHelpPanel, helpPage } from "/static/help-panel.js";
 import { createStatusChip } from "/static/status-chip.js";
 import { legacyRoute, parseVideoHash } from "/static/video-utils.js";
@@ -277,6 +278,11 @@ function renderTabbar() {
     svgIcon(t.icon, "tab-icon"), h("span", {}, t.label))));
 }
 
+// The 공용 라이브러리 tab is the one subnav link that a disabled feature takes away.
+function featureOfLink(item) {
+  return item.href === "#/refs?tab=library" ? "library" : null;
+}
+
 function renderSubnav(hash) {
   const nav = $("subnav");
   const items = subnavItems(hash);
@@ -284,7 +290,7 @@ function renderSubnav(hash) {
   nav.classList.toggle("subnav-phone", items.length > 0 && items.every((it) => it.phoneOnly));
   nav.replaceChildren(...items.map((it) => h("a", {
     class: "subnav-link" + (it.phoneOnly ? " subnav-phone-item" : ""), href: it.href,
-    "aria-current": it.current ? "page" : null,
+    "aria-current": it.current ? "page" : null, "data-feature": featureOfLink(it),
   }, it.label)));
 }
 
@@ -664,6 +670,7 @@ async function start() {
     e.preventDefault();
     $("main").focus();
   });
+  watchFeatures(document.body, await loadFeatures(api));   // hides what this edition cannot do (/api/features)
   await refreshCategories();
   await route();
 }

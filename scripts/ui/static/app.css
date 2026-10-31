@@ -68,6 +68,7 @@ code { background: var(--chip); padding: 1px 6px; border-radius: 4px; }
 .head { position: sticky; top: 0; z-index: 40; }
 .banner { background: var(--danger); color: var(--on-danger); padding: var(--sp-3) var(--sp-4); font-weight: 600; }
 .banner[hidden] { display: none; }
+[data-feature][hidden] { display: none; }
 
 /* top bar: logo, category, status chip slot, help menu */
 .topbar { height: var(--topbar-h); display: flex; align-items: center; gap: var(--sp-4);

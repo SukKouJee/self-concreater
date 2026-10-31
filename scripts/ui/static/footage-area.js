@@ -841,7 +841,7 @@ export function mountFootageArea(ctx, opts) {
   const slots = {};
   for (const name of ["folders", "process", "cuts", "suggest", "outputs"]) slots[name] = h("div", { class: `fc-slot fc-${name}` });
   const body = h("div", { class: "footage-body", id: "footage-body", hidden: true }, ...Object.values(slots));
-  const root = h("section", { class: "footage card", "aria-label": "촬영 영상" }, live, head, body);
+  const root = h("section", { class: "footage card", "aria-label": "촬영 영상", "data-feature": "footage" }, live, head, body);
   F = {
     ctx, opts, root, head, body, slots, live, open: false, view: null, error: null,
     filter: "all", folderText: "", folderError: "", busy: new Set(), playing: new Set(), players: new Map(), unplayable: new Set(),
