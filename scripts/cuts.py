@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterator
 import cv2
 import numpy as np
 
-from scripts import ctx, keys, refstore
+from scripts import ctx, keys, limits, refstore
 from scripts.common import (
     TEMPLATES_DIR,
     ArgParser,
@@ -376,6 +376,13 @@ def summarize_camera(scenes: list[dict]) -> dict:
 DOWNLOAD_START_TEXT = "영상 받는 중"
 
 
+def _wait_reporter(report: Progress | None) -> Callable[[], None] | None:
+    """media 슬롯을 기다리는 동안 보일 문구(진행 단계 "wait": 걸린 시간에 넣지 않는다)."""
+    if report is None:
+        return None
+    return lambda: report("wait", None, limits.WAIT_TEXT)
+
+
 def cut_stats(video_id: str, force: bool = False, progress: Progress | None = None) -> dict:
     """progress가 있으면 wait → download → scenes → camera 순서로 하위 구간 진행을 알린다."""
     c = ctx.here()
@@ -389,19 +396,20 @@ def cut_stats(video_id: str, force: bool = False, progress: Progress | None = No
     try:
         report = safe_progress(progress)
         wait_turn(report)
-        if report is not None:
-            # 첫 progress hook은 extract_info가 끝난 뒤에야 온다: 그 사이를 대기로 남기지 않는다
-            report("download", None, DOWNLOAD_START_TEXT)
-        proxy = os.environ.get("YT_PROXY") or None
-        video = download_video(video_id, tmp_dir, proxy, progress=report)
-        try:
-            with c.shared.write_path(frames_key) as frames_dir:
-                analysis = analyze_video(video, frames_dir, report)
-        except BaseException:
-            # write_path가 미리 만든 빈 폴더는 남기지 않는다(프레임이 일부 있으면 예전처럼 둔다)
-            if not c.shared.list(frames_key):
-                c.shared.delete_prefix(frames_key)
-            raise
+        with limits.slot("media", on_wait=_wait_reporter(report)):
+            if report is not None:
+                # 첫 progress hook은 extract_info가 끝난 뒤에야 온다: 그 사이를 대기로 남기지 않는다
+                report("download", None, DOWNLOAD_START_TEXT)
+            proxy = os.environ.get("YT_PROXY") or None
+            video = download_video(video_id, tmp_dir, proxy, progress=report)
+            try:
+                with c.shared.write_path(frames_key) as frames_dir:
+                    analysis = analyze_video(video, frames_dir, report)
+            except BaseException:
+                # write_path가 미리 만든 빈 폴더는 남기지 않는다(프레임이 일부 있으면 예전처럼 둔다)
+                if not c.shared.list(frames_key):
+                    c.shared.delete_prefix(frames_key)
+                raise
     finally:
         # 원본 영상은 어떤 경우에도 남기지 않는다
         for leftover in tmp_dir.glob(f"{video_id}.*") if tmp_dir.exists() else []:

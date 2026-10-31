@@ -13,7 +13,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable
 
-from scripts import claude_cli, ctx, keys, llm_anthropic
+from scripts import claude_cli, ctx, keys, limits, llm_anthropic
 from scripts.common import ScriptError
 
 CONFIG_FILE = keys.CONFIG
@@ -115,7 +115,22 @@ def ask(
     options = {k: v for k, v in cfg.items() if k != "engine"}
     if max_tokens is not None:              # 호출 단위 덮어쓰기(config의 max_tokens보다 우선)
         options["max_tokens"] = max_tokens
-    return engine.ask(rules, payload, task, schema=schema, files=_file_keys(files), timeout=timeout, options=options)
+    file_keys = _file_keys(files)
+    meter = ctx.here().usage
+    meter.check()                           # 한도 초과면 엔진을 부르기 전에 거절(로컬판 NullMeter는 no-op)
+    seen: list[dict[str, int]] = []
+    options["on_usage"] = seen.append
+    model = str(options.get("model") or getattr(engine, "DEFAULT_MODEL", ""))
+    try:
+        with limits.slot("llm"):
+            result = engine.ask(rules, payload, task, schema=schema, files=file_keys, timeout=timeout, options=options)
+    except BaseException:
+        for usage in seen:                  # 실패 응답도 토큰은 썼다
+            meter.record(model, usage, False)
+        raise
+    for usage in seen:
+        meter.record(model, usage, True)
+    return result
 
 
 def ask_validated(

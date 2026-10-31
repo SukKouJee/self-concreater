@@ -116,6 +116,18 @@ def _http_error(e: urllib.error.HTTPError, key: str) -> ScriptError:
     return ScriptError("llm_failed", f"Anthropic API 호출이 실패했습니다({detail})")
 
 
+USAGE_FIELDS = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+
+
+def _report_usage(response: Any, options: dict) -> None:
+    """응답의 usage를 `options["on_usage"]`로 넘긴다(반환 dict 형식과 무관). 거절된 응답도 넘긴다."""
+    on_usage = options.get("on_usage")
+    usage = response.get("usage") if isinstance(response, dict) else None
+    if on_usage is None or not isinstance(usage, dict):
+        return
+    on_usage({f: v if isinstance(v := usage.get(f), int) and not isinstance(v, bool) else 0 for f in USAGE_FIELDS})
+
+
 def _extract(response: Any, schema: dict | None) -> dict:
     content = response.get("content") if isinstance(response, dict) else None
     if not isinstance(content, list):
@@ -168,4 +180,5 @@ def ask(
         response = json.loads(raw.decode("utf-8"))
     except ValueError as e:
         raise ScriptError("llm_failed", "Anthropic API 응답을 읽지 못했습니다") from e
+    _report_usage(response, options or {})
     return _extract(response, schema)

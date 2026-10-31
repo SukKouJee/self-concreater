@@ -311,3 +311,26 @@ def test_probe_audio(tmp_path):
     with pytest.raises(ScriptError) as exc:
         stt.probe_audio(bad)
     assert exc.value.code == "stt_failed" and "bad.mov" not in exc.value.message
+
+
+def test_transcribe_holds_media_slot_during_work(home, fake_whisper, fake_audio):
+    import threading
+
+    from scripts import limits
+
+    held = []
+    sem = threading.Semaphore(1)
+    limits.install(media=sem)
+    orig = stt.decode_audio
+
+    def probe(path):
+        held.append(not sem.acquire(blocking=False))   # 일하는 동안 자리가 차 있다
+        return orig(path)
+
+    stt.decode_audio = probe
+    try:
+        stt.transcribe(VID)
+    finally:
+        stt.decode_audio = orig
+        limits.install()
+    assert held == [True] and sem.acquire(blocking=False)

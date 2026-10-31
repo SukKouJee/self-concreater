@@ -468,3 +468,115 @@ def test_anthropic_stop_reason_is_llm_failed(api, stop, fragment):
     with pytest.raises(ScriptError) as e:
         llm.ask([], {}, "t", schema={"type": "object"})
     assert e.value.code == "llm_failed" and fragment in e.value.message
+
+
+# ---- usage 이음매(서버판 사용량 계량) --------------------------------------------------
+
+def _usage_reply(data, usage, stop_reason=None):
+    body = {"content": [{"type": "tool_use", "name": "respond", "input": data}], "usage": usage}
+    if stop_reason:
+        body["stop_reason"] = stop_reason
+    return FakeResponse(body)
+
+
+class _Meter:
+    def __init__(self, deny=None):
+        self.events = []
+        self.deny = deny
+
+    def check(self, job_kind=None):
+        self.events.append(("check", job_kind))
+        if self.deny:
+            raise self.deny
+
+    def record(self, model, usage, ok):
+        self.events.append(("record", model, usage, ok))
+
+
+def _meter_ctx(tmp_path, meter):
+    from scripts import ctx
+
+    c = ctx.Ctx(root=tmp_path, user_id="u1")
+    c.__dict__["usage"] = meter             # cached_property 자리에 직접 꽂는다(서버판은 backend.usage)
+    return c, ctx
+
+
+def test_anthropic_passes_response_usage_to_on_usage_callback(api):
+    usage = {"input_tokens": 11, "output_tokens": 22, "cache_read_input_tokens": 3,
+             "cache_creation_input_tokens": 4, "service_tier": "standard"}
+    api(_usage_reply({"a": 1}, usage))
+    seen = []
+    out = llm_anthropic.ask([], {}, "t", schema={"type": "object"}, options={"on_usage": seen.append})
+    assert out == {"a": 1}
+    assert seen == [{"input_tokens": 11, "output_tokens": 22, "cache_read_input_tokens": 3,
+                     "cache_creation_input_tokens": 4}]
+
+
+def test_anthropic_missing_usage_fields_default_to_zero_and_absent_usage_skips_callback(api):
+    api(_usage_reply({"a": 1}, {"input_tokens": 5}))
+    seen = []
+    llm_anthropic.ask([], {}, "t", schema={"type": "object"}, options={"on_usage": seen.append})
+    assert seen == [{"input_tokens": 5, "output_tokens": 0, "cache_read_input_tokens": 0,
+                     "cache_creation_input_tokens": 0}]
+    api(_tool_reply({"a": 1}))
+    seen.clear()
+    llm_anthropic.ask([], {}, "t", schema={"type": "object"}, options={"on_usage": seen.append})
+    assert seen == []
+
+
+def test_anthropic_reports_usage_even_when_response_is_rejected(api):
+    api(_usage_reply({}, {"input_tokens": 9, "output_tokens": 8}, stop_reason="max_tokens"))
+    seen = []
+    with pytest.raises(ScriptError):
+        llm_anthropic.ask([], {}, "t", schema={"type": "object"}, options={"on_usage": seen.append})
+    assert seen and seen[0]["output_tokens"] == 8
+
+
+def test_llm_ask_checks_then_records_with_model(api, tmp_path):
+    api(_usage_reply({"a": 1}, {"input_tokens": 1, "output_tokens": 2}))
+    meter = _Meter()
+    c, ctx = _meter_ctx(tmp_path, meter)
+    with ctx.use(c):
+        assert llm.ask([], {}, "t", schema={"type": "object"}) == {"a": 1}
+    assert meter.events[0] == ("check", None)
+    kind, model, usage, ok = meter.events[1]
+    assert (kind, model, ok) == ("record", llm_anthropic.DEFAULT_MODEL, True)
+    assert usage["input_tokens"] == 1 and len(meter.events) == 2
+
+
+def test_llm_ask_records_failed_call_with_ok_false(api, tmp_path):
+    api(_usage_reply({}, {"input_tokens": 7}, stop_reason="max_tokens"))
+    meter = _Meter()
+    c, ctx = _meter_ctx(tmp_path, meter)
+    with ctx.use(c), pytest.raises(ScriptError):
+        llm.ask([], {}, "t", schema={"type": "object"})
+    assert meter.events[1][0] == "record" and meter.events[1][3] is False
+
+
+def test_llm_ask_denied_check_never_calls_engine(api, monkeypatch, tmp_path):
+    called = []
+    monkeypatch.setenv("YTC_LLM_ENGINE", "anthropic-api")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", FAKE_KEY)
+    monkeypatch.setattr(llm_anthropic.urllib.request, "urlopen", lambda *a, **k: called.append(1))
+    meter = _Meter(deny=ScriptError("llm_limit", "다 썼습니다"))
+    c, ctx = _meter_ctx(tmp_path, meter)
+    with ctx.use(c), pytest.raises(ScriptError) as e:
+        llm.ask([], {}, "t")
+    assert e.value.code == "llm_limit" and not called and meter.events == [("check", None)]
+
+
+def test_llm_ask_without_usage_records_nothing(api, tmp_path):
+    api(_tool_reply({"a": 1}))
+    meter = _Meter()
+    c, ctx = _meter_ctx(tmp_path, meter)
+    with ctx.use(c):
+        llm.ask([], {}, "t", schema={"type": "object"})
+    assert meter.events == [("check", None)]
+
+
+def test_local_ctx_usage_is_null_meter(tmp_path):
+    from scripts import ctx, stores
+    m = ctx.Ctx(root=tmp_path).usage
+    assert isinstance(m, stores.NullMeter)
+    m.check("add")
+    m.record("m", {"input_tokens": 1}, True)

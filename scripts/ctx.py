@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from scripts.stores import Backend, DocStore, ObjectStore, Scratch, SharedCache, Trash
+    from scripts.stores import Backend, DocStore, ObjectStore, Scratch, SharedCache, Trash, UsageMeter
 
 
 @dataclass(frozen=True)
@@ -74,6 +74,13 @@ class Ctx:
             return self.backend.trash(self.user_id)
         from scripts import filestore
         return filestore.FileTrash(self._root())
+
+    @cached_property
+    def usage(self) -> UsageMeter:
+        if self.backend is not None:
+            return self.backend.usage(self.user_id)
+        from scripts import stores
+        return stores.NullMeter()
 
     def for_key(self, key: str) -> DocStore | ObjectStore:
         """키를 다루는 저장소(`keys.kind`): md는 store, 영상 캐시는 shared, 나머지는 objects.

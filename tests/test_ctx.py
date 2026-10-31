@@ -280,3 +280,14 @@ def test_file_scratch_tmp_file_maps_only_tmp_keys(tmp_path: Path) -> None:
         with pytest.raises((ValueError, ScriptError)):
             with s.tmp_file(bad):
                 pass
+
+
+def test_backend_supplies_usage_meter() -> None:
+    meter = object()
+
+    class Backend:
+        def usage(self, user_id: str | None) -> object:
+            assert user_id == "u1"
+            return meter
+
+    assert ctx.Ctx(user_id="u1", backend=Backend()).usage is meter

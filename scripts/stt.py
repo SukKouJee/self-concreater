@@ -14,9 +14,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterator, NamedTuple
+from typing import TYPE_CHECKING, Any, Callable, Iterator, NamedTuple
 
-from scripts import ctx
+from scripts import ctx, limits
 from scripts.common import ArgParser, Progress, ScriptError, run, safe_progress
 from scripts.fetch import load_raw, save_raw, ytdlp_error, ytdlp_options
 
@@ -125,6 +125,12 @@ def stt_progress_text(done_sec: float, duration_sec: float | None) -> str:
     return f"음성 인식 중 {_clock(min(done_sec, duration_sec))} / {_clock(duration_sec)}"
 
 
+def _wait_reporter(report: Progress | None) -> Callable[[], None] | None:
+    if report is None:
+        return None
+    return lambda: report("wait", None, limits.WAIT_TEXT)
+
+
 def transcribe(video_id: str, force: bool = False, progress: Progress | None = None) -> dict:
     """progress가 있으면 segment마다 ("stt", 끝 시각/영상 길이, "음성 인식 중 12:30 / 43:31")을 알린다.
 
@@ -140,23 +146,24 @@ def transcribe(video_id: str, force: bool = False, progress: Progress | None = N
     tmp_dir = ctx.here().scratch.local_path("tmp")
     report = safe_progress(progress)
     try:
-        if report is not None:
-            report("stt", None, "음성 받는 중")
-        audio = download_audio(video_id, tmp_dir, os.environ.get("YT_PROXY") or None)
-        if report is not None:
-            report("stt", None, "음성 인식 준비 중")
-        model = WhisperModel(model_name, device="cpu", compute_type="int8")
-        segments, info = model.transcribe(decode_audio(audio), language=None, vad_filter=True)
-        duration = getattr(info, "duration", None) or (data.get("meta") or {}).get("duration") or None
-        segs = []
-        for s in segments:
-            if s.text.strip():
-                segs.append({"start": round(s.start, 2), "dur": round(s.end - s.start, 2), "text": s.text.strip()})
+        with limits.slot("media", on_wait=_wait_reporter(report)):
             if report is not None:
-                fraction = min(1.0, max(0.0, s.end / duration)) if duration else None
-                report("stt", fraction, stt_progress_text(s.end, duration))
-        # 말이 없으면(ASMR·음악) 감지 언어는 의미가 없다
-        data["transcript"] = {"source": "stt", "language": info.language if segs else None, "segments": segs}
+                report("stt", None, "음성 받는 중")
+            audio = download_audio(video_id, tmp_dir, os.environ.get("YT_PROXY") or None)
+            if report is not None:
+                report("stt", None, "음성 인식 준비 중")
+            model = WhisperModel(model_name, device="cpu", compute_type="int8")
+            segments, info = model.transcribe(decode_audio(audio), language=None, vad_filter=True)
+            duration = getattr(info, "duration", None) or (data.get("meta") or {}).get("duration") or None
+            segs = []
+            for s in segments:
+                if s.text.strip():
+                    segs.append({"start": round(s.start, 2), "dur": round(s.end - s.start, 2), "text": s.text.strip()})
+                if report is not None:
+                    fraction = min(1.0, max(0.0, s.end / duration)) if duration else None
+                    report("stt", fraction, stt_progress_text(s.end, duration))
+            # 말이 없으면(ASMR·음악) 감지 언어는 의미가 없다
+            data["transcript"] = {"source": "stt", "language": info.language if segs else None, "segments": segs}
     finally:
         # 받은 오디오는 어떤 경우에도 남기지 않는다
         for leftover in tmp_dir.glob(f"{video_id}.*") if tmp_dir.exists() else []:
@@ -221,16 +228,17 @@ def transcribe_file(path: str | Path, lang: str = "ko", progress: Progress | Non
     model = _model(whisper_model, os.environ.get("YT_STT_MODEL") or DEFAULT_MODEL)
     duration = probe.duration
     out: list[dict[str, Any]] = []
-    for offset, audio in iter_audio_windows(path):
-        segments, _ = model.transcribe(audio, language=lang, vad_filter=True)
-        for s in segments:
-            start, end = offset + s.start, offset + s.end
-            text = s.text.strip()
-            if text:
-                out.append({"start": round(start, 2), "end": round(end, 2), "text": text})
-            if report is not None:
-                fraction = min(1.0, max(0.0, end / duration)) if duration else None
-                report("stt", fraction, stt_progress_text(end, duration))
+    with limits.slot("media", on_wait=_wait_reporter(report)):
+        for offset, audio in iter_audio_windows(path):
+            segments, _ = model.transcribe(audio, language=lang, vad_filter=True)
+            for s in segments:
+                start, end = offset + s.start, offset + s.end
+                text = s.text.strip()
+                if text:
+                    out.append({"start": round(start, 2), "end": round(end, 2), "text": text})
+                if report is not None:
+                    fraction = min(1.0, max(0.0, end / duration)) if duration else None
+                    report("stt", fraction, stt_progress_text(end, duration))
     return out
 
 

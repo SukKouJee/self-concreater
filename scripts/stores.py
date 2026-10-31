@@ -104,6 +104,21 @@ class Trash(Protocol):
     def move(self, keys: builtins.list[str], last: str) -> dict[str, Any]: ...
 
 
+class UsageMeter(Protocol):
+    """LLM 사용량 계량(서버 설계 §6). 로컬판은 `NullMeter`(아무것도 하지 않는다)."""
+
+    def check(self, job_kind: str | None = None) -> None: ...   # 한도를 넘었으면 ScriptError("llm_limit")
+    def record(self, model: str, usage: dict[str, int], ok: bool) -> None: ...
+
+
+class NullMeter:
+    def check(self, job_kind: str | None = None) -> None:
+        return None
+
+    def record(self, model: str, usage: dict[str, int], ok: bool) -> None:
+        return None
+
+
 class Backend(Protocol):
     """서버판(S5)이 `Ctx(backend=...)`로 주입한다. 사용자별 저장소를 만든다."""
 
@@ -112,3 +127,4 @@ class Backend(Protocol):
     def shared(self, user_id: str | None) -> SharedCache: ...
     def scratch(self, user_id: str | None) -> Scratch: ...
     def trash(self, user_id: str | None) -> Trash: ...
+    def usage(self, user_id: str | None) -> UsageMeter: ...

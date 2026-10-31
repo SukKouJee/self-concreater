@@ -577,3 +577,22 @@ def test_cut_stats_reports_download_start_without_wait(home, fake_download):
     rec = Recorder()
     cuts.cut_stats(VID, progress=rec)
     assert rec.calls[0] == ("download", None, cuts.DOWNLOAD_START_TEXT)
+
+
+def test_cut_stats_holds_media_slot_and_reports_wait_when_full(home, fake_download):
+    import threading
+
+    from scripts import limits
+
+    sem = threading.Semaphore(1)
+    limits.install(media=sem)
+    try:
+        sem.acquire()                       # 다른 사용자 작업이 자리를 쥐고 있다
+        rec = Recorder()
+        threading.Timer(0.3, sem.release).start()
+        out = cuts.cut_stats(VID, progress=rec)
+    finally:
+        limits.install()
+    assert out["status"] == "analyzed"
+    assert ("wait", None, limits.WAIT_TEXT) in rec.calls
+    assert sem.acquire(blocking=False)      # 끝나면 반납됨
