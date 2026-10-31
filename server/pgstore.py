@@ -14,61 +14,24 @@ from __future__ import annotations
 
 import builtins
 import errno
-import fnmatch
-import hashlib
 import os
-import re
 import tempfile
 import time
 import uuid
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
-from functools import lru_cache
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 
 from scripts import keys as _keys
 from scripts import refstore
 from scripts.stores import Doc, Meta, VersionConflict
 from server.db import Conn, Db
-
-
-@lru_cache(maxsize=256)
-def _matcher(pattern: str) -> Callable[[str], re.Match[str] | None]:
-    """Windows pathlib glob(3.12 `_compile_pattern`, case_sensitive=False)과 같은 일치 함수."""
-    if not pattern or "/" in pattern or "\\" in pattern:
-        raise ValueError(f"패턴은 이름 하나에 대한 glob이어야 합니다: {pattern!r}")
-    return re.compile(fnmatch.translate(pattern), re.IGNORECASE).match
-
-
-def _windows_order(names: Iterable[str]) -> builtins.list[str]:
-    """Windows FileStore 순서. 대소문자만 다른 두 키(Windows에는 없다)는 키 문자열로 순서를 고정한다."""
-    return sorted(names, key=lambda k: (PureWindowsPath(k), k))
-
-
-def _prefix(prefix: str) -> str:
-    if not prefix.endswith("/"):
-        raise ValueError(f"접두사는 '/'로 끝나야 합니다: {prefix!r}")
-    return _keys.check(prefix)
-
-
-def _ancestors(key: str) -> builtins.list[str]:
-    """키를 담는 폴더 접두사들(바깥부터). `refs/ref_a/videos/x.md` → refs/, refs/ref_a/, refs/ref_a/videos/.
-    폴더 키(`/`로 끝남)는 자기 자신까지."""
-    parts = key.split("/")[:-1]
-    return ["/".join(parts[: i + 1]) + "/" for i in range(len(parts))]
-
-
-def _not_found(key: str) -> FileNotFoundError:
-    return FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), key)
+from server.keyindex import ancestors, check_prefix, matcher, meta, not_found, sha256_hex, windows_order
 
 
 def _now_ns() -> int:
     """쓰기 시각(`Meta.mtime_ns`). 테스트가 시계를 바꿔 끼우는 자리."""
     return time.time_ns()
-
-
-def _sha(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
 
 
 class PgDocStore:
@@ -98,7 +61,7 @@ class PgDocStore:
         with self._tx() as conn:
             row = conn.execute("SELECT raw FROM docs WHERE user_id = %s AND key = %s", (self._uid, key)).fetchone()
         if row is None:
-            raise _not_found(key)
+            raise not_found(key)
         return Doc(key=key, raw=bytes(row[0]), label=key)
 
     def exists(self, key: str) -> bool:
@@ -113,8 +76,8 @@ class PgDocStore:
             row = conn.execute("SELECT size, mtime_ns FROM docs WHERE user_id = %s AND key = %s",
                                (self._uid, key)).fetchone()
         if row is None:
-            raise _not_found(key)
-        return _meta(key, int(row[0]), int(row[1]))
+            raise not_found(key)
+        return meta(key, int(row[0]), int(row[1]))
 
     # --- 쓰기 ---
 
@@ -125,7 +88,7 @@ class PgDocStore:
         다시 검사한다(동시 쓰기가 메모 가드를 건너뛰지 않게)."""
         key = self._doc_key(key)
         data = bytes(data)
-        version = _sha(data)
+        version = sha256_hex(data)
         with self._tx() as conn:
             while True:
                 row = conn.execute("SELECT raw, mtime_ns FROM docs WHERE user_id = %s AND key = %s FOR UPDATE",
@@ -133,7 +96,7 @@ class PgDocStore:
                 if expect_version is not None:
                     if row is None:
                         raise VersionConflict(f"{key}: 파일이 없습니다")
-                    if _sha(bytes(row[0])) != expect_version:
+                    if sha256_hex(bytes(row[0])) != expect_version:
                         raise VersionConflict(f"{key}: 다른 곳에서 바뀌었습니다")
                 if row is not None:
                     refstore.check_memo(key, bytes(row[0]), data)
@@ -144,7 +107,7 @@ class PgDocStore:
                     break
                 if self._insert(conn, key, data, version):
                     break
-            self._upsert_folders(conn, _ancestors(key))
+            self._upsert_folders(conn, ancestors(key))
         return version
 
     def create(self, key: str, data: bytes) -> str:
@@ -152,11 +115,11 @@ class PgDocStore:
         동시에 만들면 PK 충돌 대기 뒤 하나만 이긴다. 기존 문서를 덮지 않으므로 메모 가드가 필요 없다."""
         key = self._doc_key(key)
         data = bytes(data)
-        version = _sha(data)
+        version = sha256_hex(data)
         with self._tx() as conn:
             if not self._insert(conn, key, data, version):
                 raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), key)
-            self._upsert_folders(conn, _ancestors(key))
+            self._upsert_folders(conn, ancestors(key))
         return version
 
     def _insert(self, conn: Conn, key: str, data: bytes, version: str) -> bool:
@@ -173,25 +136,25 @@ class PgDocStore:
     # --- 목록·폴더 ---
 
     def list(self, prefix: str, pattern: str = "*.md") -> builtins.list[Meta]:
-        prefix = _prefix(prefix)
-        match = _matcher(pattern)
+        prefix = check_prefix(prefix)
+        match = matcher(pattern)
         with self._tx() as conn:
             rows = conn.execute("SELECT key, size, mtime_ns FROM docs WHERE user_id = %s AND starts_with(key, %s)",
                                 (self._uid, prefix)).fetchall()
-        metas = {str(k): _meta(str(k), int(size), int(mtime_ns)) for k, size, mtime_ns in rows
+        metas = {str(k): meta(str(k), int(size), int(mtime_ns)) for k, size, mtime_ns in rows
                  if "/" not in str(k)[len(prefix):] and match(str(k)[len(prefix):])}
-        return [metas[k] for k in _windows_order(metas)]
+        return [metas[k] for k in windows_order(metas)]
 
     def folders(self, prefix: str, pattern: str) -> builtins.list[str]:
-        prefix = _prefix(prefix)
-        match = _matcher(pattern)
+        prefix = check_prefix(prefix)
+        match = matcher(pattern)
         with self._tx() as conn:
             found = self._under(conn, prefix)
         names = {rest.split("/", 1)[0] for rest in (k[len(prefix):] for k in found) if "/" in rest}
-        return _windows_order(prefix + name + "/" for name in names if match(name))
+        return windows_order(prefix + name + "/" for name in names if match(name))
 
     def folder_exists(self, prefix: str) -> bool:
-        prefix = _prefix(prefix)
+        prefix = check_prefix(prefix)
         with self._tx() as conn:
             row = conn.execute(
                 "SELECT EXISTS (SELECT 1 FROM folders WHERE user_id = %(u)s AND starts_with(prefix, %(p)s)) "
@@ -201,9 +164,9 @@ class PgDocStore:
         return bool(row and row[0])
 
     def ensure_folder(self, prefix: str) -> None:
-        prefix = _prefix(prefix)
+        prefix = check_prefix(prefix)
         with self._tx() as conn:
-            self._upsert_folders(conn, _ancestors(prefix))
+            self._upsert_folders(conn, ancestors(prefix))
 
     def _under(self, conn: Conn, prefix: str) -> builtins.list[str]:
         """prefix 아래의 폴더 행·문서 키·객체 키(재귀)."""
@@ -231,7 +194,3 @@ class PgDocStore:
             if row is not None:
                 path.write_bytes(bytes(row[0]))
             yield path
-
-
-def _meta(key: str, size: int, mtime_ns: int) -> Meta:
-    return Meta(key=key, size=size, mtime=mtime_ns / 1e9, mtime_ns=mtime_ns)

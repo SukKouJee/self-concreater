@@ -508,3 +508,85 @@ def test_folder_exists_sees_docs_of_the_same_user_only(request: pytest.FixtureRe
 
     assert objects.folder_exists("drafts/")
     assert not other.folder_exists("drafts/")
+
+
+# --- polish: 큰 파일·공유 키 형식 사전 검사, 읽는 중 사라진 객체, 실제 S3Error 경로 ----------------
+
+def test_folder_write_path_checks_sizes_before_deleting_anything(shared: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    frames = f"workspace/frames/{VID}/"
+    shared.put(f"{frames}0001.jpg", b"old")
+    monkeypatch.setattr(s3store, "MAX_OBJECT_BYTES", 4)
+
+    with pytest.raises(ScriptError) as e, shared.write_path(frames) as folder:
+        (folder / "0001.jpg").write_bytes(b"ok")
+        (folder / "0002.jpg").write_bytes(b"too big")
+
+    assert e.value.code == "object_too_large"
+    assert [m.key for m in shared.list(frames)] == [f"{frames}0001.jpg"]
+    assert shared.get(f"{frames}0001.jpg") == b"old"
+
+
+def test_folder_write_path_checks_shared_key_shape_before_deleting_anything(shared: Any) -> None:
+    shared.put(f"workspace/raw/{VID}.json", b"old")
+
+    with pytest.raises(ValueError), shared.write_path("workspace/raw/") as folder:
+        (folder / f"{VID}.json").write_bytes(b"new")
+        (folder / "not-a.video.json").write_bytes(b"no shared_s3_key for this name")
+
+    assert [m.key for m in shared.list("workspace/raw/")] == [f"workspace/raw/{VID}.json"]
+    assert shared.get(f"workspace/raw/{VID}.json") == b"old"
+
+
+def test_file_write_path_checks_size_before_reading(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(s3store, "MAX_OBJECT_BYTES", 4)
+    read: list[Path] = []
+    real_read = Path.read_bytes
+
+    def spy(self: Path) -> bytes:
+        read.append(self)
+        return real_read(self)
+
+    monkeypatch.setattr(Path, "read_bytes", spy)
+
+    with pytest.raises(ScriptError) as e, store.write_path("drafts/a-captions.mp4") as path:
+        path.write_bytes(b"too big")
+
+    assert e.value.code == "object_too_large"
+    assert read == []
+    assert not store.exists("drafts/a-captions.mp4")
+
+
+def test_folder_local_path_skips_objects_deleted_mid_read(shared: Any, bucket: Any,
+                                                          monkeypatch: pytest.MonkeyPatch) -> None:
+    frames = f"workspace/frames/{VID}/"
+    shared.put(f"{frames}0001.jpg", b"1")
+    shared.put(f"{frames}0002.jpg", b"2")
+    real_get = bucket.get
+
+    def vanishing_get(s3_key: str) -> bytes:
+        if s3_key.endswith("0001.jpg"):
+            raise FileNotFoundError(2, "gone", s3_key)    # another job deleted it after the row read
+        return real_get(s3_key)
+
+    monkeypatch.setattr(bucket, "get", vanishing_get)
+
+    with shared.local_path(frames) as folder:
+        assert sorted(p.name for p in folder.iterdir()) == ["0002.jpg"]
+
+
+def test_real_s3_put_failure_is_an_os_error_and_leaves_nothing(store: Any, bucket: Any,
+                                                               request: pytest.FixtureRequest) -> None:
+    """버킷을 가리키는 이름이 틀린 실제 boto3 호출: S3Error가 OSError로 잡히고 행·객체가 남지 않는다."""
+    broken = s3store.S3Bucket(bucket.client, "no-such-bucket-" + uuid.uuid4().hex[:8])
+    other = s3store.S3ObjectStore(request.getfixturevalue("pg_db"), broken, store._uid)
+
+    try:
+        other.put("drafts/a-conti.html", b"x")
+    except OSError as e:
+        caught: OSError = e
+    else:
+        pytest.fail("put to a missing bucket did not fail")
+
+    assert isinstance(caught, S3Error)
+    assert _rows(request, "objects") == []
+    assert not store.exists("drafts/a-conti.html")

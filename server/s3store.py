@@ -8,7 +8,7 @@
   잠금은 같은 키의 PUT·행 순서가 엇갈려 행(size·sha256)이 다른 쓰기의 바이트를 가리키는 일도 막는다.
 - 삭제: 같은 잠금 안에서 행 삭제 → 객체 삭제 → 커밋. 객체 삭제가 실패하면 롤백되어 행과 객체가 함께 남는다.
 - 행이 없는 객체(고아)는 보이지 않는다(exists·get·list 모두 행 기준). 정리는 S10 점검.
-- 목록·이름 일치·순서·접두사 검사는 PgDocStore와 같다(`server.pgstore`의 도우미). mtime_ns는 다시 쓸 때 줄지 않는다.
+- 목록·이름 일치·순서·접두사 검사는 PgDocStore와 같다(`server.keyindex`). mtime_ns는 다시 쓸 때 줄지 않는다.
 - `local_path`·`write_path`는 임시 파일·폴더(끝나면 지운다). 폴더 키의 `write_path`는 정상 종료 때 `delete_prefix` 후
   하위 파일을 이름순으로 올린다. 예외면 아무것도 올리지 않는다.
 - S3·네트워크 오류는 `S3Error`(OSError)로 바꾼다: 호출부가 파일 오류처럼 `except OSError`로 잡는다(ADR-3과 같은 결).
@@ -33,7 +33,7 @@ from scripts import keys as _keys
 from scripts.common import ScriptError
 from scripts.stores import Meta
 from server.db import Conn, Db
-from server.pgstore import _ancestors, _matcher, _meta, _not_found, _prefix, _sha, _windows_order
+from server.keyindex import ancestors, check_prefix, matcher, meta, not_found, sha256_hex, windows_order
 
 MAX_OBJECT_BYTES: Final = 64 * 1024 * 1024        # §3.5: old conti HTML (46MB) fits
 DELETE_BATCH: Final = 1000                          # S3 DeleteObjects limit
@@ -50,6 +50,14 @@ class S3Error(OSError):
 def _now_ns() -> int:
     """쓰기 시각(`Meta.mtime_ns`). 테스트가 시계를 바꿔 끼우는 자리."""
     return time.time_ns()
+
+
+def _check_size(key: str, size: int) -> None:
+    """§3.5 객체 크기 상한. 넘으면 ScriptError("object_too_large")."""
+    if size > MAX_OBJECT_BYTES:
+        raise ScriptError("object_too_large",
+                          f"파일이 너무 큽니다({size // (1024 * 1024)}MB). "
+                          f"서버에는 {MAX_OBJECT_BYTES // (1024 * 1024)}MB까지 저장할 수 있습니다: {key}")
 
 
 class S3Bucket:
@@ -157,7 +165,7 @@ class _S3Store:
         raise NotImplementedError
 
     def _check_prefix(self, prefix: str) -> str:
-        return _prefix(prefix)
+        return check_prefix(prefix)
 
     def _s3_key(self, key: str) -> str:
         raise NotImplementedError
@@ -202,19 +210,16 @@ class _S3Store:
         with self._tx() as conn:
             row = self._row(conn, key)
         if row is None:
-            raise _not_found(key)
+            raise not_found(key)
         try:
             return self._bucket.get(self._s3_key(key))
         except FileNotFoundError as e:          # deleted between the row read and the GET
-            raise _not_found(key) from e
+            raise not_found(key) from e
 
     def put(self, key: str, data: bytes) -> None:
         key = self._key(key)
         data = bytes(data)
-        if len(data) > MAX_OBJECT_BYTES:
-            raise ScriptError("object_too_large",
-                              f"파일이 너무 큽니다({len(data) // (1024 * 1024)}MB). "
-                              f"서버에는 {MAX_OBJECT_BYTES // (1024 * 1024)}MB까지 저장할 수 있습니다: {key}")
+        _check_size(key, len(data))
         s3_key = self._s3_key(key)
         with self._tx() as conn:
             self._lock(conn, key)
@@ -223,7 +228,7 @@ class _S3Store:
             try:
                 with conn.transaction():         # savepoint: the outer tx (and the lock) survives a failed upsert
                     self._upsert(conn, key, data, s3_key)
-                    self._touch_folders(conn, _ancestors(key))
+                    self._touch_folders(conn, ancestors(key))
             except BaseException as e:
                 if not existed:
                     self._discard(s3_key, e)
@@ -246,17 +251,17 @@ class _S3Store:
         with self._tx() as conn:
             row = self._row(conn, key)
         if row is None:
-            raise _not_found(key)
-        return _meta(key, *row)
+            raise not_found(key)
+        return meta(key, *row)
 
     def list(self, prefix: str, pattern: str = "*") -> builtins.list[Meta]:
         prefix = self._check_prefix(prefix)
-        match = _matcher(pattern)
+        match = matcher(pattern)
         with self._tx() as conn:
             rows = self._keys_under(conn, prefix)
-        metas = {k: _meta(k, size, mtime_ns) for k, size, mtime_ns in rows
+        metas = {k: meta(k, size, mtime_ns) for k, size, mtime_ns in rows
                  if "/" not in k[len(prefix):] and match(k[len(prefix):])}
-        return [metas[k] for k in _windows_order(metas)]
+        return [metas[k] for k in windows_order(metas)]
 
     def folder_exists(self, prefix: str) -> bool:
         prefix = self._check_prefix(prefix)
@@ -276,6 +281,9 @@ class _S3Store:
         prefix = self._check_prefix(prefix)
         with self._tx() as conn:
             found = sorted(k for k, _, _ in self._keys_under(conn, prefix))
+            # One advisory lock per key (one round trip each), held until commit. Fine for today's callers
+            # (frames ≤ 40, history and cut folders of tens of files); a prefix of thousands of keys would
+            # want a single prefix lock that put/delete also take.
             for key in found:
                 self._lock(conn, key)
             gone = self._delete_rows(conn, found)
@@ -290,10 +298,14 @@ class _S3Store:
             path = Path(tmp) / PurePosixPath(key).name
             if key.endswith("/"):
                 path.mkdir()
-                for meta in self._all_under(key):
-                    target = path.joinpath(*meta.key[len(key):].split("/"))
+                for item in self._all_under(key):
+                    try:
+                        data = self._bucket.get(self._s3_key(item.key))
+                    except FileNotFoundError:
+                        continue                     # deleted after the row read: like a file gone mid-copy
+                    target = path.joinpath(*item.key[len(key):].split("/"))
                     target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_bytes(self._bucket.get(self._s3_key(meta.key)))
+                    target.write_bytes(data)
             else:
                 try:
                     path.write_bytes(self.get(key))
@@ -304,7 +316,7 @@ class _S3Store:
     def _all_under(self, prefix: str) -> builtins.list[Meta]:
         with self._tx() as conn:
             rows = self._keys_under(conn, self._check_prefix(prefix))
-        return [_meta(k, size, mtime_ns) for k, size, mtime_ns in sorted(rows)]
+        return [meta(k, size, mtime_ns) for k, size, mtime_ns in sorted(rows)]
 
     @contextmanager
     def write_path(self, key: str) -> Iterator[Path]:
@@ -319,25 +331,30 @@ class _S3Store:
             if key.endswith("/"):
                 self._upload_folder(key, path)
             elif path.is_file():
+                _check_size(key, path.stat().st_size)    # before reading a huge render into memory
                 self.put(key, path.read_bytes())
             else:
                 with self._tx() as conn:
-                    self._touch_folders(conn, _ancestors(key))
+                    self._touch_folders(conn, ancestors(key))
 
     def _upload_folder(self, key: str, folder: Path) -> None:
+        """먼저 모든 파일을 검사한다(키·객체 이름·크기). 하나라도 안 되면 예전 내용을 지우기 전에 멈춘다."""
         files: builtins.list[tuple[str, Path]] = []
         subfolders: builtins.list[str] = []
         for p in folder.rglob("*"):
             rel = p.relative_to(folder).as_posix()
             if p.is_file():
-                files.append((self._key(key + rel), p))
+                file_key = self._key(key + rel)
+                self._s3_key(file_key)                   # shared: ValueError for a name with no object layout
+                _check_size(file_key, p.stat().st_size)
+                files.append((file_key, p))
             elif p.is_dir():
                 subfolders.append(_keys.check(key + rel + "/"))
         self.delete_prefix(key)
         for file_key, p in sorted(files):
             self.put(file_key, p.read_bytes())
         with self._tx() as conn:
-            self._touch_folders(conn, [*_ancestors(key), *sorted(subfolders)])
+            self._touch_folders(conn, [*ancestors(key), *sorted(subfolders)])
 
     def display_path(self, key: str) -> str:
         """화면·CLI 출력용 = 키(§3.3)."""
@@ -370,7 +387,7 @@ class S3ObjectStore(_S3Store):
             "INSERT INTO objects (user_id, key, size, sha256, mtime_ns, s3_key) VALUES (%s, %s, %s, %s, %s, %s) "
             "ON CONFLICT (user_id, key) DO UPDATE SET size = EXCLUDED.size, sha256 = EXCLUDED.sha256, "
             "mtime_ns = GREATEST(EXCLUDED.mtime_ns, objects.mtime_ns + 1), s3_key = EXCLUDED.s3_key",
-            (self._uid, key, len(data), _sha(data), _now_ns(), s3_key))
+            (self._uid, key, len(data), sha256_hex(data), _now_ns(), s3_key))
 
     def _delete_rows(self, conn: Conn, keys: builtins.list[str]) -> builtins.list[str]:
         if not keys:
@@ -412,7 +429,7 @@ class S3SharedCache(_S3Store):
     def _check_prefix(self, prefix: str) -> str:
         if not prefix.startswith(_keys.SHARED_PREFIXES):
             raise ValueError(f"공유 캐시 키가 아닙니다: {prefix!r}")
-        return _prefix(prefix)
+        return check_prefix(prefix)
 
     def _key(self, key: str) -> str:
         if not key.startswith(_keys.SHARED_PREFIXES):
@@ -434,7 +451,7 @@ class S3SharedCache(_S3Store):
             "VALUES (%s, %s, %s, %s, %s, %s) "
             "ON CONFLICT (key) DO UPDATE SET size = EXCLUDED.size, sha256 = EXCLUDED.sha256, "
             "mtime_ns = GREATEST(EXCLUDED.mtime_ns, shared_objects.mtime_ns + 1), s3_key = EXCLUDED.s3_key",
-            (key, len(data), _sha(data), _now_ns(), s3_key, self._uid))
+            (key, len(data), sha256_hex(data), _now_ns(), s3_key, self._uid))
 
     def _delete_rows(self, conn: Conn, keys: builtins.list[str]) -> builtins.list[str]:
         if not keys:

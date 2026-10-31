@@ -176,7 +176,15 @@ CREATE POLICY own ON <t> USING (user_id = nullif(current_setting('app.user_id', 
 - **label()** = `ytc:{email}`(사용자마다 다름 → `conti_history` 캐시 키 `(label(), key)` 충돌 없음), `Doc.label` = 키, `display_path` = 키.
 - **local_path(key)**: 임시 파일에 바이트를 써서 yield, 끝나면 삭제. **write_path(key)**: 임시 경로 yield → 정상 종료 시 업로드, 예외면 버림.
   폴더 키(`frames_dir`, `footage_dir`, `-cuts/`)는 임시 폴더 yield → 정상 종료 시 `delete_prefix` 후 하위 파일 전부 업로드(이름순).
+  업로드 전에 모든 파일의 키·객체 이름·크기(64MB)를 먼저 검사해, 하나라도 안 되면 예전 내용을 지우지 않고 멈춘다.
+  **주의(T7)**: 서버의 폴더 `write_path`는 그 폴더를 통째로 비운다(FileStore는 비우지 않는다). 지금 비활성 기능의 두 호출부가
+  여기에 걸린다 — `footage.decode_scenes`(`write_path(footage_dir(fid))`: 앞서 쓴 `scenes.json`·`transcript.json`까지 지운다),
+  `footage_out.export_clips`(`write_path(cut_files_dir)`로 폴더만 만든 뒤 컷 파일을 따로 `write_path`: 같은 폴더의 다른 파일을 지운다).
+  footage(§8)를 켜기 전에 두 호출부의 키를 실제로 쓰는 하위 폴더(`…/frames/`·`…/montage/`)·파일 키로 좁히거나 이 규칙을 바꾼다.
 - **put 순서**: MinIO PUT → 인덱스 행 upsert(같은 트랜잭션 밖이라도 "행이 있으면 객체가 있다"가 유지). **delete**: 행 삭제 → 객체 삭제(실패하면 고아, S10 점검).
+  구현(T7): 같은 키의 put·delete는 `pg_advisory_xact_lock(class, hashtext(uid/key))`로 한 번에 하나씩, 새 키의 행 upsert가 실패하면
+  올린 객체를 지운다. `delete_prefix`는 지울 키마다 잠금을 하나씩(키 순서) 잡는다 — 지금 호출부(프레임 ≤ 40장, 이력·컷 폴더 수십 개)에는
+  충분하고, 수천 개 키의 접두사를 지우게 되면 put·delete도 함께 잡는 접두사 잠금 하나로 바꾼다.
 - **SharedCache 쓰기**: 누구나 덮어쓸 수 있다(원본 데이터, 교정은 사용자 md에). 같은 영상 수집 경합은 `pg_advisory_xact_lock(hashtext(vid))`로
   수집 단계에서 직렬화. `Trash.move`는 shared 키를 옮기지 않고 `moved`에서 뺀다(다른 사용자 데이터).
 - **프로세스 잠금**(`INDEX_LOCK`, `HISTORY_LOCK`, `_RELABEL_LOCK`): 프로세스가 하나라 그대로 유효(사용자 간 과잉 직렬화는 수십 명 규모에서 허용).
@@ -313,6 +321,8 @@ media 대기 p95가 5분을 넘거나, 앱 재시작으로 작업을 잃는 일�
 | caption_video | `/api/conti/…/caption-video`류(구현 때 표에 정확한 패턴 고정) | 자막 영상 만들기는 내 PC 판에서만 됩니다 |
 | srtfit | srtfit 시작 라우트 | 자막 시간 맞추기는 내 PC 판에서만 됩니다(영상 파일 필요) |
 | footage | `/api/footage` 전부 | 촬영 영상 처리는 내 PC 판에서 하고, 결과는 가져오기로 옮기세요 |
+
+- footage를 켜려면 먼저 §3.3 주의(폴더 `write_path`가 폴더를 비움: `footage.decode_scenes`, `footage_out.export_clips`)를 해결한다.
 
 - 정적 JS: 버튼·메뉴에 `data-feature="<기능>"`을 달고 시작 때 `/api/features`를 읽어 숨기고 그 자리에 문구 한 줄. 가드는 서버가 최종(숨김만 믿지 않음).
 - 테스트: 라우트 전수 표(ROUTES)를 돌며 서버 백엔드에서 비활성 표에 없는 라우트가 `NotImplementedError`/`Path` 접근으로 500을 내지 않는지(§9-4).
