@@ -703,3 +703,10 @@ def test_registry_refuses_a_new_manager_while_drop_is_waiting() -> None:
     assert e.value.code == "login_required"
     release.set()
     dropper.join(10)
+
+
+def test_admin_help_page_is_served_on_the_server_and_not_locally(root: TestClient, local_client: Any) -> None:
+    r = root.get("/api/help/admin")
+    assert r.status_code == 200 and r.json()["title"] == "관리"
+    status, body = local_client.json("GET", "/api/help/admin")
+    assert status == 400 and body["error"] == "help_not_found"

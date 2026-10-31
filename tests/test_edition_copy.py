@@ -256,7 +256,7 @@ def test_local_help_reads_the_shared_file(page):
     assert body.strip() and body in (api_help.HELP_DIR / f"{page}.md").read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("page", ALL_PAGES)
+@pytest.mark.parametrize("page", [*ALL_PAGES, *api_help.SERVER_PAGES])
 def test_server_help_has_no_local_only_words(page):
     with edition.use("server"):
         text = api_help.read_help(page)["markdown"]
@@ -267,8 +267,10 @@ def test_server_help_has_no_local_only_words(page):
 
 def test_server_help_variants_exist_only_for_shared_pages_and_keep_sections():
     names = sorted(p.stem for p in api_help.SERVER_HELP_DIR.glob("*.md"))
-    assert set(names) <= {*ALL_PAGES, "_chatbot"}
+    assert set(names) <= {*ALL_PAGES, *api_help.SERVER_PAGES, "_chatbot"}
     for name in names:
+        if name in api_help.SERVER_PAGES:              # server-only screens have no local page to differ from
+            continue
         text = (api_help.SERVER_HELP_DIR / f"{name}.md").read_text(encoding="utf-8")
         local = (api_help.HELP_DIR / f"{name}.md").read_text(encoding="utf-8")
         assert text != local, name
@@ -329,3 +331,21 @@ def test_server_help_trash_is_honest_and_home_has_no_caption_criterion():
 def test_operations_doc_gives_the_admin_a_way_to_make_categories_and_profiles():
     text = (ROOT / "deploy" / "server" / "OPERATIONS.md").read_text(encoding="utf-8")
     assert "python -m scripts.refstore init" in text and "profile.md" in text and "admin import /import" in text
+
+
+# ---- server-only help (#/admin) ---------------------------------------------------------------
+
+def test_admin_help_is_served_only_by_the_server_edition():
+    assert api_help.SERVER_PAGES == ("admin",)
+    assert not (api_help.HELP_DIR / "admin.md").exists()          # local help unchanged: no admin page
+    with pytest.raises(ScriptError) as e:
+        api_help.read_help("admin")
+    assert e.value.code == "help_not_found"
+    with edition.use("server"):
+        page = api_help.read_help("admin")
+    assert page["page"] == "admin" and page["title"] == "관리"
+    assert re.findall(r"^## (.+?)\s*$", page["markdown"], re.M) == SECTIONS
+    for words in ("사용자", "사용량", "감사 기록", "서버 정보", "사용자 추가", "이메일을 그대로", "마지막 관리자",
+                  "하루 AI 한도", "비활성"):
+        assert words in page["markdown"], words
+    assert "(#/admin)" not in page["markdown"] and "(#/library)" not in page["markdown"]

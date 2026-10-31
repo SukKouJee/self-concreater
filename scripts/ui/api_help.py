@@ -1,6 +1,6 @@
 """도움말 조회 API: docs/help의 허용된 페이지만 읽어 준다.
 
-- 허용 목록은 `SCREEN_PAGES`(화면별 11개)와 `GUIDE_PAGES`(가이드 2개)뿐이다. `_chatbot.md` 같은 파일은 목록 밖이라 내지 않는다.
+- 허용 목록은 `SCREEN_PAGES`(화면별 11개)와 `GUIDE_PAGES`(가이드 2개), 서버판에서만 `SERVER_PAGES`(관리 화면)뿐이다. `_chatbot.md` 같은 파일은 목록 밖이라 내지 않는다.
 - 페이지 이름이 목록에 없으면 `help_not_found`. 서버는 모든 ScriptError를 400으로 낸다.
 
 도움말 챗봇 작업(kind "help_chat")
@@ -28,6 +28,8 @@ SERVER_HELP_DIR: Path = HELP_DIR / "server"
 SCREEN_PAGES: tuple[str, ...] = ("home", "refs", "library", "typify", "report", "motif", "draft", "conti",
                                  "diagnose", "mission", "guide")
 GUIDE_PAGES: tuple[str, ...] = ("guide-shorts", "guide-long")
+# 서버판에만 있는 화면의 도움말(`docs/help/server/<이름>.md`만 있다). 로컬판에는 그 화면도 이 페이지도 없다(help_not_found).
+SERVER_PAGES: tuple[str, ...] = ("admin",)
 
 # app.js MENU와 같은 순서·내용(tests가 대조한다).
 MENU: list[dict[str, str]] = [
@@ -69,7 +71,7 @@ def help_file(name: str) -> Path:
 
 def read_help(page: str) -> dict[str, str]:
     """허용 목록의 도움말 한 장을 `{"page", "title", "markdown"}`로 돌려준다(markdown은 프런트매터를 뗀 본문)."""
-    if page not in SCREEN_PAGES and page not in GUIDE_PAGES:
+    if page not in SCREEN_PAGES and page not in GUIDE_PAGES and not (page in SERVER_PAGES and is_server()):
         raise ScriptError("help_not_found", f"도움말 페이지가 없습니다: {page}")
     path = help_file(page)
     if not path.is_file():
