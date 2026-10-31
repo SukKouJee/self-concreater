@@ -1,4 +1,4 @@
-"""Alembic `0001`(+ `0002` 비밀번호 열, T15)이 서버 설계 §3.1 스키마를 정확히 만들고, 되돌리면 깨끗이 지우는지(T5)."""
+"""Alembic `0001`(+ `0002` 비밀번호 열, T15, `0003` 감사 기록·관리 함수, T16)이 서버 설계 §3.1 스키마를 정확히 만들고, 되돌리면 깨끗이 지우는지(T5)."""
 from __future__ import annotations
 
 from typing import Any
@@ -12,7 +12,7 @@ from tests.server.conftest import TestDb, run_alembic
 psycopg = pytest.importorskip("psycopg")
 
 RLS_TABLES = ("docs", "folders", "objects", "trash_items", "llm_usage")
-ALL_TABLES = {"users", "docs", "folders", "objects", "shared_objects", "trash_items", "llm_usage"}
+ALL_TABLES = {"users", "docs", "folders", "objects", "shared_objects", "trash_items", "llm_usage", "admin_audit"}
 
 # (column, data_type, is_nullable, collation) — 서버 설계 §3.1 그대로
 EXPECTED_COLUMNS: dict[str, list[tuple[str, str, str, str | None]]] = {
@@ -43,6 +43,10 @@ EXPECTED_COLUMNS: dict[str, list[tuple[str, str, str, str | None]]] = {
         ("output_tokens", "integer", "NO", None), ("cache_read_tokens", "integer", "NO", None),
         ("cache_write_tokens", "integer", "NO", None), ("cost_usd", "numeric(10,6)", "NO", None),
         ("ok", "boolean", "NO", None)],
+    "admin_audit": [                                                                      # 0003
+        ("id", "bigint", "NO", None), ("actor_id", "uuid", "YES", None), ("action", "text", "NO", None),
+        ("target_user_id", "uuid", "YES", None), ("detail", "jsonb", "NO", None),
+        ("at", "timestamp with time zone", "NO", None)],
 }
 
 # 테이블별 인덱스 정의(PK·UNIQUE 포함). pg_indexes.indexdef에서 이름을 뺀 "ON … USING …" 부분
@@ -54,6 +58,7 @@ EXPECTED_INDEXES: dict[str, set[str]] = {
     "shared_objects": {"UNIQUE (key)"},
     "trash_items": {"UNIQUE (id)", "UNIQUE (user_id, stamp, key)"},
     "llm_usage": {"UNIQUE (id)", "(user_id, at)"},
+    "admin_audit": {"UNIQUE (id)", "(at)"},
 }
 
 
@@ -96,7 +101,7 @@ def _role(dsn: str, role: str) -> tuple[Any, ...] | None:
 
 def test_upgrade_creates_exactly_the_design_tables(migrated_db: TestDb) -> None:
     assert _tables(migrated_db.owner_dsn) == ALL_TABLES | {"alembic_version"}
-    assert _q(migrated_db.owner_dsn, "SELECT version_num FROM alembic_version") == [("0002",)]
+    assert _q(migrated_db.owner_dsn, "SELECT version_num FROM alembic_version") == [("0003",)]
 
 
 @pytest.mark.parametrize("table", sorted(EXPECTED_COLUMNS))
@@ -127,6 +132,8 @@ def test_upgrade_defaults_constraints_and_foreign_keys(migrated_db: TestDb) -> N
     cascade = "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE"
     assert fks == {("docs", cascade), ("folders", cascade), ("objects", cascade), ("trash_items", cascade),
                    ("llm_usage", cascade),
+                   ("admin_audit", "FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE SET NULL"),
+                   ("admin_audit", "FOREIGN KEY (target_user_id) REFERENCES users(id) ON DELETE SET NULL"),
                    ("shared_objects", "FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL")}
     with psycopg.connect(dsn) as conn:
         row = conn.execute("INSERT INTO users (email) VALUES ('a@x.com') "
@@ -167,6 +174,7 @@ def test_downgrade_removes_everything_and_upgrade_reapplies(migrated_db: TestDb)
         SELECT relname FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relname <> 'alembic_version'
            AND relname NOT LIKE 'alembic_version%%'""")
     assert leftovers == []
+    assert _q(migrated_db.owner_dsn, "SELECT count(*) FROM pg_proc WHERE pronamespace = 'public'::regnamespace") == [(0,)]
 
     run_alembic(migrated_db, "upgrade", "head")
     assert _tables(migrated_db.owner_dsn) == ALL_TABLES | {"alembic_version"}
@@ -179,7 +187,7 @@ def test_0002_downgrade_drops_only_the_password_column_and_upgrade_restores_it(m
     with psycopg.connect(migrated_db.owner_dsn) as conn:
         with pytest.raises(psycopg.errors.CheckViolation):
             conn.execute("UPDATE users SET password_hash = 'plain-text'")
-    run_alembic(migrated_db, "downgrade", "0001")
+    run_alembic(migrated_db, "downgrade", "0001")      # through 0003 (admin functions, audit) as well
     assert _q(migrated_db.owner_dsn, "SELECT version_num FROM alembic_version") == [("0001",)]
     assert [c[0] for c in _columns(migrated_db.owner_dsn, "users")] == [c[0] for c in EXPECTED_COLUMNS["users"][:-1]]
     assert _q(migrated_db.owner_dsn, "SELECT email FROM users") == [("a@x.com",)]          # users are kept
@@ -187,6 +195,19 @@ def test_0002_downgrade_drops_only_the_password_column_and_upgrade_restores_it(m
     run_alembic(migrated_db, "upgrade", "head")
     assert _columns(migrated_db.owner_dsn, "users") == EXPECTED_COLUMNS["users"]
     assert _q(migrated_db.owner_dsn, "SELECT password_hash FROM users") == [(None,)]
+
+
+def test_0003_downgrade_drops_only_the_audit_table_and_functions(migrated_db: TestDb) -> None:
+    with psycopg.connect(migrated_db.owner_dsn) as conn:
+        conn.execute("INSERT INTO users (email, is_admin) VALUES ('root@x.com', true)")
+    run_alembic(migrated_db, "downgrade", "0002")
+    assert _tables(migrated_db.owner_dsn) == ALL_TABLES - {"admin_audit"} | {"alembic_version"}
+    assert _q(migrated_db.owner_dsn, "SELECT count(*) FROM pg_proc WHERE pronamespace = 'public'::regnamespace") == [(0,)]
+    assert _q(migrated_db.owner_dsn, "SELECT email, is_admin FROM users") == [("root@x.com", True)]   # users are kept
+    run_alembic(migrated_db, "upgrade", "head")
+    with psycopg.connect(migrated_db.app_dsn) as conn:                  # grants are back: the function runs (and refuses)
+        conn.execute("SELECT set_config('app.user_id', (SELECT id::text FROM users), true)")
+        assert [r[1] for r in conn.execute("SELECT * FROM admin_list_users()").fetchall()] == ["root@x.com"]
 
 
 def test_upgrade_is_idempotent_for_existing_app_role(test_db: TestDb) -> None:
