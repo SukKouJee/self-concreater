@@ -198,6 +198,8 @@ a.chip-job:hover, button.chip-job:hover { background: color-mix(in srgb, var(--k
 /* sub links under the header: refs/library on every width; the other group links only on phones */
 .subnav { display: flex; gap: 2px; padding: 0 var(--sp-6); border-bottom: 1px solid var(--border); background: var(--surface); overflow-x: auto; overflow-y: hidden; }
 .subnav[hidden] { display: none; }
+/* a disabled feature's one-line note in place of its subnav link (features.js): centred like the links, no paragraph margin */
+.subnav > .feature-note { margin: 0; align-self: center; padding: 0 var(--sp-3); white-space: nowrap; }
 .subnav-link { color: var(--muted); text-decoration: none; font-size: 14px; padding: var(--sp-2) var(--sp-3); min-height: 40px;
   display: inline-flex; align-items: center; border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
 .subnav-link:hover { color: var(--ink); }
@@ -1696,6 +1698,8 @@ body.shoot-mode .toasts { bottom: var(--sp-4); }
 .admin-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .admin-table tr.is-off .admin-name { color: var(--muted); }
 .admin-table time { white-space: nowrap; }
+/* names and emails wrap only where they must: in a narrow main column (help panel open) the table scrolls instead */
+.admin-table .admin-name, .admin-table .admin-email { overflow-wrap: break-word; }
 .admin-name { display: block; font-weight: 600; overflow-wrap: anywhere; }
 .admin-email { display: block; font-size: 12px; overflow-wrap: anywhere; margin: 0; }
 .admin-chips { display: inline-flex; flex-wrap: wrap; gap: var(--sp-1); }
