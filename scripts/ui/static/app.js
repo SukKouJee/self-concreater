@@ -283,6 +283,16 @@ function featureOfLink(item) {
   return item.href === "#/refs?tab=library" ? "library" : null;
 }
 
+// Screens that belong to a feature: reached directly (#/library, a help-panel or page link) while that feature is
+// disabled, they show the edition's one-line notice instead of the page.
+const PAGE_FEATURES = { library: "library" };
+let disabledFeatures = {};
+
+function disabledNote(page) {
+  const feature = PAGE_FEATURES[page];
+  return feature && Object.hasOwn(disabledFeatures, feature) ? { feature, text: disabledFeatures[feature] } : null;
+}
+
 function renderSubnav(hash) {
   const nav = $("subnav");
   const items = subnavItems(hash);
@@ -549,6 +559,12 @@ async function route() {
   }
   state.current = null;
   state.currentPage = null;
+  const off = disabledNote(page);
+  if (off) {
+    main.replaceChildren(h("p", { class: "feature-note muted", role: "status", "data-feature-note": off.feature }, off.text));
+    keepFocus();
+    return;
+  }
   main.replaceChildren(h("p", { class: "muted", role: "status" }, "불러오는 중…"));
   try {
     const mod = await import(`/static/pages/${page}.js`);
@@ -670,7 +686,8 @@ async function start() {
     e.preventDefault();
     $("main").focus();
   });
-  watchFeatures(document.body, await loadFeatures(api));   // hides what this edition cannot do (/api/features)
+  disabledFeatures = await loadFeatures(api);
+  watchFeatures(document.body, disabledFeatures);   // hides what this edition cannot do (/api/features)
   await refreshCategories();
   await route();
 }

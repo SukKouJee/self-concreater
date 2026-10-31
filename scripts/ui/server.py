@@ -34,6 +34,9 @@ import threading
 import traceback
 import urllib.error
 import urllib.request
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -108,7 +111,7 @@ _CONTENT_TYPES = {
 
 @dataclass
 class App:
-    root: Path
+    root: Path | None          # 작업 폴더. 서버판 어댑터(server/asgi.py)는 None(작업 폴더가 없다)
     token: str
     port: int
     server: ThreadingHTTPServer | None = None
@@ -276,9 +279,33 @@ def range_response(path: Path, size: int, ctype: str, header: str | None, open_c
                     file=FileSlice(path, start, end - start + 1, chunk))
 
 
+# 판(edition) 문맥: (판 이름, 항상 끄는 기능). 기본은 로컬판 그대로. 서버판 어댑터가 요청마다 `edition()`으로 바꾼다
+# (스레드 문맥이라 프로세스 전역 상태가 아니다. 작업 스레드는 copy_context()로 이어받는다).
+_EDITION: ContextVar[tuple[str, frozenset[str]]] = ContextVar("ytc_edition", default=(EDITION, frozenset()))
+
+
+@contextmanager
+def edition(name: str, disabled: Iterable[str]) -> Iterator[None]:
+    """블록 동안 판 이름을 name으로, disabled(FEATURE_PREFIXES의 키)를 env와 상관없이 끈 것으로 본다."""
+    forced = frozenset(disabled)
+    unknown = forced - FEATURE_PREFIXES.keys()
+    if unknown:
+        raise ValueError(f"unknown features: {sorted(unknown)}")
+    token = _EDITION.set((name, forced))
+    try:
+        yield
+    finally:
+        _EDITION.reset(token)
+
+
+def current_edition() -> str:
+    return _EDITION.get()[0]
+
+
 def disabled_features() -> dict[str, str]:
-    """env `YTC_DISABLE`에 든 기능 → 문구. 모르는 이름은 무시한다. 비어 있으면 모두 켜짐(로컬판 기본)."""
-    names = {n.strip() for n in os.environ.get(DISABLE_ENV, "").split(",")}
+    """env `YTC_DISABLE`에 든 기능(+ 판 문맥이 항상 끄는 기능) → 문구. 모르는 이름은 무시한다.
+    비어 있으면 모두 켜짐(로컬판 기본)."""
+    names = {n.strip() for n in os.environ.get(DISABLE_ENV, "").split(",")} | _EDITION.get()[1]
     return {name: FEATURE_TEXT[name] for name in FEATURE_PREFIXES if name in names}
 
 
@@ -338,7 +365,7 @@ def _api_ping(req: Request) -> dict:
 
 @route("GET", "/api/features")
 def _api_features(req: Request) -> dict:
-    return {"edition": EDITION, "disabled": disabled_features()}
+    return {"edition": current_edition(), "disabled": disabled_features()}
 
 
 @route("GET", "/healthz", auth=False)
@@ -407,6 +434,19 @@ def error_result(exc: Exception) -> tuple[int, dict]:
         return 400, {"error": exc.code, "message": exc.message, **exc.details}
     traceback.print_exception(exc, file=sys.stderr)
     return 500, {"error": "internal", "message": f"{type(exc).__name__}: {exc}"}
+
+
+def parse_json_body(raw: bytes) -> dict[str, Any]:
+    """요청 본문 → JSON 객체. 비어 있으면 {}. JSON 객체가 아니면 ScriptError("bad_json")."""
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        raise ScriptError("bad_json", f"요청 본문이 JSON이 아닙니다: {e}") from e
+    if not isinstance(data, dict):
+        raise ScriptError("bad_json", "요청 본문은 JSON 객체여야 합니다")
+    return data
 
 
 def call(rt: Route, req: Request, groups: dict[str, str]) -> Response:
@@ -503,15 +543,7 @@ class _Handler(BaseHTTPRequestHandler):
             raise ScriptError("bad_request", "요청 본문이 너무 큽니다")
         raw = self.rfile.read(length) if length else b""
         self._body_read = True
-        if not raw:
-            return {}
-        try:
-            data = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as e:
-            raise ScriptError("bad_json", f"요청 본문이 JSON이 아닙니다: {e}") from e
-        if not isinstance(data, dict):
-            raise ScriptError("bad_json", "요청 본문은 JSON 객체여야 합니다")
-        return data
+        return parse_json_body(raw)
 
     def _send(self, resp: Response) -> None:
         self.send_response(resp.status)

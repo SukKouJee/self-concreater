@@ -22,7 +22,7 @@ from scripts.common import ScriptError
 from scripts.ui.api_conti import CONTI_SUFFIX, FILE_JOB_KINDS, _safe_key, job_running_on
 from scripts.ui.api_refs import _body_parts
 from scripts.ui.jobs import Job, new_item
-from scripts.ui.server import Request, route
+from scripts.ui.server import Request, disabled_features, route
 
 KIND = "draft"
 MAX_TOPIC = 100
@@ -111,7 +111,10 @@ def _conti_links(key: str) -> tuple[str | None, str | None]:
 # ---- 출처 -------------------------------------------------------------------------------
 
 def _library_templates() -> list[dict] | None:
-    """연결된 라이브러리의 지인 틀 묶음. 연결 전이거나 라이브러리 조회가 실패하면 None(묶음을 뺀다)."""
+    """연결된 라이브러리의 지인 틀 묶음. 연결 전이거나 라이브러리 조회가 실패하면 None(묶음을 뺀다).
+    라이브러리 기능이 꺼진 판(YTC_DISABLE·서버판)이면 라이브러리를 건드리지 않고 None."""
+    if "library" in disabled_features():
+        return None
     try:
         if not library.status().get("connected"):
             return None

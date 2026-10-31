@@ -37,6 +37,7 @@ from server.keyindex import (ImportOutcome, ancestors, check_prefix, matcher, me
                              windows_order)
 
 MAX_OBJECT_BYTES: Final = 64 * 1024 * 1024        # §3.5: old conti HTML (46MB) fits
+STREAM_CHUNK: Final = 1024 * 1024                   # /files streaming piece (same as the local server)
 DELETE_BATCH: Final = 1000                          # S3 DeleteObjects limit
 _LOCK_OBJECTS: Final = 0x79746301                   # advisory lock class ids ("ytc" + 1/2)
 _LOCK_SHARED: Final = 0x79746302
@@ -99,6 +100,39 @@ class S3Bucket:
             raise S3Error(errno.EIO, f"S3 GET 실패: {e}", s3_key) from e
         except BotoCoreError as e:
             raise S3Error(errno.EIO, f"S3 GET 실패: {e}", s3_key) from e
+
+    def open_range(self, s3_key: str, start: int, length: int, chunk: int = STREAM_CHUNK) -> Iterator[bytes]:
+        """[start, start + length) 구간을 chunk씩 내주는 반복자(/files 스트리밍, Range). 요청은 지금 보내므로
+        없는 객체·S3 오류는 반복 전에 FileNotFoundError·S3Error로 난다. 다 읽거나 멈추면 본문을 닫는다."""
+        if length <= 0:
+            return iter(())
+        try:
+            body = self.client.get_object(Bucket=self.name, Key=s3_key,
+                                          Range=f"bytes={start}-{start + length - 1}")["Body"]
+        except ClientError as e:
+            if str(e.response.get("Error", {}).get("Code")) in _MISSING_CODES:
+                raise FileNotFoundError(errno.ENOENT, "S3 객체가 없습니다", s3_key) from e
+            raise S3Error(errno.EIO, f"S3 GET 실패: {e}", s3_key) from e
+        except BotoCoreError as e:
+            raise S3Error(errno.EIO, f"S3 GET 실패: {e}", s3_key) from e
+
+        def chunks() -> Iterator[bytes]:
+            try:
+                for part in body.iter_chunks(chunk):
+                    yield bytes(part)
+            except (ClientError, BotoCoreError) as e:
+                raise S3Error(errno.EIO, f"S3 GET 실패: {e}", s3_key) from e
+            finally:
+                body.close()
+
+        return chunks()
+
+    def ping(self) -> None:
+        """버킷에 닿는지(healthz). 안 되면 S3Error."""
+        try:
+            self.client.head_bucket(Bucket=self.name)
+        except (ClientError, BotoCoreError) as e:
+            raise S3Error(errno.EIO, f"S3 버킷 확인 실패: {e}", self.name) from e
 
     def copy(self, src: str, dst: str) -> None:
         """같은 버킷 안 서버 쪽 복사(휴지통 이동). 원본이 없으면 FileNotFoundError."""
@@ -245,6 +279,18 @@ class _S3Store:
             raise not_found(key)
         try:
             return self._bucket.get(self._s3_key(key))
+        except FileNotFoundError as e:          # deleted between the row read and the GET
+            raise not_found(key) from e
+
+    def open_range(self, key: str, start: int, length: int) -> Iterator[bytes]:
+        """키의 [start, start + length) 구간을 나눠 읽는 반복자(/files Range). 행이 없으면 FileNotFoundError."""
+        key = self._key(key)
+        with self._tx() as conn:
+            row = self._row(conn, key)
+        if row is None:
+            raise not_found(key)
+        try:
+            return self._bucket.open_range(self._s3_key(key), start, length)
         except FileNotFoundError as e:          # deleted between the row read and the GET
             raise not_found(key) from e
 

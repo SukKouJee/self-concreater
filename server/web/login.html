@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>로그인 · yt-coach</title>
+<style>
+  body { font-family: system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; margin: 0; background: #f6f7f9; color: #1d2330; }
+  main { max-width: 360px; margin: 12vh auto; padding: 28px; background: #fff; border: 1px solid #e3e6ec; border-radius: 12px; }
+  h1 { font-size: 20px; margin: 0 0 8px; }
+  p { margin: 0 0 16px; line-height: 1.5; }
+  label { display: block; font-size: 14px; margin-bottom: 6px; }
+  input { width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #c9ced8; border-radius: 8px; font: inherit; }
+  button { margin-top: 12px; width: 100%; padding: 9px; border: 0; border-radius: 8px; background: #2f5bea; color: #fff; font: inherit; cursor: pointer; }
+  button:disabled { opacity: .6; cursor: default; }
+  .muted { color: #5b6475; font-size: 14px; }
+  .error { color: #b42318; font-size: 14px; margin-top: 10px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>yt-coach</h1>
+  <p class="muted">초대받은 계정으로 로그인하세요.</p>
+  <p id="no-method" class="muted" hidden>아직 쓸 수 있는 로그인 방법이 없습니다. 관리자에게 문의하세요.</p>
+  <form id="dev-form" hidden>
+    <label for="dev-email">개발용 로그인(이메일)</label>
+    <input id="dev-email" name="email" type="email" autocomplete="email" required>
+    <button type="submit">로그인</button>
+    <p id="dev-error" class="error" role="alert" hidden></p>
+  </form>
+</main>
+<script type="module" src="/auth/login.js"></script>
+</body>
+</html>

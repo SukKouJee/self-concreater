@@ -1,5 +1,13 @@
 // JSON fetch helper. Throws {status, error, message, data} on failure (error "aborted" when signal fires).
 const BAD_TOKEN_TEXT = "서버가 다시 켜졌습니다. 터미널에 나온 새 주소로 여세요";
+// Server edition: a request without a valid session answers 401 login_required -> go to the login screen.
+// (The local edition never answers 401.)
+export const LOGIN_PATH = "/auth/login";
+
+function goLogin() {
+  if (typeof location === "undefined" || location.pathname === LOGIN_PATH) return;
+  location.assign(LOGIN_PATH);
+}
 
 export function showBanner(text) {
   const el = document.getElementById("banner");
@@ -42,6 +50,7 @@ export async function api(method, path, body, signal) {
       err.message = BAD_TOKEN_TEXT;
       showBanner(BAD_TOKEN_TEXT);
     }
+    if (res.status === 401 && err.error === "login_required") goLogin();
     throw err;
   }
   announceJob(data);

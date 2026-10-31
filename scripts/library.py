@@ -92,8 +92,12 @@ def _fail(code: str, message: str, **details: Any) -> ScriptError:
 # --- 설정(library.json) · 경로 --------------------------------------------------------
 
 def clone_dir() -> Path:
-    """공용 라이브러리 git clone 위치. git이 실제 폴더를 필요로 해서 로컬 전용이다(`scratch.local_path`)."""
-    return ctx.here().scratch.local_path("library")
+    """공용 라이브러리 git clone 위치. git이 실제 폴더를 필요로 해서 로컬 전용이다(`scratch.local_path`).
+    저장소가 그 폴더를 줄 수 없으면(서버판 scratch: NotImplementedError) ScriptError `library_unavailable`."""
+    try:
+        return ctx.here().scratch.local_path("library")
+    except NotImplementedError as e:
+        raise ScriptError("library_unavailable", "공용 라이브러리는 서버판에서 아직 쓸 수 없습니다") from e
 
 
 def _read_config() -> dict[str, Any] | None:

@@ -124,6 +124,13 @@ class Db:
             yield conn
 
     @contextmanager
+    def public_tx(self) -> Iterator[Conn]:
+        """사용자 설정 없는 앱 롤 트랜잭션: 로그인 전 `users` 조회(RLS 없음)와 healthz 전용.
+        RLS 테이블은 정책이 NULL과 비교해 행 0개(fail closed)라 여기서 사용자 데이터는 보이지 않는다."""
+        with self._pool.connection() as conn, conn.transaction():
+            yield conn
+
+    @contextmanager
     def admin_tx(self) -> Iterator[Conn]:
         """owner 롤 트랜잭션(관리 CLI 전용). 모든 사용자 행이 보인다."""
         if not self._owner_dsn:

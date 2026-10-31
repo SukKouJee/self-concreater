@@ -43,8 +43,8 @@ def mask_credentials(text: str) -> str:
 def scrub(text: str) -> str:
     """사용자에게 내보내는 문구에서 URL 자격 증명과 절대 경로(작업 폴더는 <작업 폴더>, 그 밖은 <경로>)를 가린다."""
     text = mask_credentials(text)
-    root = work_root()
-    variants = {str(root), root.as_posix(), str(root.resolve()), root.resolve().as_posix()}
+    root = ctx.here().root            # 서버판(작업 폴더 없음)은 절대 경로 가리기만 한다
+    variants = {str(root), root.as_posix(), str(root.resolve()), root.resolve().as_posix()} if root is not None else set()
     for v in sorted(variants, key=len, reverse=True):
         if v:
             text = text.replace(v, PATH_MASK)

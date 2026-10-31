@@ -18,7 +18,7 @@ from scripts import ctx, draft, keys, library, llm, motif, refstore, similarity,
 from scripts.common import PLUGIN_ROOT, ScriptError
 from scripts.ui.api_draft import _library_templates
 from scripts.ui.jobs import Job, new_item
-from scripts.ui.server import Request, route
+from scripts.ui.server import Request, disabled_features, route
 
 HELP_DIR: Path = PLUGIN_ROOT / "docs" / "help"
 SCREEN_PAGES: tuple[str, ...] = ("home", "refs", "library", "typify", "report", "motif", "draft", "conti",
@@ -140,7 +140,9 @@ def situation(category: str | None, page: str) -> dict[str, Any]:
                        for c in overview["categories"]],
         "mission": {k: mission[k] for k in ("date", "exists", "status", "kind")},
     }
-    if page == "library":
+    if page == "library" and "library" in disabled_features():
+        result["library"] = {"connected": False}          # 꺼진 기능: 라이브러리를 건드리지 않는다
+    elif page == "library":
         lib = library.status()
         result["library"] = ({"connected": True, "shared_count": lib["shared_count"], "last_pull": lib["last_pull"]}
                              if lib.get("connected") else {"connected": False})

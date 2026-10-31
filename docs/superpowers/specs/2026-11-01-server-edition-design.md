@@ -221,6 +221,15 @@ CREATE POLICY own ON <t> USING (user_id = nullif(current_setting('app.user_id', 
    `GET /api/ping`(`{"ok", "edition": "server", "user": email}`), `POST /api/shutdown`(404), `GET /healthz`(PG·MinIO 확인, 인증 없음).
 5. 정적 파일: `scripts/ui/static`을 같은 출처 `/static/`으로(인증 필요, 지금과 같음). 본문 상한 10MB 그대로.
 6. `api.js`: 401 `login_required`면 `/auth/login`으로 이동(로컬판은 401을 내지 않으므로 영향 없음).
+7. 구현(T10): 경로는 `scope["raw_path"]`(퍼센트 인코딩 그대로, 쿼리 제외) = stdlib의 `urlsplit(self.path).path`라 가드와 `match`가 같은 문자열을 본다.
+   순서: `/healthz` → CSRF → `/auth/*` → 세션(요청마다 users 조회, Ctx 전) → 덮어쓴 기본 라우트 → `match` → 가드 → 본문 → 작업 스레드.
+   판 문맥은 `scripts.ui.server.edition("server", 끌 기능)`(ContextVar, 요청 스레드에서 `ctx.use`와 함께 건다 → 작업 스레드도 이어받음).
+   `disabled_features()`는 env ∪ 판 문맥이라 `/api/features`(edition 포함)와 코어 쪽 라이브러리 출처(`_library_templates`, 도움말 상황)가 같은 답을 낸다.
+   라이브러리 폴더가 없는 저장소(서버 scratch)에서 `library.clone_dir()`은 `library_unavailable`(400)이라 `library:<id>` 기획안 출처·모티브 `library_ids`도 500이 아니라 400.
+   `common.scrub`은 작업 폴더가 없으면(서버) 절대 경로 가리기만 한다(이전에는 `work_root()`가 RuntimeError).
+   응답 헤더: 표준 헤더 + CSP(앱 `APP_CSP`, `/files`는 스크립트 없는 `FILES_CSP` — 리포트 iframe 때문에 `frame-ancestors 'self'`, SVG는 `SVG_CSP`) + https면 HSTS.
+   상태를 바꾸는 요청은 `Registry.close()` 뒤 503 `restarting`. `/auth/login`은 `server/web/login.html`+`login.js`(인라인 스크립트 없음),
+   `/auth/methods`가 dev 로그인 여부를 알려 준다(Google 버튼은 T12).
 
 ### 4.2 인증·세션·CSRF (`server/auth.py`)
 
@@ -235,12 +244,15 @@ CREATE POLICY own ON <t> USING (user_id = nullif(current_setting('app.user_id', 
 | dev 로그인 | `YTC_DEV_LOGIN=1`일 때만 `POST /auth/dev {"email"}`(users에 있는 이메일). `YTC_ENV=production`이면 설정 자체를 시작 시 거부 |
 | 시크릿 | `YTC_SESSION_SECRET`(32바이트 이상), `GOOGLE_CLIENT_ID/SECRET`, `ANTHROPIC_API_KEY`, DB·S3 비밀번호는 env만. 로그에 쿠키·키를 남기지 않는다(접근 로그는 경로만, 쿼리 제외) |
 | TLS | 앱은 HTTP(내부 127.0.0.1:8080). 외부는 Caddy(자동 TLS) 또는 Tailscale 등 사설망 — §11 사용자 결정 |
+| 구현(T10) | `YTC_ENV` 기본 production. production이면 `YTC_PUBLIC_URL`은 https만(쿠키 `Secure`·HSTS), 개발(`YTC_ENV=dev` 등)의 http 주소는 `Secure` 없이(파이썬 스모크가 http로 쿠키를 보내게). `YTC_SESSION_SECRET` 32바이트 미만·`YTC_DEV_LOGIN` 0/1 밖 → `config_invalid`. 사용자 조회는 `Db.public_tx()`(app.user_id 없음: RLS 테이블 0행). 세션 `{uid, epoch, iat}`, iat 뒤 14일(+시계 60초) 밖·비활성·epoch 다름·없는 사용자면 세션을 비우고 401. Origin 비교는 소문자·끝 `/` 제거 후 출처 일치(`null` 거부) |
 
 ### 4.3 `/files/<key>` (`server/files.py`)
 
 `keys.check` → `FILE_DIRS` 접두사 검사(지금과 같음: `workspace/frames`, `workspace/conti-art`, `drafts`, `reports`) → `keys.kind`로 저장소 선택
 (shared는 로그인 사용자 누구나 — 공개 YouTube 영상 프레임, 그 밖은 자기 RLS 행) → 없으면 404 → MinIO GET(Range 헤더 전달, 206/416) 스트리밍,
 `content_type`·SVG CSP 재사용. 남의 키는 RLS 때문에 "없음"과 똑같이 404.
+구현(T10): Range는 로컬처럼 영상(`VIDEO_SUFFIXES`)만, `S3Bucket.open_range`(S3 ranged GET, 1MB씩 스트리밍), 끝 없는 `bytes=N-`는 `MAX_OPEN_RANGE`.
+폴더 키(끝 `/`)·`workspace/tmp`는 404. md 문서(`drafts/*.md`)도 로컬처럼 내준다.
 
 ### 4.4 설정(env, `server/config.py`)
 
@@ -335,6 +347,8 @@ media 대기 p95가 5분을 넘거나, 앱 재시작으로 작업을 잃는 일�
 | footage | `/api/footage` 전부 | 촬영 영상 처리는 내 PC 판에서 하고, 결과는 가져오기로 옮기세요 |
 
 - footage를 켜려면 먼저 §3.3 주의(폴더 `write_path`가 폴더를 비움: `footage.decode_scenes`, `footage_out.export_clips`)를 해결한다.
+- 구현(T10): 서버판은 env와 상관없이 표의 네 기능을 모두 끈다(`server.asgi.SERVER_FEATURES`, `YTC_DISABLE`는 더할 수만 있다).
+  화면: `#/library`(및 도움말·다른 화면의 라이브러리 링크)로 바로 와도 페이지 대신 그 기능의 문구 한 줄(`app.js` `PAGE_FEATURES`).
 
 - 정적 JS: 버튼·메뉴에 `data-feature="<기능>"`을 달고 시작 때 `/api/features`를 읽어 숨기고 그 자리에 문구 한 줄. 가드는 서버가 최종(숨김만 믿지 않음).
 - 테스트: 라우트 전수 표(ROUTES)를 돌며 서버 백엔드에서 비활성 표에 없는 라우트가 `NotImplementedError`/`Path` 접근으로 500을 내지 않는지(§9-4).
