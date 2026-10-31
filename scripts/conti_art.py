@@ -318,8 +318,10 @@ def _draw_batch(key: str, number: int, batch_ids: list[str], tally: _Tally) -> N
                 _, got = llm.ask_validated(rules(), _payload(fm, batch), DRAW_TASK + DRAW_JSON_RETRY,
                                            lambda d, s=scene_ids: _validated(d, s), max_tokens=MAX_TOKENS)
         except ScriptError as e:
+            reason = ("Claude 답이 JSON 형식이 아니었어요. 남은 장면 그리기를 다시 눌러 주세요"
+                      if e.code == "llm_bad_json" else e.message)
             with tally.lock:
-                tally.warnings.append(f"{number}번째 묶음({len(batch)}장면)을 그리지 못했어요: {e.message}")
+                tally.warnings.append(f"{number}번째 묶음({len(batch)}장면)을 그리지 못했어요: {reason}")
                 tally.failed += len(batch)
             asked = False
         results: dict[str, tuple[str, str]] = {}

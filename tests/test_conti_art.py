@@ -611,6 +611,7 @@ def test_draw_bad_json_twice_fails_with_one_warning(saved, monkeypatch):
     ids = [c["id"] for c in cuts_of(saved)]
     out = conti_art.draw(saved, ids[:2], False)
     assert out["drawn"] == 0 and out["failed"] == 2 and len(out["warnings"]) == 1
+    assert "JSON 형식이 아니었어요" in out["warnings"][0] and "Expecting" not in out["warnings"][0]
     assert len(f.calls) == 2
 
 
