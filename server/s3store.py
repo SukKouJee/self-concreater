@@ -69,11 +69,12 @@ class S3Bucket:
 
     @classmethod
     def connect(cls, endpoint: str, access_key: str, secret_key: str, bucket: str,
-                region: str = "us-east-1") -> S3Bucket:
+                region: str = "us-east-1", *, max_pool_connections: int = 10) -> S3Bucket:
         import boto3
 
         config = Config(signature_version="s3v4", s3={"addressing_style": "path"},
-                        retries={"max_attempts": 3, "mode": "standard"}, connect_timeout=10, read_timeout=60)
+                        retries={"max_attempts": 3, "mode": "standard"}, connect_timeout=10, read_timeout=60,
+                        max_pool_connections=max_pool_connections)
         client = boto3.client("s3", endpoint_url=endpoint, aws_access_key_id=access_key,
                               aws_secret_access_key=secret_key, region_name=region, config=config)
         return cls(client, bucket)
@@ -97,6 +98,17 @@ class S3Bucket:
             raise S3Error(errno.EIO, f"S3 GET 실패: {e}", s3_key) from e
         except BotoCoreError as e:
             raise S3Error(errno.EIO, f"S3 GET 실패: {e}", s3_key) from e
+
+    def copy(self, src: str, dst: str) -> None:
+        """같은 버킷 안 서버 쪽 복사(휴지통 이동). 원본이 없으면 FileNotFoundError."""
+        try:
+            self.client.copy_object(Bucket=self.name, Key=dst, CopySource={"Bucket": self.name, "Key": src})
+        except ClientError as e:
+            if str(e.response.get("Error", {}).get("Code")) in _MISSING_CODES:
+                raise FileNotFoundError(errno.ENOENT, "S3 객체가 없습니다", src) from e
+            raise S3Error(errno.EIO, f"S3 COPY 실패: {e}", src) from e
+        except BotoCoreError as e:
+            raise S3Error(errno.EIO, f"S3 COPY 실패: {e}", src) from e
 
     def delete(self, s3_key: str) -> None:
         """없는 객체를 지워도 된다(S3 DeleteObject는 204)."""
@@ -128,6 +140,21 @@ class S3Bucket:
         except (ClientError, BotoCoreError) as e:
             raise S3Error(errno.EIO, f"S3 LIST 실패: {e}", prefix) from e
         return sorted(found)
+
+
+def user_s3_key(uid: uuid.UUID, key: str) -> str:
+    """사용자 객체 이름 `users/{uid}/{key}`(`objects.s3_key` CHECK와 같은 꼴)."""
+    return f"users/{uid}/{key}"
+
+
+def object_lock_name(uid: uuid.UUID, key: str) -> str:
+    """사용자 객체 키 잠금 이름. 휴지통 이동(PgTrash)도 같은 잠금을 잡아 put·delete와 한 번에 하나씩 돈다."""
+    return f"{uid}/{key}"
+
+
+def lock_user_object(conn: Conn, uid: uuid.UUID, key: str) -> None:
+    """S3ObjectStore의 put·delete와 같은 키 잠금(트랜잭션 끝에 풀린다)."""
+    conn.execute("SELECT pg_advisory_xact_lock(%s::int, hashtext(%s))", (_LOCK_OBJECTS, object_lock_name(uid, key)))
 
 
 def shared_s3_key(key: str) -> str:
@@ -372,10 +399,10 @@ class S3ObjectStore(_S3Store):
         return _keys.check(key)
 
     def _s3_key(self, key: str) -> str:
-        return f"users/{self._uid}/{key}"
+        return user_s3_key(self._uid, key)
 
     def _lock_name(self, key: str) -> str:
-        return f"{self._uid}/{key}"
+        return object_lock_name(self._uid, key)
 
     def _row(self, conn: Conn, key: str) -> tuple[int, int] | None:
         row = conn.execute("SELECT size, mtime_ns FROM objects WHERE user_id = %s AND key = %s",

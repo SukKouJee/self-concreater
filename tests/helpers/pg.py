@@ -221,3 +221,22 @@ def pg_shared_cache(request: pytest.FixtureRequest, email: str = "a@example.com"
     from server.s3store import S3SharedCache
 
     return S3SharedCache(db, bucket, pg_user(request.getfixturevalue("migrated_db").owner_dsn, email))
+
+
+@pytest.fixture
+def pg_backend(request: pytest.FixtureRequest, tmp_path: Path) -> Any:
+    """테스트 DB·버킷 위의 `server.backend.ServerBackend`(임시·상태 폴더는 tmp_path 아래)."""
+    db = request.getfixturevalue("pg_db")
+    bucket = request.getfixturevalue("s3_bucket")
+    from server.backend import ServerBackend
+
+    return ServerBackend(db, bucket, scratch_dir=tmp_path / "server-tmp", state_dir=tmp_path / "server-state")
+
+
+def pg_ctx(request: pytest.FixtureRequest, email: str = "a@example.com") -> Any:
+    """새 사용자(email)의 서버 Ctx(`Ctx(user_id=<uid>, backend=ServerBackend)`). 같은 테스트에서는 같은 DB·버킷."""
+    from scripts.ctx import Ctx
+
+    backend = request.getfixturevalue("pg_backend")
+    uid = pg_user(request.getfixturevalue("migrated_db").owner_dsn, email)
+    return Ctx(user_id=str(uid), backend=backend)

@@ -156,7 +156,7 @@ CREATE POLICY own ON <t> USING (user_id = nullif(current_setting('app.user_id', 
 | shared | `workspace/raw/<vid>.json`, `workspace/cuts/<vid>.json`, `workspace/shots/<vid>.json`, `workspace/frames/<vid>/<nnnn>.jpg` | `shared_objects` 행 + MinIO `shared/videos/{vid}/{raw.json\|cuts.json\|shots.json\|frames/<name>}` | 변환은 `s3store.shared_s3_key(key)` 한 함수. 문자열은 데이터 안에 키 그대로 남는다 |
 | scratch | `workspace/tmp/<name>` | 프로세스 임시 폴더 `/tmp/ytc/{uid}/` | 같은 프로세스 안 HTTP→작업 핸드오프(ADR-S6이라 성립) |
 | (Scratch.local_path) | `timings.json`, `.last_fetch`, `library/` | `timings`·`.last_fetch`: `/var/lib/ytc/state/`(서버 전역, 볼륨) / `library`: NotImplementedError | `.last_fetch` = 서버 전체 YouTube 속도 제한(상위 §4) |
-| trash | `workspace/trash/<stamp>[-n]/…` | `trash_items` + MinIO `trash/{uid}/{stamp}/{key}`(`trash_items.s3_key` CHECK) | 반환 문자열 형식 동일 |
+| trash | `workspace/trash/<stamp>[-n]/…` | `trash_items` + MinIO `trash/{uid}/{stamp}/{key}`(`trash_items.s3_key` CHECK) | 반환 문자열 형식 동일. 구현(T8): 한 트랜잭션(사용자 잠금 → 행·객체 키 잠금 → 서버 쪽 COPY → 행 이동) 커밋 뒤 원래 객체 삭제(실패하면 고아, 경고 로그). 폴더 키는 그 아래 문서·객체·폴더 행째 |
 | (밖) | `ui.lock`, `ui.log`, 촬영 원본 폴더, `remotion/`, `templates/`, `skills/` | 없음 / 이미지 안 `PLUGIN_ROOT` | |
 
 ### 3.3 Protocol 준수 규칙 (계약 테스트가 고정)
@@ -193,6 +193,9 @@ CREATE POLICY own ON <t> USING (user_id = nullif(current_setting('app.user_id', 
 
 `tmp_path(name)`·`tmp_file(key)` → `/tmp/ytc/{uid}/<name>`(시작 때 비움). `arg_path`: 절대 경로는 tmp 폴더 안만, 상대는 tmp 기준.
 `key_of`: 문자열 키는 `keys.check`, tmp 안 경로는 `workspace/tmp/…`, 그 밖은 `bad_path`. `workdir()`·`local_path("library")`: NotImplementedError.
+구현(T8): `local_path("tmp")` = 그 사용자의 tmp 폴더(cuts·stt·미션 정리가 쓴다), `timings.json`·`.last_fetch` = `YTC_STATE_DIR`,
+그 밖은 전부 NotImplementedError. 상대 `key_of`는 FileScratch의 resolve처럼 `./`·`a/../`를 접은 뒤 `keys.check`. 시작 때 비우기는
+`clear_scratch_root`(이름이 UUID인 하위 폴더만 지운다).
 
 ### 3.5 MinIO
 
@@ -245,6 +248,8 @@ CREATE POLICY own ON <t> USING (user_id = nullif(current_setting('app.user_id', 
 `YTC_DB_OWNER_DSN`(migrate·admin만), `YTC_S3_ENDPOINT`, `YTC_S3_BUCKET`, `YTC_S3_ACCESS_KEY`, `YTC_S3_SECRET_KEY`, `ANTHROPIC_API_KEY`,
 `YTC_LLM_ENGINE=anthropic-api`, `YTC_LLM_MODEL`, `YTC_LLM_MAX_TOKENS`, `YTC_DAILY_USD`(기본 1.00), `YTC_MEDIA_SLOTS`(2), `YTC_LLM_SLOTS`(4),
 `YT_PROXY`, `YT_FETCH_INTERVAL`, `YTC_DEV_LOGIN`. 필수 값이 없으면 시작하지 않는다(`config_missing`).
+저장소(T8, `StorageSettings`): `YTC_DB_POOL_MIN`(1)·`YTC_DB_POOL_MAX`(10), `YTC_S3_MAX_POOL_CONNECTIONS`(10, boto 연결 풀),
+`YTC_SCRATCH_DIR`(`/tmp/ytc`), `YTC_STATE_DIR`(`/var/lib/ytc/state`). 잘못된 값은 `config_invalid`.
 
 ## 5. S7 작업 실행
 
@@ -379,8 +384,9 @@ media 대기 p95가 5분을 넘거나, 앱 재시작으로 작업을 잃는 일�
    `pg` 매개변수는 `YTC_TEST_DB_DSN`·`YTC_TEST_S3_ENDPOINT`가 없으면 skip. 환경은 `docker compose -f deploy/server/docker-compose.test.yml up -d`
    (운영과 같은 이미지, testcontainers 의존성 추가 없음).
 2. **동등성 시나리오** `tests/server/test_equivalence.py`: 같은 시나리오(scaffold·init_category → 영상 md 쓰기·relabel → 모티브 → 기획안 저장 →
-   콘티 저장·이력 → 미션 give/submit → 휴지통)를 File Ctx와 Pg Ctx에서 돌리고, `export_tree(ctx) -> {key: sha256}`(S9 검증과 같은 함수)와
-   반환 JSON(라벨 제외)을 비교. 기존 테스트 파일은 디스크를 직접 검사하므로 그대로 Pg에서 돌리지 않는다 — 대신 이 시나리오가 모듈 경로를 덮는다.
+   콘티 저장·이력 → 미션 give/submit → 휴지통)를 File Ctx와 Pg Ctx에서 돌리고, `export_tree(backend, uid) -> ExportedTree`
+   (`.hashes()` = `{key: sha256}`, `.folders`, `.write(dest)`; S9 검증과 같은 함수)와 반환 JSON(라벨·display_path·쓰기 시각 제외)을 비교.
+   허용 차이는 테스트 파일 머리말에 고정(휴지통 스탬프, 서버 휴지통은 공유 캐시를 옮기지 않음, scratch 제외). 기존 테스트 파일은 디스크를 직접 검사하므로 그대로 Pg에서 돌리지 않는다 — 대신 이 시나리오가 모듈 경로를 덮는다.
 3. **격리** `tests/server/test_isolation.py`(ASGI TestClient + dev 로그인): A가 기획안·콘티 HTML·작업 생성 → B의 목록 비어 있음,
    B의 `/files/<A의 키>` 404, B가 A의 job_id 조회 `job_not_found`, B의 decide/cancel 거절. DB 직접: `ytc_app`으로 `app.user_id` 없이 SELECT → 0행,
    B로 설정 후 A 행 0행, A의 user_id로 INSERT 시도 → RLS 위반. 비로그인 → 401, 다른 Origin POST → 403, 폼 Content-Type → 403.

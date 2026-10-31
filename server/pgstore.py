@@ -1,4 +1,5 @@
 """PostgreSQL 문서 저장소(서버 설계 §3.1·§3.3, ADR-S3): `scripts.stores.DocStore`를 `docs`·`folders` 테이블로 구현한다.
+휴지통(`PgTrash`)도 여기 있다: 문서·객체를 `trash_items` 행(+ MinIO `trash/{uid}/{stamp}/{key}`)으로 옮긴다.
 
 - 원문 바이트(`docs.raw`)를 그대로 저장한다. version = sha256(raw), `Doc.label` = 키, `label()` = `ytc:{email}`.
 - 모든 질의는 `Db.user_tx(uid)` 안에서 돈다(RLS가 최종 방어선). WHERE에도 user_id를 적는다(이중 방어, PK 범위 질의).
@@ -14,19 +15,28 @@ from __future__ import annotations
 
 import builtins
 import errno
+import logging
 import os
 import tempfile
 import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
+from typing import Any, Final
 
 from scripts import keys as _keys
 from scripts import refstore
+from scripts.common import ScriptError
 from scripts.stores import Doc, Meta, VersionConflict
 from server.db import Conn, Db
 from server.keyindex import ancestors, check_prefix, matcher, meta, not_found, sha256_hex, windows_order
+from server.s3store import S3Bucket, lock_user_object, user_s3_key
+
+log = logging.getLogger(__name__)
+_LOCK_TRASH: Final = 0x79746303                     # advisory lock class: one trash move per user at a time
 
 
 def _now_ns() -> int:
@@ -194,3 +204,162 @@ class PgDocStore:
             if row is not None:
                 path.write_bytes(bytes(row[0]))
             yield path
+
+
+# --- 휴지통 ---------------------------------------------------------------------------------
+
+def trash_s3_key(uid: uuid.UUID, stamp: str, key: str) -> str:
+    """휴지통 객체 이름 `trash/{uid}/{stamp}/{key}`(`trash_items.s3_key` CHECK와 같은 꼴)."""
+    return f"trash/{uid}/{stamp}/{key}"
+
+
+def _trash_failed(cause: BaseException) -> ScriptError:
+    """FileTrash(`filestore.move_paths`)와 같은 코드·문구."""
+    return ScriptError("trash_failed", f"파일을 옮기지 못했습니다(다른 프로그램이 열어 두었는지 확인하세요): {cause}.")
+
+
+@dataclass
+class _Plan:
+    """한 번의 이동에서 옮길 행들."""
+
+    docs: builtins.list[tuple[str, bytes, int, int]] = field(default_factory=builtins.list)  # key, raw, size, mtime
+    objects: builtins.list[str] = field(default_factory=builtins.list)
+    folders: builtins.list[str] = field(default_factory=builtins.list)    # moved folder prefixes ('/')
+
+
+class PgTrash:
+    """한 사용자의 휴지통(`scripts.stores.Trash`). 반환 형식·문자열·오류는 FileTrash와 같다:
+    `{"trash": "workspace/trash/<stamp>[-n]", "moved": [키(폴더는 끝 / 없이), …]}`, last는 마지막,
+    없는 키는 trash_failed.
+
+    - 문서는 `trash_items.raw`로, 객체는 MinIO 서버 쪽 복사(`trash/{uid}/{stamp}/{key}`) 뒤 행으로 옮긴다.
+      폴더 키는 그 아래 문서·객체 전부와 폴더 행을 옮긴다(디스크에서 폴더째 옮기는 것과 같다). 조상 폴더 행은 남는다.
+    - 공유 캐시 키(`workspace/{raw,cuts,frames,shots}/`)는 옮기지 않고 `moved`에서 뺀다:
+      다른 사용자도 쓰는 원본 데이터다(§3.3).
+    - 한 트랜잭션: 사용자 잠금 → 스탬프 고르기 → 행 잠금(문서 FOR UPDATE, 객체는 S3ObjectStore와 같은 키 잠금, 키 순서)
+      → 휴지통 객체 복사 → trash_items 넣기 → 원래 행 지우기 → 커밋 → 원래 MinIO 객체 지우기.
+      커밋 전 실패면 롤백하고 복사본을 지운다(아무것도 옮기지 않음).
+      원래 객체 삭제는 커밋 뒤라 "행이 있으면 객체가 있다"가 늘 성립한다.
+      그 삭제가 실패하면 행 없는 고아 객체(S10 점검)로 남고 경고 로그를 남긴다(이동은 이미 끝났다).
+    """
+
+    def __init__(self, db: Db, bucket: S3Bucket, user_id: uuid.UUID | str) -> None:
+        self._db = db
+        self._bucket = bucket
+        self._uid = user_id if isinstance(user_id, uuid.UUID) else uuid.UUID(user_id)
+
+    @staticmethod
+    def _name(key: str) -> str:
+        name = _keys.check(key).removesuffix("/")
+        if _keys.kind(name) == "scratch":
+            raise ValueError(f"임시 파일 키는 휴지통으로 옮기지 않습니다: {key!r}")
+        return name
+
+    def move(self, keys: builtins.list[str], last: str) -> dict[str, Any]:
+        names = [self._name(k) for k in keys]
+        last_name = self._name(last)
+        names.sort(key=lambda n: n == last_name)
+        moving = [n for n in names if _keys.kind(n) != "shared"]
+        copied: builtins.list[str] = []
+        originals: builtins.list[str] = []
+        try:
+            with self._db.user_tx(self._uid) as conn:
+                conn.execute("SELECT pg_advisory_xact_lock(%s::int, hashtext(%s))", (_LOCK_TRASH, str(self._uid)))
+                stamp = self._stamp(conn)
+                plan = self._plan(conn, moving)
+                for key in plan.objects:
+                    dst = trash_s3_key(self._uid, stamp, key)
+                    self._bucket.copy(user_s3_key(self._uid, key), dst)
+                    copied.append(dst)
+                self._record(conn, stamp, plan)
+                originals = [user_s3_key(self._uid, k) for k in plan.objects]
+        except BaseException as e:
+            if copied:
+                self._discard(copied, e)
+            if isinstance(e, OSError):
+                raise _trash_failed(e) from e
+            raise
+        if originals:
+            try:
+                self._bucket.delete_many(originals)
+            except OSError as e:          # moved already (rows point at the trash copies): leftovers are orphans
+                log.warning("휴지통 이동 뒤 원래 객체를 지우지 못했습니다(고아, S10 점검): %s: %s", originals, e)
+        return {"trash": f"{_keys.TRASH}{stamp}", "moved": moving}
+
+    def _stamp(self, conn: Conn) -> str:
+        """`YYYYmmdd-HHMMSS`, 같은 초에 이미 쓴 스탬프면 `-2`, `-3` …(FileTrash의 폴더 이름과 같다)."""
+        base = datetime.now().strftime("%Y%m%d-%H%M%S")
+        n = 1
+        while True:
+            stamp = base if n == 1 else f"{base}-{n}"
+            row = conn.execute("SELECT 1 FROM trash_items WHERE user_id = %s AND stamp = %s LIMIT 1",
+                               (self._uid, stamp)).fetchone()
+            if row is None:
+                return stamp
+            n += 1
+
+    def _plan(self, conn: Conn, names: builtins.list[str]) -> _Plan:
+        """옮길 행을 잠그고 모은다. 없는 키는 trash_failed(FileTrash: 옮길 파일이 없으면 shutil.move가 실패)."""
+        plan = _Plan()
+        candidates: builtins.list[str] = []
+        explicit: builtins.list[str] = []
+        for name in names:
+            if _keys.is_doc(name):
+                row = conn.execute("SELECT raw, size, mtime_ns FROM docs WHERE user_id = %s AND key = %s FOR UPDATE",
+                                   (self._uid, name)).fetchone()
+                if row is None:
+                    raise _trash_failed(not_found(name))
+                plan.docs.append((name, bytes(row[0]), int(row[1]), int(row[2])))
+                continue
+            if conn.execute("SELECT 1 FROM objects WHERE user_id = %s AND key = %s", (self._uid, name)).fetchone():
+                candidates.append(name)
+                explicit.append(name)
+                continue
+            prefix = name + "/"
+            docs = conn.execute("SELECT key, raw, size, mtime_ns FROM docs WHERE user_id = %s AND starts_with(key, %s) "
+                                "ORDER BY key FOR UPDATE", (self._uid, prefix)).fetchall()
+            objs = conn.execute("SELECT key FROM objects WHERE user_id = %s AND starts_with(key, %s)",
+                                (self._uid, prefix)).fetchall()
+            folder = conn.execute("SELECT 1 FROM folders WHERE user_id = %s AND starts_with(prefix, %s) LIMIT 1",
+                                  (self._uid, prefix)).fetchone()
+            if not docs and not objs and folder is None:
+                raise _trash_failed(not_found(name))
+            plan.docs.extend((str(k), bytes(raw), int(size), int(m)) for k, raw, size, m in docs)
+            candidates.extend(str(r[0]) for r in objs)
+            plan.folders.append(prefix)
+        wanted = sorted(set(candidates))
+        # Same per-key lock as S3ObjectStore.put/delete, in key order (delete_prefix also locks in key order)
+        for key in wanted:
+            lock_user_object(conn, self._uid, key)
+        rows = conn.execute("SELECT key FROM objects WHERE user_id = %s AND key = ANY(%s)",
+                            (self._uid, wanted)).fetchall()
+        present = {str(r[0]) for r in rows}
+        for name in explicit:
+            if name not in present:                              # deleted while we waited for its lock
+                raise _trash_failed(not_found(name))
+        plan.objects = sorted(present)
+        return plan
+
+    def _record(self, conn: Conn, stamp: str, plan: _Plan) -> None:
+        for key, raw, size, mtime_ns in plan.docs:
+            conn.execute("INSERT INTO trash_items (user_id, stamp, key, kind, raw, size, mtime_ns) "
+                         "VALUES (%s, %s, %s, 'doc', %s, %s, %s)", (self._uid, stamp, key, raw, size, mtime_ns))
+        if plan.objects:
+            conn.execute(
+                "INSERT INTO trash_items (user_id, stamp, key, kind, s3_key, size, mtime_ns) "
+                "SELECT user_id, %s, key, 'object', %s || key, size, mtime_ns FROM objects "
+                "WHERE user_id = %s AND key = ANY(%s)",
+                (stamp, trash_s3_key(self._uid, stamp, ""), self._uid, plan.objects))
+            conn.execute("DELETE FROM objects WHERE user_id = %s AND key = ANY(%s)", (self._uid, plan.objects))
+        if plan.docs:
+            conn.execute("DELETE FROM docs WHERE user_id = %s AND key = ANY(%s)",
+                         (self._uid, [d[0] for d in plan.docs]))
+        for prefix in plan.folders:
+            conn.execute("DELETE FROM folders WHERE user_id = %s AND starts_with(prefix, %s)", (self._uid, prefix))
+
+    def _discard(self, copied: builtins.list[str], cause: BaseException) -> None:
+        """롤백된 이동의 휴지통 복사본을 지운다. 실패하면 원래 예외에 고아 객체를 적어 둔다(S10 점검)."""
+        try:
+            self._bucket.delete_many(copied)
+        except OSError as e:
+            cause.add_note(f"휴지통 복사본이 고아로 남았습니다(S10 점검): {copied}: {e}")
