@@ -1,0 +1,47 @@
+# 서버판 테스트용 PostgreSQL 16 + MinIO(서버 설계 §9.3·§10). 운영 compose(docker-compose.yml)와 같은 이미지.
+# 데이터는 tmpfs(내리면 사라짐), 포트는 127.0.0.1의 무작위 번호. 프로젝트 이름은 실행마다 -p 로 따로 준다:
+#   docker compose -p ytc-test-<이름> -f deploy/server/docker-compose.test.yml up -d --wait
+#   docker compose -p ytc-test-<이름> -f deploy/server/docker-compose.test.yml port postgres 5432
+#   docker compose -p ytc-test-<이름> -f deploy/server/docker-compose.test.yml down -v
+# 보통은 직접 띄우지 않고 pytest가 띄운다: YTC_TEST_DOCKER=1 pytest tests/server (tests/server/conftest.py).
+# 비밀번호는 테스트 전용 기본값이다. 운영 값은 deploy/server/.env 에만 둔다.
+name: ytc-test
+
+services:
+  postgres:
+    # postgres:16-alpine (16.15)
+    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+    environment:
+      POSTGRES_USER: ytc_owner
+      POSTGRES_PASSWORD: "${YTC_TEST_PG_PASSWORD:-ytc-test-owner}"
+      POSTGRES_DB: ytc
+    ports:
+      - "127.0.0.1::5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      # -h 127.0.0.1: 초기화용 임시 서버(유닉스 소켓만)가 아니라 실제 서버가 뜬 뒤에 healthy
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "ytc_owner", "-d", "ytc"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+
+  minio:
+    # MinIO 공식 이미지(minio/minio, quay.io/minio/minio)는 더 이상 받을 수 없어 Chainguard 빌드를 쓴다
+    # (RELEASE.2026-10-23T20-06-51Z, mc 포함, 비루트 65532).
+    image: cgr.dev/chainguard/minio@sha256:3b6e40c30ecd5cea627e382ff0b82ca841f58c52294578787043ee80c8ef7c82
+    command: ["server", "/data", "--address", ":9000", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: "${YTC_TEST_S3_ACCESS_KEY:-ytc-test}"
+      MINIO_ROOT_PASSWORD: "${YTC_TEST_S3_SECRET_KEY:-ytc-test-secret}"
+    ports:
+      - "127.0.0.1::9000"
+    tmpfs:
+      - /data:uid=65532,gid=65532
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
