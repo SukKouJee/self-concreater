@@ -25,7 +25,7 @@
 ## 개발 환경
 - Python 3.11+. 의존성은 `requirements.txt`. ffmpeg는 선택(현재 코드는 쓰지 않음: 컷은 OpenCV, STT·촬영 영상 디코딩은 PyAV).
 - 로컬 실행 전제. 자막 차단 시 `YT_PROXY` 안내.
-- 테스트: `pytest tests/`. 실제 링크는 `tests/fixtures/links.txt`. `tests/server`·`tests/contract`는 PG·MinIO가 필요해 `YTC_TEST_DOCKER=1`(Docker)이 없으면 skip된다. 서버를 건드리면 이 값을 켜고 돌린다.
+- 테스트: `pytest tests/`. 실제 링크는 `tests/fixtures/links.txt`. PG·MinIO fixture(`pg_stack` 등, `tests/helpers/pg.py`)를 쓰는 테스트만 `YTC_TEST_DOCKER=1`(Docker) 또는 `YTC_TEST_DB_DSN`이 없으면 skip된다(폴더 통째가 아니다: `tests/server`·`tests/contract`의 단위 테스트는 늘 돈다). Docker 스모크(`tests/test_deploy_smoke.py`)도 `YTC_TEST_DOCKER=1`일 때만 돈다. 서버를 건드리면 이 값을 켜고 돌린다.
 - 프로세스를 이미지 이름으로 일괄 종료하지 않는다(`taskkill /IM python.exe`, `Stop-Process -Name python`, `pkill python`, `node.exe` 포함 금지). 사용자의 UI 서버와 다른 프로그램까지 죽인다. UI 서버는 `ytc ui --stop`, 남은 프로세스는 직접 띄운 PID나 그 포트를 쓰는 PID만 끈다.
 
 ## 작업 방식
