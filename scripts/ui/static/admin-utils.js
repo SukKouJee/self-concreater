@@ -307,7 +307,7 @@ export function auditLine(entry) {
   if (entry.action === "delete_user") {
     what = `사용자 삭제(문서 ${d.docs || 0}개, 파일 ${d.objects || 0}개, 휴지통 ${d.trash || 0}개)`;
   }
-  const who = entry.actor_email || (d.via === "cli" ? "운영자(명령줄)" : "알 수 없음");
+  const who = entry.actor_email || (d.via === "cli" ? "운영자(관리 명령)" : "알 수 없음");
   return { who, what, whom: entry.target_email || DELETED };
 }
 

@@ -128,7 +128,7 @@ docker compose --profile admin run --rm -T admin set-password friend@example.com
 | `clear-password <이메일>` | 비밀번호를 지워 비밀번호 로그인을 막음(Google 로그인은 그대로). 세션도 끊김 |
 | `disable-user <이메일>` | 비활성. 로그인 중이던 세션도 끊김 |
 | `logout-all <이메일>` | 계정은 그대로 두고 모든 기기의 세션을 끊음(기기 분실 등). 다시 로그인하면 됨 |
-| `make-admin <이메일>` / `revoke-admin <이메일>` | 관리자 권한을 주거나 걷음(첫 관리자 만들기, 관리 화면이 잠겼을 때). 출력의 `disabled`가 true면 그 계정은 로그인할 수 없으니 `enable-user`를 먼저. 감사 기록에 "운영자(명령줄)"로 남음 |
+| `make-admin <이메일>` / `revoke-admin <이메일>` | 관리자 권한을 주거나 걷음(첫 관리자 만들기, 관리 화면이 잠겼을 때). 출력의 `disabled`가 true면 그 계정은 로그인할 수 없으니 `enable-user`를 먼저. 감사 기록에 "운영자(관리 명령)"로 남음 |
 | `enable-user <이메일>` | 비활성을 풂(세션은 그대로 끊긴 상태, 다시 로그인하면 됨). 감사 기록에 남음 |
 | `set-email <이메일> <새 이메일>` | 이메일을 바꿈. Google 연결이 풀리고 모든 기기 세션이 끊김(새 이메일로 다시 로그인). 감사 기록에 남음 |
 | `set-name <이메일> <이름>` | 표시 이름을 바꿈(빈 값이면 지움). 감사 기록에 남음 |

@@ -183,10 +183,10 @@ def test_audit_lines_and_usage_totals():
               m.adminErrorText({ status: 409, error: "last_admin", message: "마지막" })],
       };""")
     assert out["limit"] == {"who": "r@x", "what": "하루 한도 $2.00 → 기본", "whom": "b@x"}
-    assert out["cli"] == {"who": "운영자(명령줄)", "what": "관리자로 지정", "whom": "b@x"}
+    assert out["cli"] == {"who": "운영자(관리 명령)", "what": "관리자로 지정", "whom": "b@x"}
     assert out["invite"]["what"] == "사용자 추가"
     assert out["email"]["what"] == "이메일 변경 b@x → c@x"
-    assert out["gone"] == {"who": "운영자(명령줄)", "what": "사용자 삭제(문서 3개, 파일 2개, 휴지통 1개)", "whom": "b@x"}
+    assert out["gone"] == {"who": "운영자(관리 명령)", "what": "사용자 삭제(문서 3개, 파일 2개, 휴지통 1개)", "whom": "b@x"}
     assert out["lost"]["whom"] == "삭제된 사용자"
     assert out["anon"] == [{"email": "삭제된 사용자", "calls": 1, "failed": 0, "cost": 0.25}]
     assert out["totals"] == [{"email": "a", "calls": 4, "failed": 0, "cost": 1.25},

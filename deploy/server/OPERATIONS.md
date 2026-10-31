@@ -39,8 +39,8 @@
   (비밀번호·해시는 남기지 않는다). 비밀번호 해시는 앱이 만들고 함수에는 해시만 넘어간다.
 - 관리자를 모두 잃었거나 화면이 잠겼으면 owner 경로로 되살린다: `... admin make-admin you@example.com`.
   되살릴 계정은 **활성**이어야 로그인할 수 있다 — 출력의 `"disabled": true`면 먼저 `... admin enable-user you@example.com`.
-  (`revoke-admin`으로 걷기. CLI는 마지막 관리자도 걷을 수 있는 운영자의 탈출구다. 감사 기록에는 "운영자(명령줄)"로 남는다.)
-- 명령줄로도 된다(owner 경로, 감사 기록 "운영자(명령줄)"): `... admin set-email old@example.com new@example.com`,
+  (`revoke-admin`으로 걷기. CLI는 마지막 관리자도 걷을 수 있는 운영자의 탈출구다. 감사 기록에는 "운영자(관리 명령)"로 남는다.)
+- 명령줄로도 된다(owner 경로, 감사 기록 "운영자(관리 명령)"): `... admin set-email old@example.com new@example.com`,
   `... admin set-name friend@example.com "지수"`, `... admin delete-user friend@example.com --confirm friend@example.com`
   (명령줄 삭제는 앱의 작업을 멈추지 못하므로 먼저 `disable-user`로 세션을 끊어 두거나 웹 화면에서 지운다).
   명령줄은 웹 관리 함수와 같은 DB 잠금을 잡아 순서대로 처리된다. 명령줄로 이메일을 바꾸면 세션은 바로 끊기지만, 떠 있는 앱은

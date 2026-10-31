@@ -56,8 +56,6 @@ ALLOWED: dict[tuple[str, str, str], str] = {
         "bad_token: only the local stdlib server answers it (the server edition uses login)",
     ("scripts/ui/static/app.js", "Claude에게", "서버를 껐습니다."): "banner after 서버 끄기, which the server edition does not render",
     ("scripts/ui/static/app.js", "서버 끄기", "서버 끄기"): "the 서버 끄기 menu item: local branch only (isServer() returns before it)",
-    ("scripts/ui/static/admin-utils.js", "명령줄", "운영자(명령줄)"):
-        "admin audit actor for the operator CLI (python -m server.admin): the server's own command line, admins only",
     ("scripts/ui/static/footage-area.js", "플러그인", "받아쓰기(faster-whisper)가"):
         "footage area: data-feature=footage, off on the server edition",
     ("scripts/ui/static/footage-area.js", "pip install", "받아쓰기(faster-whisper)가"):
