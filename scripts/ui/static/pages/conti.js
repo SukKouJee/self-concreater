@@ -26,7 +26,6 @@ const HANDLED_KEY = "ytc.conti.handled";
 const TRASH_WARNING = "콘티와 스토리보드, 이 콘티로 만든 자막(SRT·자막 영상)을 휴지통으로 옮깁니다. 기획안은 그대로 둡니다";
 const RECREATE_WARNING = "다시 만들면 화면에서 바꾼 대사·가이드·고정한 참고 프레임이 사라지고 내 메모만 남습니다";
 const SAVED_TOAST = "저장했습니다 · 스토리보드도 다시 그렸습니다";
-const CHANGED_TEXT = "파일이 밖에서 바뀌었습니다 — 다시 불러오기";
 const MATCH_TEXT = { pinned: "참고(고정)", content: "참고", composition: "구도만 참고" };
 const UNDO_MS = 8000;
 const INSERT_LABEL = "여기에 장면 넣기";
@@ -1257,7 +1256,7 @@ function renderConflict() {
   if (!S.conflict) { slot.replaceChildren(); return; }
   // a drawing job saving its pictures moved the file, not another editor
   const byArt = !!S.conflictByArt;
-  const btn = h("button", { type: "button", class: "btn btn-danger" }, byArt ? "다시 불러오기" : CHANGED_TEXT);
+  const btn = h("button", { type: "button", class: "btn btn-danger" }, byArt ? "다시 불러오기" : t("conti.changedButton"));
   btn.addEventListener("click", () => loadEditor(true));
   slot.replaceChildren(h("div", { class: "conflict", role: "alert" },
     h("p", {}, byArt ? "장면 그림을 저장하느라 파일이 바뀌었어요. 다시 불러온 뒤 저장해 주세요. 입력해 둔 내용은 남아 있습니다."
@@ -2016,7 +2015,7 @@ function setPanelBusy(busy) {
 async function saveCut(n, fields, focusKey) {
   const mine = S;
   if (mine.saving || mine.editing) return;
-  if (mine.conflict) { mine.ctx.toast("파일이 밖에서 바뀌었습니다. 먼저 다시 불러오세요", "error"); return; }
+  if (mine.conflict) { mine.ctx.toast(t("conti.changedToast"), "error"); return; }
   mine.saving = true;
   setPanelBusy(true);
   try {
@@ -2069,7 +2068,7 @@ async function saveCut(n, fields, focusKey) {
 async function editCuts(op) {
   const mine = S;
   if (mine.editing || mine.saving) return null;
-  if (mine.conflict) { mine.ctx.toast("파일이 밖에서 바뀌었습니다. 먼저 다시 불러오세요", "error"); return null; }
+  if (mine.conflict) { mine.ctx.toast(t("conti.changedToast"), "error"); return null; }
   mine.editing = true;
   mine.nodes.list.setAttribute("aria-busy", "true");
   setPanelBusy(true);
@@ -2473,7 +2472,7 @@ async function nameNow(name, btn, note) {
   const mine = S;
   if (mine.hist.busy) return;
   if (mine.editing || mine.saving) { note.textContent = BUSY_TEXT; return; }
-  if (mine.conflict) { note.textContent = "파일이 밖에서 바뀌었습니다. 먼저 다시 불러오세요"; return; }
+  if (mine.conflict) { note.textContent = t("conti.changedToast"); return; }
   mine.hist.busy = true;
   btn.disabled = true;
   try {
@@ -2586,7 +2585,7 @@ async function restoreTo(n, buttons, note) {
   const mine = S;
   if (mine.hist.busy) return;
   if (mine.editing || mine.saving) { note.textContent = BUSY_TEXT; return; }
-  if (mine.conflict) { note.textContent = "파일이 밖에서 바뀌었습니다. 먼저 다시 불러오세요"; return; }
+  if (mine.conflict) { note.textContent = t("conti.changedToast"); return; }
   mine.hist.busy = true;
   for (const b of buttons) b.disabled = true;
   buttons[0].textContent = "되돌리는 중…";

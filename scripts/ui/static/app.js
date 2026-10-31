@@ -22,7 +22,7 @@
 import { api, showBanner } from "/static/api.js";
 import { h } from "/static/dom.js";
 import { loadIsAdmin } from "/static/admin-utils.js";
-import { loadFeatureInfo, watchFeatures } from "/static/features.js";
+import { loadFeatureInfo, pageEdition, watchFeatures } from "/static/features.js";
 import { isServer, setEdition, t } from "/static/copy.js";
 import { createHelpPanel, helpPage } from "/static/help-panel.js";
 import { createStatusChip } from "/static/status-chip.js";
@@ -699,9 +699,9 @@ function showAdminEntry(on) {
 // ---- start ----------------------------------------------------------------
 
 async function start() {
-  // the edition first: the chrome and every page pick their wording by it (copy.js)
-  const features = await loadFeatureInfo(api);
-  setEdition(features.edition);
+  // the edition first, from the page itself (server/asgi.py marks its shell): the chrome is drawn at once, in that
+  // edition's wording (copy.js), without waiting for /api/features
+  setEdition(pageEdition());
   buildTopbar();
   renderTabbar();
   renderSidebar();
@@ -712,6 +712,8 @@ async function start() {
     e.preventDefault();
     $("main").focus();
   });
+  const features = await loadFeatureInfo(api);
+  setEdition(features.edition);                     // pages follow the answer (same as the page mark on both editions)
   disabledFeatures = features.disabled;
   watchFeatures(document.body, disabledFeatures);   // hides what this edition cannot do (/api/features)
   showAdminEntry(await loadIsAdmin(api, features.edition));   // server edition: GET /api/me (local: no request)

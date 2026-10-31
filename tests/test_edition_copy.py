@@ -17,7 +17,7 @@ from scripts import edition, fetch, mission, similarity, stt
 from scripts.common import ScriptError
 from scripts.edition import ed
 from scripts.ui import api_add, api_help, server
-from tests.helpers.copy_gate import hits, py_strings, scan
+from tests.helpers.copy_gate import allowed, hits, py_strings, scan, stale
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -47,29 +47,57 @@ LOCAL_ED_GOLDEN: list[tuple[str, str]] = sorted([
     ("scripts/ui/api_draft.py", "f'작업 폴더 기준 상대 경로만 쓸 수 있습니다: {raw}'"),
 ])
 
-# Strings in scripts/ and server/ that keep a local-only word. The server edition never shows them, because:
-PY_ALLOWED: dict[tuple[str, str], str] = {
-    ("scripts/captions.py", "ytc "): "caption video (Remotion) setup: feature caption_video is off on the server edition",
-    ("scripts/claude_cli.py", "터미널"): "claude CLI engine: the server edition pins the anthropic-api engine (llm.pin)",
-    ("scripts/claude_cli.py", "Claude Code"): "claude CLI engine: the server edition pins the anthropic-api engine (llm.pin)",
-    ("scripts/common.py", "작업 폴더"): "PATH_MASK needs a work-folder root (none on the server) / RuntimeError for programmers",
-    ("scripts/conti.py", "/yt-"): "a line inside the saved conti md (file content, equal bytes in both editions)",
-    ("scripts/ctx.py", "작업 폴더"): "RuntimeError for programmers (no context), never a ScriptError message",
-    ("scripts/filestore.py", "작업 폴더"): "the local FileStore; the server edition uses pgstore/s3store/scratch",
-    ("scripts/footage_out.py", "pip install"): "footage cut files: feature footage is off on the server edition",
-    ("scripts/library.py", "/yt-"): "shared library (git): feature library is off on the server edition",
-    ("scripts/library.py", "작업 폴더"): "shared library (git): feature library is off on the server edition",
-    ("scripts/library.py", "ytc "): "shared library (git): feature library is off on the server edition",
-    ("scripts/library_mcp.py", "플러그인"): "library MCP server for the plugin (stderr log), not part of the server edition",
-    ("scripts/library_mcp.py", "pip install"): "library MCP server for the plugin (stderr log), not part of the server edition",
-    ("scripts/library_mcp.py", "작업 폴더"): "library MCP server for the plugin (stderr log), not part of the server edition",
-    ("scripts/ui/__main__.py", "ytc "): "the `ytc ui` launcher (local CLI)",
-    ("scripts/ui/server.py", "127.0.0.1"): "the local stdlib server's bind and Host check (server edition: server/asgi.py)",
-    ("scripts/ui/server.py", "localhost"): "the local stdlib server's Host check",
-    ("scripts/ui/server.py", "터미널"): "bad_token: only the local stdlib server answers it",
-    ("server/admin.py", "터미널"): "the operator CLI (python -m server.admin) runs in a terminal",
-    ("server/admin.py", "작업 폴더"): "the operator CLI imports a local work folder (`import <작업 폴더>`)",
-    ("server/scratch.py", "작업 폴더"): "NotImplementedError for programmers (claude CLI engine), never shown",
+# Strings in scripts/ and server/ that keep a local-only word: (file, word, string prefix) -> why the server never shows it.
+CLI = "claude CLI engine: the server edition pins the anthropic-api engine (llm.pin)"
+LIB = "shared library (git): feature library is off on the server edition"
+MCP = "library MCP server for the plugin (stderr log), not part of the server edition"
+LAUNCHER = "the `ytc ui` launcher (local CLI)"
+ENV_NAME = "an environment variable name, not a message"
+STD = "the local stdlib server only (server edition: server/asgi.py)"
+PY_ALLOWED: dict[tuple[str, str, str], str] = {
+    ("scripts/captions.py", "ytc ", "움직이는 자막을 만들려면"): "caption video setup: feature caption_video is off on the server",
+    ("scripts/captions.py", "ytc ", "). Node를 올린 뒤"): "caption video setup: feature caption_video is off on the server",
+    ("scripts/claude_cli.py", "터미널", "Claude에 로그인되어 있지 않습니다."): CLI,
+    ("scripts/claude_cli.py", "터미널", "Claude Code CLI(claude)를 찾을 수 없습니다."): CLI,
+    ("scripts/claude_cli.py", "Claude Code", "Claude Code CLI(claude)를"): CLI,
+    ("scripts/common.py", "작업 폴더", "<작업 폴더>"): "PATH_MASK needs a work-folder root (none on the server)",
+    ("scripts/common.py", "작업 폴더", "작업 폴더(root)가 없는 실행 문맥"): "RuntimeError for programmers, never a message",
+    ("scripts/conti.py", "/yt-", "- 고치려면 위 프런트매터의"): "a line inside the saved conti md (file content, same bytes in both editions)",
+    ("scripts/ctx.py", "작업 폴더", "작업 폴더(root)도 저장소 backend도"): "RuntimeError for programmers, never a message",
+    ("scripts/cuts.py", "YT_PROXY", "YT_PROXY"): ENV_NAME,
+    ("scripts/stt.py", "YT_PROXY", "YT_PROXY"): ENV_NAME,
+    ("scripts/fetch.py", "YT_PROXY", "YT_PROXY"): ENV_NAME,
+    ("scripts/fetch.py", "환경변수", "YouTube가 이 네트워크의 요청을 막았습니다."):
+        "BLOCKED_MESSAGE is the local value; blocked_message() gives BLOCKED_MESSAGE_SERVER on the server",
+    ("scripts/fetch.py", "YT_PROXY", "YouTube가 이 네트워크의 요청을 막았습니다."):
+        "BLOCKED_MESSAGE is the local value; blocked_message() gives BLOCKED_MESSAGE_SERVER on the server",
+    ("scripts/fetch.py", "YT_PROXY", "YT_PROXY에 지정한 프록시에"):
+        "local proxy_failed text; _ytdlp_message() gives PROXY_FAILED_SERVER on the server",
+    ("scripts/filestore.py", "작업 폴더", "작업 폴더 밖의"): "the local FileStore; the server uses pgstore/s3store/scratch",
+    ("scripts/filestore.py", "작업 폴더", "작업 폴더 자체는"): "the local FileStore; the server uses pgstore/s3store/scratch",
+    ("scripts/footage_out.py", "pip install", "PyAV가 설치돼 있지 않아"): "footage cut files: feature footage is off on the server",
+    ("scripts/keys.py", "yt-coach.json", "yt-coach.json"): "the local config file key, not a message",
+    ("scripts/library.py", "/yt-", "# 공용 라이브러리"): LIB,
+    ("scripts/library.py", "/yt-", "저장소 주소가 올바르지 않습니다"): LIB,
+    ("scripts/library.py", "작업 폴더", "작업 폴더의 drafts/"): LIB,
+    ("scripts/library.py", "ytc ", "공용 라이브러리가 연결되지 않았습니다."): LIB,
+    ("scripts/library_mcp.py", "플러그인", "pyyaml을 찾을 수 없습니다."): MCP,
+    ("scripts/library_mcp.py", "pip install", "pyyaml을 찾을 수 없습니다."): MCP,
+    ("scripts/library_mcp.py", "플러그인", "재실행한 Python에도"): MCP,
+    ("scripts/library_mcp.py", "pip install", "재실행한 Python에도"): MCP,
+    ("scripts/library_mcp.py", "작업 폴더", "시작: 작업 폴더"): MCP,
+    ("scripts/ui/__main__.py", "UI 서버", "초 안에 UI 서버가"): LAUNCHER,
+    ("scripts/ui/__main__.py", "UI 서버", "UI 서버가 바로 종료"): LAUNCHER,
+    ("scripts/ui/__main__.py", "UI 서버", "UI 서버를 끄지 못했습니다"): LAUNCHER,
+    ("scripts/ui/__main__.py", "ytc ", "ytc ui"): LAUNCHER,
+    ("scripts/ui/server.py", "127.0.0.1", "127.0.0.1"): STD,
+    ("scripts/ui/server.py", "localhost", "localhost:"): STD,
+    ("scripts/ui/server.py", "127.0.0.1", "이 서버는 127.0.0.1 주소로만"): STD,
+    ("scripts/ui/server.py", "터미널", "주소의 key가 맞지 않습니다."): "bad_token: " + STD,
+    ("server/admin.py", "터미널", "비밀번호를 물을 터미널이 없습니다."): "the operator CLI (python -m server.admin) runs in a terminal",
+    ("server/admin.py", "터미널", "비밀번호 로그인용 비밀번호."): "the operator CLI's --help text",
+    ("server/admin.py", "작업 폴더", "작업 폴더가 없습니다:"): "the operator CLI imports a local work folder",
+    ("server/scratch.py", "작업 폴더", "claude CLI 엔진(작업 폴더 cwd)"): "NotImplementedError for programmers, never shown",
 }
 
 
@@ -206,15 +234,13 @@ def test_python_strings_visible_on_the_server_have_no_local_only_words():
     paths = [p for p in sorted((ROOT / "scripts").rglob("*.py"))]
     paths += [p for p in sorted((ROOT / "server").glob("*.py"))]
     found = scan(paths, py_strings, ROOT)
-    unexpected = [f for f in found if (f[0], f[2]) not in PY_ALLOWED]
-    assert unexpected == []
-    assert {(f[0], f[2]) for f in found} == set(PY_ALLOWED)   # no stale allowlist entries
+    assert [f for f in found if not allowed(f, PY_ALLOWED)] == []
+    assert stale(found, PY_ALLOWED) == []                   # no stale allowlist entries
 
 
 def test_py_string_scanner_skips_docstrings_and_local_ed_argument():
     src = '"""작업 폴더 doc"""\ndef f():\n    """터미널"""\n    return ed("작업 폴더 L", "서버 S") + "슬래시"\n'
-    assert [t for _, t in py_strings(src)] == ["서버 S", "슬래시"] or \
-        sorted(t for _, t in py_strings(src)) == sorted(["서버 S", "슬래시"])
+    assert sorted(t for _, t in py_strings(src)) == sorted(["서버 S", "슬래시"])
 
 
 # ---- help pages ------------------------------------------------------------------------------
@@ -263,3 +289,43 @@ def test_chatbot_rules_follow_the_edition():
     text = rules[0].read_text(encoding="utf-8")
     assert "서버판" in text and "이 서버에서 쓸 수 없는 것" in text and "서버 끄기" not in text
     assert hits(text) == []
+
+
+
+# ---- fix round 1 -----------------------------------------------------------------------------
+
+def test_server_chat_menu_drops_disabled_routes(monkeypatch):
+    monkeypatch.delenv(server.DISABLE_ENV, raising=False)
+    assert api_help.chat_menu() == api_help.MENU
+    monkeypatch.setenv(server.DISABLE_ENV, "library")       # local edition (container): menu unchanged
+    assert api_help.chat_menu() == api_help.MENU
+    with server.edition("server", list(server.FEATURE_PREFIXES)):
+        menu = api_help.chat_menu()
+    assert [m["route"] for m in menu] == [m["route"] for m in api_help.MENU if m["route"] != "#/library"]
+
+
+def test_server_scratch_messages():
+    from server import scratch
+
+    assert scratch.OUTSIDE_MESSAGE == "허용되지 않은 위치입니다"
+    assert scratch.NOT_A_FILE_MESSAGE == "올바른 파일이 아닙니다"
+
+
+def test_server_trash_failure_message_is_server_wording():
+    from server import pgstore
+
+    e = pgstore._trash_failed(OSError("boom"))
+    assert e.code == "trash_failed" and e.message == "파일을 옮기지 못했습니다. 잠시 뒤 다시 시도해 주세요."
+
+
+def test_server_help_trash_is_honest_and_home_has_no_caption_criterion():
+    for name in ("refs", "draft", "conti"):
+        text = (api_help.SERVER_HELP_DIR / f"{name}.md").read_text(encoding="utf-8")
+        assert "되살릴 수 없어요" in text and "관리자에게 문의하세요(지운" not in text, name
+    home_md = (api_help.SERVER_HELP_DIR / "home.md").read_text(encoding="utf-8")
+    assert "자막 영상은 자막 영상을 만들었을 때" not in home_md
+
+
+def test_operations_doc_gives_the_admin_a_way_to_make_categories_and_profiles():
+    text = (ROOT / "deploy" / "server" / "OPERATIONS.md").read_text(encoding="utf-8")
+    assert "python -m scripts.refstore init" in text and "profile.md" in text and "admin import /import" in text

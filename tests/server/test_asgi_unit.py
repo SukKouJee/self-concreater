@@ -355,6 +355,14 @@ def test_root_serves_the_shell_when_logged_in(client, alice):
     assert client.get("/static/app.js").status_code == 200
 
 
+def test_root_marks_the_shell_as_server_edition(client, alice):
+    # the page knows its edition before /api/features answers (or if it fails); the local file stays as it is
+    local = (ui.STATIC_DIR / "index.html").read_bytes()
+    assert b'<html lang="ko">' in local and b"data-edition" not in local
+    r = client.get("/")
+    assert r.content == local.replace(b'<html lang="ko">', b'<html lang="ko" data-edition="server">', 1)
+
+
 # ---- request context in the worker thread ---------------------------------------------------
 
 @pytest.fixture

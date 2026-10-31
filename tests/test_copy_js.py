@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from scripts.ui.server import STATIC_DIR
-from tests.helpers.copy_gate import FORBIDDEN, hits, js_strings, scan
+from tests.helpers.copy_gate import FORBIDDEN, allowed, copy_server_strings, hits, js_strings, scan, stale
 
 NODE = shutil.which("node")
 COPY_JS = STATIC_DIR / "copy.js"
@@ -39,6 +39,8 @@ LOCAL_GOLDEN: dict[str, str] = {
     "trash.restoreHint": "잘못 지웠으면 Claude에게 “휴지통에서 되살려줘”라고 말하세요.",
     "conti.changedElsewhere": "다른 곳(편집기·터미널)에서 이 콘티 파일이 바뀌어 저장하지 않았습니다. 다시 불러온 뒤 고쳐 주세요. "
                               "입력해 둔 내용은 남아 있습니다.",
+    "conti.changedButton": "파일이 밖에서 바뀌었습니다 — 다시 불러오기",
+    "conti.changedToast": "파일이 밖에서 바뀌었습니다. 먼저 다시 불러오세요",
     "conti.exportSummary": " CapCut용 SRT · 움직이는 자막 영상",
     "conti.artBlocked": "Claude를 쓸 수 없어 장면 그림을 다시 그리지 못했어요",
     "mission.profileNote": "프로필을 만들면 미션이 맞춤으로 나옵니다. Claude에게 “처음 설정해줘”라고 말하면 함께 만들어요",
@@ -48,13 +50,20 @@ LOCAL_GOLDEN: dict[str, str] = {
     "help.chatEmpty": "이 화면에 대해 궁금한 점을 물어보세요. 답은 도움말과 지금 작업 폴더 상태를 바탕으로 만들어집니다.",
 }
 
-# Shared static strings that keep a local-only word, each with why the server edition never shows it.
-ALLOWED: dict[tuple[str, str], str] = {
-    ("scripts/ui/static/api.js", "터미널"): "bad_token: only the local stdlib server answers it (the server edition uses login)",
-    ("scripts/ui/static/app.js", "Claude에게"): "banner after 서버 끄기, which the server edition does not render",
-    ("scripts/ui/static/footage-area.js", "플러그인"): "footage area: data-feature=footage, off on the server edition",
-    ("scripts/ui/static/footage-area.js", "pip install"): "footage area: data-feature=footage, off on the server edition",
-    ("scripts/ui/static/pages/conti.js", "ytc "): "caption video setup command: data-feature=caption_video, off on the server",
+# Shared static strings that keep a local-only word: (file, word, string prefix) -> why the server never shows it.
+ALLOWED: dict[tuple[str, str, str], str] = {
+    ("scripts/ui/static/api.js", "터미널", "서버가 다시 켜졌습니다. 터미널에"):
+        "bad_token: only the local stdlib server answers it (the server edition uses login)",
+    ("scripts/ui/static/app.js", "Claude에게", "서버를 껐습니다."): "banner after 서버 끄기, which the server edition does not render",
+    ("scripts/ui/static/app.js", "서버 끄기", "서버 끄기"): "the 서버 끄기 menu item: local branch only (isServer() returns before it)",
+    ("scripts/ui/static/admin-utils.js", "명령줄", "운영자(명령줄)"):
+        "admin audit actor for the operator CLI (python -m server.admin): the server's own command line, admins only",
+    ("scripts/ui/static/footage-area.js", "플러그인", "받아쓰기(faster-whisper)가"):
+        "footage area: data-feature=footage, off on the server edition",
+    ("scripts/ui/static/footage-area.js", "pip install", "받아쓰기(faster-whisper)가"):
+        "footage area: data-feature=footage, off on the server edition",
+    ("scripts/ui/static/pages/conti.js", "ytc ", "ytc captions setup"):
+        "caption video setup command: data-feature=caption_video, off on the server edition",
 }
 
 
@@ -120,10 +129,29 @@ def _static_files() -> list[Path]:
 
 def test_static_strings_have_no_local_only_words_outside_the_allowlist():
     found = scan(_static_files(), js_strings, ROOT)
-    unexpected = [f for f in found if (f[0], f[2]) not in ALLOWED]
-    assert unexpected == []
-    # the allowlist stays tight: every entry still matches something
-    assert {(f[0], f[2]) for f in found} == set(ALLOWED)
+    assert [f for f in found if not allowed(f, ALLOWED)] == []
+    assert stale(found, ALLOWED) == []          # the allowlist stays tight: every entry still matches something
+
+
+def test_copy_js_server_values_have_no_local_only_words_static():
+    # no node needed: every literal in copy.js except the ones right after `local:`
+    found = scan([COPY_JS], copy_server_strings, ROOT)
+    assert found == []
+    texts = [t for _, t in copy_server_strings(COPY_JS.read_text(encoding="utf-8"))]
+    assert "카테고리가 아직 없어요" in texts and "카테고리를 먼저 만들어요" not in texts
+
+
+def test_copy_server_strings_skips_only_local_values():
+    src = ('const A = "공통";\nexport const COPY = { "k": { local: "작업 폴더", server: `서버 ${A}` }, "j": { local:\n'
+           ' "터미널", server: null } };')
+    assert [t for _, t in copy_server_strings(src)] == ["공통", "k", "서버 ${A}", "j"]
+
+
+def test_allowlist_matches_by_prefix_not_just_word():
+    entry = {("a.js", "터미널", "서버가 다시"): "why"}
+    assert allowed(("a.js", 1, "터미널", "서버가 다시 켜졌습니다. 터미널"), entry)
+    assert not allowed(("a.js", 2, "터미널", "새 문장 터미널"), entry)
+    assert stale([("a.js", 2, "터미널", "새 문장 터미널")], entry) == [("a.js", "터미널", "서버가 다시")]
 
 
 def test_js_string_scanner_skips_comments_and_reads_all_quotes():
@@ -132,5 +160,71 @@ def test_js_string_scanner_skips_comments_and_reads_all_quotes():
 
 
 def test_forbidden_list_covers_the_dispatch_terms():
-    for term in ("작업 폴더", "터미널", "ytc ", "localhost", "127.0.0.1", "Claude Code", "슬래시"):
+    for term in ("작업 폴더", "터미널", "ytc ", "localhost", "127.0.0.1", "Claude Code", "슬래시",
+                 "서버 끄기", "UI 서버", "명령줄", "환경변수", "YT_PROXY", "yt-coach.json"):
         assert term in FORBIDDEN
+
+
+# ---- features.js: the edition survives a failed /api/features ---------------------------------
+
+FEATURES_JS = STATIC_DIR / "features.js"
+
+
+def _features(body: str):
+    code = (f"import({json.dumps(FEATURES_JS.as_uri())}).then(async (m) => {{ const out = await (async () => {{ {body} }})(); "
+            "console.log(JSON.stringify(out)); }).catch((e) => { console.error(e); process.exit(1); });")
+    out = subprocess.run([NODE, "--input-type=module", "-e", code], capture_output=True, text=True, encoding="utf-8",
+                         timeout=30)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+@needs_node
+def test_server_page_retries_once_then_keeps_the_server_edition():
+    from scripts.ui import server as ui
+
+    out = _features("""
+      let calls = 0;
+      const fail = async () => { calls += 1; throw { status: 0, error: "network" }; };
+      const down = await m.loadFeatureInfo(fail, "server");
+      const downCalls = calls;
+      calls = 0;
+      let first = true;
+      const flaky = async () => { calls += 1; if (first) { first = false; throw { status: 503 }; }
+                                  return { edition: "server", disabled: { library: "x" } }; };
+      const again = await m.loadFeatureInfo(flaky, "server");
+      const againCalls = calls;
+      calls = 0;
+      const local = await m.loadFeatureInfo(fail, "local");
+      return { down, downCalls, again, againCalls, local, localCalls: calls, hint: m.pageEdition() };""")
+    assert out["down"] == {"edition": "server", "disabled": ui.FEATURE_TEXT_SERVER} and out["downCalls"] == 2
+    assert out["again"] == {"edition": "server", "disabled": {"library": "x"}} and out["againCalls"] == 2
+    assert out["local"] == {"edition": "local", "disabled": {}} and out["localCalls"] == 1
+    assert out["hint"] == "local"                        # no document (node): the local edition
+
+
+def test_features_js_server_defaults_match_the_server():
+    from scripts.ui import server as ui
+
+    text = FEATURES_JS.read_text(encoding="utf-8")
+    for name, message in ui.FEATURE_TEXT_SERVER.items():
+        assert f'{name}: "{message}"' in text, name
+
+
+def test_app_sets_the_edition_from_the_page_before_drawing():
+    text = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    start = text[text.index("async function start() {"):]
+    assert start.index("setEdition(pageEdition());") < start.index("buildTopbar();")         < start.index("await loadFeatureInfo(api)")
+
+
+@needs_node
+def test_server_wording_rulings():
+    server = _js("Object.fromEntries(Object.keys(m.COPY).map(k => [k, m.t(k)]))", "server")
+    # no admin restore tool exists: say it honestly
+    for key in ("trash.restoreHint", "refs.trashHint"):
+        assert "되살릴 수 없어요" in server[key] and "관리자" not in server[key], key
+    assert server["page.noCategory"] == "카테고리가 없습니다. 카테고리를 만들려면 관리자에게 문의하세요."
+    for key in ("mission.profileNote", "motif.profileNote", "report.noProfile"):
+        assert server[key].endswith("프로필을 만들려면 관리자에게 문의하세요."), key
+    assert server["conti.changedButton"] == "다른 곳에서 바뀌었어요 — 다시 불러오기"
+    assert "파일" not in server["conti.changedToast"]

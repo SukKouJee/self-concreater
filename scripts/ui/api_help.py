@@ -46,6 +46,18 @@ MENU: list[dict[str, str]] = [
 ]
 
 
+# 메뉴 route → 그 화면 전체를 끄는 기능(app.js PAGE_FEATURES와 같은 뜻)
+MENU_FEATURES: dict[str, str] = {"#/library": "library"}
+
+
+def chat_menu() -> list[dict[str, str]]:
+    """챗봇에 주는 메뉴. 서버판에서는 꺼진 기능의 화면을 뺀다(없는 화면으로 안내하지 않게). 로컬판은 MENU 그대로."""
+    if not is_server():
+        return MENU
+    off = disabled_features()
+    return [item for item in MENU if MENU_FEATURES.get(item["route"]) not in off]
+
+
 def help_file(name: str) -> Path:
     """판에 맞는 도움말 파일: 서버판은 `server/<name>.md`가 있으면 그것, 아니면(로컬판 포함) `<name>.md`."""
     if is_server():
@@ -237,7 +249,7 @@ def _chat(req: Request) -> dict[str, Any]:
     payload = {
         "screen": {"page": screen["page"], "title": screen["title"], "markdown": screen["markdown"]},
         "guide": {name: read_help(name)["markdown"] for name in GUIDE_PAGES},
-        "menu": MENU,
+        "menu": chat_menu(),
         "situation": situation(category, page),
         "stage_rules": _stage_rules(),
         "history": history,

@@ -94,7 +94,10 @@ def test_missing_key_is_trash_failed_and_nothing_moves(c: Ctx) -> None:
     with pytest.raises(ScriptError) as e:
         c.trash.move([HTML, keys.srt(CONTI, "-lines"), CONTI], last=CONTI)
     assert e.value.code == "trash_failed"
-    assert e.value.message.startswith("파일을 옮기지 못했습니다(다른 프로그램이 열어 두었는지 확인하세요): ")
+    if isinstance(c.trash, filestore.FileTrash):   # local store: message unchanged
+        assert e.value.message.startswith("파일을 옮기지 못했습니다(다른 프로그램이 열어 두었는지 확인하세요): ")
+    else:                                       # server store: no local-program hint, no internal detail
+        assert e.value.message == "파일을 옮기지 못했습니다. 잠시 뒤 다시 시도해 주세요."
     assert c.store.exists(CONTI) and c.objects.exists(HTML)
     assert c.store.read(CONTI).raw.endswith("메모\n".encode())
 

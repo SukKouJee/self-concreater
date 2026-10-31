@@ -485,8 +485,17 @@ class _Endpoint:
         await response(scope, receive, send)
 
 
+LOCAL_HTML_TAG: Final = b'<html lang="ko">'
+SERVER_HTML_TAG: Final = b'<html lang="ko" data-edition="server">'
+
+
 def _index() -> ui.Response:
-    return ui.Response(200, (ui.STATIC_DIR / "index.html").read_bytes(), "text/html; charset=utf-8")
+    """The app shell marked as the server edition (`data-edition`): the page picks its wording and hides PC-only
+    controls before `/api/features` answers, and keeps doing so if that request fails. The local file is not changed."""
+    raw = (ui.STATIC_DIR / "index.html").read_bytes()
+    if LOCAL_HTML_TAG not in raw:
+        raise RuntimeError("index.html has no <html lang=\"ko\"> tag to mark")
+    return ui.Response(200, raw.replace(LOCAL_HTML_TAG, SERVER_HTML_TAG, 1), "text/html; charset=utf-8")
 
 
 def _file_chunks(part: ui.FileSlice) -> Iterator[bytes]:

@@ -231,7 +231,7 @@ def test_conti_page_contract_and_safety():
     for token in [
         "isCurrent()", "/api/drafts", "/api/conti/create", "/api/conti/save", "/api/conti/scenes",
         "/api/conti/alternatives", "/api/conti/cut", "/api/jobs/current?kind=conti", "conti_exists",
-        "conti_changed", "파일이 밖에서 바뀌었습니다 — 다시 불러오기", "저장했습니다 · 스토리보드도 다시 그렸습니다",
+        "conti_changed", 't("conti.changedButton")', "저장했습니다 · 스토리보드도 다시 그렸습니다",
         "레퍼런스 실제 장면", "대사 대안", "대안 더 보기", "이걸로 바꾸기", "고정 해제", "콘티 만들기", "다시 만들기",
         "스토리보드 HTML", "CapCut용 자막(SRT) 받기", "/api/conti/srt", "/api/conti/trash", "콘티 삭제", "workspace/trash/", "download", "exclude", "hash", "DOMParser", "filesUrl", "clearTimeout", "aria-live", "noopener",
     ]:

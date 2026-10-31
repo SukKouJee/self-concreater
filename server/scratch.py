@@ -30,7 +30,7 @@ TMP_PART: Final = "tmp"
 PC_PATH_MESSAGE: Final = "서버에서는 PC 파일 경로를 읽을 수 없습니다"
 # key_of: the value is not echoed (it may be a server-side temp path)
 OUTSIDE_MESSAGE: Final = "허용되지 않은 위치입니다"
-NOT_A_FILE_MESSAGE: Final = "파일이 아니라 폴더를 가리킵니다"
+NOT_A_FILE_MESSAGE: Final = "올바른 파일이 아닙니다"
 
 
 class PcPathError(ScriptError, ValueError):

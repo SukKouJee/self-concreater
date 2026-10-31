@@ -8,7 +8,23 @@ from pathlib import Path
 FORBIDDEN: tuple[str, ...] = (
     "작업 폴더", "작업폴더", "터미널", "ytc ", "localhost", "127.0.0.1", "Claude Code", "슬래시",
     "Claude에게", "플러그인", "pip install", "/yt-",
+    "서버 끄기", "UI 서버", "명령줄", "환경변수", "YT_PROXY", "yt-coach.json",
 )
+
+# A finding: (file, line, term, text). An allowlist entry (file, term, prefix) covers findings in that file with that
+# term whose string starts with prefix, so a new sentence with the same word in the same file is not let through.
+Finding = tuple[str, int, str, str]
+
+
+def allowed(finding: Finding, allowlist: dict[tuple[str, str, str], str]) -> bool:
+    rel, _, term, text = finding
+    return any(rel == f and term == t and text.startswith(prefix) for f, t, prefix in allowlist)
+
+
+def stale(findings: list[Finding], allowlist: dict[tuple[str, str, str], str]) -> list[tuple[str, str, str]]:
+    """Allowlist entries that no longer match anything (the allowlist stays tight)."""
+    return [key for key in allowlist
+            if not any(r == key[0] and t == key[1] and text.startswith(key[2]) for r, _, t, text in findings)]
 
 
 def hits(text: str) -> list[str]:
@@ -18,7 +34,17 @@ def hits(text: str) -> list[str]:
 def js_strings(source: str) -> list[tuple[int, str]]:
     """JS 소스의 문자열 리터럴('…', "…", `…`)을 (줄 번호, 내용)으로. 주석은 건너뛴다. 템플릿의 ${…}는 내용째 둔다.
     정규식 리터럴은 따로 다루지 않는다(이 앱의 정적 JS에서 따옴표가 든 정규식이 문구로 잘못 잡히면 허용 목록이 아니라 여기를 고친다)."""
-    out: list[tuple[int, str]] = []
+    return [(line, text) for _, line, text in _js_literals(source)]
+
+
+def copy_server_strings(source: str) -> list[tuple[int, str]]:
+    """copy.js에서 서버판에 보일 수 있는 문자열: `local:` 바로 뒤의 리터럴(로컬판 문구)만 뺀 나머지 전부."""
+    return [(line, text) for start, line, text in _js_literals(source)
+            if not source[:start].rstrip().endswith("local:")]
+
+
+def _js_literals(source: str) -> list[tuple[int, int, str]]:
+    out: list[tuple[int, int, str]] = []
     i, n, line = 0, len(source), 1
     while i < n:
         c = source[i]
@@ -44,7 +70,7 @@ def js_strings(source: str) -> list[tuple[int, str]]:
                     line += 1
                 buf.append(source[j])
                 j += 1
-            out.append((start_line, "".join(buf)))
+            out.append((i, start_line, "".join(buf)))
             i = j + 1
         else:
             i += 1
@@ -75,7 +101,7 @@ def py_strings(source: str) -> list[tuple[int, str]]:
     return out
 
 
-def scan(paths: list[Path], extract, root: Path) -> list[tuple[str, int, str, str]]:
+def scan(paths: list[Path], extract, root: Path) -> list[Finding]:
     """(파일, 줄, 금지어, 문자열 앞부분) 목록."""
     found = []
     for path in paths:

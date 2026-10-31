@@ -19,8 +19,8 @@ export function isServer() {
   return current === "server";
 }
 
-const TRASH_SERVER = "잘못 지웠으면 관리자에게 문의하세요. 지운 것은 휴지통에 보관됩니다.";
-const PROFILE_SERVER = "이 서버에서는 프로필을 화면에서 만들 수 없어요. 필요하면 관리자에게 문의하세요";
+const TRASH_SERVER = "지운 것은 화면에서 되살릴 수 없어요. 지우기 전에 한 번 더 확인해 주세요.";
+const PROFILE_SERVER = "프로필을 만들려면 관리자에게 문의하세요.";
 
 export const COPY = {
   // home: no category yet / first visit (no work space yet)
@@ -40,7 +40,7 @@ export const COPY = {
   "report.noCategory": { local: "카테고리를 먼저 만들어 주세요.", server: "카테고리가 아직 없습니다. 관리자에게 문의하세요." },
   "page.noCategory": {
     local: "카테고리가 없습니다. 홈에서 먼저 카테고리를 만드세요.",
-    server: "카테고리가 없습니다. 카테고리는 관리자에게 문의하세요.",
+    server: "카테고리가 없습니다. 카테고리를 만들려면 관리자에게 문의하세요.",
   },
   // add (레퍼런스 넣기)
   "add.unsaved": { local: "저장하지 않은 결과는 UI 서버를 끄면 사라져요", server: "저장하지 않은 결과는 서버가 다시 시작되면 사라져요" },
@@ -66,6 +66,11 @@ export const COPY = {
   },
   // the caption export box summary: the moving-caption video is off on the server edition
   "conti.exportSummary": { local: " CapCut용 SRT · 움직이는 자막 영상", server: " CapCut용 SRT" },
+  "conti.changedButton": { local: "파일이 밖에서 바뀌었습니다 — 다시 불러오기", server: "다른 곳에서 바뀌었어요 — 다시 불러오기" },
+  "conti.changedToast": {
+    local: "파일이 밖에서 바뀌었습니다. 먼저 다시 불러오세요",
+    server: "다른 곳에서 콘티가 바뀌었어요. 먼저 다시 불러와 주세요",
+  },
   "conti.artBlocked": {
     local: "Claude를 쓸 수 없어 장면 그림을 다시 그리지 못했어요",
     server: "AI를 지금 쓸 수 없어 장면 그림을 다시 그리지 못했어요. 계속되면 관리자에게 문의하세요",
@@ -73,15 +78,15 @@ export const COPY = {
   // profile missing (mission, motif, report)
   "mission.profileNote": {
     local: "프로필을 만들면 미션이 맞춤으로 나옵니다. Claude에게 “처음 설정해줘”라고 말하면 함께 만들어요",
-    server: `프로필이 있으면 미션이 맞춤으로 나옵니다. ${PROFILE_SERVER}`,
+    server: `프로필이 있으면 미션이 맞춤으로 나와요. ${PROFILE_SERVER}`,
   },
   "motif.profileNote": {
     local: "프로필이 없어 카드가 일반적으로 나옵니다 — Claude에게 “처음 설정해줘”라고 말하면 만들 수 있어요",
-    server: `프로필이 없어 카드가 일반적으로 나옵니다 — ${PROFILE_SERVER}`,
+    server: `프로필이 없어 카드가 일반적으로 나와요. ${PROFILE_SERVER}`,
   },
   "report.noProfile": {
     local: "프로필이 없어 제안을 반영할 수 없습니다. Claude에게 “처음 설정해줘”라고 말하면 프로필을 먼저 만들어요",
-    server: `프로필이 없어 제안을 반영할 수 없습니다. ${PROFILE_SERVER}`,
+    server: `프로필이 없어 제안을 반영할 수 없어요. ${PROFILE_SERVER}`,
   },
   // motif: the technique catalog cleanup only exists as a chat request to Claude Code
   "motif.catalogHint": {
