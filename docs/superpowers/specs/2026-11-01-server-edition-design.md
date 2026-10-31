@@ -406,7 +406,7 @@ media 대기 p95가 5분을 넘거나, 앱 재시작으로 작업을 잃는 일�
 |---|---|
 | base | `python:3.12-slim-bookworm@sha256:<고정>`, apt: `ca-certificates tini`(OpenCV는 headless 휠, PyAV 휠에 ffmpeg 내장 → 시스템 ffmpeg 없음), `pip install --no-cache-dir -r requirements.txt`, 플러그인 폴더 복사(`scripts templates skills`), 비루트 uid 10001, 빌드 검사 `python -c "import cv2, av, scenedetect, yt_dlp"` |
 | local | base + `CMD ["python","-m","scripts.ui","--host","0.0.0.0","--port","8765","--no-open","--foreground"]`, `ENV YT_COACH_HOME=/work YTC_LLM_ENGINE=anthropic-api YTC_DISABLE=library,caption_video` |
-| server | base + `requirements-server.txt` + `server/`, `CMD ["uvicorn","server.asgi:app","--host","0.0.0.0","--port","8080","--workers","1","--proxy-headers","--lifespan","on","--no-access-log"]` (`--lifespan on`: 앱은 lifespan 시작 때 만들어지고 설정·저장소 오류면 `lifespan.startup.failed`로 uvicorn이 끝난다. 접근 로그는 §4.2) |
+| server | base + `requirements-server.txt`(첫 줄 `-r requirements.txt`는 뺀다: 다시 풀면 scenedetect가 GUI판 opencv를 되돌려 끌어온다) + `server/`, 상태·임시 폴더(`/var/lib/ytc/state`, `/tmp/ytc`)는 uid 10001 소유, `HEALTHCHECK`(`/healthz`, 8080), `CMD ["uvicorn","server.asgi:app","--host","0.0.0.0","--port","8080","--workers","1","--proxy-headers","--lifespan","on","--no-access-log"]` (`--lifespan on`: 앱은 lifespan 시작 때 만들어지고 설정·저장소 오류면 `lifespan.startup.failed`로 uvicorn이 끝난다. 접근 로그는 §4.2) |
 
 - Remotion(Node·Chrome)은 두 이미지 모두 넣지 않는다. yt-dlp가 YouTube 추출에 JS 런타임을 요구하는 경우가 있어 T3 스모크(실제 링크 1개)로 확인하고 필요하면 base에 deno 단일 바이너리를 넣는다.
 - 코어 이음매: `scripts.ui`에 `--host`(기본 127.0.0.1, `0.0.0.0`은 env `YTC_IN_CONTAINER=1`일 때만 허용)와 포그라운드 실행 옵션, `GET /healthz`(인증 없음, `{"ok": true}`만).
@@ -426,10 +426,11 @@ media 대기 p95가 5분을 넘거나, 앱 재시작으로 작업을 잃는 일�
 |---|---|---|
 | postgres | `postgres:16-alpine`(다이제스트 고정), 볼륨 `pgdata`, 포트 비공개, `POSTGRES_USER=ytc_owner` | `pg_isready` |
 | minio | `cgr.dev/chainguard/minio@sha256:…`(아래 주), 볼륨 `minio`, 콘솔 포트 비공개 | `mc ready local` |
-| minio-init | 같은 이미지 `entrypoint: mc`, 버킷 생성(1회) | — |
-| migrate | server 이미지, `alembic upgrade head`(owner DSN, `ytc_app` 롤·비밀번호 생성 포함), `restart: "no"` | — |
+| minio-init | 같은 이미지 `entrypoint: mc`, `MC_HOST_local` env로 접속, `mb --ignore-existing local/ytc`(1회, 버전 관리는 켜지 않음 — §3.5) | — |
+| migrate | server 이미지, `python -m alembic -c server/alembic.ini upgrade head`(owner DSN + app DSN, `ytc_app` 롤·비밀번호 생성 포함), `restart: "no"` | — |
 | app | server 이미지, `depends_on: postgres healthy, minio healthy, migrate completed_successfully`, `ports: ["127.0.0.1:8080:8080"]`, 볼륨 `state:/var/lib/ytc/state`, tmpfs `/tmp/ytc`, `stop_grace_period: 90s` | `/healthz` |
-| caddy (profile `tls`) | `caddy:2`, `Caddyfile`(`{$YTC_DOMAIN} { reverse_proxy app:8080 }`), 80·443 공개, 볼륨 `caddy_data` | — |
+| admin (profile `admin`) | server 이미지, `entrypoint: python -m server.admin`, owner DSN·S3 설정(앱 컨테이너에는 owner DSN을 넣지 않는다) | — |
+| caddy (profile `tls`) | `caddy:2@sha256:…`, `Caddyfile`(`{$YTC_DOMAIN} { reverse_proxy app:8080 }`), 80·443 공개, 볼륨 `caddy_data` | — |
 
 - 워커 서비스는 없다(ADR-S6). `docker-compose.test.yml`: postgres·minio만, 무작위 포트, tmpfs(테스트용).
 - **MinIO 이미지(2026-10 확인)**: MinIO 커뮤니티 이미지는 더 이상 배포되지 않는다(`minio/minio` pull 거부, `quay.io/minio/minio` 401).
@@ -439,7 +440,16 @@ media 대기 p95가 5분을 넘거나, 앱 재시작으로 작업을 잃는 일�
   `YTC_S3_ENDPOINT`와 compose 서비스만 바뀐다(Range GET·버킷 생성은 계약 테스트로 확인).
 - `.env.example`: §4.4 변수 전부 빈 값 + 생성 방법 주석(`python -c "import secrets;print(secrets.token_urlsafe(48))"`). 실제 `.env`는 커밋 금지(`.gitignore`,
   게이트 테스트가 `deploy/**/.env` 추적 여부 확인). 운영 DB·S3 비밀번호는 기본값 없이 필수.
-- 첫 사용자: `docker compose run --rm app python -m server.admin add-user you@gmail.com --admin`.
+- 첫 사용자: `docker compose --profile admin run --rm admin add-user you@gmail.com --admin`(owner DSN이 필요한 관리 명령은 `admin` 서비스로 돌려 app 컨테이너가
+  owner 자격을 갖지 않게 한다). 가져오기: `docker compose --profile admin run --rm -v <작업 폴더>:/import:ro admin import /import --user you@gmail.com`.
+- **구현(T13)**: 설정은 `env_file`이 아니라 compose 변수 치환이다 — `deploy/server/.env`(또는 `--env-file`)를 compose가 읽고, `docker-compose.yml`의 `environment:`가
+  앱이 읽는 변수만 이름으로 넘긴다(필수 값은 `${VAR:?메시지}`로 비어 있으면 `up` 자체가 실패, DSN은 비밀번호에서 조립 → 비밀번호는 URL 안전 문자만).
+  app·migrate·admin은 같은 `build`(target server)와 이미지 이름(`YTC_IMAGE`, 기본 `ytc:server`)을 쓴다. app·migrate·admin은 `cap_drop: ALL`, `no-new-privileges`.
+  app의 `/tmp/ytc`는 tmpfs(uid 10001, 크기 `YTC_SCRATCH_SIZE` 기본 2g). caddy는 `reverse_proxy app:8080`(`flush_interval -1`).
+  `--proxy-headers`는 uvicorn 기본 신뢰 대상(127.0.0.1)만 믿으므로 다른 컨테이너의 caddy가 보내는 `X-Forwarded-*`는 무시된다 — 앱은 scheme을 `YTC_PUBLIC_URL`로 정하므로 영향 없음.
+- **smoke server(T13)**: `python deploy/smoke.py server`(`pytest`는 `YTC_TEST_DOCKER=1 tests/test_deploy_smoke.py::test_server_stack_smoke`). `YTC_ENV=test` + `YTC_DEV_LOGIN=1`로 전체 스택을 올려
+  `admin add-user` 2명 → dev 로그인 → `/healthz`·`/api/status` → `/api/draft/save`·`/files` 읽기 → 격리(목록·`/files` 404) → `down -v`(남은 컨테이너·볼륨까지 확인, 남으면 실패).
+  Chrome(`YTC_CHROME` 또는 흔한 경로)이 있으면 DevTools 프로토콜(표준 라이브러리 websocket)로 `/files`의 HTML이 `FILES_CSP` 아래서 JPEG·SVG를 그리는지(최상위·앱 화면 iframe, CSP 위반 로그 0)까지 확인한다.
 
 ## 10. 테스트 전략
 

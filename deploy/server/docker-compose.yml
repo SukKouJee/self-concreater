@@ -1,0 +1,185 @@
+# 서버판(지인 규모, 서버 설계 §9.3). 사용법은 .env.example 맨 위 참고.
+#   cd deploy/server && cp .env.example .env     # 값을 채운다(.env는 커밋하지 않는다)
+#   docker compose up -d --build                  # postgres, minio, 버킷 생성, 마이그레이션, app
+#   docker compose --profile tls up -d            # 도메인 + 자동 HTTPS가 필요하면 caddy도 함께
+#   docker compose --profile admin run --rm admin add-user you@gmail.com --admin    # 첫 사용자(초대)
+# 변수는 같은 폴더의 .env에서 읽는다(compose 변수 치환). 값에 $ 문자를 넣지 않는다(생성 방법은 .env.example 참고).
+name: ytc-server
+
+x-server-build: &server-build
+  context: ../..
+  dockerfile: deploy/Dockerfile
+  target: server
+
+# DB·S3 접속 정보는 비밀번호에서 조립한다. 비밀번호는 URL 안전 문자만 쓴다(secrets.token_urlsafe).
+x-db-dsn: &db-dsn "postgresql://ytc_app:${YTC_DB_APP_PASSWORD:?YTC_DB_APP_PASSWORD가 필요합니다}@postgres:5432/ytc"
+x-db-owner-dsn: &db-owner-dsn "postgresql://ytc_owner:${YTC_DB_OWNER_PASSWORD:?YTC_DB_OWNER_PASSWORD가 필요합니다}@postgres:5432/ytc"
+
+services:
+  postgres:
+    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+    environment:
+      POSTGRES_USER: ytc_owner
+      POSTGRES_PASSWORD: "${YTC_DB_OWNER_PASSWORD:?YTC_DB_OWNER_PASSWORD가 필요합니다}"
+      POSTGRES_DB: ytc
+    # 포트는 게시하지 않는다(compose 네트워크 안에서만).
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # -h 127.0.0.1: 초기화용 임시 서버(유닉스 소켓만)가 아니라 실제 서버가 뜬 뒤에 healthy
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "ytc_owner", "-d", "ytc"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+    restart: unless-stopped
+
+  minio:
+    # MinIO 공식 이미지는 더 이상 받을 수 없어 Chainguard 빌드를 다이제스트로 고정해 쓴다(갱신 방법: 서버 설계 §9.3).
+    image: cgr.dev/chainguard/minio@sha256:3b6e40c30ecd5cea627e382ff0b82ca841f58c52294578787043ee80c8ef7c82
+    command: ["server", "/data", "--address", ":9000", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: "${YTC_S3_ACCESS_KEY:?YTC_S3_ACCESS_KEY가 필요합니다}"
+      MINIO_ROOT_PASSWORD: "${YTC_S3_SECRET_KEY:?YTC_S3_SECRET_KEY가 필요합니다}"
+    # 9000(S3)·9001(콘솔) 모두 게시하지 않는다.
+    volumes:
+      - minio:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    restart: unless-stopped
+
+  minio-init:
+    # 버킷 1개를 만든다(이미 있으면 그대로). 버전 관리는 v1에서 끈다(서버 설계 §3.5). 한 번 하고 끝난다.
+    image: cgr.dev/chainguard/minio@sha256:3b6e40c30ecd5cea627e382ff0b82ca841f58c52294578787043ee80c8ef7c82
+    entrypoint: ["mc"]
+    command: ["mb", "--ignore-existing", "local/${YTC_S3_BUCKET:-ytc}"]
+    environment:
+      MC_HOST_local: "http://${YTC_S3_ACCESS_KEY}:${YTC_S3_SECRET_KEY}@minio:9000"
+      HOME: /tmp
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: "no"
+
+  migrate:
+    # alembic upgrade head: owner 롤로 테이블·RLS를 만들고 ytc_app 롤(비밀번호는 YTC_DB_DSN에서)을 만든다. 한 번 하고 끝난다.
+    build: *server-build
+    image: ${YTC_IMAGE:-ytc:server}
+    command: ["python", "-m", "alembic", "-c", "server/alembic.ini", "upgrade", "head"]
+    environment:
+      YTC_DB_OWNER_DSN: *db-owner-dsn
+      YTC_DB_DSN: *db-dsn
+    depends_on:
+      postgres:
+        condition: service_healthy
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: "no"
+
+  app:
+    build: *server-build
+    image: ${YTC_IMAGE:-ytc:server}
+    # 앱 롤(ytc_app)만 쓴다. owner DSN은 넣지 않는다(마이그레이션·관리 명령 전용).
+    environment:
+      YTC_ENV: "${YTC_ENV:-production}"
+      YTC_PUBLIC_URL: "${YTC_PUBLIC_URL:?YTC_PUBLIC_URL이 필요합니다}"
+      YTC_SESSION_SECRET: "${YTC_SESSION_SECRET:?YTC_SESSION_SECRET이 필요합니다}"
+      YTC_GOOGLE_CLIENT_ID: "${YTC_GOOGLE_CLIENT_ID:-}"
+      YTC_GOOGLE_CLIENT_SECRET: "${YTC_GOOGLE_CLIENT_SECRET:-}"
+      YTC_DEV_LOGIN: "${YTC_DEV_LOGIN:-}"
+      YTC_DB_DSN: *db-dsn
+      YTC_DB_POOL_MIN: "${YTC_DB_POOL_MIN:-}"
+      YTC_DB_POOL_MAX: "${YTC_DB_POOL_MAX:-}"
+      YTC_S3_ENDPOINT: "http://minio:9000"
+      YTC_S3_BUCKET: "${YTC_S3_BUCKET:-ytc}"
+      YTC_S3_ACCESS_KEY: "${YTC_S3_ACCESS_KEY}"
+      YTC_S3_SECRET_KEY: "${YTC_S3_SECRET_KEY}"
+      YTC_S3_MAX_POOL_CONNECTIONS: "${YTC_S3_MAX_POOL_CONNECTIONS:-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
+      YTC_LLM_MODEL: "${YTC_LLM_MODEL:-}"
+      YTC_LLM_MAX_TOKENS: "${YTC_LLM_MAX_TOKENS:-}"
+      YTC_DAILY_USD: "${YTC_DAILY_USD:-}"
+      YTC_MEDIA_SLOTS: "${YTC_MEDIA_SLOTS:-}"
+      YTC_LLM_SLOTS: "${YTC_LLM_SLOTS:-}"
+      YT_PROXY: "${YT_PROXY:-}"
+      YT_FETCH_INTERVAL: "${YT_FETCH_INTERVAL:-}"
+    ports:
+      - "127.0.0.1:${YTC_PORT:-8080}:8080"
+    volumes:
+      - state:/var/lib/ytc/state
+    tmpfs:
+      - "/tmp/ytc:uid=10001,gid=10001,mode=0700,size=${YTC_SCRATCH_SIZE:-2g}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+    stop_grace_period: 90s
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  admin:
+    # 관리 명령(profile admin): docker compose --profile admin run --rm admin add-user you@gmail.com --admin
+    # owner DSN이 필요해 앱 컨테이너와 따로 둔다. 가져오기: run --rm -v <작업 폴더>:/import:ro admin import /import --user you@gmail.com
+    build: *server-build
+    image: ${YTC_IMAGE:-ytc:server}
+    profiles: ["admin"]
+    entrypoint: ["tini", "--", "python", "-m", "server.admin"]
+    environment:
+      YTC_DB_OWNER_DSN: *db-owner-dsn
+      YTC_DB_DSN: *db-dsn
+      YTC_S3_ENDPOINT: "http://minio:9000"
+      YTC_S3_BUCKET: "${YTC_S3_BUCKET:-ytc}"
+      YTC_S3_ACCESS_KEY: "${YTC_S3_ACCESS_KEY}"
+      YTC_S3_SECRET_KEY: "${YTC_S3_SECRET_KEY}"
+      YTC_SCRATCH_DIR: /tmp/ytc-admin
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: "no"
+
+  caddy:
+    # 도메인 + 자동 HTTPS(Let's Encrypt). 80·443이 호스트에 열려 있고 YTC_DOMAIN의 DNS가 이 서버를 가리켜야 한다.
+    # 쓸 때: docker compose --profile tls up -d  (YTC_PUBLIC_URL=https://<YTC_DOMAIN>)
+    image: caddy:2@sha256:36c24ad91a7ff7bc4c87fe22bfa8df3c4b18da0773d73fc12ee2c52b98c0bb7e
+    profiles: ["tls"]
+    environment:
+      YTC_DOMAIN: "${YTC_DOMAIN:-}"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  minio:
+  state:
+  caddy_data:
+  caddy_config:

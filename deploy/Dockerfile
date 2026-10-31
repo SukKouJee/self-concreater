@@ -56,3 +56,23 @@ EXPOSE 8765
 # 맨 docker run 도 점검되도록(compose의 healthcheck와 같은 /healthz). 포트는 컨테이너의 YTC_PORT(없으면 8765).
 HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=5     CMD ["python", "-c", "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/healthz' % os.environ.get('YTC_PORT', '8765'), timeout=3)"]
 CMD ["python", "-m", "scripts.ui", "--host", "0.0.0.0", "--port", "8765", "--no-open", "--foreground"]
+
+
+FROM base AS server
+
+# 서버판(서버 설계 §9.1): base + requirements-server.txt + server/. 테스트 도구는 넣지 않는다.
+# requirements-server.txt 첫 줄 `-r requirements.txt`는 뺀다: base가 이미 깔았고, 다시 풀면 scenedetect가 GUI판 opencv를 되돌려 끌어온다.
+USER root
+COPY requirements-server.txt ./
+RUN --mount=type=cache,target=/root/.cache/pip     grep -v '^-r ' requirements-server.txt > /tmp/requirements.server.txt     && pip install -r /tmp/requirements.server.txt     && rm /tmp/requirements.server.txt     && python -c "import cv2, av, scenedetect, yt_dlp, starlette, uvicorn, psycopg, psycopg_pool, boto3, alembic, authlib"
+COPY server ./server
+# 상태 폴더(timings.json·.last_fetch)와 임시 폴더: 이름 있는 볼륨은 처음 붙일 때 이 소유권을 이어받는다.
+RUN mkdir -p /var/lib/ytc/state /tmp/ytc     && chown 10001:10001 /var/lib/ytc/state /tmp/ytc
+
+ENV YTC_EDITION=server     YTC_LLM_ENGINE=anthropic-api     YTC_STATE_DIR=/var/lib/ytc/state     YTC_SCRATCH_DIR=/tmp/ytc
+USER 10001
+VOLUME ["/var/lib/ytc/state"]
+EXPOSE 8080
+HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=5     CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3)"]
+# 접근 로그는 끈다(쿼리 문자열의 OIDC code·state가 로그에 남지 않게, 서버 설계 §4.2). --lifespan on: 설정·저장소 오류면 시작 단계에서 끝난다.
+CMD ["uvicorn", "server.asgi:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1", "--proxy-headers", "--lifespan", "on", "--no-access-log"]

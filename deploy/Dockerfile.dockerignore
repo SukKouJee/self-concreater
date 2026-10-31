@@ -5,5 +5,7 @@
 !skills
 !docs/help
 !requirements.txt
+!requirements-server.txt
+!server
 **/__pycache__
 **/*.pyc
