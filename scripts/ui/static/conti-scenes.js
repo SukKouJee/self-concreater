@@ -20,6 +20,7 @@
 //         promise를 돌려줄 수 있음), onArtSaved() (그림 묶음이 저장됨: 편집 칸은 그대로 두고 카드·그림만 새로, promise),
 //         onArtChange() (그림 작업이 시작·끝남, 다시 그릴 장면이 바뀜: 캡션 고치기) }
 import { h, fill } from "/static/dom.js";
+import { t } from "/static/copy.js";
 import { tag } from "/static/ui.js";
 import { sectionLabelName } from "/static/labels.js";
 import {
@@ -37,7 +38,6 @@ const MERGE_FIRST = "반복 컷을 먼저 장면으로 합쳐 주세요";
 const AFTER_DESCRIBE = "사진 설명이 생겼어요. 사진 다시 고르기를 누르면 장면에 맞는 사진이 붙어요";
 const STALE_MERGE = "미리보기를 만든 뒤 콘티가 바뀌었어요. 장면으로 합치기를 다시 눌러 주세요";
 const DRAFTS_FIRST = "저장하지 않은 입력이 있어요. 저장하거나 지운 뒤 합쳐 주세요";
-const ART_BLOCKED = "Claude를 쓸 수 없어 장면 그림을 다시 그리지 못했어요";
 const READY_ERRORS = new Set(["claude_missing", "llm_not_configured"]);
 const KINDS = { merge: "conti_merge", describe: "refs_describe", pick: "conti_refs", art: "conti_art" };
 
@@ -594,7 +594,7 @@ function paint() {
   if (repeats && buttons.some((b) => ["pick", "art", "art-all"].includes(b.dataset.fk))) {
     notes.push(h("p", { class: "sa-hint", id: "sa-merge-first" }, MERGE_FIRST));
   }
-  if (A.art.blocked) notes.push(h("p", { class: "sa-note", role: "status" }, ART_BLOCKED));
+  if (A.art.blocked) notes.push(h("p", { class: "sa-note", role: "status" }, t("conti.artBlocked")));
   const undrawn = artBusyNow ? 0 : artTrouble(art.last, data.art_counts);
   if (undrawn) {
     const again = h("button", { type: "button", class: "btn btn-s", "data-fk": "art-resume", disabled: repeats }, "남은 장면 그리기");

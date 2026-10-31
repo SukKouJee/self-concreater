@@ -31,6 +31,7 @@ from urllib.parse import parse_qs, urlparse
 
 from scripts import ctx, keys, limits, refstore
 from scripts.common import ArgParser, Progress, ScriptError, run, safe_progress
+from scripts.edition import ed
 
 SHORTS_MAX_SEC = 180
 # 공백 제외 글자 수 / 영상 길이(초)가 이보다 낮으면 말이 거의 없는 영상으로 본다
@@ -42,6 +43,9 @@ BLOCKED_MESSAGE = (
     "YouTube가 이 네트워크의 요청을 막았습니다. 잠시 후 다시 시도하거나, "
     "YT_PROXY 환경변수에 프록시를 지정하세요 (예: YT_PROXY=http://user:pass@host:port)."
 )
+# 서버판: 프록시는 운영자가 정한다. 사용자에게는 기다렸다가 다시 하라고만 알린다.
+BLOCKED_MESSAGE_SERVER = "YouTube가 이 서버의 요청을 잠시 막았습니다. 잠시 후 다시 시도하고, 계속되면 관리자에게 알려 주세요."
+PROXY_FAILED_SERVER = "서버의 프록시에 연결할 수 없습니다. 관리자에게 알려 주세요."
 
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 _HOSTS = {"youtube.com", "m.youtube.com", "music.youtube.com", "youtube-nocookie.com", "youtu.be"}
@@ -145,9 +149,21 @@ _YTDLP_MESSAGES = {
 }
 
 
+def blocked_message() -> str:
+    return ed(BLOCKED_MESSAGE, BLOCKED_MESSAGE_SERVER)
+
+
+def _ytdlp_message(code: str) -> str | None:
+    if code == "blocked":
+        return blocked_message()
+    if code == "proxy_failed":
+        return ed(_YTDLP_MESSAGES[code], PROXY_FAILED_SERVER)
+    return _YTDLP_MESSAGES.get(code)
+
+
 def ytdlp_error(e: Exception, action: str) -> ScriptError:
     code = classify_ytdlp_error(str(e))
-    return ScriptError(code, _YTDLP_MESSAGES.get(code, f"{action} 실패: {clean_error(str(e))}"))
+    return ScriptError(code, _ytdlp_message(code) or f"{action} 실패: {clean_error(str(e))}")
 
 
 def get_metadata(video_id: str, proxy: str | None) -> dict:
@@ -199,7 +215,7 @@ def get_transcript(video_id: str, proxy: str | None, original: str | None = None
     except (yta.TranscriptsDisabled, yta.NoTranscriptFound):
         return None
     except yta.RequestBlocked as e:  # IpBlocked 포함
-        raise ScriptError("blocked", BLOCKED_MESSAGE) from e
+        raise ScriptError("blocked", blocked_message()) from e
     except (yta.VideoUnavailable, yta.VideoUnplayable) as e:
         raise ScriptError("unavailable", _YTDLP_MESSAGES["unavailable"]) from e
     except yta.AgeRestricted as e:

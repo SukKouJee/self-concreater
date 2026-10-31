@@ -29,6 +29,12 @@ FUNCTIONS = {
     "admin_audit_log(integer)",
 }
 SIGNATURES = {sig.replace(", ", ",") for sig in FUNCTIONS}          # regprocedure text has no spaces
+FUNCTIONS_0004 = {
+    "admin_list_users_page(text, text, text, text, text, boolean, integer, integer)", "admin_user_detail(uuid)",
+    "admin_overview()", "admin_set_email(uuid, text)", "admin_set_name(uuid, text)", "admin_delete_user(uuid, text)",
+    "admin_audit_page(text, text, text, date, date, integer, integer)",
+}
+SIGNATURES_0004 = {sig.replace(", ", ",") for sig in FUNCTIONS_0004}
 
 
 def _sqlstate(exc: pytest.ExceptionInfo[Any]) -> str | None:
@@ -120,7 +126,8 @@ def test_app_role_may_execute_only_the_admin_functions(migrated_db: TestDb) -> N
                   migrated_db.app_role)
     for sig, app, public in rows:
         assert not public, sig                                  # never PUBLIC
-        assert app == (sig in SIGNATURES), sig                   # helpers (admin_actor) are not callable by the app
+        # helpers (admin_actor, admin_apply_*) are not callable by the app
+        assert app == (sig in SIGNATURES | SIGNATURES_0004), sig
 
 
 def test_app_role_has_no_direct_access_to_the_audit_table(db: Db, people: dict[str, uuid.UUID]) -> None:
@@ -134,6 +141,8 @@ def test_app_role_has_no_direct_access_to_the_audit_table(db: Db, people: dict[s
     "UPDATE users SET is_admin = true", "UPDATE users SET disabled = true", "UPDATE users SET session_epoch = 9",
     "UPDATE users SET password_hash = NULL", "UPDATE users SET daily_usd_limit = 1",
     "INSERT INTO users (email) VALUES ('x@example.com')", "DELETE FROM users",
+    "UPDATE users SET email = 'x@example.com'", "UPDATE users SET last_login_at = now()",
+    "UPDATE users SET display_name = 'x'",
 ])
 def test_app_role_still_cannot_write_users_directly_even_as_an_admin(db: Db, people: dict[str, uuid.UUID],
                                                                      stmt: str) -> None:

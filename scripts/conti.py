@@ -46,6 +46,7 @@ from typing import Any
 
 from scripts import ctx, features, fetch, keys, motif, refstore
 from scripts.common import TEMPLATES_DIR, ArgParser, ScriptError, run
+from scripts.edition import ed
 from scripts.features import SHOT_SIZES
 from scripts.report import SLOTS, _vars
 from scripts.stores import Doc
@@ -111,7 +112,7 @@ def parse_draft(path: str | Path) -> dict:
     key = _key(path)
     store = ctx.here().store
     if not keys.is_doc(key) or not store.exists(key):
-        raise ScriptError("draft_not_found", f"기획안이 없습니다: {key} (먼저 /yt-draft)")
+        raise ScriptError("draft_not_found", ed(f"기획안이 없습니다: {key} (먼저 /yt-draft)", "기획안이 없습니다. 내 영상에서 기획안을 먼저 만드세요"))
     fm, body = store.read(key).parsed
     if not fm.get("sections"):
         raise ScriptError("invalid_draft", f"기획안 프런트매터에 sections가 없습니다: {key}")
@@ -921,7 +922,7 @@ def _check_edit(fields: dict) -> dict:
         try:
             rel = _key(ref)                              # resolve 기준: `..`·심볼릭 링크로 밖을 가리키면 거절
         except ScriptError as e:
-            raise ScriptError("invalid_edit", f"작업 폴더 밖의 파일은 고정할 수 없습니다: {ref}") from e
+            raise ScriptError("invalid_edit", ed(f"작업 폴더 밖의 파일은 고정할 수 없습니다: {ref}", "허용되지 않은 위치의 사진은 고정할 수 없습니다")) from e
         if not key_exists(rel):
             raise ScriptError("invalid_edit", f"참고 프레임 파일이 없습니다: {ref}")
         edit["ref_frame"] = rel

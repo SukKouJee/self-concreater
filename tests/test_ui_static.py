@@ -231,7 +231,7 @@ def test_conti_page_contract_and_safety():
     for token in [
         "isCurrent()", "/api/drafts", "/api/conti/create", "/api/conti/save", "/api/conti/scenes",
         "/api/conti/alternatives", "/api/conti/cut", "/api/jobs/current?kind=conti", "conti_exists",
-        "conti_changed", "파일이 밖에서 바뀌었습니다 — 다시 불러오기", "저장했습니다 · 스토리보드도 다시 그렸습니다",
+        "conti_changed", 't("conti.changedButton")', "저장했습니다 · 스토리보드도 다시 그렸습니다",
         "레퍼런스 실제 장면", "대사 대안", "대안 더 보기", "이걸로 바꾸기", "고정 해제", "콘티 만들기", "다시 만들기",
         "스토리보드 HTML", "CapCut용 자막(SRT) 받기", "/api/conti/srt", "/api/conti/trash", "콘티 삭제", "workspace/trash/", "download", "exclude", "hash", "DOMParser", "filesUrl", "clearTimeout", "aria-live", "noopener",
     ]:
@@ -463,8 +463,8 @@ def test_motif_page_contract_and_safety():
     for token in ["export async function mount", "export function unmount", "export function onCategory",
                   "isCurrent()", "ctx.api(", "/api/motif", "/api/motif/run", "/api/motif/save", "/api/motif/star",
                   "kind=motif", "새 카드 뽑기", "선택한 카드 저장", "저장하면서 ★", "이 카드로 새 영상 시작",
-                  "기법 모음 정리해줘", "#/typify", "#/add", "#/refs/",
-                  "프로필이 없어 카드가 일반적으로 나옵니다", "유형화를 먼저 하면 흐름·조합 카드가 나옵니다",
+                  't("motif.catalogHint")', "#/typify", "#/add", "#/refs/",
+                  't("motif.profileNote")', "유형화를 먼저 하면 흐름·조합 카드가 나옵니다",
                   "먼저 레퍼런스를 넣어 주세요", "즐겨찾기만", "res.warning", "job_id: mine.jobId"]:
         assert token in js, token
     for bad in ["innerHTML", "insertAdjacentHTML", "outerHTML"]:
@@ -633,7 +633,7 @@ def test_mission_page_contract_and_safety():
                   "/api/mission/submit", "/api/mission/skip", "kind=mission", "kind=mission_feedback", "job_id",
                   "오늘 미션 받기", "이걸로 할게요", "이걸로 바꿀게요", "다른 걸로", "완료 제출", "피드백 받기",
                   "건너뛰기", "바꾸기", "renderMarkdown", "dropTitle", "fieldset", "legend", "mission_exists",
-                  "bad_file", "already_submitted", "aborted", "markHandled", "처음 설정해줘",
+                  "bad_file", "already_submitted", "aborted", "markHandled", 't("mission.profileNote")',
                   "날짜가 바뀌었습니다", "다시 제출하면 이전 제출을 덮어씁니다", "원본은 건드리지 않고",
                   "adjust", "role: \"alert\"", "scope"]:
         assert token in js, token
@@ -665,7 +665,7 @@ def test_report_page_contract_and_safety():
                   "/api/review/write", "/api/review/save", "/api/review/apply", "kind=review", "job_id",
                   "리포트 만들기", "새 탭에서 열기", "sandbox", "회고 쓰기", "다시 쓰기", "프로필에 반영",
                   "tablist", "aria-selected", "ArrowRight", "renderMarkdown", "dropTitle", "markHandled",
-                  "aborted", "처음 설정해줘", "#/typify", "이번 주 미션 기록이 없습니다", "회고 있음"]:
+                  "aborted", 't("report.noProfile")', "#/typify", "이번 주 미션 기록이 없습니다", "회고 있음"]:
         assert token in js, token
     assert "allow-scripts" not in js
     assert re.search(r'sandbox:\s*""', js)
@@ -1107,7 +1107,7 @@ def test_add_area_review_queue_and_progress_card_wiring():
     js = (STATIC_DIR / "pages" / "add.js").read_text(encoding="utf-8")
     css = (STATIC_DIR / "app.css").read_text(encoding="utf-8")
     for token in ["saveAllPlan(", "/review/", "/cancel", "모두 저장", "자세히", "확인 대기", "aria-expanded",
-                  "UI 서버를 끄면 사라져요", "멈추기", "고칠 점 적고 다시 분석", "작업이 멈춰 다시 분석할 수 없어요",
+                  't("add.unsaved")', "멈추기", "고칠 점 적고 다시 분석", "작업이 멈춰 다시 분석할 수 없어요",
                   "카테고리에서", "보기", "tabindex", "reviewItems(", "queueLine(", "/static/section-band.js",
                   "onSaved"]:
         assert token in js, token
@@ -1786,7 +1786,7 @@ def test_conti_scene_tools_draw_and_auto_redraw():
     js = _js("conti-scenes.js")
     for token in ["/api/conti/art", "conti_art", "artButtons(", "artTrouble(", "art_counts", "장면을 못 그렸어요",
                   '"art-resume"', "artRedrawPlan(", "ART_DEBOUNCE_MS", "body.stale_only = true",
-                  '"Claude를 쓸 수 없어 장면 그림을 다시 그리지 못했어요"', "claude_missing", "llm_not_configured",
+                  't("conti.artBlocked")', "claude_missing", "llm_not_configured",
                   "conti_busy", "conti_changed", 'type: "leave"', 'type: "done"', 'type: "stale"', 'type: "timer"',
                   'type: "fail_ready"', 'type: "requeue"', "artStale:", "artBusy:", "redraw:", "clearTimeout(mine.art.timer)"]:
         assert token in js, token

@@ -57,7 +57,7 @@ HELP_ALLOWED: set[tuple[str, str]] = set()   # (file, token) pairs that must sta
 
 def test_help_pages_hide_file_names_paths_and_commands():
     bad = []
-    for path in sorted(HELP_DIR.glob("*.md")):
+    for path in sorted([*HELP_DIR.glob("*.md"), *(HELP_DIR / "server").glob("*.md")]):   # + server-edition pages
         text = path.read_text(encoding="utf-8")
         for token in HIDDEN_IN_HELP:
             if token in text and (path.name, token) not in HELP_ALLOWED:

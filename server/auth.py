@@ -8,11 +8,13 @@
 - 사용자 조회(`PgUsers`)는 `Db.public_tx()`(app.user_id 없이, `users`는 RLS 없음)로 한다. 로그인 전이라 사용자 id가 없다.
 - Google 로그인 허용(`admit_google`, T12): 이메일 인증된 Google 계정이고, 그 이메일이 `users`에 있고(초대제: 관리자 `add-user`,
   모르는 이메일로 계정을 만들지 않는다), 비활성이 아니고, `google_sub`가 비었으면 이번 sub로 고정(`pin_google_sub`, 비어 있을 때만
-  UPDATE), 이미 있으면 같아야 한다. 같은 sub가 다른 사용자 행에 있으면(UNIQUE) 거부. 거부는 `LoginDenied(reason)`.
+  UPDATE, 조회한 이메일이 그대로일 때만 — 관리자가 그사이 이메일을 바꾸면 `not_invited`), 이미 있으면 같아야 한다. 같은 sub가 다른 사용자 행에 있으면(UNIQUE) 거부. 거부는 `LoginDenied(reason)`.
   프로토콜 검증(state·서명·클레임)은 `server.oidc`.
 - 이메일+비밀번호 로그인(T15, `YTC_PASSWORD_LOGIN=1`): `PgUsers.password_login`이 행과 `password_hash`를 함께 읽는다(해시는
   `UserRow`에 넣지 않는다: 세션 확인 경로에는 해시가 오가지 않는다). 해시·검증은 `server.passwords`, 실패 횟수 제한은
   `server.login_limit`, 경로는 `server.asgi`(`POST /auth/password`). 모든 실패는 같은 문구(`LOGIN_FAILED`).
+- 마지막 로그인(0004): 로그인에 성공하면(Google·비밀번호·dev) `record_login`이 `users.last_login_at`을 적는다. 실패해도 로그인은 막지 않는다
+  (`server.asgi`가 로그만 남긴다).
 """
 from __future__ import annotations
 
@@ -62,8 +64,9 @@ class LoginDenied(Exception):
 class UserDirectory(Protocol):
     def by_id(self, user_id: uuid.UUID) -> UserRow | None: ...
     def by_email(self, email: str) -> UserRow | None: ...
-    def pin_google_sub(self, user_id: uuid.UUID, sub: str) -> UserRow | None: ...
+    def pin_google_sub(self, user_id: uuid.UUID, sub: str, email: str) -> UserRow | None: ...
     def password_login(self, email: str) -> tuple[UserRow, str | None] | None: ...
+    def record_login(self, user_id: uuid.UUID) -> None: ...
 
 
 class PgUsers:
@@ -96,12 +99,20 @@ class PgUsers:
             return None
         return _row(row[:6]), None if row[6] is None else str(row[6])
 
-    def pin_google_sub(self, user_id: uuid.UUID, sub: str) -> UserRow | None:
-        """`google_sub`가 비었을 때만 sub를 넣고(경합해도 먼저 넣은 쪽이 남는다) 그 뒤의 행을 돌려준다. 이미 있으면 바꾸지 않는다
-        (호출부가 비교한다). 없는 사용자면 None. 같은 sub가 다른 사용자에게 있으면 LoginDenied("sub_taken")."""
+    def record_login(self, user_id: uuid.UUID) -> None:
+        """로그인 성공 기록(`users.last_login_at`, 0004 `user_record_login()`). 그 사용자 자신의 `user_tx` 안에서 부르므로
+        함수는 그 행만 바꿀 수 있다(앱 롤의 users 쓰기 권한은 늘지 않는다)."""
+        with self._db.user_tx(user_id) as conn:
+            conn.execute("SELECT user_record_login()")
+
+    def pin_google_sub(self, user_id: uuid.UUID, sub: str, email: str) -> UserRow | None:
+        """`google_sub`가 비었고 이메일이 조회 때(`email`) 그대로일 때만 sub를 넣고(경합해도 먼저 넣은 쪽이 남는다) 그 뒤의 행을
+        돌려준다. 이미 있거나 그사이 관리자가 이메일을 바꿨으면 바꾸지 않는다(호출부가 비교한다). 없는 사용자면 None.
+        같은 sub가 다른 사용자에게 있으면 LoginDenied("sub_taken")."""
         try:
             with self._db.public_tx() as conn:
-                conn.execute("UPDATE users SET google_sub = %s WHERE id = %s AND google_sub IS NULL", (sub, user_id))
+                conn.execute("UPDATE users SET google_sub = %s WHERE id = %s AND email = %s AND google_sub IS NULL",
+                             (sub, user_id, email))
                 row = conn.execute(f"SELECT {self._COLUMNS} FROM users WHERE id = %s", (user_id,)).fetchone()
         except UniqueViolation as e:
             raise LoginDenied("sub_taken") from e
@@ -123,9 +134,10 @@ def admit_google(users: UserDirectory, claims: GoogleClaims) -> UserRow:
     if row.disabled:
         raise LoginDenied("disabled")
     if row.google_sub is None:
-        row = users.pin_google_sub(row.id, claims.sub)
-        if row is None:
-            raise LoginDenied("not_invited")          # deleted between the two reads
+        looked_up = row.email
+        row = users.pin_google_sub(row.id, claims.sub, looked_up)
+        if row is None or row.email != looked_up:
+            raise LoginDenied("not_invited")          # deleted or renamed by an admin between the two reads
     if row.google_sub != claims.sub:
         raise LoginDenied("sub_mismatch")
     if row.disabled:

@@ -13,6 +13,13 @@
   마지막 관리자도 걷을 수 있다(운영자의 탈출구). 세션은 끊지 않는다(관리자 여부는 요청마다 읽는다). 출력의 `disabled`가 true면
   그 계정은 로그인할 수 없으니 `enable-user`를 먼저(또는 함께) 실행한다.
 - `enable-user <email>`: 비활성을 푼다(owner 경로, 감사 기록 `enable`·`via: cli`). 세션 epoch는 그대로(끊긴 세션은 이미 끊겼다).
+- `set-email <email> <새 이메일>`: 이메일을 바꾼다(소문자, 이미 있으면 `user_exists`). Google 연결(`google_sub`)을 풀고 모든 세션을 끊는다.
+- `set-name <email> <이름>`: 표시 이름(100자 이하, 빈 값이면 지움).
+- `delete-user <email> --confirm <같은 이메일>`: 사용자와 그 데이터(문서·폴더·파일·휴지통 행, MinIO `users/{id}/`·`trash/{id}/`)를
+  지운다. 공유 캐시는 그대로, 사용량 기록은 익명으로 남는다. 마지막 관리자도 지울 수 있다(운영자 탈출구, 출력 `admins`).
+  앱이 돌리던 그 사용자의 작업은 멈추지 않는다(다른 프로세스) — 먼저 `disable-user`로 세션을 끊어 두거나 웹 관리 화면에서 지운다.
+  저장소 설정(`YTC_S3_*` 등)이 필요하다. MinIO 정리가 실패하면 출력 `storage.ok: false`(행은 이미 지워졌다, S10 점검).
+  이 세 명령은 0004의 내부 함수(`admin_apply_*`, 웹 관리 화면과 같은 코드)를 owner로 부르고, 감사 기록은 행위자 NULL·`via: cli`.
 - `import <작업 폴더> --user <email> [--dry-run] [--overwrite] [--overwrite-memo] [--no-verify]`: 로컬 작업 폴더를 그 사용자 계정으로 올린다.
 - `usage [--days N]`: 사용자·날짜(Asia/Seoul)별 LLM 사용량 합계(`llm_usage`, 아직 기록이 없으면 빈 목록).
 
@@ -64,10 +71,20 @@ from server.backend import ServerBackend
 from server.config import StorageSettings
 from server.db import Conn, Db
 from server.pgstore import PgDocStore
-from server.s3store import MAX_OBJECT_BYTES, S3Bucket, S3ObjectStore, S3SharedCache
+from server.s3store import MAX_OBJECT_BYTES, S3Bucket, S3ObjectStore, S3SharedCache, purge_user_objects
 
 EMAIL_RE: Final = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 MAX_LIMIT: Final = Decimal("999999.99")      # users.daily_usd_limit numeric(8,2)
+MAX_NAME: Final = 100
+VIA_CLI: Final = "cli"
+ADMIN_LOCK: Final = 8751729245835585902      # migrations 0003/0004: the web admin functions take the same lock
+# 0004 function / constraint SQLSTATE -> CLI error (code, message)
+CLI_REFUSALS: Final[dict[str, tuple[str, str]]] = {
+    "YTA02": ("user_not_found", "없는 사용자입니다"),
+    "23505": ("user_exists", "이미 있는 이메일입니다"),
+    "23514": ("bad_input", "값이 올바르지 않습니다"),
+    "YTA05": ("bad_input", "값이 올바르지 않습니다"),
+}
 
 # 가져오지 않는 것(§7-2). 폴더 규칙은 '/'로 끝나고, 파일 규칙은 정확한 키다.
 EXCLUDED_DIRS: Final = (keys.TMP, keys.TRASH, keys.WORKSPACE + "library/", keys.GIT_DIR)
@@ -275,7 +292,9 @@ def _owner_dsn(env: Mapping[str, str]) -> str:
 
 @contextmanager
 def _owner_tx(env: Mapping[str, str]) -> Iterator[Conn]:
+    """owner 트랜잭션. 웹 관리 함수와 같은 advisory lock(ADMIN_LOCK)을 먼저 잡아 둘이 섞이지 않게 한다(트랜잭션 끝에 풀린다)."""
     with psycopg.connect(_owner_dsn(env)) as conn, conn.transaction():
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (ADMIN_LOCK,))
         yield conn
 
 
@@ -401,6 +420,70 @@ def enable_user(env: Mapping[str, str], email: str) -> dict[str, Any]:
     return {"id": str(row[0]), "email": address, "disabled": False, "session_epoch": int(row[1])}
 
 
+def _refused(e: psycopg.Error, address: str) -> ScriptError | None:
+    found = CLI_REFUSALS.get(e.sqlstate or "")
+    return None if found is None else ScriptError(found[0], f"{found[1]}: {address}")
+
+
+def _user_id(conn: Conn, address: str) -> uuid.UUID:
+    row = conn.execute("SELECT id FROM users WHERE email = %s", (address,)).fetchone()
+    if row is None:
+        raise ScriptError("user_not_found", f"없는 사용자입니다: {address}")
+    return uuid.UUID(str(row[0]))
+
+
+def set_email(env: Mapping[str, str], email: str, new_email: str) -> dict[str, Any]:
+    """owner로 `admin_apply_email`(0004): 소문자·UNIQUE, Google 연결 풀기, epoch 증가, 감사 `via: cli`."""
+    address, target = _email(email), _email(new_email)
+    try:
+        with _owner_tx(env) as conn:
+            uid = _user_id(conn, address)
+            row = conn.execute("SELECT public.admin_apply_email(%s, %s, NULL, %s)", (uid, target, VIA_CLI)).fetchone()
+    except psycopg.Error as e:
+        refused = _refused(e, target)
+        if refused is None:
+            raise
+        raise refused from e
+    assert row is not None
+    return {"id": str(uid), "email": target, "previous": address, "session_epoch": int(row[0])}
+
+
+def _display_name(text: str) -> str | None:
+    name = text.strip()
+    if len(name) > MAX_NAME:
+        raise ScriptError("bad_name", f"이름은 {MAX_NAME}자 이하여야 합니다")
+    return name or None
+
+
+def set_name(env: Mapping[str, str], email: str, name: str) -> dict[str, Any]:
+    """owner로 `admin_apply_name`(0004). 빈 이름은 지운다."""
+    address, value = _email(email), _display_name(name)
+    with _owner_tx(env) as conn:
+        uid = _user_id(conn, address)
+        conn.execute("SELECT public.admin_apply_name(%s, %s, NULL, %s)", (uid, value, VIA_CLI))
+    return {"id": str(uid), "email": address, "display_name": value}
+
+
+def delete_user(env: Mapping[str, str], email: str, confirm: str) -> dict[str, Any]:
+    """owner로 `admin_apply_delete`(0004, 행·감사, 커밋) → MinIO `users/{id}/`·`trash/{id}/` 정리.
+    `--confirm`은 같은 이메일이어야 한다(대소문자·앞뒤 공백 무시)."""
+    address = _email(email)
+    if _email(confirm) != address:
+        raise ScriptError("confirm_mismatch", f"--confirm에 지울 사용자의 이메일을 그대로 넣으세요: {address}")
+    settings = StorageSettings.from_env(env)
+    with _owner_tx(env) as conn:
+        uid = _user_id(conn, address)
+        row = conn.execute("SELECT public.admin_apply_delete(%s, NULL, %s)", (uid, VIA_CLI)).fetchone()
+        left = conn.execute("SELECT count(*) FROM users WHERE is_admin AND NOT disabled").fetchone()
+    assert row is not None and left is not None
+    summary: dict[str, Any] = dict(row[0])
+    bucket = S3Bucket.connect(settings.s3_endpoint, settings.s3_access_key, settings.s3_secret_key, settings.s3_bucket,
+                              max_pool_connections=settings.s3_max_pool_connections)
+    storage = purge_user_objects(bucket, uid, [str(k) for k in summary.pop("s3_keys", [])])
+    deleted = {k: summary.get(k, 0) for k in ("docs", "folders", "objects", "trash", "usage_rows", "usage_usd")}
+    return {"id": str(uid), "email": address, "deleted": deleted, "storage": storage, "admins": int(left[0])}
+
+
 def usage(env: Mapping[str, str], days: int) -> dict[str, Any]:
     if days < 1:
         raise ScriptError("bad_days", "--days는 1 이상이어야 합니다")
@@ -503,6 +586,15 @@ def _parser() -> ArgParser:
     revoke.add_argument("email")
     enable = sub.add_parser("enable-user", help="비활성을 푼다(관리자로 되살릴 계정은 먼저 이것으로)")
     enable.add_argument("email")
+    mail = sub.add_parser("set-email", help="이메일을 바꾼다(Google 연결을 풀고 모든 세션을 끊는다)")
+    mail.add_argument("email")
+    mail.add_argument("new_email")
+    name = sub.add_parser("set-name", help="표시 이름을 바꾼다(빈 값이면 지운다)")
+    name.add_argument("email")
+    name.add_argument("name")
+    delete = sub.add_parser("delete-user", help="사용자와 그 데이터를 지운다(되돌릴 수 없다)")
+    delete.add_argument("email")
+    delete.add_argument("--confirm", required=True, help="확인을 위해 같은 이메일을 한 번 더")
     imp = sub.add_parser("import")
     imp.add_argument("folder")
     imp.add_argument("--user", required=True)
@@ -538,6 +630,12 @@ def main(argv: list[str], env: Mapping[str, str] | None = None, *, stdin: TextIO
         return logout_all(environ, args.email)
     if args.command == "enable-user":
         return enable_user(environ, args.email)
+    if args.command == "set-email":
+        return set_email(environ, args.email, args.new_email)
+    if args.command == "set-name":
+        return set_name(environ, args.email, args.name)
+    if args.command == "delete-user":
+        return delete_user(environ, args.email, args.confirm)
     if args.command in ("make-admin", "revoke-admin"):
         return set_admin(environ, args.email, args.command == "make-admin")
     if args.command == "import":

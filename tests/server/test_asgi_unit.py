@@ -33,6 +33,8 @@ SECRET = "t" * 40
 class FakeUsers:
     def __init__(self) -> None:
         self.rows: dict[uuid.UUID, auth.UserRow] = {}
+        self.logins: list[uuid.UUID] = []             # record_login calls (last login hook, 0004)
+        self.login_hook_fails: bool | str = False
 
     def add(self, email: str, **over: Any) -> auth.UserRow:
         row = auth.UserRow(uuid.uuid4(), email, over.get("disabled", False), over.get("session_epoch", 0),
@@ -49,12 +51,20 @@ class FakeUsers:
     def by_email(self, email: str) -> auth.UserRow | None:
         return next((r for r in self.rows.values() if r.email == email.strip().lower()), None)
 
-    def pin_google_sub(self, user_id: uuid.UUID, sub: str) -> auth.UserRow | None:
-        """PgUsers와 같은 의미: 비어 있을 때만 채운다, 다른 사용자가 이미 가진 sub면 LoginDenied(sub_taken)."""
+    def record_login(self, user_id: uuid.UUID) -> None:
+        if self.login_hook_fails == "other":
+            raise RuntimeError("unexpected")
+        if self.login_hook_fails:
+            import psycopg
+            raise psycopg.OperationalError("db down")
+        self.logins.append(user_id)
+
+    def pin_google_sub(self, user_id: uuid.UUID, sub: str, email: str) -> auth.UserRow | None:
+        """PgUsers와 같은 의미: 비어 있고 이메일이 그대로일 때만 채운다, 다른 사용자가 이미 가진 sub면 LoginDenied(sub_taken)."""
         row = self.rows.get(user_id)
         if row is None:
             return None
-        if row.google_sub is None:
+        if row.google_sub is None and row.email == email:
             if any(r.google_sub == sub for r in self.rows.values()):
                 raise auth.LoginDenied("sub_taken")
             row = self.rows[user_id] = replace(row, google_sub=sub)
@@ -194,6 +204,23 @@ def test_dev_login_refuses_unknown_or_disabled(client, users, disabled):
     assert "set-cookie" not in r.headers
 
 
+def test_dev_login_records_the_last_login_and_a_failing_hook_does_not_block(client, users):
+    row = users.add("a@example.com")
+    assert _login(client, "a@example.com").status_code == 200
+    assert users.logins == [row.id]
+    users.login_hook_fails = True                       # last_login_at is a convenience, not a gate
+    assert _login(client, "a@example.com").status_code == 200
+    users.login_hook_fails = "other"                    # any failure, not only database errors
+    assert _login(client, "a@example.com").status_code == 200
+    assert users.logins == [row.id]
+
+
+def test_refused_dev_login_records_nothing(client, users):
+    users.add("a@example.com", disabled=True)
+    assert _login(client, "a@example.com").status_code == 403
+    assert users.logins == []
+
+
 def test_dev_login_needs_an_email(client):
     assert client.post("/auth/dev", json={}).status_code == 400
 
@@ -306,7 +333,7 @@ def test_features_report_server_edition_with_everything_off(client, alice):
 def test_disabled_features_answer_403(client, alice, method, path, feature):
     r = client.request(method, path, json={} if method == "POST" else None)
     assert r.status_code == 403 and r.json() == {"error": "feature_disabled", "feature": feature,
-                                                 "message": ui.FEATURE_TEXT[feature]}
+                                                 "message": ui.FEATURE_TEXT_SERVER[feature]}
 
 
 @pytest.mark.parametrize("path", ["/api/%6Cibrary/status", "/api/footage%2Fprocess", "/api/Library/status"])
@@ -353,6 +380,14 @@ def test_root_serves_the_shell_when_logged_in(client, alice):
     assert r.status_code == 200 and b"/static/app.js" in r.content
     assert "set-cookie" not in r.headers or "ytc_key" not in r.headers["set-cookie"]
     assert client.get("/static/app.js").status_code == 200
+
+
+def test_root_marks_the_shell_as_server_edition(client, alice):
+    # the page knows its edition before /api/features answers (or if it fails); the local file stays as it is
+    local = (ui.STATIC_DIR / "index.html").read_bytes()
+    assert b'<html lang="ko">' in local and b"data-edition" not in local
+    r = client.get("/")
+    assert r.content == local.replace(b'<html lang="ko">', b'<html lang="ko" data-edition="server">', 1)
 
 
 # ---- request context in the worker thread ---------------------------------------------------

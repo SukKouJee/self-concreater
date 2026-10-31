@@ -22,6 +22,8 @@ from scripts.ui.jobs import JobManager, join_until
 from server.config import LlmSettings
 from server.db import Db
 
+DROP_WAIT = 5.0          # seconds a deleted user's cancelled jobs get to stop before the rows go
+
 
 def install_runtime(settings: LlmSettings, db: Db) -> None:
     """프로세스 전역 자원 제한과 LLM 정책을 설치한다(서버 시작 때 한 번)."""
@@ -40,6 +42,7 @@ class Registry:
         self._factory = factory
         self._lock = threading.Lock()
         self._managers: dict[uuid.UUID, JobManager] = {}
+        self._dropped: set[uuid.UUID] = set()          # users being deleted: no fresh manager (login_required)
         self._closing = False
 
     @property
@@ -50,6 +53,8 @@ class Registry:
         """그 사용자의 JobManager(없으면 만든다). user_id는 인증된 값만 넘긴다(UUID가 아니면 ValueError)."""
         uid = user_id if isinstance(user_id, uuid.UUID) else uuid.UUID(user_id)
         with self._lock:
+            if uid in self._dropped:
+                raise ScriptError("login_required", "로그인이 필요합니다")
             manager = self._managers.get(uid)
             if manager is None:
                 if self._closing:
@@ -57,6 +62,25 @@ class Registry:
                 manager = self._factory()
                 self._managers[uid] = manager
             return manager
+
+    def drop(self, user_id: uuid.UUID, timeout: float | None = DROP_WAIT) -> int:
+        """지울 사용자의 작업을 모두 취소하고(timeout초까지 기다린다) 매니저를 버린다. 취소한 작업 수.
+        표시(tombstone)를 남겨 그동안과 그 뒤의 `for_user`는 login_required다(기다리는 사이 새 매니저가 생기지 않게).
+        사용자 행이 지워진 뒤에는 그 작업의 쓰기가 FK로 실패하므로, 지우기 전에 부른다(관리 화면 지우기).
+        DB가 지우기를 거절하면 `undrop`."""
+        with self._lock:
+            self._dropped.add(user_id)
+            manager = self._managers.pop(user_id, None)
+        if manager is None:
+            return 0
+        jobs = manager.cancel_all()
+        join_until(jobs, None if timeout is None else time.monotonic() + timeout)
+        return len(jobs)
+
+    def undrop(self, user_id: uuid.UUID) -> None:
+        """`drop` 표시를 걷는다(지우기가 거절되어 사용자가 남을 때)."""
+        with self._lock:
+            self._dropped.discard(user_id)
 
     def close(self) -> None:
         """새 작업을 받지 않는다(이미 있는 매니저는 조회·취소용으로 남는다)."""

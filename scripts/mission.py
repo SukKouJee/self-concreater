@@ -25,6 +25,7 @@ from typing import Any
 
 from scripts import ctx, keys, motif, refstore
 from scripts.common import ArgParser, ScriptError, run
+from scripts.edition import ed
 
 KINDS = ["관찰", "분석", "기획", "촬영", "편집", "업로드"]
 STAGES = ["관찰", "모방", "제작", "변형"]
@@ -225,7 +226,7 @@ def save(mission_path: Path, date: str | None = None, replace: bool = False) -> 
 def _require_mission(day: str) -> str:
     key = _mission_key(day)
     if not ctx.here().store.exists(key):
-        raise ScriptError("no_mission", f"{day} 미션이 없습니다. 먼저 /yt-mission today")
+        raise ScriptError("no_mission", ed(f"{day} 미션이 없습니다. 먼저 /yt-mission today", f"{day} 미션이 없습니다. 먼저 오늘 미션을 받으세요"))
     return key
 
 
@@ -392,7 +393,7 @@ def profile_update(updates_path: Path, date: str | None = None) -> dict:
         raise ScriptError("invalid_profile_update", f"성장 단계는 {', '.join(STAGES)} 중 하나입니다")
     store = ctx.here().store
     if not store.exists(keys.PROFILE):
-        raise ScriptError("no_profile", "profile.md가 없습니다. 먼저 /yt-init")
+        raise ScriptError("no_profile", ed("profile.md가 없습니다. 먼저 /yt-init", "프로필이 없습니다. 프로필은 관리자에게 문의하세요"))
     text = store.read(keys.PROFILE).raw.decode("utf-8-sig")
     nl = "\r\n" if "\r\n" in text else "\n"
     fm, body = refstore.split_frontmatter(text)

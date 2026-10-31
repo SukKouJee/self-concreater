@@ -27,6 +27,7 @@ from typing import Any
 
 from scripts import conti, ctx, features, keys, motif, refstore
 from scripts.common import PLUGIN_ROOT, TEMPLATES_DIR, ArgParser, ScriptError, run
+from scripts.edition import ed
 from scripts.stores import VersionConflict
 from scripts.draft import _escape_headings, _one_line
 from scripts.features import TITLE_PATTERNS
@@ -582,8 +583,10 @@ def apply(draft: str | Path, choice: dict, expected_hash: str) -> dict:
         lines[at:at] = block
 
     if store.exists(keys.conti_md(key)):
-        warnings.append("이 기획안의 콘티가 이미 있습니다. 제목·훅 대본이 바뀌었으니 /yt-coach:yt-conti 로 콘티를 다시 만들어 주세요 "
-                        "(콘티의 대사는 자동으로 바뀌지 않습니다)")
+        warnings.append(ed("이 기획안의 콘티가 이미 있습니다. 제목·훅 대본이 바뀌었으니 /yt-coach:yt-conti 로 콘티를 다시 만들어 주세요 "
+                           "(콘티의 대사는 자동으로 바뀌지 않습니다)",
+                           "이 기획안의 콘티가 이미 있습니다. 제목·훅 대본이 바뀌었으니 콘티 탭에서 콘티를 다시 만들어 주세요 "
+                           "(콘티의 대사는 자동으로 바뀌지 않습니다)"))
     out = refstore.join_frontmatter(fm, "\n".join(lines).replace("\n", nl), nl).encode("utf-8")
     try:
         version = store.write(key, BOM + out if raw.startswith(BOM) else out, expect_version=doc.version)

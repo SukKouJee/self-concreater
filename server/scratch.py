@@ -28,6 +28,9 @@ from scripts.common import ScriptError
 STATE_FILES: Final = frozenset({"timings.json", ".last_fetch"})
 TMP_PART: Final = "tmp"
 PC_PATH_MESSAGE: Final = "서버에서는 PC 파일 경로를 읽을 수 없습니다"
+# key_of: the value is not echoed (it may be a server-side temp path)
+OUTSIDE_MESSAGE: Final = "허용되지 않은 위치입니다"
+NOT_A_FILE_MESSAGE: Final = "올바른 파일이 아닙니다"
 
 
 class PcPathError(ScriptError, ValueError):
@@ -128,19 +131,19 @@ class ServerScratch:
         if path.is_absolute():
             real = self._inside_tmp(path, value)
             if real is None:
-                raise ScriptError("bad_path", f"작업 폴더 밖의 경로입니다: {value}")
+                raise ScriptError("bad_path", OUTSIDE_MESSAGE)
             rel = real.relative_to(self._tmp.resolve()).as_posix()
             if rel == ".":
-                raise ScriptError("bad_path", f"작업 폴더 자체는 파일이 아닙니다: {value}")
+                raise ScriptError("bad_path", NOT_A_FILE_MESSAGE)
             return _keys.tmp(rel)
         text = value.as_posix() if isinstance(value, Path) else value
         if not text or "\\" in text:
             return _keys.check(text)                           # bad_path with the usual message
         rel = posixpath.normpath(text)
         if rel == ".":
-            raise ScriptError("bad_path", f"작업 폴더 자체는 파일이 아닙니다: {value}")
+            raise ScriptError("bad_path", NOT_A_FILE_MESSAGE)
         if rel == ".." or rel.startswith("../") or rel.startswith("/"):
-            raise ScriptError("bad_path", f"작업 폴더 밖의 경로입니다: {value}")
+            raise ScriptError("bad_path", OUTSIDE_MESSAGE)
         return _keys.check(rel)
 
     def workdir(self) -> Path:

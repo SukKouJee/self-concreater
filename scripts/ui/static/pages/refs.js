@@ -6,6 +6,7 @@
 // api 호출은 ctx.api를 쓴다: 페이지별 ctx.api가 이미 ctx.signal(이동하면 abort)을 실어 보낸다. 중단된 요청(error "aborted")은 조용히 무시한다.
 // 모든 비동기 뒤에는 ctx.isCurrent()로 화면이 아직 이 페이지인지 확인한다.
 import { h, fill, filesUrl } from "/static/dom.js";
+import { t } from "/static/copy.js";
 import {
   bandCaption, bodySubName, fmtCut, formatName, hookName, narrativeName, sectionLabelName, sectionName, topCamera,
 } from "/static/labels.js";
@@ -89,7 +90,7 @@ function loading(title) {
 function noCategory(title) {
   S.el.replaceChildren(h("h1", {}, title),
     h("section", { class: "card" },
-      h("p", {}, "카테고리가 아직 없습니다. 홈에서 작업 폴더와 카테고리를 먼저 만드세요."),
+      h("p", {}, t("refs.noCategory")),
       h("a", { class: "btn", href: "#/home" }, "홈으로")));
 }
 
@@ -438,7 +439,7 @@ function trashControls(v) {
     h("p", { class: "warn-text" },
       `이 ${what}의 분석 결과와 데이터(프레임·컷·샷 분류·자막)를 휴지통으로 옮깁니다`),
     h("p", { class: "muted hint" },
-      "기법 모음에서도 이 영상 출처를 뺍니다. 다른 카테고리에 같은 영상이 있으면 분석 데이터는 그대로 둡니다. 잘못 지웠으면 Claude에게 “휴지통에서 되살려줘”라고 말하세요."),
+      t("refs.trashHint")),
     h("div", { class: "btn-row" }, yes, no));
   const open = (on) => {
     panel.hidden = !on;

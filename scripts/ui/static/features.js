@@ -21,16 +21,37 @@ export function applyFeatures(root, disabled, makeNote = defaultNote) {
   }
 }
 
-// Read the edition and the disabled list. An older or unreachable server means the local edition with nothing
-// disabled (the local edition's default).
-export async function loadFeatureInfo(api) {
-  try {
-    const data = await api("GET", "/api/features");
-    const disabled = data && typeof data.disabled === "object" && data.disabled ? data.disabled : {};
-    return { edition: data && data.edition === "server" ? "server" : "local", disabled };
-  } catch {
-    return { edition: "local", disabled: {} };
+// The server marks its shell (<html data-edition="server">, server/asgi.py); the local file has no mark.
+export function pageEdition() {
+  if (typeof document === "undefined") return "local";
+  return document.documentElement.dataset.edition === "server" ? "server" : "local";
+}
+
+// What the server edition always turns off (= scripts/ui/server.py FEATURE_TEXT_SERVER, tests compare them).
+// Used when /api/features cannot be read on a server page, so dead buttons still stay hidden.
+export const SERVER_DISABLED = {
+  library: "공용 라이브러리는 이 서버에서 아직 쓸 수 없습니다",
+  caption_video: "자막 영상 만들기는 이 서버에서 쓸 수 없습니다",
+  srtfit: "자막 시간 맞추기는 이 서버에서 쓸 수 없습니다(편집한 영상 파일이 필요해요)",
+  footage: "촬영 영상 처리는 이 서버에서 쓸 수 없습니다",
+};
+
+// Read the edition and the disabled list. Local page: an older or unreachable server means the local edition with
+// nothing disabled (the local edition's default). Server page: one retry, then the server edition with its fixed
+// disabled list (never the local UI).
+export async function loadFeatureInfo(api, hint = pageEdition()) {
+  const tries = hint === "server" ? 2 : 1;
+  for (let i = 0; i < tries; i += 1) {
+    try {
+      const data = await api("GET", "/api/features");
+      const disabled = data && typeof data.disabled === "object" && data.disabled ? data.disabled : {};
+      const named = data && (data.edition === "server" || data.edition === "local") ? data.edition : null;
+      return { edition: named || hint, disabled };
+    } catch {
+      // try again (server page) or fall through to the default below
+    }
   }
+  return hint === "server" ? { edition: "server", disabled: { ...SERVER_DISABLED } } : { edition: "local", disabled: {} };
 }
 
 // Read the disabled list only.
