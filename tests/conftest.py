@@ -1,5 +1,8 @@
 import pytest
 
+# PG·MinIO fixture(pg_stack·test_db·migrated_db): tests/server와 tests/contract가 같은 세션 스택을 쓴다
+pytest_plugins = ["tests.helpers.pg"]
+
 
 @pytest.fixture(autouse=True)
 def _clean_llm_env(monkeypatch):
