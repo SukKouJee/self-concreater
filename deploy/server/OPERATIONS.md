@@ -8,12 +8,29 @@
    `YTC_PASSWORD_LOGIN=1`(이메일+비밀번호, 예시 파일 기본값)과 Google 클라이언트(선택) 중 하나 이상이 있어야 production이 시작한다.
    비밀번호·키는 영문·숫자·`-_`만 쓴다(주소에 끼워 넣는다). `python -c "import secrets;print(secrets.token_urlsafe(48))"`
 2. `docker compose up -d --build` (도메인과 자동 HTTPS가 필요하면 `--profile tls`, `.env`에 `YTC_DOMAIN`).
-3. 첫 사용자: `docker compose --profile admin run --rm admin add-user you@example.com --admin --password`
+3. 첫 사용자(관리자): `docker compose --profile admin run --rm admin add-user you@example.com --admin --password`
    (비밀번호를 두 번 묻는다. 화면에 보이지 않고 출력·로그에도 남지 않는다. 10자 이상)
+   이미 있는 계정을 관리자로 만들려면 `... admin make-admin you@example.com`.
+4. 그다음 사용자 관리는 웹의 **관리 화면**에서 한다(아래 "관리 화면").
 
-## 사용자 추가·가져오기
+## 관리 화면 (`#/admin`)
 
-- 초대: `docker compose --profile admin run --rm admin add-user friend@example.com [--daily-limit 2.00] [--password]`
+- 관리자(`users.is_admin`)에게만 머리글의 "관리" 링크와 도움말 메뉴의 "관리"가 보인다. 관리자가 아니면 API가 403이고 DB도 거부한다.
+- 할 수 있는 것: 사용자 목록(상태, 로그인 방법, 오늘 사용액/한도), 초대(이메일, 이름, 첫 비밀번호 선택, 관리자 여부, 하루 한도),
+  비밀번호 재설정(정한 비밀번호는 화면에 다시 나오지 않으니 직접 알려 준다)·지우기, 모든 기기 로그아웃, 비활성/다시 쓰기,
+  하루 한도(비우면 `YTC_DAILY_USD`), 관리자 지정·해제, 최근 7일 사용량, 최근 관리 기록 50개.
+- 막는 것: 자기 계정 비활성·강등, 마지막 활성 관리자를 없애는 변경(409). 두 관리자가 동시에 서로를 빼도 한 명은 남는다.
+- 비밀번호 재설정·지우기·비활성·모든 기기 로그아웃은 그 사람의 세션을 바로 끊는다(`session_epoch` 증가).
+- 구조: 앱은 여전히 owner DB 자격이 없다. 앱 롤은 users에 직접 쓰지 못하고, 마이그레이션 `0003`의 owner 소유 SECURITY DEFINER 함수
+  (`admin_*`)만 실행할 수 있다. 함수는 먼저 요청한 사람(`app.user_id`)이 활성 관리자인지 확인하고, 바꾼 것은 `admin_audit`에 남긴다
+  (비밀번호·해시는 남기지 않는다). 비밀번호 해시는 앱이 만들고 함수에는 해시만 넘어간다.
+- 관리자를 모두 잃었거나 화면이 잠겼으면 owner 경로로 되살린다: `... admin make-admin you@example.com`
+  (`revoke-admin`으로 걷기. CLI는 마지막 관리자도 걷을 수 있는 운영자의 탈출구다. 감사 기록에는 "운영자(명령줄)"로 남는다.)
+- 감사 기록을 DB에서 직접 보기: `docker compose exec postgres psql -U ytc_owner -d ytc -c "SELECT at, action, detail FROM admin_audit ORDER BY id DESC LIMIT 20"`
+
+## 사용자 추가·가져오기(명령줄)
+
+- 초대(관리 화면에서도 된다): `docker compose --profile admin run --rm admin add-user friend@example.com [--daily-limit 2.00] [--password]`
   초대된 이메일만 로그인할 수 있다(비밀번호를 정했으면 이메일+비밀번호로, Google이 켜져 있으면 그 이메일의 Google 계정으로).
 
 ## 비밀번호(이메일+비밀번호 로그인, `YTC_PASSWORD_LOGIN=1`)

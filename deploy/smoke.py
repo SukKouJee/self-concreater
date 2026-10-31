@@ -6,6 +6,7 @@
 - server: deploy/server/docker-compose.yml 전체(postgres·minio·버킷·migrate·app)를 YTC_ENV=test + dev 로그인 + 비밀번호 로그인으로 띄우고
   admin add-user 2명 -> dev 로그인 -> /healthz·/api/status -> 기획안 저장·읽기 -> 두 사용자 격리 1건 ->
   add-user --password-stdin -> POST /auth/password(틀림 401·맞음 200) ->
+  admin make-admin -> 관리 API(/api/me, 사용자 목록에 해시 없음, 일반 사용자 403, 다른 사람 모든 기기 로그아웃, 자기 비활성 409, 감사 기록) ->
   (Chrome이 있으면) 로그인 화면의 비밀번호 폼(틀림 문구·맞으면 /로 이동)과 /files의 HTML이 FILES_CSP(sandbox allow-same-origin) 아래서
   이미지를 그리는지 -> 게시 포트로 보낸 X-Forwarded-For를 믿지 않는지(IP별 실패 제한 429) -> down -v.
   Chrome은 YTC_CHROME 또는 흔한 설치 경로에서 찾는다. 없으면 그 점검만 건너뛴다고 출력한다(--no-browser로 끌 수도 있다).
@@ -623,6 +624,23 @@ def smoke_server(project: str, image: str, with_browser: bool) -> None:
             check(status == 200 and body.get("email") == PW_EMAIL, "POST /auth/password 맞는 비밀번호로 로그인 200")
             status, body, _ = carol.request("GET", "/api/ping")
             check(status == 200 and body.get("user") == PW_EMAIL, "비밀번호로 만든 세션으로 /api/ping")
+
+            made = last_json(run(admin + ["make-admin", "alice@example.com"], env))
+            check(made.get("is_admin") is True and made.get("admins") == 1, "admin make-admin alice (첫 관리자, owner 경로)")
+            check(alice.request("GET", "/api/me")[1] == {"email": "alice@example.com", "is_admin": True},
+                  "/api/me: alice는 관리자(같은 세션, 다음 요청부터)")
+            status, listed, _ = alice.request("GET", "/api/admin/users")
+            emails = sorted(u["email"] for u in listed.get("users", [])) if status == 200 else []
+            check(status == 200 and emails == sorted([*users, PW_EMAIL]) and "scrypt" not in json.dumps(listed),
+                  f"GET /api/admin/users: 사용자 {len(emails)}명, 해시 없음")
+            check(bob.request("GET", "/api/admin/users")[0] == 403, "관리자가 아닌 bob의 관리 API는 403")
+            status, _, _ = alice.request("POST", f"/api/admin/users/{users['bob@example.com']}/logout-all", {})
+            check(status == 200 and bob.request("GET", "/api/ping")[0] == 401, "관리 API로 bob을 모든 기기에서 로그아웃 → bob 401")
+            status, body, _ = alice.request("POST", f"/api/admin/users/{users['alice@example.com']}/disable", {})
+            check(status == 409 and body.get("error") == "self_protected", "자기 계정 비활성은 409 self_protected")
+            status, audit, _ = alice.request("GET", "/api/admin/audit?limit=10")
+            actions = [e["action"] for e in audit.get("entries", [])] if status == 200 else []
+            check(actions == ["logout_all", "set_admin"], f"감사 기록(최신순): {actions}")
 
             chrome = find_chrome() if with_browser else None
             if not with_browser:

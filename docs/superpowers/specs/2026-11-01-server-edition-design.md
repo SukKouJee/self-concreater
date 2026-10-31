@@ -49,7 +49,8 @@
 │   ├── auth.py              세션, CSRF, dev 로그인, Google 로그인 허용(초대·sub 고정)
 │   ├── oidc.py              Google OIDC 프로토콜(state·nonce·PKCE, ID 토큰 검증)
 │   ├── files.py             /files 프록시(Range)
-│   ├── admin.py             CLI: add-user · disable-user · logout-all · import · usage
+│   ├── admin.py             CLI: add-user · disable-user · logout-all · make-admin · import · usage
+│   ├── admin_api.py         관리 화면 API(T16): /api/admin/* → 0003 SECURITY DEFINER 함수
 │   ├── migrations/ alembic.ini
 │   └── web/login.html
 ├── deploy/
@@ -143,6 +144,11 @@ CREATE POLICY own ON <t> USING (user_id = nullif(current_setting('app.user_id', 
 - Alembic `0002`(T15): `users.password_hash text NULL`, CHECK `password_hash IS NULL OR password_hash LIKE 'scrypt$%'`.
   앱 롤 권한은 그대로(표 SELECT로 읽기만, UPDATE 열 목록에 없음). 값은 `admin add-user --password`·`set-password`·`clear-password`(owner)만 쓴다.
   되돌리면 열만 지운다.
+- Alembic `0003`(T16, 관리 화면 §4.2): `admin_audit(id, actor_id → users SET NULL, action, target_user_id → users SET NULL, detail jsonb, at)`
+  + 인덱스 `(at)`, RLS 없음, **앱 롤 권한 없음**. owner 소유 `SECURITY DEFINER` 함수 10개(`admin_list_users`, `admin_add_user`,
+  `admin_set_password`, `admin_clear_password`, `admin_set_disabled`, `admin_logout_all`, `admin_set_limit`, `admin_set_admin`,
+  `admin_usage`, `admin_audit_log`)만 앱 롤에 EXECUTE(PUBLIC은 걷음). 내부 함수 `admin_actor()`(호출자 확인)·`admin_target`·`admin_keep_one`은
+  앱 롤도 못 부른다. 앱 롤의 users 권한은 그대로(SELECT, UPDATE(google_sub, display_name)). 되돌리면 함수·표만 지운다.
 - `trash_items.raw`(문서) / `s3_key`(객체 `trash/{uid}/{stamp}/{key}`). 만료(30일)는 S10.
 - `s3_key` CHECK: `objects`는 정확히 `users/{user_id}/{key}`, `trash_items`는 NULL 또는 `trash/{user_id}/{stamp}/{key}`.
   RLS가 행을 막아도 행 안의 `s3_key`가 남의 MinIO 객체를 가리키면 `/files`·휴지통 복원이 그 바이트를 읽는다 — 행과 객체 위치를 DB에서 묶는다.
@@ -263,6 +269,7 @@ CREATE POLICY own ON <t> USING (user_id = nullif(current_setting('app.user_id', 
 | 시크릿 | `YTC_SESSION_SECRET`(32바이트 이상), `YTC_GOOGLE_CLIENT_ID/SECRET`, `ANTHROPIC_API_KEY`, DB·S3 비밀번호는 env만. 로그에 쿠키·키를 남기지 않는다(접근 로그는 경로만, 쿼리 제외). uvicorn 기본 접근 로그는 쿼리 문자열(OIDC `code`·`state` 등)까지 찍으므로 `--no-access-log`로 끄거나 쿼리를 지우는 log config를 준다(T13이 연결) |
 | 구현(T12) | `server/oidc.py`. 대기 로그인 `{state, nonce, verifier, exp}` 하나를 세션 쿠키에 두고(10분, 새로 시작하면 덮어씀) 콜백에서 **먼저 꺼내 지운다**(재사용 불가). state는 상수 시간 비교, 실패하면 code를 교환하지 않는다. 토큰 엔드포인트는 httpx로 직접(client_secret_post + code_verifier), ID 토큰은 joserfc(RS256만)로 Google JWKS(`/oauth2/v3/certs`, 1시간 캐시, 모르는 kid면 60초에 한 번까지 다시 받음) 서명 확인 + `authlib.oidc.core.CodeIDToken` 클레임 규칙(iss ∈ {`https://accounts.google.com`, `accounts.google.com`}, aud = 클라이언트 id, exp·iat 60초 여유, nonce, azp, at_hash) + aud가 정확히 클라이언트 id 하나인지·nonce·sub·email을 따로 한 번 더. authlib의 httpx 통합(`AsyncOAuth2Client`)은 설치 환경에 따라 httpx2/httpx를 바꿔 고르므로 쓰지 않았다. 허용: `email_verified`(true 또는 "true") → `users`의 이메일(대소문자 무시) → 비활성 아님 → `google_sub`가 비었으면 `UPDATE … WHERE google_sub IS NULL`로 고정, 있으면 같아야 함, 그 sub가 다른 사용자에게 있으면(UNIQUE) 거부. 계정을 자동으로 만들지 않는다. 성공하면 `start_session`(세션 내용 전부 교체, 그때의 epoch) 후 항상 `/`로 302 — `next`·`redirect_uri` 같은 요청 매개변수는 읽지 않는다(열린 리디렉션 없음). 실패는 한국어 HTML 화면(이메일은 이스케이프) + 로그에는 이유 코드만(`ytc.auth`, 코드·state·토큰·비밀은 남기지 않음). Google 설정은 `YTC_GOOGLE_CLIENT_ID`·`YTC_GOOGLE_CLIENT_SECRET`(둘 다 또는 둘 다 없음), 리디렉션 URI = `YTC_PUBLIC_URL` + `/auth/google/callback`. 없으면 Google 로그인을 내놓지 않는다. production에서 Google도 비밀번호 로그인(T15)도 없으면 로그인 방법이 없으므로 시작 거부(`config_missing`) |
 | 비밀번호 로그인(T15) | Google 없이도 쓰게(사용자 결정 2026-11-02). `YTC_PASSWORD_LOGIN=1`일 때만 `POST /auth/password {email, password}`(JSON, CSRF는 다른 POST와 같음). 허용은 Google과 같다: `users`에 있는 이메일(초대제, 자동 생성 없음), 비활성 아님, 그리고 `password_hash`가 있고 맞아야 함. 성공하면 `start_session` 후 `{"ok", "email"}`(이동은 login.js가 `/`로). 실패(모르는 이메일·비밀번호 없는 계정·틀림·비활성)는 모두 401 `login_failed` "이메일 또는 비밀번호가 맞지 않습니다", 로그에는 이유 코드만. 해시(`server/passwords.py`, 표준 라이브러리만): `scrypt$N$r$p$salt$hash`(N=2^15, r=8, p=1, maxmem 64MB, salt 16바이트, 키 32바이트), `hmac.compare_digest`, 해시가 없으면 같은 매개변수의 더미 해시로 한 번 계산(계정 유무가 시간으로 드러나지 않음), 저장 값이 깨졌으면 `BadHash`(로그 + 같은 401). 동시 scrypt는 2개: 이벤트 루프의 `anyio.CapacityLimiter(HASH_SLOTS)`를 `to_thread.run_sync(limiter=)`에 넘겨, 기다리는 로그인이 기본 작업 스레드 풀(세션 확인·API)을 차지하지 않게 한다. 이미 16개(`MAX_HASH_WAITING`)가 기다리면 503 `unavailable`(실패로 세지 않음). 더미 해시는 비밀번호 로그인이 켜져 있으면 앱을 만들 때 미리 계산. UTF-8로 못 바꾸는 비밀번호(JSON의 짝 없는 서로게이트)는 같은 비용으로 계산한 뒤 실패(401, 셈), 그런 이메일은 400, 관리 CLI 규칙도 거부. 규칙: 10자 이상 1024자 이하. 실패 횟수(`server/login_limit.py`, 프로세스 메모리): 이메일별 10분 5번, 클라이언트 IP별 10분 20번(공유 IP 고려, IPv6는 /64로 묶음, 진행 중인 시도도 셈, 키 상한 1만에 닿으면 실패가 적은 키부터 버려 피해자 기록을 지킴) → 429 `too_many_attempts` + `Retry-After` + "로그인 시도가 너무 많습니다. N분 뒤 다시 시도하세요"(막힌 동안은 해시를 계산하지 않음), 성공하면 그 이메일 기록만 지움. 클라이언트 IP = ASGI `client`: uvicorn `--proxy-headers`가 `FORWARDED_ALLOW_IPS`(= caddy의 고정 IP, compose front 대역 `YTC_FRONT_NET`.0/28의 .2, 다른 컨테이너는 .8/29에서 받음)에서 온 요청의 `X-Forwarded-For`만 반영한다. caddy는 들어온 `X-Forwarded-For`를 버리고 실제 접속 IP로 쓴다(`trusted_proxies` 없음). 게시 포트(127.0.0.1:8080, Tailscale serve 등)로 들어온 요청은 docker 게이트웨이 IP로 보이고 그 헤더는 믿지 않는다(IP 제한을 함께 나눠 씀, 이메일 제한은 그대로). 관리: `add-user --password`(값 없음/`-`면 getpass 두 번, `--password-stdin`은 한 줄), `set-password`(+ `session_epoch` 증가), `clear-password`(NULL + `session_epoch` 증가). 사용자가 스스로 바꾸는 화면은 v1에 없다. 남의 이메일로 일부러 틀려 10분 막는 것은 감수(재시작하면 풀림) |
+| 관리 화면(T16) | 사용자 결정(2026-11-02): 관리자는 웹에서 사용자를 관리한다. 첫 관리자는 owner 경로 CLI(`add-user --admin`, `make-admin`, 걷기 `revoke-admin` — 마지막 관리자도 걷을 수 있는 운영자 탈출구, 감사 행위자 NULL·`via: cli`). 앱은 owner 자격을 갖지 않는다: `server/admin_api.py`의 `PgAdmin`이 `Db.user_tx(행위자)` 안에서 `0003`의 SECURITY DEFINER 함수만 부른다. 함수는 `SET search_path = pg_catalog, public, pg_temp`, 이름은 `public.`으로 고정하고, 먼저 `admin_actor()`가 `current_setting('app.user_id')`를 읽어 활성 관리자가 아니면(설정 없음·uuid 아님·관리자 아님·비활성) SQLSTATE `YTA01`(fail closed, RLS와 같은 신뢰 모델: 앱은 로그인한 사용자 id만 설정한다). 쓰는 함수는 `pg_advisory_xact_lock(ADMIN_LOCK)`으로 직렬화한 뒤 호출자를 확인한다(두 관리자가 서로를 동시에 빼도 0명이 되지 않음). 자기 비활성·자기 강등 `YTA03` → 409 `self_protected`, 마지막 활성 관리자 제거 `YTA04` → 409 `last_admin`, 없는 대상 `YTA02` → 404, 잘못된 값 `YTA05`·CHECK·범위 → 400 `bad_input`, 중복 이메일 → 409 `user_exists`. epoch: 비밀번호 설정·지우기·비활성·모든 기기 로그아웃은 올리고, 다시 쓰기·한도·관리자 변경은 그대로(관리자 여부는 요청마다 읽는다: `UserRow.is_admin`). 바꾸는 함수만 감사 행을 쓴다(목록·사용량·감사 읽기는 기록하지 않음 — 화면을 열 때마다 기록이 쌓이지 않게). 비밀번호는 앱이 규칙 검사·scrypt 해시(해시 슬롯 `HASH_SLOTS` 안에서) 후 해시만 넘기고, 응답·로그·감사 detail 어디에도 비밀번호·해시가 없다. API(서버판만, 로컬판 stdlib에는 경로 없음 → 404): `GET /api/me`(`{email, is_admin}`, 화면이 메뉴를 보일지 정함, 로컬판은 묻지 않음), `GET/POST /api/admin/users`, `POST /api/admin/users/<id>/{password,clear-password,disable,enable,logout-all,limit,admin}`, `GET /api/admin/usage?days=7`(1~90), `GET /api/admin/audit?limit=50`(1~200). 관리자가 아니면 본문도 읽지 않고 403 `admin_only`, CSRF는 다른 POST와 같다, 저장소 연결 오류는 503. 화면 `#/admin`(`pages/admin.js`, `admin-utils.js`): 관리자에게만 머리글 링크(폰에서는 숨김)와 도움말 메뉴 항목, 사용자 표(상태 칩·로그인 방법·오늘 사용/한도, 폰 폭에서는 줄마다 카드), 초대 폼(첫 비밀번호 선택·규칙 안내, `/auth/methods`로 문구 조정), 줄마다 관리 패널(비밀번호 재설정 — 입력칸은 저장 뒤 비우고 다시 보여 주지 않음, 화면 안 확인 상자, `window.confirm` 없음), 7일 사용량, 최근 관리 기록. 로그인 기록(last login)은 없다(앱 롤에 users 쓰기를 늘리지 않으려고 넣지 않음) |
 | TLS | 앱은 HTTP(내부 127.0.0.1:8080). 외부는 Caddy(자동 TLS) 또는 Tailscale 등 사설망 — §11 사용자 결정 |
 | 구현(T10) | `YTC_ENV` 기본 production. production이면 `YTC_PUBLIC_URL`은 https만(쿠키 `Secure`·HSTS), 개발(`YTC_ENV=dev` 등)의 http 주소는 `Secure` 없이(파이썬 스모크가 http로 쿠키를 보내게). `YTC_SESSION_SECRET` 32바이트 미만·`YTC_DEV_LOGIN` 0/1 밖 → `config_invalid`. 사용자 조회는 `Db.public_tx()`(app.user_id 없음: RLS 테이블 0행). 세션 `{uid, epoch, iat}`, iat 뒤 14일(+시계 60초) 밖·비활성·epoch 다름·없는 사용자면 세션을 비우고 401. Origin 비교는 소문자·끝 `/` 제거 후 출처 일치(`null` 거부) |
 
@@ -362,7 +369,7 @@ media 대기 p95가 5분을 넘거나, 앱 재시작으로 작업을 잃는 일�
     최악 약 $1.04 초과. 더 조이려면 `YTC_LLM_SLOTS`·`YTC_LLM_MAX_TOKENS`를 낮춘다. 기록 실패도 장부로 잡히므로 한계 안이다(재시작 전까지).
 - 오류(400, 화면은 기존 오류 표시 그대로):
   `ScriptError("llm_limit", "오늘 쓸 수 있는 AI 사용량(1.00달러)을 다 썼습니다. 내일 0시(한국 시간)에 다시 쓸 수 있습니다. 오늘 사용: 1.02달러", used=1.02, limit=1.00, resets_at="2026-11-02T00:00:00+09:00")`
-- 관리: `python -m server.admin usage [--days 7]` → 사용자별 일 합계 JSON. 관리자 화면은 S8 정식판.
+- 관리: `python -m server.admin usage [--days 7]` → 사용자별 일 합계 JSON. 웹 관리 화면(T16, §4.2)이 최근 7일 사용량과 사용자별 오늘 사용액/한도를 보여 주고 한도를 바꾼다. 월 한도·그래프는 S8 정식판.
 
 ## 7. S9 최소: 가져오기
 
@@ -401,6 +408,8 @@ media 대기 p95가 5분을 넘거나, 앱 재시작으로 작업을 잃는 일�
 - 구현(T10): 서버판은 env와 상관없이 표의 네 기능을 모두 끈다(`server.asgi.SERVER_FEATURES`, `YTC_DISABLE`는 더할 수만 있다).
   화면: `#/library`(및 도움말·다른 화면의 라이브러리 링크)로 바로 와도 페이지 대신 그 기능의 문구 한 줄(`app.js` `PAGE_FEATURES`).
 
+- 관리 화면(T16, §4.2)은 비활성 기능이 아니라 **판 + 권한**으로 갈린다: 로컬판에는 `/api/admin`·`/api/me` 경로가 없고(404) 화면은 `/api/me`를 묻지 않아
+  메뉴가 생기지 않는다. 서버판은 관리자에게만 메뉴가 보이고 서버(403)와 DB(`YTA01`)가 따로 막는다.
 - 정적 JS: 버튼·메뉴에 `data-feature="<기능>"`을 달고 시작 때 `/api/features`를 읽어 숨기고 그 자리에 문구 한 줄. 가드는 서버가 최종(숨김만 믿지 않음).
 - 테스트: 라우트 전수 표(ROUTES)를 돌며 서버 백엔드에서 비활성 표에 없는 라우트가 `NotImplementedError`/`Path` 접근으로 500을 내지 않는지(§9-4).
 
@@ -503,6 +512,7 @@ media 대기 p95가 5분을 넘거나, 앱 재시작으로 작업을 잃는 일�
 | T12 | Google OIDC: authlib 로그인·콜백·허용 목록·sub 고정·로그아웃·epoch, login.html | server/auth | 콜백을 가짜 IdP 토큰으로 단위 테스트(서명 검증 경로 포함), 실제 Google 1회 수동 |
 | T13 | 서버판 패키징: Dockerfile server, `deploy/server` compose(pg·minio·init·migrate·app·caddy profile), healthcheck, smoke server | deploy | smoke server 통과 |
 | T15 | 이메일+비밀번호 로그인(Google 없이 쓰기): Alembic `0002` `password_hash`, `server/passwords.py`(scrypt), `server/login_limit.py`, `POST /auth/password`, login.js 폼, admin `--password`·`set-password`·`clear-password`, compose 고정 caddy IP + `FORWARDED_ALLOW_IPS`, smoke server 비밀번호 로그인 | server, deploy, docs | 해시·규칙·제한 단위, ASGI(성공·실패 4종·429·CSRF·프록시 헤더), PG(CLI·epoch·clear), 설정 행렬, smoke |
+| T16 | 관리 화면: Alembic `0003`(`admin_audit` + owner 소유 SECURITY DEFINER 관리 함수), admin `make-admin`·`revoke-admin`, `server/admin_api.py`(`/api/admin/*`, `/api/me`), `UserRow.is_admin`, `pages/admin.js`·`admin-utils.js`, smoke server 관리 API | server, scripts/ui/static, deploy, docs | PG(함수 fail closed·관리자 아님·자기 보호·마지막 관리자·동시 강등·감사 행·epoch·앱 롤 직접 UPDATE 불가), ASGI(관리자/아님·로컬판 404·CSRF·해시 없음), UI 정적·node 단위, smoke |
 | T14 | 문서: README(두 판 실행·커맨드 표), CLAUDE.md 범위, 상위 설계 §2(배치)·§3.2(최소 스키마)·§4(작업 ADR-S6)·§6 갱신 | docs | 리뷰 |
 
 T3은 서버 작업과 독립이라 먼저 끝내 개인판을 바로 쓸 수 있게 한다. T5~T9는 서버 앱 없이 검증된다(저장소 → 데이터 → 앱 순).
