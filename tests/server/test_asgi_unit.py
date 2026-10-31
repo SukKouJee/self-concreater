@@ -79,6 +79,10 @@ class FakeBackend:
     def __init__(self) -> None:
         self.db = FakeDb()
         self.bucket = FakeBucket()
+        self.objects_impl: Any = None
+
+    def objects(self, user_id: str | None) -> Any:
+        return self.objects_impl
 
 
 def _settings(**over: str) -> AuthSettings:
@@ -416,34 +420,137 @@ def test_app_shows_the_notice_for_disabled_screens():
     assert "innerHTML" not in text
 
 
-# ---- uvicorn entry point ----------------------------------------------------------------------
+# ---- uvicorn entry point (lifespan protocol) ---------------------------------------------------
 
-def test_module_app_is_lazy_and_refuses_to_start_without_config(monkeypatch):
+def _drive_lifespan(app: Any, then: list[dict] | None = None) -> list[dict]:
+    """lifespan scope: startup, (optionally further messages), shutdown. Returns what the app sent."""
+    import anyio as _anyio
+
+    incoming = [{"type": "lifespan.startup"}, *(then or []), {"type": "lifespan.shutdown"}]
+    sent: list[dict] = []
+
+    async def run() -> None:
+        async def receive() -> dict:
+            if incoming:
+                return incoming.pop(0)
+            await _anyio.sleep_forever()
+            return {}
+
+        async def send(message: dict) -> None:
+            sent.append(message)
+        with _anyio.fail_after(10):
+            await app({"type": "lifespan", "asgi": {"version": "3.0"}, "state": {}}, receive, send)
+    _anyio.run(run)
+    return sent
+
+
+def test_bad_config_sends_lifespan_startup_failed(monkeypatch):
     for name in ("YTC_DB_DSN", "YTC_S3_ENDPOINT", "YTC_PUBLIC_URL", "YTC_SESSION_SECRET"):
         monkeypatch.delenv(name, raising=False)
-    import anyio as _anyio
-
-    async def lifespan_start():
-        async def receive():
-            return {"type": "lifespan.startup"}
-
-        async def send(message):
-            raise AssertionError(f"must not start: {message}")
-        await asgi._LazyApp(asgi.from_env)({"type": "lifespan"}, receive, send)
-
-    with pytest.raises(Exception) as e:
-        _anyio.run(lifespan_start)
-    assert getattr(e.value, "code", None) == "config_missing"
+    sent = _drive_lifespan(asgi._LazyApp(asgi.from_env))
+    assert [m["type"] for m in sent] == ["lifespan.startup.failed"]
+    assert "config_missing" in sent[0]["message"]
 
 
-def test_module_app_builds_once(monkeypatch):
-    built = []
+def test_factory_error_of_any_kind_fails_startup():
+    def boom() -> Any:
+        raise RuntimeError("db unreachable")
+    sent = _drive_lifespan(asgi._LazyApp(boom))
+    assert sent[0]["type"] == "lifespan.startup.failed" and "db unreachable" in sent[0]["message"]
 
-    async def inner(scope, receive, send):
-        built.append(scope["type"])
 
-    lazy = asgi._LazyApp(lambda: (built.append("factory"), inner)[1])
-    import anyio as _anyio
-    _anyio.run(lazy, {"type": "http"}, None, None)
-    _anyio.run(lazy, {"type": "http"}, None, None)
-    assert built == ["factory", "http", "http"]
+def test_lifespan_builds_the_app_once_and_serves_after_startup(users, backend):
+    calls: list[int] = []
+
+    def factory() -> Any:
+        calls.append(1)
+        return asgi.create_app(_settings(), backend, users=users)   # type: ignore[arg-type]
+
+    lazy = asgi._LazyApp(factory)
+    sent = _drive_lifespan(lazy)
+    assert [m["type"] for m in sent] == ["lifespan.startup.complete", "lifespan.shutdown.complete"]
+    with TestClient(lazy, base_url=ORIGIN) as c:          # a second lifespan + requests: no rebuild
+        assert c.get("/healthz").json() == {"ok": True}
+    assert calls == [1]
+
+
+def test_requests_before_startup_are_refused():
+    calls: list[int] = []
+    lazy = asgi._LazyApp(lambda: calls.append(1))  # type: ignore[arg-type,return-value]
+    c = TestClient(lazy, base_url=ORIGIN)            # no `with`: no lifespan
+    r = c.get("/healthz")
+    assert r.status_code == 503 and r.json()["error"] == "starting"
+    assert calls == []
+
+
+# ---- fix round 1: 500 text, /files errors, unknown methods ---------------------------------------
+
+def test_server_500_hides_details(client, alice, temp_routes, capsys):
+    @ui.route("GET", "/api/t10/secret")
+    def handler(req):
+        raise RuntimeError("password=hunter2 at /var/lib/ytc")
+
+    r = client.get("/api/t10/secret")
+    assert r.status_code == 500 and r.json() == {"error": "internal", "message": asgi.INTERNAL_MESSAGE}
+    assert r.headers["content-security-policy"] == asgi.APP_CSP
+    assert "hunter2" in capsys.readouterr().err                # details stay in the log
+
+
+def test_local_500_message_is_unchanged():
+    code, body = ui.error_result(RuntimeError("boom"))
+    assert code == 500 and body == {"error": "internal", "message": "RuntimeError: boom"}
+
+
+class _BrokenObjects:
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+
+    def get(self, key: str) -> bytes:
+        raise self.exc
+
+    def stat(self, key: str) -> Any:
+        raise self.exc
+
+
+@pytest.mark.parametrize("exc,status,error", [
+    (OSError(5, "S3 GET 실패"), 500, "internal"),
+    (__import__("scripts.common", fromlist=["ScriptError"]).ScriptError("object_too_large", "큼"), 400,
+     "object_too_large"),
+])
+def test_files_errors_are_json_with_security_headers(client, alice, backend, exc, status, error):
+    backend.objects_impl = _BrokenObjects(exc)
+    for rel in ("drafts/a-conti.html", "drafts/a-captions.mp4"):
+        r = client.get(f"/files/{rel}")
+        assert r.status_code == status and r.json()["error"] == error, rel
+        assert r.headers["content-security-policy"] == asgi.FILES_CSP
+        assert r.headers["x-content-type-options"] == "nosniff"
+    if status == 500:
+        assert r.json()["message"] == asgi.INTERNAL_MESSAGE
+
+
+@pytest.mark.parametrize("method", ["HEAD", "OPTIONS", "TRACE", "FOO", "PROPFIND"])
+def test_unknown_methods_are_json_not_found(client, alice, method):
+    r = client.request(method, "/api/status")
+    assert r.status_code == 404
+    assert r.headers["content-security-policy"] == asgi.APP_CSP
+    if method != "HEAD":
+        assert r.json()["error"] == "not_found"
+
+
+def test_unknown_method_without_session_is_401(users, backend):
+    app = asgi.create_app(_settings(), backend, users=users)   # type: ignore[arg-type]
+    with TestClient(app, base_url=ORIGIN) as c:
+        assert c.request("FOO", "/api/status").status_code == 401
+
+
+def test_files_csp_sandboxes_user_html():
+    assert "sandbox allow-same-origin" in asgi.FILES_CSP and "allow-scripts" not in asgi.FILES_CSP
+    assert "script-src" not in asgi.FILES_CSP and "default-src 'none'" in asgi.FILES_CSP
+
+
+def test_login_js_shows_an_offline_state():
+    from pathlib import Path as _P
+    web = _P(asgi.__file__).with_name("web")
+    assert "서버에 연결할 수 없습니다. 잠시 뒤 새로고침하세요" in (web / "login.html").read_text(encoding="utf-8")
+    js = (web / "login.js").read_text(encoding="utf-8")
+    assert '$("offline").hidden = false' in js

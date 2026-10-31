@@ -62,6 +62,18 @@ def test_dev_login_allowed_outside_production_and_http_allowed_there():
     assert s.public_origin == "http://127.0.0.1:8080" and not s.secure_cookie
 
 
+@pytest.mark.parametrize("name", ["prod", "staging", "development", "local"])
+def test_env_name_allowlist(name):
+    with pytest.raises(ScriptError) as e:
+        AuthSettings.from_env(_env(YTC_ENV=name))
+    assert e.value.code == "config_invalid"
+
+
+@pytest.mark.parametrize("name", ["dev", "test", "TEST"])
+def test_env_names_outside_production(name):
+    assert AuthSettings.from_env(_env(YTC_ENV=name, YTC_PUBLIC_URL="http://localhost:8080")).env == name.lower()
+
+
 def test_production_requires_https():
     with pytest.raises(ScriptError) as e:
         AuthSettings.from_env(_env(YTC_PUBLIC_URL="http://ytc.example.com"))

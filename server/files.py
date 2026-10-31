@@ -86,15 +86,22 @@ def serve(rel: str, range_header: str | None) -> Reply:
     c = ctx.here()
     ctype = _content_type(key)
     try:
-        if kind == "doc":
-            data = c.store.read(key).raw
-        else:
-            store = c.shared if kind == "shared" else c.objects
-            if PurePosixPath(key).suffix.lower() in ui.VIDEO_SUFFIXES:
-                return _ranged(store, key, ctype, range_header)
-            data = store.get(key)
+        return _read(c, key, kind, ctype, range_header)
     except FileNotFoundError:
         return ui.NOT_FOUND
+    except (ScriptError, OSError) as e:      # S3/PG trouble or a store refusal: same JSON error shape (500 is logged)
+        return ui.error_result(e)
+
+
+def _read(c: ctx.Ctx, key: str, kind: str, ctype: str, range_header: str | None) -> Reply:
+    """없는 키는 FileNotFoundError(호출자가 404로 바꾼다)."""
+    if kind == "doc":
+        data = c.store.read(key).raw
+    else:
+        store = c.shared if kind == "shared" else c.objects
+        if PurePosixPath(key).suffix.lower() in ui.VIDEO_SUFFIXES:
+            return _ranged(store, key, ctype, range_header)
+        data = store.get(key)
     resp = ui.Response(200, data, ctype)
     if key.lower().endswith(".svg"):
         resp.headers.append(("Content-Security-Policy", ui.SVG_CSP))

@@ -17,6 +17,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import uuid
@@ -48,17 +49,21 @@ from server.jobs_registry import Registry
 
 EDITION: Final = "server"
 SERVER_FEATURES: Final = tuple(ui.FEATURE_PREFIXES)      # §8: server v1 turns every optional feature off
-METHODS: Final = ["GET", "POST", "PUT", "DELETE", "PATCH"]
 LOGIN_PATH: Final = "/auth/login"
 SHUTDOWN_TIMEOUT: Final = 60.0
 APP_CSP: Final = ("default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
                   "frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 # User files (conti/report HTML with inline styles, images): no scripts at all; the report page frames them (same origin)
+# `sandbox allow-same-origin`: scripts, forms, popups and top navigation stay off; allow-same-origin keeps the document's
+# origin so `img-src 'self'` still matches its frame/art images (an opaque origin would not match 'self' in every browser).
 FILES_CSP: Final = ("default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'; "
-                    "frame-ancestors 'self'; base-uri 'none'; form-action 'none'")
+                    "frame-ancestors 'self'; base-uri 'none'; form-action 'none'; sandbox allow-same-origin")
 HSTS: Final = "max-age=31536000"
 RESTARTING: Final = {"error": "restarting", "message": "서버가 다시 시작하는 중입니다. 잠시 뒤 새로고침하세요"}
 UNHEALTHY: Final = "unhealthy"
+# 500 bodies in the server edition: details (exception text may carry paths or values) stay in the log only
+INTERNAL_MESSAGE: Final = "서버 오류가 났습니다. 잠시 뒤 다시 시도해 주세요"
+STARTING: Final = {"error": "starting", "message": "서버가 아직 시작하는 중입니다. 잠시 뒤 새로고침하세요"}
 
 
 def _web(name: str) -> bytes:
@@ -115,7 +120,11 @@ class _ServerApp:
             resp.headers["Content-Length"] = str(norm.file.length)
             headers = norm.headers
         else:
-            resp = StarletteResponse(norm.body, status_code=norm.status, media_type=norm.content_type)
+            body = norm.body
+            if norm.status == 500 and norm.content_type.startswith("application/json"):
+                print(f"500 {path}: {body[:2000].decode('utf-8', 'replace')}", file=sys.stderr)
+                body = json.dumps({"error": "internal", "message": INTERNAL_MESSAGE}, ensure_ascii=False).encode("utf-8")
+            resp = StarletteResponse(body, status_code=norm.status, media_type=norm.content_type)
             headers = norm.headers
         for key, value in self._security(headers, path):
             resp.headers.append(key, value)
@@ -279,6 +288,17 @@ class _ServerApp:
         return self._reply({"ok": True}, path)
 
 
+class _Endpoint:
+    """모든 메서드를 `dispatch`로(함수 엔드포인트는 Starlette가 GET만 받는다). 모르는 메서드는 JSON 404·보안 헤더."""
+
+    def __init__(self, handler: _ServerApp) -> None:
+        self._handler = handler
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        response = await self._handler.dispatch(StarletteRequest(scope, receive))
+        await response(scope, receive, send)
+
+
 def _index() -> ui.Response:
     return ui.Response(200, (ui.STATIC_DIR / "index.html").read_bytes(), "text/html; charset=utf-8")
 
@@ -312,7 +332,7 @@ def create_app(settings: AuthSettings, backend: ServerBackend, *, users: auth.Us
                 backend.close()
 
     app = Starlette(
-        routes=[Route("/{path:path}", handler.dispatch, methods=METHODS)],
+        routes=[Route("/{path:path}", _Endpoint(handler))],      # ASGI endpoint: every method reaches dispatch
         middleware=[Middleware(SessionMiddleware, secret_key=settings.session_secret, session_cookie=auth.SESSION_COOKIE,
                                max_age=auth.SESSION_MAX_AGE, path="/", same_site="lax",
                                https_only=settings.secure_cookie)],
@@ -330,16 +350,51 @@ def from_env() -> Starlette:
 
 
 class _LazyApp:
-    """uvicorn `server.asgi:app`: import 때가 아니라 첫 호출(lifespan 시작) 때 env로 앱을 만든다(테스트 import가 env를 요구하지 않게)."""
+    """uvicorn `server.asgi:app`(`--lifespan on`): import 때가 아니라 **lifespan 시작** 때 env로 앱을 한 번 만든다.
+
+    - 만들다 실패하면(설정 오류 `config_missing`·`config_invalid`, DB·MinIO 연결 실패 …) `lifespan.startup.failed`를 보내
+      uvicorn이 시작하지 않고 끝나게 한다. 다시 만들지 않는다.
+    - 시작 전(또는 실패 뒤)의 http 요청은 503 `starting`, 그 밖의 scope는 거절한다.
+    - 앱의 lifespan에는 이미 받은 `lifespan.startup` 메시지를 먼저 다시 넘긴다.
+    """
 
     def __init__(self, factory: Callable[[], ASGIApp]) -> None:
         self._factory = factory
         self._app: ASGIApp | None = None
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "lifespan":
+            await self._lifespan(scope, receive, send)
+            return
         if self._app is None:
-            self._app = self._factory()
+            if scope["type"] != "http":
+                raise RuntimeError("app is not started (lifespan startup has not completed)")
+            await StarletteResponse(json.dumps(STARTING, ensure_ascii=False).encode("utf-8"), status_code=503,
+                                    media_type="application/json; charset=utf-8")(scope, receive, send)
+            return
         await self._app(scope, receive, send)
+
+    async def _lifespan(self, scope: Scope, receive: Receive, send: Send) -> None:
+        first = await receive()
+        if self._app is None and first.get("type") == "lifespan.startup":
+            try:
+                self._app = await anyio.to_thread.run_sync(self._factory)
+            except Exception as e:  # noqa: BLE001 - every startup failure must stop the server, with its reason
+                await send({"type": "lifespan.startup.failed", "message": f"{getattr(e, 'code', type(e).__name__)}: {e}"})
+                return
+        if self._app is None:
+            await send({"type": "lifespan.startup.failed", "message": "app is not available"})
+            return
+        replayed = False
+
+        async def replay() -> Any:
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return first
+            return await receive()
+
+        await self._app(scope, replay, send)
 
 
 app = _LazyApp(from_env)

@@ -3,12 +3,16 @@
 const $ = (id) => document.getElementById(id);
 
 async function start() {
-  let methods = {};
+  let methods = null;
   try {
     const res = await fetch("/auth/methods", { credentials: "same-origin" });
-    methods = res.ok ? await res.json() : {};
+    methods = res.ok ? await res.json() : null;
   } catch {
-    methods = {};
+    methods = null;
+  }
+  if (!methods || typeof methods !== "object") {   // server down, starting (503) or not answering JSON
+    $("offline").hidden = false;
+    return;
   }
   if (!methods.dev_login) {
     $("no-method").hidden = false;

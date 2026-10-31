@@ -227,7 +227,12 @@ CREATE POLICY own ON <t> USING (user_id = nullif(current_setting('app.user_id', 
    `disabled_features()`는 env ∪ 판 문맥이라 `/api/features`(edition 포함)와 코어 쪽 라이브러리 출처(`_library_templates`, 도움말 상황)가 같은 답을 낸다.
    라이브러리 폴더가 없는 저장소(서버 scratch)에서 `library.clone_dir()`은 `library_unavailable`(400)이라 `library:<id>` 기획안 출처·모티브 `library_ids`도 500이 아니라 400.
    `common.scrub`은 작업 폴더가 없으면(서버) 절대 경로 가리기만 한다(이전에는 `work_root()`가 RuntimeError).
-   응답 헤더: 표준 헤더 + CSP(앱 `APP_CSP`, `/files`는 스크립트 없는 `FILES_CSP` — 리포트 iframe 때문에 `frame-ancestors 'self'`, SVG는 `SVG_CSP`) + https면 HSTS.
+   응답 헤더: 표준 헤더 + CSP(앱 `APP_CSP`, `/files`는 스크립트 없는 `FILES_CSP` — 리포트 iframe 때문에 `frame-ancestors 'self'`,
+   `sandbox allow-same-origin`(스크립트·폼·팝업 없음, 출처는 유지해 `img-src 'self'`가 그림에 맞는다), SVG는 `SVG_CSP`) + https면 HSTS.
+   500 응답 본문은 고정 문구("서버 오류가 났습니다. 잠시 뒤 다시 시도해 주세요"), 자세한 내용은 stderr 로그에만(로컬판은 그대로).
+   `/files`의 저장소 오류(ScriptError·OSError)도 같은 JSON 오류 모양. 모르는 메서드(HEAD·OPTIONS·FOO …)도 dispatch로 와서 JSON 404(비로그인 401).
+   시작: `server.asgi:app`은 lifespan 시작 때 한 번만 앱을 만들고, 실패하면 `lifespan.startup.failed`. 시작 전 http 요청은 503 `starting`.
+   `YTC_ENV`는 production·dev·test만(그 밖 `config_invalid`).
    상태를 바꾸는 요청은 `Registry.close()` 뒤 503 `restarting`. `/auth/login`은 `server/web/login.html`+`login.js`(인라인 스크립트 없음),
    `/auth/methods`가 dev 로그인 여부를 알려 준다(Google 버튼은 T12).
 
@@ -242,7 +247,7 @@ CREATE POLICY own ON <t> USING (user_id = nullif(current_setting('app.user_id', 
 | CSRF | 안전하지 않은 메서드(POST·PUT·DELETE)는 ① `Origin`이 `YTC_PUBLIC_URL`의 출처와 같아야 하고(없으면 `Sec-Fetch-Site: same-origin` 요구) ② `Content-Type: application/json` 필수(api.js가 이미 항상 보냄 → 단순 폼 교차 전송 불가). SameSite=Lax가 한 겹 더 |
 | 보안 헤더 | 기존 `nosniff`, `no-store`, `Referrer-Policy` + `Strict-Transport-Security`(HTTPS일 때), `Content-Security-Policy: default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'` (정적 JS가 인라인 스크립트를 쓰면 T10에서 확인 후 조정), SVG CSP 유지 |
 | dev 로그인 | `YTC_DEV_LOGIN=1`일 때만 `POST /auth/dev {"email"}`(users에 있는 이메일). `YTC_ENV=production`이면 설정 자체를 시작 시 거부 |
-| 시크릿 | `YTC_SESSION_SECRET`(32바이트 이상), `GOOGLE_CLIENT_ID/SECRET`, `ANTHROPIC_API_KEY`, DB·S3 비밀번호는 env만. 로그에 쿠키·키를 남기지 않는다(접근 로그는 경로만, 쿼리 제외) |
+| 시크릿 | `YTC_SESSION_SECRET`(32바이트 이상), `GOOGLE_CLIENT_ID/SECRET`, `ANTHROPIC_API_KEY`, DB·S3 비밀번호는 env만. 로그에 쿠키·키를 남기지 않는다(접근 로그는 경로만, 쿼리 제외). uvicorn 기본 접근 로그는 쿼리 문자열(OIDC `code`·`state` 등)까지 찍으므로 `--no-access-log`로 끄거나 쿼리를 지우는 log config를 준다(T13이 연결) |
 | TLS | 앱은 HTTP(내부 127.0.0.1:8080). 외부는 Caddy(자동 TLS) 또는 Tailscale 등 사설망 — §11 사용자 결정 |
 | 구현(T10) | `YTC_ENV` 기본 production. production이면 `YTC_PUBLIC_URL`은 https만(쿠키 `Secure`·HSTS), 개발(`YTC_ENV=dev` 등)의 http 주소는 `Secure` 없이(파이썬 스모크가 http로 쿠키를 보내게). `YTC_SESSION_SECRET` 32바이트 미만·`YTC_DEV_LOGIN` 0/1 밖 → `config_invalid`. 사용자 조회는 `Db.public_tx()`(app.user_id 없음: RLS 테이블 0행). 세션 `{uid, epoch, iat}`, iat 뒤 14일(+시계 60초) 밖·비활성·epoch 다름·없는 사용자면 세션을 비우고 401. Origin 비교는 소문자·끝 `/` 제거 후 출처 일치(`null` 거부) |
 
@@ -361,7 +366,7 @@ media 대기 p95가 5분을 넘거나, 앱 재시작으로 작업을 잃는 일�
 |---|---|
 | base | `python:3.12-slim-bookworm@sha256:<고정>`, apt: `ca-certificates tini`(OpenCV는 headless 휠, PyAV 휠에 ffmpeg 내장 → 시스템 ffmpeg 없음), `pip install --no-cache-dir -r requirements.txt`, 플러그인 폴더 복사(`scripts templates skills`), 비루트 uid 10001, 빌드 검사 `python -c "import cv2, av, scenedetect, yt_dlp"` |
 | local | base + `CMD ["python","-m","scripts.ui","--host","0.0.0.0","--port","8765","--no-open","--foreground"]`, `ENV YT_COACH_HOME=/work YTC_LLM_ENGINE=anthropic-api YTC_DISABLE=library,caption_video` |
-| server | base + `requirements-server.txt` + `server/`, `CMD ["uvicorn","server.asgi:app","--host","0.0.0.0","--port","8080","--workers","1","--proxy-headers"]` |
+| server | base + `requirements-server.txt` + `server/`, `CMD ["uvicorn","server.asgi:app","--host","0.0.0.0","--port","8080","--workers","1","--proxy-headers","--lifespan","on","--no-access-log"]` (`--lifespan on`: 앱은 lifespan 시작 때 만들어지고 설정·저장소 오류면 `lifespan.startup.failed`로 uvicorn이 끝난다. 접근 로그는 §4.2) |
 
 - Remotion(Node·Chrome)은 두 이미지 모두 넣지 않는다. yt-dlp가 YouTube 추출에 JS 런타임을 요구하는 경우가 있어 T3 스모크(실제 링크 1개)로 확인하고 필요하면 base에 deno 단일 바이너리를 넣는다.
 - 코어 이음매: `scripts.ui`에 `--host`(기본 127.0.0.1, `0.0.0.0`은 env `YTC_IN_CONTAINER=1`일 때만 허용)와 포그라운드 실행 옵션, `GET /healthz`(인증 없음, `{"ok": true}`만).

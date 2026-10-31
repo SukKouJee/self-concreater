@@ -1,7 +1,7 @@
 """서버판 설정(서버 설계 §4.4): env → frozen 설정. 필수 값이 없으면 시작하지 않는다(`config_missing`).
 
 - `StorageSettings`: PG·MinIO·임시/상태 폴더·연결 풀 크기(T8).
-- `AuthSettings`(T10): `YTC_ENV`(기본 production), `YTC_PUBLIC_URL`(출처 = CSRF Origin 비교 기준), `YTC_SESSION_SECRET`(32바이트 이상),
+- `AuthSettings`(T10): `YTC_ENV`(production|dev|test, 기본 production), `YTC_PUBLIC_URL`(출처 = CSRF Origin 비교 기준), `YTC_SESSION_SECRET`(32바이트 이상),
   `YTC_DEV_LOGIN`(1이면 dev 로그인. production에서는 시작 거부). production은 https 공개 주소만(쿠키 Secure).
 - `ServerSettings`: 앱이 쓰는 설정 묶음(storage + auth). Google OIDC(T12)·LLM·한도(T11)는 그 Task가 더한다.
 연결 풀: 앱 요청 스레드(anyio 기본 40)와 작업 스레드가 같은 풀을 나눠 쓴다. 풀이 모자라면 `YTC_DB_POOL_MAX`·
@@ -25,6 +25,7 @@ DEFAULT_DB_POOL_MAX: Final = 10
 DEFAULT_S3_MAX_POOL: Final = 10
 DEFAULT_ENV: Final = "production"
 PRODUCTION: Final = "production"
+ENV_NAMES: Final = ("production", "dev", "test")
 MIN_SECRET_BYTES: Final = 32
 _DEFAULT_PORTS: Final = {"http": 80, "https": 443}
 
@@ -136,6 +137,8 @@ class AuthSettings:
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> AuthSettings:
         name = (env.get("YTC_ENV") or "").strip().lower() or DEFAULT_ENV
+        if name not in ENV_NAMES:
+            raise ScriptError("config_invalid", f"YTC_ENV는 {', '.join(ENV_NAMES)} 중 하나여야 합니다: {name!r}")
         origin = _origin(_required(env, "YTC_PUBLIC_URL"))
         secret = _required(env, "YTC_SESSION_SECRET")
         if len(secret.encode("utf-8")) < MIN_SECRET_BYTES:
