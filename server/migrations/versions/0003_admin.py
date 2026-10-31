@@ -212,7 +212,8 @@ BEGIN
   PERFORM pg_advisory_xact_lock({ADMIN_LOCK});
   actor := public.admin_actor();
   PERFORM public.admin_target(p_user);
-  UPDATE public.users u SET session_epoch = u.session_epoch + 1 WHERE u.id = p_user RETURNING u.session_epoch INTO epoch;
+  UPDATE public.users u SET session_epoch = u.session_epoch + 1 WHERE u.id = p_user
+    RETURNING u.session_epoch INTO epoch;
   INSERT INTO public.admin_audit (actor_id, action, target_user_id) VALUES (actor, 'logout_all', p_user);
   RETURN epoch;
 END $fn$;

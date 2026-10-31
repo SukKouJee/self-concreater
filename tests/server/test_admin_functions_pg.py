@@ -7,9 +7,9 @@ DB를 직접 두드린다(앱 롤 `Db.user_tx(uid)` = 요청 경로와 같은 �
 from __future__ import annotations
 
 import threading
-from decimal import Decimal
 import uuid
 from collections.abc import Iterator
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -195,7 +195,8 @@ def test_list_users_shows_status_login_methods_and_todays_spend(db: Db, people: 
     assert (bob["has_password"], bob["has_google"], bob["is_admin"], bob["disabled"]) == (True, True, False, False)
     assert float(bob["daily_usd_limit"]) == 2.0 and float(bob["today_usd"]) == 0.75
     root = rows["root@example.com"]
-    assert (root["display_name"], root["has_password"], root["has_google"], root["is_admin"]) == ("루트", False, False, True)
+    assert (root["display_name"], root["has_password"], root["has_google"], root["is_admin"]) == (
+        "루트", False, False, True)
     assert root["daily_usd_limit"] is None and float(root["today_usd"]) == 0
     assert "password_hash" not in cols and "google_sub" not in cols
     assert _audit(migrated_db.owner_dsn) == []                       # reads are not audited
@@ -224,9 +225,11 @@ def test_add_user_creates_the_row_and_audits_without_the_hash(db: Db, people: di
                                                               migrated_db: TestDb) -> None:
     (new_id,), = _call(db, people["root"], "SELECT admin_add_user(%s, %s, %s, %s, %s)",
                        "new@example.com", "새 사람", Decimal("3.5"), HASH, True)
-    row = _owner(migrated_db.owner_dsn, "SELECT email, display_name, daily_usd_limit, password_hash, is_admin, disabled "
+    row = _owner(migrated_db.owner_dsn, "SELECT email, display_name, daily_usd_limit, password_hash, is_admin, "
+                                        "disabled "
                                         "FROM users WHERE id = %s", new_id)[0]
-    assert (row[0], row[1], float(row[2]), row[3], row[4], row[5]) == ("new@example.com", "새 사람", 3.5, HASH, True, False)
+    assert (row[0], row[1], float(row[2]), row[3], row[4], row[5]) == (
+        "new@example.com", "새 사람", 3.5, HASH, True, False)
     (audit,) = _audit(migrated_db.owner_dsn)
     assert audit[:3] == (people["root"], "add_user", new_id)
     assert audit[3] == {"email": "new@example.com", "is_admin": True, "password": True, "daily_usd_limit": 3.5}
@@ -303,7 +306,8 @@ def test_admin_cannot_disable_or_demote_self(db: Db, people: dict[str, uuid.UUID
         with pytest.raises(psycopg.Error) as e:
             _call(db, root, sql, root)
         assert _sqlstate(e) == "YTA03"
-    assert _user(migrated_db.owner_dsn, root)["is_admin"] is True and _user(migrated_db.owner_dsn, root)["disabled"] is False
+    after = _user(migrated_db.owner_dsn, root)
+    assert after["is_admin"] is True and after["disabled"] is False
     # harmless self changes are fine (no-op enable, own limit, own logout)
     _call(db, root, "SELECT admin_set_disabled(%s, false)", root)
     _call(db, root, "SELECT admin_set_admin(%s, true)", root)

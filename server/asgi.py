@@ -5,7 +5,8 @@
    기능 가드(`feature_guard`)와 라우팅(`match`, 그룹만 디코딩)이 같은 문자열을 본다(`/api/%6Cibrary`는 가드에도 라우트에도 안 걸려 404).
 2. `/healthz`(인증 없음, PG·MinIO 확인) → CSRF(안전하지 않은 메서드: Origin + JSON, `auth.csrf_error`) → `/auth/*`
    (로그인 화면, Google 로그인 시작·콜백, 이메일+비밀번호 로그인, dev 로그인, 로그아웃) → 세션 확인(**요청마다** users의 disabled·session_epoch, Ctx를 만들기 전) →
-   서버가 덮어쓰는 기본 라우트(`/`, `/api/ping`, `/api/shutdown` 404, `/files/<key>`) → `match` → 기능 가드(서버판은 §8 전부 끔)
+   서버가 덮어쓰는 기본 라우트(`/`, `/api/ping`, `/api/me`, `/api/shutdown` 404, `/files/<key>`) →
+   관리 API(`/api/admin/*`, 관리자만, `server.admin_api`) → `match` → 기능 가드(서버판은 §8 전부 끔)
    → 본문(10MB, `parse_json_body`) → 작업 스레드에서 `edition("server")` + `ctx.use(Ctx(user_id, backend))` 안에서 `call`.
    핸들러가 시작한 작업 스레드는 `copy_context()`로 Ctx·판 문맥을 이어받는다(JobManager.start).
 3. `req.app` = `App(root=None, token="", port=0, server=None, jobs=registry.for_user(uid))`. 핸들러가 쓰는 것은 `jobs`뿐.
@@ -46,7 +47,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from scripts import ctx
 from scripts.common import ScriptError
 from scripts.ui import server as ui
-from server import auth, files, login_limit, oidc, passwords
+from server import admin_api, auth, files, login_limit, oidc, passwords
 from server.backend import ServerBackend
 from server.config import DEFAULT_ENV, PRODUCTION, AuthSettings, LlmSettings, ServerSettings
 from server.jobs_registry import Registry, install_runtime, uninstall_runtime
@@ -76,6 +77,8 @@ HASH_SLOTS: Final = 2
 MAX_HASH_WAITING: Final = 16
 UNKNOWN_CLIENT: Final = "unknown"
 LOGIN_UNAVAILABLE: Final = {"error": "unavailable", "message": "지금은 로그인할 수 없습니다. 잠시 뒤 다시 시도하세요"}
+ADMIN_ONLY: Final = {"error": "admin_only", "message": "관리자만 쓸 수 있습니다"}
+STORE_UNAVAILABLE: Final = {"error": "unavailable", "message": "저장소에 연결할 수 없습니다. 잠시 뒤 다시 시도하세요"}
 
 
 def _web(name: str) -> bytes:
@@ -101,6 +104,7 @@ def raw_path(scope: Scope) -> str:
 class _User:
     id: uuid.UUID
     email: str
+    is_admin: bool = False
 
 
 auth_log = logging.getLogger("ytc.auth")
@@ -111,9 +115,11 @@ class _ServerApp:
 
     def __init__(self, settings: AuthSettings, backend: ServerBackend, users: auth.UserDirectory,
                  registry: Registry, google: oidc.GoogleOidc | None = None,
-                 login_limits: login_limit.LoginLimiter | None = None) -> None:
+                 login_limits: login_limit.LoginLimiter | None = None,
+                 admin: admin_api.AdminStore | None = None) -> None:
         self.settings = settings
         self.backend = backend
+        self.admin = admin
         self.users = users
         self.registry = registry
         self.google = google
@@ -183,7 +189,7 @@ class _ServerApp:
         if row is None or not auth.session_valid(claim, row):
             session.clear()
             return None
-        return _User(row.id, row.email)
+        return _User(row.id, row.email, row.is_admin)
 
     # ---- 본문 --------------------------------------------------------------------
 
@@ -241,8 +247,12 @@ class _ServerApp:
             return self._reply(_index(), path)
         if method == "GET" and path == "/api/ping":
             return self._reply({"ok": True, "edition": EDITION, "user": user.email}, path)
+        if method == "GET" and path == "/api/me":
+            return self._reply({"email": user.email, "is_admin": user.is_admin}, path)
         if path == "/api/shutdown":
             return self._reply(ui.NOT_FOUND, path)
+        if path.startswith(admin_api.PREFIX):
+            return await self._admin_route(request, method, path, user)
         if method == "GET" and path.startswith("/files/") and len(path) > len("/files/"):
             rel = unquote(path[len("/files/"):])
             result = await anyio.to_thread.run_sync(
@@ -270,6 +280,41 @@ class _ServerApp:
                          app=ui.App(root=None, token="", port=0, server=None, jobs=jobs))
         result = await anyio.to_thread.run_sync(self._in_user_ctx, user, lambda: ui.call(rt, req, groups))
         return self._send(result, path)
+
+    # ---- /api/admin --------------------------------------------------------------
+
+    async def _admin_route(self, request: StarletteRequest, method: str, path: str, user: _User) -> StarletteResponse:
+        """관리 API: 관리자가 아니면 본문도 읽지 않고 403(DB 함수도 따로 거부한다). 비밀번호가 오가는 요청은 scrypt 슬롯 안에서."""
+        if not user.is_admin:
+            auth_log.warning("admin api refused: user %s is not an admin", user.id)
+            return self._json(403, dict(ADMIN_ONLY), path)
+        if self.admin is None:
+            return self._reply(ui.NOT_FOUND, path)
+        store = self.admin
+        try:
+            body = await self._json_body(request) if method in auth.UNSAFE_METHODS else {}
+        except ScriptError as e:
+            return self._reply(ui.error_result(e), path)
+        query = dict(parse_qsl(request.scope.get("query_string", b"").decode("latin-1"), keep_blank_values=True))
+
+        def run() -> tuple[int, dict[str, Any]]:
+            return admin_api.handle(store, user.id, method, path, query, body,
+                                    default_daily_usd=self.backend.daily_usd)
+
+        limiter = self.hash_limiter if admin_api.needs_hash(method, path) else None
+        try:
+            result = await anyio.to_thread.run_sync(run, limiter=limiter)
+        except ScriptError as e:
+            return self._reply(ui.error_result(e), path)
+        except admin_api.AdminError as e:
+            auth_log.warning("admin api refused: %s (user %s, %s %s)", e.code, user.id, method, path)
+            return self._json(e.status, e.payload(), path)
+        except psycopg.Error as e:
+            auth_log.error("admin api unavailable: %s", type(e).__name__)
+            return self._json(503, dict(STORE_UNAVAILABLE), path)
+        if method in auth.UNSAFE_METHODS and result[0] == 200:
+            auth_log.info("admin api: user %s %s %s", user.id, method, path)
+        return self._reply(result, path)
 
     # ---- /auth -------------------------------------------------------------------
 
@@ -459,16 +504,18 @@ def _file_chunks(part: ui.FileSlice) -> Iterator[bytes]:
 def create_app(settings: AuthSettings, backend: ServerBackend, *, users: auth.UserDirectory | None = None,
                registry: Registry | None = None, close_backend: bool = False,
                runtime: LlmSettings | None = None, google: oidc.GoogleOidc | None = None,
-               login_limits: login_limit.LoginLimiter | None = None) -> Starlette:
+               login_limits: login_limit.LoginLimiter | None = None,
+               admin: admin_api.AdminStore | None = None) -> Starlette:
     """설정·저장소로 앱을 만든다. users 기본값은 PG(`auth.PgUsers`). close_backend면 종료 때 저장소를 닫는다.
     runtime을 주면 지금 전역 자원 슬롯·수집 잠금·LLM 고정을 설치하고 종료 때 걷는다(`jobs_registry.install_runtime`).
     google 기본값은 설정에 Google 클라이언트가 있으면 실제 Google(`oidc.GoogleOidc`), 없으면 Google 로그인 없음.
-    테스트는 가짜 IdP 전송 계층을 넣은 GoogleOidc를 준다. login_limits 기본값은 이메일 10분에 5번·IP 10분에 20번(`server.login_limit`)."""
+    테스트는 가짜 IdP 전송 계층을 넣은 GoogleOidc를 준다. login_limits 기본값은 이메일 10분에 5번·IP 10분에 20번(`server.login_limit`).
+    admin 기본값은 PG 관리 함수(`admin_api.PgAdmin(backend.db)`)."""
     ui.register_routes()
     if google is None and settings.google is not None:
         google = oidc.GoogleOidc(settings.google)
     handler = _ServerApp(settings, backend, users or auth.PgUsers(backend.db), registry or Registry(), google,
-                         login_limits)
+                         login_limits, admin if admin is not None else admin_api.PgAdmin(backend.db))
     if runtime is not None:
         install_runtime(runtime, backend.db)
     if settings.password_login:

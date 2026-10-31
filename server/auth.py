@@ -48,6 +48,7 @@ class UserRow:
     disabled: bool
     session_epoch: int
     google_sub: str | None = None
+    is_admin: bool = False                 # read on every request: the admin screen follows a change at once
 
 
 class LoginDenied(Exception):
@@ -68,7 +69,7 @@ class UserDirectory(Protocol):
 class PgUsers:
     """`users` 행 조회(앱 롤은 users에 SELECT만). 캐시하지 않는다: 비활성·epoch 변경이 다음 요청부터 바로 먹는다."""
 
-    _COLUMNS: Final = "id, email, disabled, session_epoch, google_sub"
+    _COLUMNS: Final = "id, email, disabled, session_epoch, google_sub, is_admin"
 
     def __init__(self, db: Db) -> None:
         self._db = db
@@ -93,7 +94,7 @@ class PgUsers:
                                (email.strip().lower(),)).fetchone()
         if row is None:
             return None
-        return _row(row[:5]), None if row[5] is None else str(row[5])
+        return _row(row[:6]), None if row[6] is None else str(row[6])
 
     def pin_google_sub(self, user_id: uuid.UUID, sub: str) -> UserRow | None:
         """`google_sub`가 비었을 때만 sub를 넣고(경합해도 먼저 넣은 쪽이 남는다) 그 뒤의 행을 돌려준다. 이미 있으면 바꾸지 않는다
@@ -109,7 +110,7 @@ class PgUsers:
 
 def _row(row: tuple[Any, ...]) -> UserRow:
     return UserRow(uuid.UUID(str(row[0])), str(row[1]), bool(row[2]), int(row[3]),
-                   None if row[4] is None else str(row[4]))
+                   None if row[4] is None else str(row[4]), bool(row[5]))
 
 
 def admit_google(users: UserDirectory, claims: GoogleClaims) -> UserRow:
