@@ -3,6 +3,7 @@
 //   있으면 "완료 제출"(피드백 받기 → 확인 후 저장) / "건너뛰기"(사유 선택 후 확인) / "바꾸기"(교체 미리보기 → 저장).
 //   Claude는 받기·다른 걸로·바꾸기·피드백 받기 클릭 때만 부른다. 파일 쓰기는 항상 사용자가 누른 저장/확인 뒤.
 import { h, fill } from "/static/dom.js";
+import { isServer, t } from "/static/copy.js";
 import { renderMarkdown } from "/static/md.js";
 
 const POLL_MS = 1000;
@@ -581,7 +582,7 @@ function render() {
 
 function profileNote() {
   return h("div", { class: "mi-profile" },
-    h("p", { class: "muted" }, "프로필을 만들면 미션이 맞춤으로 나옵니다. Claude에게 “처음 설정해줘”라고 말하면 함께 만들어요"));
+    h("p", { class: "muted" }, t("mission.profileNote")));
 }
 
 function renderStale() {
@@ -776,7 +777,8 @@ function submitPanel(today) {
       e.note ? h("p", { class: "field-error error", id: "mi-note-err", role: "alert" }, e.note) : null),
     diff,
     e.difficulty ? h("p", { class: "field-error error", role: "alert" }, e.difficulty) : null,
-    h("div", { class: "field" },
+    // a file location on the user's PC means nothing to the hosted server edition: no field there
+    isServer() ? null : h("div", { class: "field" },
       h("label", { for: "mi-file" }, "첨부할 사진·스크린샷·글 파일 위치(선택)"), file,
       h("p", { class: "muted small", id: "mi-file-hint" },
         "원본은 건드리지 않고 잠깐 복사해 읽은 뒤 지웁니다. 이미지(png·jpg·webp·gif)와 텍스트(txt·md)만, 10MB까지 낼 수 있어요. 영상은 한 일에 설명으로 적어 주세요"),

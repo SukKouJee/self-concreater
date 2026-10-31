@@ -6,6 +6,7 @@
 //                      실제 장면 · 대사 대안 · 직접 고치기)
 // 모든 컷 저장은 마지막으로 받은 hash를 보낸다. 파일이 밖에서 바뀌면 서버가 conti_changed로 거절한다.
 import { h, fill, filesUrl } from "/static/dom.js";
+import { t } from "/static/copy.js";
 import { button } from "/static/ui.js";
 import { sectionLabelName } from "/static/labels.js";
 import {
@@ -328,7 +329,7 @@ function draftCard(d) {
     });
     li.append(h("div", { class: "inline-confirm", role: "alert" },
       h("p", { class: "warn-text" }, TRASH_WARNING),
-      h("p", { class: "muted hint" }, "잘못 지웠으면 Claude에게 “휴지통에서 되살려줘”라고 말하세요."),
+      h("p", { class: "muted hint" }, t("trash.restoreHint")),
       h("div", { class: "btn-row" }, yes, no)));
   }
   return li;
@@ -848,7 +849,7 @@ function srtBox() {
   const stale = S.data.outputs_stale && (S.data.outputs_stale.srt || S.data.outputs_stale.video);
   const box = h("details", { class: "srt-box card", id: "srt-box" },
     h("summary", {}, h("span", { class: "srt-box-title" }, "자막 내보내기"),
-      h("span", { class: "muted small" }, " CapCut용 SRT · 움직이는 자막 영상"),
+      h("span", { class: "muted small" }, t("conti.exportSummary")),
       stale ? h("span", { class: "stale-note srt-box-stale" }, " · 콘티가 바뀌어 다시 받아야 해요") : null),
     srtRow());
   box.open = !!S.srtOpen;
@@ -1260,7 +1261,7 @@ function renderConflict() {
   btn.addEventListener("click", () => loadEditor(true));
   slot.replaceChildren(h("div", { class: "conflict", role: "alert" },
     h("p", {}, byArt ? "장면 그림을 저장하느라 파일이 바뀌었어요. 다시 불러온 뒤 저장해 주세요. 입력해 둔 내용은 남아 있습니다."
-      : "다른 곳(편집기·터미널)에서 이 콘티 파일이 바뀌어 저장하지 않았습니다. 다시 불러온 뒤 고쳐 주세요. 입력해 둔 내용은 남아 있습니다."),
+      : t("conti.changedElsewhere")),
     btn));
 }
 

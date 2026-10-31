@@ -5,6 +5,7 @@
 // layout also reads the conti of the next video (scene count) and of the listed videos (first scene photo).
 // The layout follows the width (matchMedia): switching repaints from the loaded data without new requests.
 import { h, filesUrl, fill } from "/static/dom.js";
+import { t } from "/static/copy.js";
 import {
   HOME_ORDER, STEP_NAMES, VISIBLE_VIDEOS, contiOf, isFolded, missionView, nextButton, nextStep, phoneVideos, recentLine,
   shootProgress, stageDots, stageWord, stepSr, stepState, videoMeta,
@@ -292,7 +293,7 @@ function render(view, pendingFocus) {
   fill(el, h("h1", { class: phone ? "sr-only" : null }, "홈"),
     h("div", { class: `home${phone ? " home-phone" : ""}` }, ...order.map((key) => (cat || key === "mission" || key === "recent" ? build[key]() : null))));
   if (!cat) el.querySelector(".home").prepend(h("section", { class: "card" }, h("h2", {}, "카테고리가 없습니다"),
-    h("p", { class: "muted" }, "Claude에게 “처음 설정해줘”라고 말하면 첫 카테고리를 함께 만들어요.")));
+    h("p", { class: "muted" }, t("home.noCategory"))));
   restoreFocus(el, pendingFocus, cat ? cat.videos : []);
   if (phone && cat) {
     paintContis(view, cat);
@@ -302,15 +303,15 @@ function render(view, pendingFocus) {
 
 function initCard(el, params, ctx) {
   const card = h("section", { class: "card" });
-  card.append(h("h2", {}, "아직 작업 폴더가 아닙니다"),
-    h("p", { class: "muted" }, "지금 연 폴더를 작업 폴더로 만들면 레퍼런스와 기획안이 여기에 저장돼요."));
-  const btn = primary("button", { type: "button" }, "이 폴더를 yt-coach 작업 폴더로 만들기");
+  card.append(h("h2", {}, t("home.init.title")),
+    h("p", { class: "muted" }, t("home.init.lead")));
+  const btn = primary("button", { type: "button" }, t("home.init.button"));
   btn.addEventListener("click", async () => {
     btn.disabled = true;
     try {
       await ctx.api("POST", "/api/init", {});
       if (!ctx.isCurrent()) return;
-      ctx.toast("작업 폴더를 만들었습니다", "ok");
+      ctx.toast(t("home.init.done"), "ok");
       await ctx.refreshCategories();
       if (!ctx.isCurrent()) return;
       mount(el, params, ctx);

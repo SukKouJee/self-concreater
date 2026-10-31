@@ -9,6 +9,7 @@
 // started under an older epoch is dropped (and its job cancelled), so a late answer never lands in another screen.
 import { api } from "/static/api.js";
 import { h, fill } from "/static/dom.js";
+import { t } from "/static/copy.js";
 import { renderMarkdown } from "/static/md.js";
 import { helpPage, trimHistory, pollDelay } from "/static/help-utils.js";
 
@@ -51,7 +52,7 @@ export function createHelpPanel(root, getCategory) {
   }, screenBody);
 
   const emptyHint = h("p", { class: "muted small help-empty" },
-    "이 화면에 대해 궁금한 점을 물어보세요. 답은 도움말과 지금 작업 폴더 상태를 바탕으로 만들어집니다.");
+    t("help.chatEmpty"));
   const log = h("div", { class: "help-log", "aria-live": "polite", "aria-label": "대화" });
   const status = h("div", { class: "help-status", role: "status" });
   const input = h("textarea", {

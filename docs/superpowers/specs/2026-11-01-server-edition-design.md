@@ -404,6 +404,8 @@ media 대기 p95가 5분을 넘거나, 앱 재시작으로 작업을 잃는 일�
 | srtfit | srtfit 시작 라우트 | 자막 시간 맞추기는 내 PC 판에서만 됩니다(영상 파일 필요) |
 | footage | `/api/footage` 전부 | 촬영 영상 처리는 내 PC 판에서 하고, 결과는 가져오기로 옮기세요 |
 
+  위 문구는 로컬판(개인판 컨테이너 `YTC_DISABLE`) 문구다. 서버판은 `FEATURE_TEXT_SERVER`("…는 이 서버에서 (아직) 쓸 수 없습니다")를 낸다.
+
 - footage를 켜려면 먼저 §3.3 주의(폴더 `write_path`가 폴더를 비움: `footage.decode_scenes`, `footage_out.export_clips`)를 해결한다.
 - 구현(T10): 서버판은 env와 상관없이 표의 네 기능을 모두 끈다(`server.asgi.SERVER_FEATURES`, `YTC_DISABLE`는 더할 수만 있다).
   화면: `#/library`(및 도움말·다른 화면의 라이브러리 링크)로 바로 와도 페이지 대신 그 기능의 문구 한 줄(`app.js` `PAGE_FEATURES`).
@@ -411,6 +413,13 @@ media 대기 p95가 5분을 넘거나, 앱 재시작으로 작업을 잃는 일�
 - 관리 화면(T16, §4.2)은 비활성 기능이 아니라 **판 + 권한**으로 갈린다: 로컬판에는 `/api/admin`·`/api/me` 경로가 없고(404) 화면은 `/api/me`를 묻지 않아
   메뉴가 생기지 않는다. 서버판은 관리자에게만 메뉴가 보이고 서버(403)와 DB(`YTA01`)가 따로 막는다.
 - 정적 JS: 버튼·메뉴에 `data-feature="<기능>"`을 달고 시작 때 `/api/features`를 읽어 숨기고 그 자리에 문구 한 줄. 가드는 서버가 최종(숨김만 믿지 않음).
+- 판별 문구(2026-11-03): 판은 한 곳(`scripts/edition.py`의 ContextVar, `ui.server.edition()`이 건다)에서 정하고, 화면은 시작 때
+  `/api/features`의 `edition`을 `static/copy.js`(`setEdition`, `t(key)`)에 넣는다. 내 PC에서만 뜻이 통하는 문장(작업 폴더, 터미널,
+  "Claude에게 …라고 말하세요", 슬래시 커맨드, 서버 끄기)은 `copy.js`의 `{local, server}`(server가 null이면 숨김)와 파이썬 `ed(local, server)`로
+  고른다. 로컬판은 글자 그대로(tests/test_copy_js.py·tests/test_edition_copy.py의 골든). 서버판에서는 "서버 끄기"와 미션 첨부 파일 경로 칸을
+  그리지 않는다. 도움말은 `docs/help/server/<이름>.md`가 있으면 서버판이 그것을 쓰고(챗봇 규칙 `_chatbot.md` 포함), 없으면 공통 파일.
+  게이트: 서버판에서 보일 수 있는 문자열(정적 JS·HTML, scripts/·server/의 파이썬 문자열 중 `ed()` 로컬 인자 밖, 서버판 도움말)에
+  금지어(`tests/helpers/copy_gate.FORBIDDEN`)가 있으면 이유를 적은 허용 목록에 있어야 한다.
 - 테스트: 라우트 전수 표(ROUTES)를 돌며 서버 백엔드에서 비활성 표에 없는 라우트가 `NotImplementedError`/`Path` 접근으로 500을 내지 않는지(§9-4).
 
 ## 9. 패키징

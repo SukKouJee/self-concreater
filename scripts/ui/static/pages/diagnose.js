@@ -3,6 +3,7 @@
 //   / "설명 받기"(작업: 비교 → Claude 1회) → 미리보기(편집) → 저장.
 //   미리보기 단계에서는 mine/ 이 바뀌지 않는다. 저장은 사용자가 누른 뒤에만. 의도한 차이 표시는 사용자 행동이라 바로 저장한다.
 import { h, fill } from "/static/dom.js";
+import { t } from "/static/copy.js";
 import { sectionLabelName, sectionName } from "/static/labels.js";
 import { renderMarkdown } from "/static/md.js";
 import { recordMismatch as gapsMismatch, previewStale as gapsStale } from "/static/diagnose-gaps.js";
@@ -114,7 +115,7 @@ const qs = (mine) => `category=${encodeURIComponent(mine.category)}`;
 async function load() {
   const mine = S;
   if (!mine.category) {
-    fill(mine.el, pageHeading("진단"), h("p", { class: "muted" }, "카테고리가 없습니다. 홈에서 먼저 카테고리를 만드세요."));
+    fill(mine.el, pageHeading("진단"), h("p", { class: "muted" }, t("page.noCategory")));
     return;
   }
   fill(mine.el, pageHeading("진단"), h("p", { class: "muted", role: "status" }, "불러오는 중…"));

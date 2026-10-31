@@ -23,6 +23,7 @@ import { api, showBanner } from "/static/api.js";
 import { h } from "/static/dom.js";
 import { loadIsAdmin } from "/static/admin-utils.js";
 import { loadFeatureInfo, watchFeatures } from "/static/features.js";
+import { isServer, setEdition, t } from "/static/copy.js";
 import { createHelpPanel, helpPage } from "/static/help-panel.js";
 import { createStatusChip } from "/static/status-chip.js";
 import { legacyRoute, parseVideoHash } from "/static/video-utils.js";
@@ -246,7 +247,7 @@ function videoRow(v) {
 
 function videoRows() {
   const side = state.side;
-  if (!ctx.category) return [h("li", { class: "menu-note" }, "카테고리를 먼저 만들어요")];
+  if (!ctx.category) return [h("li", { class: "menu-note" }, t("menu.noCategory"))];
   if (!side || side.videos === null) return [];
   const { shown, total } = sidebarVideos(side.videos, SIDEBAR_VIDEOS);
   const rows = shown.map(videoRow);
@@ -404,10 +405,14 @@ function fillHelpPop(pop) {
   guide.addEventListener("click", () => setHelpMenu(false));
   const admin = h("a", { class: "pop-item", id: "admin-pop", href: "#/admin", hidden: true }, "관리");
   admin.addEventListener("click", () => setHelpMenu(false));
-  const off = h("button", { type: "button", class: "pop-item pop-danger" }, "서버 끄기");
-  off.addEventListener("click", onShutdownClick);
   // a shutdown confirm (only while a collect job runs) appears here
   const confirm = h("div", { class: "pop-confirm", id: "help-confirm", hidden: true });
+  if (isServer()) {                          // the hosted server is not the user's to stop: no 서버 끄기
+    pop.replaceChildren(toggle, guide, admin, confirm);
+    return;
+  }
+  const off = h("button", { type: "button", class: "pop-item pop-danger" }, "서버 끄기");
+  off.addEventListener("click", onShutdownClick);
   pop.replaceChildren(toggle, guide, admin, h("div", { class: "pop-sep", role: "separator" }), off, confirm);
 }
 
@@ -694,6 +699,9 @@ function showAdminEntry(on) {
 // ---- start ----------------------------------------------------------------
 
 async function start() {
+  // the edition first: the chrome and every page pick their wording by it (copy.js)
+  const features = await loadFeatureInfo(api);
+  setEdition(features.edition);
   buildTopbar();
   renderTabbar();
   renderSidebar();
@@ -704,7 +712,6 @@ async function start() {
     e.preventDefault();
     $("main").focus();
   });
-  const features = await loadFeatureInfo(api);
   disabledFeatures = features.disabled;
   watchFeatures(document.body, disabledFeatures);   // hides what this edition cannot do (/api/features)
   showAdminEntry(await loadIsAdmin(api, features.edition));   // server edition: GET /api/me (local: no request)

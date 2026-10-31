@@ -7,6 +7,7 @@
 // unsavedNote()로 탭 모듈에 묻는다(app.js가 묻는 창을 띄운다).
 import { api } from "/static/api.js";
 import { h, fill, filesUrl } from "/static/dom.js";
+import { t } from "/static/copy.js";
 import { videoMeta as listMeta } from "/static/home-utils.js";
 import { sectionLabelName } from "/static/labels.js";
 import { videoProgress } from "/static/menu-utils.js";
@@ -115,7 +116,7 @@ const shootText = (mine) => {
 async function loadList(mine) {
   const cat = mine.category;
   if (!cat) {
-    fill(mine.el, h("h1", {}, "내 영상"), h("p", { class: "muted" }, "카테고리가 없습니다. 홈에서 먼저 카테고리를 만드세요."));
+    fill(mine.el, h("h1", {}, "내 영상"), h("p", { class: "muted" }, t("page.noCategory")));
     return;
   }
   fill(mine.el, h("h1", {}, "내 영상"), h("p", { class: "muted", role: "status" }, "불러오는 중…"));
