@@ -4,6 +4,7 @@ PG 환경이 없으면 skip(`tests/helpers/pg.py`).
 """
 from __future__ import annotations
 
+import threading
 import uuid
 
 import psycopg
@@ -53,3 +54,38 @@ def test_sub_held_by_another_user_is_refused(users, migrated_db):
 
 def test_pin_for_a_missing_user_returns_none(users):
     assert users.pin_google_sub(uuid.uuid4(), "sub-x") is None
+
+
+def _race(users: auth.PgUsers, uid: uuid.UUID, subs: tuple[str, ...]) -> dict[str, str | None]:
+    """subs마다 스레드 하나가 같은 순간에 pin_google_sub. 스레드의 예외는 여기서 다시 올린다."""
+    barrier = threading.Barrier(len(subs))
+    seen: dict[str, str | None] = {}
+    errors: list[Exception] = []
+
+    def pin(sub: str) -> None:
+        try:
+            barrier.wait(timeout=10)
+            row = users.pin_google_sub(uid, sub)
+            seen[sub] = None if row is None else row.google_sub
+        except Exception as e:  # noqa: BLE001 - collected and re-raised in the calling thread
+            errors.append(e)
+
+    threads = [threading.Thread(target=pin, args=(s,)) for s in subs]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    if errors:
+        raise errors[0]
+    return seen
+
+
+def test_concurrent_first_logins_with_two_subs_pin_exactly_one(users, migrated_db):
+    uid = pg_user(migrated_db.owner_dsn, "a@example.com")
+    for _ in range(5):
+        with psycopg.connect(migrated_db.owner_dsn) as conn:
+            conn.execute("UPDATE users SET google_sub = NULL WHERE id = %s", (uid,))
+        seen = _race(users, uid, ("sub-1", "sub-2"))
+        stored = _sub_of(migrated_db.owner_dsn, uid)
+        assert stored in {"sub-1", "sub-2"}
+        assert seen == {"sub-1": stored, "sub-2": stored}    # both see the winner; admit_google refuses the loser

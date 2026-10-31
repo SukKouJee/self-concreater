@@ -57,6 +57,8 @@ class FakeIdp:
     token_status: int = 200
     token_error: str | None = None            # e.g. "network"
     omit_id_token: bool = False
+    jwks_status: int = 200
+    jwks_body: bytes | None = None            # raw body instead of the key set (non-JSON, malformed keys)
     _n: int = 0
 
     def __post_init__(self) -> None:
@@ -72,6 +74,10 @@ class FakeIdp:
         url = str(request.url)
         if request.method == "GET" and url == oidc.JWKS_URL:
             self.jwks_hits += 1
+            if self.jwks_status != 200:
+                return httpx.Response(self.jwks_status, text="unavailable")
+            if self.jwks_body is not None:
+                return httpx.Response(200, content=self.jwks_body, headers={"Content-Type": "application/json"})
             return httpx.Response(200, json=KeySet(list(self.published)).as_dict(private=False))
         if request.method == "POST" and url == oidc.TOKEN_URL:
             if self.token_error == "network":

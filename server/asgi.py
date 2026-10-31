@@ -23,7 +23,6 @@ import logging
 import os
 import string
 import sys
-import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import asynccontextmanager
@@ -288,7 +287,7 @@ class _ServerApp:
     def _google_start(self, request: StarletteRequest, google: oidc.GoogleOidc, path: str) -> StarletteResponse:
         """대기 로그인 하나(이전 것은 덮어쓴다: 쿠키가 쌓이지 않고 마지막 시도만 유효)를 세션에 두고 Google로.
         요청의 쿼리(next·redirect_uri 등)는 읽지 않는다: 돌아올 주소는 설정값, 로그인 뒤에는 항상 `/`."""
-        pending = oidc.new_pending(int(time.time()))
+        pending = oidc.new_pending(google.now())
         request.session[oidc.PENDING_KEY] = pending.to_session()
         return self._redirect(google.authorization_url(pending), path)
 
@@ -299,7 +298,7 @@ class _ServerApp:
         try:
             if pending is None:
                 raise oidc.OidcError("state")             # no login started in this browser (or already used)
-            code = oidc.check_callback(pending, dict(request.query_params), int(time.time()))
+            code = oidc.check_callback(pending, dict(request.query_params), google.now())
             claims = await google.login(code, pending)
             email = claims.email
             row = await anyio.to_thread.run_sync(auth.admit_google, self.users, claims)

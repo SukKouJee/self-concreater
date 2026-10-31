@@ -17,6 +17,7 @@ authlib, HTTP는 고정한 httpx를 직접 쓴다. authlib의 httpx 통합(`Asyn
 from __future__ import annotations
 
 import hmac
+import logging
 import secrets
 import time
 from collections.abc import Callable, Mapping
@@ -41,13 +42,16 @@ SCOPE: Final = "openid email profile"
 ALGORITHMS: Final = ("RS256",)
 CALLBACK_PATH: Final = GOOGLE_CALLBACK_PATH
 PENDING_KEY: Final = "oidc"          # session key of the one pending login
-PENDING_TTL = 600                    # seconds between /auth/google and the callback (module global: tests shorten it)
+PENDING_TTL: Final = 600             # seconds between /auth/google and the callback
 LEEWAY: Final = 60                   # clock skew allowed on exp/iat
 JWKS_TTL: Final = 3600
 JWKS_REFRESH_MIN: Final = 60         # unknown kid refetches the key set at most this often
 HTTP_TIMEOUT: Final = 10.0
 TOKEN_BYTES: Final = 32              # state, nonce: 43 url-safe chars
 VERIFIER_BYTES: Final = 48           # code_verifier: 64 chars (RFC 7636: 43..128)
+
+
+log = logging.getLogger("ytc.auth")
 
 
 class OidcError(Exception):
@@ -125,6 +129,10 @@ class GoogleOidc:
         self._keys: KeySet | None = None
         self._keys_at = 0.0
 
+    def now(self) -> int:
+        """대기 로그인 만료·클레임 검사가 같이 쓰는 시계(테스트는 clock을 넣는다)."""
+        return int(self._clock())
+
     # ---- 1. 인가 요청 ------------------------------------------------------------------
 
     def authorization_url(self, pending: PendingLogin) -> str:
@@ -167,6 +175,20 @@ class GoogleOidc:
         if self._keys is not None and (fresh and not force or force and now - self._keys_at < JWKS_REFRESH_MIN):
             return self._keys
         try:
+            keys = await self._fetch_keys()
+        except OidcError:
+            if self._keys is not None and not force:
+                # TTL refresh failed: keep verifying with the keys we have (Google publishes new keys well before use).
+                # A forced refresh (unknown kid) has nothing to fall back to and fails closed.
+                log.warning("google jwks refresh failed; using the cached key set")
+                self._keys_at = now - JWKS_TTL + JWKS_REFRESH_MIN      # retry the refresh after JWKS_REFRESH_MIN, not per login
+                return self._keys
+            raise
+        self._keys, self._keys_at = keys, now
+        return keys
+
+    async def _fetch_keys(self) -> KeySet:
+        try:
             async with self._client() as client:
                 resp = await client.get(JWKS_URL, headers={"Accept": "application/json"})
         except httpx.HTTPError as e:
@@ -174,11 +196,9 @@ class GoogleOidc:
         if resp.status_code != 200:
             raise OidcError("idp_unavailable")
         try:
-            keys = KeySet.import_key_set(_json_object(resp))  # type: ignore[arg-type]
+            return KeySet.import_key_set(_json_object(resp))  # type: ignore[arg-type]
         except (JoseError, ValueError, TypeError, KeyError) as e:
             raise OidcError("idp_unavailable") from e
-        self._keys, self._keys_at = keys, now
-        return keys
 
     async def verify_id_token(self, id_token: str, nonce: str, access_token: str | None = None) -> GoogleClaims:
         keys = await self._key_set()

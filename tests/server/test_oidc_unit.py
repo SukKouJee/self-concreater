@@ -246,11 +246,80 @@ def test_callback_cannot_be_replayed(client, idp, users):
     _refused(client.get(url, follow_redirects=False), 400, "로그인 요청이 만료되었거나 맞지 않습니다")
 
 
-def test_expired_pending_login_is_refused(client, idp, users, monkeypatch):
+def test_expired_pending_login_is_refused(client, idp, users, clock):
     users.add("a@example.com")
-    monkeypatch.setattr(oidc, "PENDING_TTL", -1)
-    _refused(_login(client, idp), 400, "로그인 요청이 만료되었거나 맞지 않습니다")
+    grant = idp.authorize(_start(client))
+    clock.offset = oidc.PENDING_TTL + 1
+    _refused(client.get(callback(grant), follow_redirects=False), 400, "로그인 요청이 만료되었거나 맞지 않습니다")
     assert idp.token_requests == []
+
+
+def test_pending_login_just_inside_its_ttl_is_accepted(client, idp, users, clock):
+    users.add("a@example.com")
+    grant = idp.authorize(_start(client))
+    clock.offset = oidc.PENDING_TTL - 5
+    assert client.get(callback(grant), follow_redirects=False).status_code == 302
+
+
+# ---- JWKS failures · at_hash -----------------------------------------------------------
+
+@pytest.mark.parametrize("status,body", [
+    (503, None), (500, None), (200, b"<html>not json</html>"), (200, b"[1, 2]"),
+    (200, b'{"keys": [{"kty": "RSA", "kid": "k1", "n": "@@", "e": "AQAB"}]}'), (200, b'{"keys": "nope"}'),
+], ids=["503", "500", "non-json", "json-list", "malformed-key", "keys-not-list"])
+def test_jwks_failures_are_idp_unavailable(client, idp, users, status, body):
+    row = users.add("a@example.com")
+    idp.jwks_status, idp.jwks_body = status, body
+    _refused(_login(client, idp), 502, "Google에 연결하지 못했습니다")
+    assert _logged_in_as(client) is None and users.rows[row.id].google_sub is None
+
+
+def test_failed_refresh_after_ttl_falls_back_to_the_cached_keys(client, idp, users, clock):
+    users.add("a@example.com")
+    assert _login(client, idp).status_code == 302
+    client.post("/auth/logout", json={})
+    clock.offset = oidc.JWKS_TTL + 1
+    idp.jwks_status = 503
+    assert _login(client, idp, claims={"exp": int(time.time()) + 3 * oidc.JWKS_TTL}).status_code == 302
+    assert idp.jwks_hits == 2                                  # it did try, then used the cache
+    client.post("/auth/logout", json={})
+    assert _login(client, idp, claims={"exp": int(time.time()) + 3 * oidc.JWKS_TTL}).status_code == 302
+    assert idp.jwks_hits == 2                                  # no refetch per login while Google is down
+    clock.offset += oidc.JWKS_REFRESH_MIN + 1
+    idp.jwks_status = 200
+    client.post("/auth/logout", json={})
+    assert _login(client, idp, claims={"exp": int(time.time()) + 3 * oidc.JWKS_TTL}).status_code == 302
+    assert idp.jwks_hits == 3                                  # retried after the back-off
+
+
+def test_unknown_kid_with_a_failing_refresh_fails_closed(client, idp, users, clock):
+    users.add("a@example.com")
+    assert _login(client, idp).status_code == 302
+    client.post("/auth/logout", json={})
+    rotated = fake_idp.new_key("k2")
+    idp.key, idp.published = rotated, [rotated]
+    clock.offset = oidc.JWKS_TTL + 1
+    idp.jwks_status = 503
+    _refused(_login(client, idp, claims={"exp": int(time.time()) + 3 * oidc.JWKS_TTL}), 502,
+             "Google에 연결하지 못했습니다")
+    assert _logged_in_as(client) is None
+
+
+def test_at_hash_mismatch_is_refused(client, idp, users):
+    users.add("a@example.com")
+    _refused(_login(client, idp, claims={"at_hash": "AAAAAAAAAAAAAAAAAAAAAA"}), 400,
+             "Google 로그인 정보를 확인하지 못했습니다")
+
+
+def test_matching_at_hash_is_accepted(client, idp, users):
+    import base64
+    import hashlib
+
+    users.add("a@example.com")
+    grant = idp.authorize(_start(client))
+    digest = hashlib.sha256(f"ya29.access-{grant.code}".encode("ascii")).digest()[:16]
+    grant.claims["at_hash"] = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    assert client.get(callback(grant), follow_redirects=False).status_code == 302
 
 
 def test_only_the_latest_started_login_is_kept(client, idp, users):
@@ -412,10 +481,20 @@ def test_tokens_codes_and_secrets_never_reach_the_logs(client, idp, users, caplo
     client.get(callback(grant), follow_redirects=False)
     secrets_seen += [grant.code, grant.state]
     out = capsys.readouterr()
-    # the TestClient's own request lines (browser side: the callback URL carries code and state) are not server logs
-    server_lines = [r.getMessage() for r in caplog.records if f"{ORIGIN}/" not in r.getMessage()]
-    text = " | ".join(server_lines) + out.out + out.err
-    assert "google login refused" in caplog.text        # failures are logged, by reason only
+    # Skipped by logger name, and only these: the httpx client loggers. They carry the TestClient's own request lines
+    # (the browser side, whose callback URL has code and state) besides the app's outgoing Google calls (checked below).
+    client_loggers = {"httpx", "httpx2"}
+    checked = [r for r in caplog.records if r.name not in client_loggers]
+    names = {r.name for r in checked}
+    assert "ytc.auth" in names                                  # failures are logged, by reason only
+    assert all(n == "root" or n.split(".")[0] in {"ytc", "uvicorn", "starlette", "authlib", "joserfc", "anyio",
+                                                   "asyncio"} for n in names), names
+    text = " | ".join(r.getMessage() for r in checked) + out.out + out.err
+    google_calls = [r.getMessage() for r in caplog.records
+                    if r.name in client_loggers and "googleapis.com" in r.getMessage()]
+    assert google_calls                                         # the app's own token/JWKS requests were logged ...
+    text += " | ".join(google_calls)                            # ... and carry no secret either
+    assert "google login refused" in text
     for value in secrets_seen:
         assert value not in text, value
     assert "ya29." not in text and "eyJ" not in text
