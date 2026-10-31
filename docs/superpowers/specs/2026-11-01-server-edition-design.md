@@ -70,7 +70,8 @@
 ### 3.1 PostgreSQL 스키마 (Alembic `0001_init`)
 
 ```sql
--- 롤: ytc_owner(마이그레이션, 테이블 소유) / ytc_app(LOGIN NOSUPERUSER NOBYPASSRLS, DML만)
+-- 롤: ytc_owner(마이그레이션, 테이블 소유, 슈퍼유저 또는 BYPASSRLS) / ytc_app(이름·비밀번호는 YTC_DB_DSN.
+--     LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOINHERIT, 어떤 롤에도 속하지 않음, DML만)
 CREATE TABLE users (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   email text NOT NULL UNIQUE CHECK (email = lower(email)),
@@ -100,7 +101,7 @@ CREATE TABLE objects (                    -- ObjectStore 인덱스. 바이트는
   user_id uuid NOT NULL REFERENCES users ON DELETE CASCADE,
   key text COLLATE "C" NOT NULL,
   size bigint NOT NULL, sha256 char(64) NOT NULL, mtime_ns bigint NOT NULL,
-  s3_key text NOT NULL,
+  s3_key text NOT NULL CHECK (s3_key = 'users/' || user_id::text || '/' || key),
   PRIMARY KEY (user_id, key));
 
 CREATE TABLE shared_objects (             -- SharedCache 인덱스(RLS 없음)
@@ -114,6 +115,7 @@ CREATE TABLE trash_items (
   stamp text NOT NULL, key text COLLATE "C" NOT NULL,
   kind text NOT NULL CHECK (kind IN ('doc','object')),
   raw bytea, s3_key text, size bigint NOT NULL, mtime_ns bigint NOT NULL,
+  CHECK (s3_key IS NULL OR s3_key = 'trash/' || user_id::text || '/' || stamp || '/' || key),
   moved_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (user_id, stamp, key));
 
@@ -138,18 +140,23 @@ CREATE POLICY own ON <t> USING (user_id = nullif(current_setting('app.user_id', 
 - `users`는 RLS 없음: 로그인 전 이메일 조회가 필요. `ytc_app`은 `users`에 SELECT·UPDATE(google_sub, display_name)만.
   사용자 추가·비활성은 `admin.py`가 `ytc_owner`로.
 - `trash_items.raw`(문서) / `s3_key`(객체 `trash/{uid}/{stamp}/{key}`). 만료(30일)는 S10.
+- `s3_key` CHECK: `objects`는 정확히 `users/{user_id}/{key}`, `trash_items`는 NULL 또는 `trash/{user_id}/{stamp}/{key}`.
+  RLS가 행을 막아도 행 안의 `s3_key`가 남의 MinIO 객체를 가리키면 `/files`·휴지통 복원이 그 바이트를 읽는다 — 행과 객체 위치를 DB에서 묶는다.
+- 롤 안전(마이그레이션과 `Db.open()`이 `db_role_unsafe`로 거부): 앱 롤 = owner, owner가 슈퍼유저·BYPASSRLS가 아님,
+  앱 롤이 슈퍼유저·BYPASSRLS, 앱 롤이 다른 롤의 멤버(`pg_auth_members`: SET ROLE·`pg_read_all_data` 등으로 우회).
+  앱 롤 비밀번호는 클라이언트에서 SCRAM-SHA-256으로 해시해 `ALTER ROLE … PASSWORD '<검증자>'`로 보낸다(평문이 문장·로그에 남지 않음).
 
 ### 3.2 키 → 저장 위치 (모든 `keys.kind`)
 
 | keys.kind | 키 예(ADR-1) | 서버 저장 | 비고 |
 |---|---|---|---|
 | doc | `refs/ref_<cat>/videos/<vid>.md`, `…/index.md`, `…/techniques.md`, `drafts/<n>.md`, `drafts/<n>-conti.md`, `mine/*.md`, `missions/*.md`, `reviews/*.md`, `profile.md` | `docs(user_id, key)` | 폴더는 `folders` |
-| object | `drafts/<n>-conti.html`, `-{captions,lines}.srt`, `reports/*.html`, `workspace/typify/<cat>*.json`, `workspace/conti_history/<stem>/NNNN.json`, `workspace/conti-art/<stem>/*.svg`, `workspace/footage_match/*.json`, `workspace/footage/<fid>/…`(가져오기로만), `yt-coach.json`(llm 절 무시), `.gitignore` | `objects` 행 + MinIO `users/{uid}/{key}` | 키를 그대로 객체 이름 뒤에 붙인다(변환 없음). 상위 §3.3의 `projects/{pid}` 배치는 projects 테이블이 생길 때 |
+| object | `drafts/<n>-conti.html`, `-{captions,lines}.srt`, `reports/*.html`, `workspace/typify/<cat>*.json`, `workspace/conti_history/<stem>/NNNN.json`, `workspace/conti-art/<stem>/*.svg`, `workspace/footage_match/*.json`, `workspace/footage/<fid>/…`(가져오기로만), `yt-coach.json`(llm 절 무시), `.gitignore` | `objects` 행 + MinIO `users/{uid}/{key}` | 키를 그대로 객체 이름 뒤에 붙인다(변환 없음, `objects.s3_key` CHECK가 강제). 상위 §3.3의 `projects/{pid}` 배치는 projects 테이블이 생길 때 |
 | object(비활성 기능) | `drafts/<n>-captions.mp4`, `-cuts/`, `-remaining.html`, `-footage.csv`, `library.json` | 위와 같음(가져오기는 함), 새로 쓰는 경로는 §8로 막힘 | |
 | shared | `workspace/raw/<vid>.json`, `workspace/cuts/<vid>.json`, `workspace/shots/<vid>.json`, `workspace/frames/<vid>/<nnnn>.jpg` | `shared_objects` 행 + MinIO `shared/videos/{vid}/{raw.json\|cuts.json\|shots.json\|frames/<name>}` | 변환은 `s3store.shared_s3_key(key)` 한 함수. 문자열은 데이터 안에 키 그대로 남는다 |
 | scratch | `workspace/tmp/<name>` | 프로세스 임시 폴더 `/tmp/ytc/{uid}/` | 같은 프로세스 안 HTTP→작업 핸드오프(ADR-S6이라 성립) |
 | (Scratch.local_path) | `timings.json`, `.last_fetch`, `library/` | `timings`·`.last_fetch`: `/var/lib/ytc/state/`(서버 전역, 볼륨) / `library`: NotImplementedError | `.last_fetch` = 서버 전체 YouTube 속도 제한(상위 §4) |
-| trash | `workspace/trash/<stamp>[-n]/…` | `trash_items` + MinIO `trash/{uid}/{stamp}/{key}` | 반환 문자열 형식 동일 |
+| trash | `workspace/trash/<stamp>[-n]/…` | `trash_items` + MinIO `trash/{uid}/{stamp}/{key}`(`trash_items.s3_key` CHECK) | 반환 문자열 형식 동일 |
 | (밖) | `ui.lock`, `ui.log`, 촬영 원본 폴더, `remotion/`, `templates/`, `skills/` | 없음 / 이미지 안 `PLUGIN_ROOT` | |
 
 ### 3.3 Protocol 준수 규칙 (계약 테스트가 고정)
@@ -337,13 +344,18 @@ media 대기 p95가 5분을 넘거나, 앱 재시작으로 작업을 잃는 일�
 | 서비스 | 이미지·설정 | healthcheck |
 |---|---|---|
 | postgres | `postgres:16-alpine`(다이제스트 고정), 볼륨 `pgdata`, 포트 비공개, `POSTGRES_USER=ytc_owner` | `pg_isready` |
-| minio | `minio/minio`(고정), 볼륨 `minio`, 콘솔 포트 비공개 | `/minio/health/live` |
-| minio-init | `minio/mc`, 버킷 생성(1회) | — |
+| minio | `cgr.dev/chainguard/minio@sha256:…`(아래 주), 볼륨 `minio`, 콘솔 포트 비공개 | `mc ready local` |
+| minio-init | 같은 이미지 `entrypoint: mc`, 버킷 생성(1회) | — |
 | migrate | server 이미지, `alembic upgrade head`(owner DSN, `ytc_app` 롤·비밀번호 생성 포함), `restart: "no"` | — |
 | app | server 이미지, `depends_on: postgres healthy, minio healthy, migrate completed_successfully`, `ports: ["127.0.0.1:8080:8080"]`, 볼륨 `state:/var/lib/ytc/state`, tmpfs `/tmp/ytc`, `stop_grace_period: 90s` | `/healthz` |
 | caddy (profile `tls`) | `caddy:2`, `Caddyfile`(`{$YTC_DOMAIN} { reverse_proxy app:8080 }`), 80·443 공개, 볼륨 `caddy_data` | — |
 
 - 워커 서비스는 없다(ADR-S6). `docker-compose.test.yml`: postgres·minio만, 무작위 포트, tmpfs(테스트용).
+- **MinIO 이미지(2026-10 확인)**: MinIO 커뮤니티 이미지는 더 이상 배포되지 않는다(`minio/minio` pull 거부, `quay.io/minio/minio` 401).
+  `cgr.dev/chainguard/minio`(MinIO 소스 빌드, `mc` 포함, 비루트 65532)를 **다이제스트로 고정**해 쓴다(무료판은 `latest` 태그만).
+  갱신: `docker pull cgr.dev/chainguard/minio:latest` → `docker image inspect --format '{{index .RepoDigests 0}}' cgr.dev/chainguard/minio:latest`
+  → 두 compose의 `@sha256:` 교체 → 계약 테스트·smoke 재실행. 이 이미지도 못 쓰게 되면 SeaweedFS·Garage로 바꾼다 — 코드는 S3 API(boto3)만 쓰므로
+  `YTC_S3_ENDPOINT`와 compose 서비스만 바뀐다(Range GET·버킷 생성은 계약 테스트로 확인).
 - `.env.example`: §4.4 변수 전부 빈 값 + 생성 방법 주석(`python -c "import secrets;print(secrets.token_urlsafe(48))"`). 실제 `.env`는 커밋 금지(`.gitignore`,
   게이트 테스트가 `deploy/**/.env` 추적 여부 확인). 운영 DB·S3 비밀번호는 기본값 없이 필수.
 - 첫 사용자: `docker compose run --rm app python -m server.admin add-user you@gmail.com --admin`.

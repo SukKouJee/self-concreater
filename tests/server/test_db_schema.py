@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from scripts.common import ScriptError
+from server.db import role_password_sql
 from tests.server.conftest import TestDb, run_alembic
 
 psycopg = pytest.importorskip("psycopg")
@@ -109,11 +110,15 @@ def test_upgrade_indexes_match_design(migrated_db: TestDb, table: str) -> None:
 
 def test_upgrade_defaults_constraints_and_foreign_keys(migrated_db: TestDb) -> None:
     dsn = migrated_db.owner_dsn
-    checks = {r[0]: r[1] for r in _q(dsn, """
+    checks = {(r[0], r[1]) for r in _q(dsn, """
         SELECT conrelid::regclass::text, pg_get_constraintdef(oid) FROM pg_constraint
          WHERE contype = 'c' AND connamespace = 'public'::regnamespace""")}
-    assert checks == {"users": "CHECK ((email = lower(email)))",
-                      "trash_items": "CHECK ((kind = ANY (ARRAY['doc'::text, 'object'::text])))"}
+    plain = {("users", "CHECK ((email = lower(email)))"),
+             ("trash_items", "CHECK ((kind = ANY (ARRAY['doc'::text, 'object'::text])))")}
+    assert plain <= checks
+    # s3_key ties (one per table, behaviour tested in test_db_rls)
+    assert sorted(t for t, d in checks - plain if "s3_key" in d) == ["objects", "trash_items"]
+    assert len(checks) == 4
     fks = {(r[0], r[1]) for r in _q(dsn, """
         SELECT conrelid::regclass::text, pg_get_constraintdef(oid) FROM pg_constraint
          WHERE contype = 'f' AND connamespace = 'public'::regnamespace""")}
@@ -180,4 +185,31 @@ def test_upgrade_refuses_app_dsn_that_is_the_owner(test_db: TestDb) -> None:
     with pytest.raises(ScriptError) as e:
         run_alembic(same, "upgrade", "head")
     assert e.value.code == "db_role_unsafe"
+    assert _tables(test_db.owner_dsn) <= {"alembic_version"}
+
+
+def test_upgrade_stores_app_password_as_scram_and_login_works(migrated_db: TestDb) -> None:
+    (stored,) = _q(migrated_db.owner_dsn, "SELECT rolpassword FROM pg_authid WHERE rolname = %s",
+                   (migrated_db.app_role,))[0]
+    assert stored.startswith("SCRAM-SHA-256$")
+    assert _q(migrated_db.app_dsn, "SELECT 1") == [(1,)]
+
+
+def test_role_password_sql_never_carries_the_plaintext(test_db: TestDb) -> None:
+    plaintext = "pw-plain-Секрет-1"
+    with psycopg.connect(test_db.owner_dsn) as conn:
+        stmt = role_password_sql(conn, "ytc_app_x", plaintext).as_string(conn)
+    assert plaintext not in stmt
+    assert stmt.startswith("ALTER ROLE \"ytc_app_x\" PASSWORD 'SCRAM-SHA-256$")
+
+
+@pytest.mark.parametrize("grant", ["pg_read_all_data", "pg_write_all_data", "ytc_owner"])
+def test_upgrade_refuses_existing_app_role_with_memberships(test_db: TestDb, grant: str) -> None:
+    with psycopg.connect(test_db.owner_dsn, autocommit=True) as conn:
+        conn.execute(f'CREATE ROLE "{test_db.app_role}" LOGIN')
+        conn.execute(f'GRANT "{grant}" TO "{test_db.app_role}"')
+    with pytest.raises(ScriptError) as e:
+        run_alembic(test_db, "upgrade", "head")
+    assert e.value.code == "db_role_unsafe"
+    assert grant in e.value.message
     assert _tables(test_db.owner_dsn) <= {"alembic_version"}

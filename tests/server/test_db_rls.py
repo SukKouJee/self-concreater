@@ -260,3 +260,51 @@ def test_db_open_refuses_app_role_that_bypasses_rls(seeded: tuple[TestDb, uuid.U
     with pytest.raises(ScriptError) as e, Db(tdb.owner_dsn):
         pass
     assert e.value.code == "db_role_unsafe"
+
+
+def test_db_open_refuses_app_role_with_memberships(seeded: tuple[TestDb, uuid.UUID, uuid.UUID]) -> None:
+    tdb, _, _ = seeded
+    with psycopg.connect(tdb.owner_dsn, autocommit=True) as conn:
+        conn.execute(f'GRANT pg_read_all_data TO "{tdb.app_role}"')
+    with pytest.raises(ScriptError) as e, Db(tdb.app_dsn):
+        pass
+    assert e.value.code == "db_role_unsafe"
+    assert "pg_read_all_data" in e.value.message
+
+
+# ---- s3_key는 그 행 사용자의 접두사만(서버 설계 §3.1·§3.2) ----
+
+OBJECT_ROW = ("INSERT INTO objects (user_id, key, size, sha256, mtime_ns, s3_key) "
+              "VALUES (%s, 'reports/x.html', 1, repeat('0', 64), 1, %s)")
+TRASH_ROW = ("INSERT INTO trash_items (user_id, stamp, key, kind, s3_key, size, mtime_ns) "
+             "VALUES (%s, '20261101-000000', 'reports/x.html', 'object', %s, 1, 1)")
+
+
+@pytest.mark.parametrize("s3_key", [
+    "users/{b}/reports/x.html", "users/{a}/reports/other.html", "users/{a}/../{b}/reports/x.html",
+    "shared/videos/v1/raw.json", "trash/{a}/20261101-000000/reports/x.html", "users/{a}reports/x.html",
+])
+def test_objects_s3_key_must_be_the_rows_own_location(seeded: tuple[TestDb, uuid.UUID, uuid.UUID],
+                                                      s3_key: str) -> None:
+    tdb, a, b = seeded
+    with psycopg.connect(tdb.owner_dsn) as conn, pytest.raises(psycopg.errors.CheckViolation):
+        conn.execute(OBJECT_ROW, (a, s3_key.format(a=a, b=b)))
+
+
+@pytest.mark.parametrize("s3_key", [
+    "trash/{b}/20261101-000000/reports/x.html", "trash/{a}/20261101-000001/reports/x.html",
+    "users/{a}/reports/x.html", "trash/{a}/20261101-000000/reports/y.html",
+])
+def test_trash_s3_key_must_be_the_rows_own_location(seeded: tuple[TestDb, uuid.UUID, uuid.UUID], s3_key: str) -> None:
+    tdb, a, b = seeded
+    with psycopg.connect(tdb.owner_dsn) as conn, pytest.raises(psycopg.errors.CheckViolation):
+        conn.execute(TRASH_ROW, (a, s3_key.format(a=a, b=b)))
+
+
+def test_own_s3_keys_are_accepted_through_user_tx(db: Db, seeded: tuple[TestDb, uuid.UUID, uuid.UUID]) -> None:
+    _, a, b = seeded
+    with db.user_tx(a) as conn:
+        conn.execute(OBJECT_ROW, (a, f"users/{a}/reports/x.html"))
+        conn.execute(TRASH_ROW, (a, f"trash/{a}/20261101-000000/reports/x.html"))
+    with pytest.raises(psycopg.errors.CheckViolation), db.user_tx(a) as conn:
+        conn.execute(OBJECT_ROW.replace("x.html", "y.html"), (a, f"users/{b}/reports/y.html"))

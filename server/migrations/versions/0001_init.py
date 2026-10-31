@@ -8,6 +8,9 @@ Create Date: 2026-11-01
 - 앱 롤(이름·비밀번호는 YTC_DB_DSN): LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOINHERIT, DML만.
 - 개인 테이블(docs, folders, objects, trash_items, llm_usage)은 ENABLE + FORCE RLS, 정책 `own` 하나.
   `app.user_id`가 없거나 빈 문자열이면 NULL과 비교 → 행 0개, INSERT 거부(fail closed).
+- 앱 롤이 이미 있고 다른 롤에 속해 있으면 거부(`db_role_unsafe`). 비밀번호는 클라이언트에서 SCRAM으로 해시해 보낸다.
+- `objects.s3_key` = `users/{user_id}/{key}`, `trash_items.s3_key` = NULL 또는 `trash/{user_id}/{stamp}/{key}`(CHECK):
+  행이 다른 사용자의 MinIO 객체를 가리킬 수 없다.
 - `users`·`shared_objects`는 RLS 없음. 앱 롤은 users에 SELECT와 UPDATE(google_sub, display_name)만.
 """
 from __future__ import annotations
@@ -18,6 +21,7 @@ from alembic import context, op
 from psycopg import sql
 
 from scripts.common import ScriptError
+from server.db import role_memberships, role_password_sql
 
 revision: str = "0001"
 down_revision: str | None = None
@@ -67,7 +71,7 @@ CREATE TABLE objects (
   user_id uuid NOT NULL REFERENCES users ON DELETE CASCADE,
   key text COLLATE "C" NOT NULL,
   size bigint NOT NULL, sha256 char(64) NOT NULL, mtime_ns bigint NOT NULL,
-  s3_key text NOT NULL,
+  s3_key text NOT NULL CHECK (s3_key = 'users/' || user_id::text || '/' || key),
   PRIMARY KEY (user_id, key));
 
 CREATE TABLE shared_objects (
@@ -81,6 +85,7 @@ CREATE TABLE trash_items (
   stamp text NOT NULL, key text COLLATE "C" NOT NULL,
   kind text NOT NULL CHECK (kind IN ('doc','object')),
   raw bytea, s3_key text, size bigint NOT NULL, mtime_ns bigint NOT NULL,
+  CHECK (s3_key IS NULL OR s3_key = 'trash/' || user_id::text || '/' || stamp || '/' || key),
   moved_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (user_id, stamp, key));
 
@@ -126,12 +131,16 @@ def upgrade() -> None:
     role = sql.Identifier(app_role)
 
     exists = drv.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (app_role,)).fetchone()
+    groups = role_memberships(drv, app_role) if exists else []
+    if groups:
+        raise ScriptError("db_role_unsafe", f"앱 롤({app_role})이 다른 롤에 속해 있습니다({', '.join(groups)}). "
+                                            "REVOKE로 소속을 지운 뒤 다시 실행하세요.")
     if not exists:
         drv.execute(sql.SQL("CREATE ROLE {}").format(role))
     drv.execute(sql.SQL("ALTER ROLE {} LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOINHERIT "
                         "NOREPLICATION").format(role))
     if password is not None:
-        drv.execute(sql.SQL("ALTER ROLE {} PASSWORD {}").format(role, sql.Literal(password)))
+        drv.execute(role_password_sql(drv, app_role, password))  # SCRAM verifier, never the plaintext
 
     op.execute(TABLES_SQL)
     for table in RLS_TABLES:

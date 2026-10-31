@@ -5,7 +5,7 @@
   돌아갈 때 `RESET ALL`로 한 번 더 지운다. 설정이 없으면 RLS 정책이 NULL과 비교해 행 0개(fail closed).
 - 관리 작업(사용자 추가·비활성, 전체 사용량)은 `Db.admin_tx()`: owner 롤(`YTC_DB_OWNER_DSN`)로 연결 하나를 따로 연다.
   풀에 섞지 않는다(앱 요청이 owner 연결을 빌리는 일이 없게).
-- `open()`은 앱 롤이 슈퍼유저이거나 BYPASSRLS면 거부한다(`db_role_unsafe`). 격리의 최종 방어선이 RLS이기 때문이다.
+- `open()`은 앱 롤이 슈퍼유저·BYPASSRLS이거나 다른 롤에 속해 있으면 거부한다(`db_role_unsafe`). 격리의 최종 방어선이 RLS이기 때문이다.
 """
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from types import TracebackType
 from typing import Final
 
 import psycopg
+from psycopg import sql
 from psycopg.conninfo import conninfo_to_dict
 from psycopg.rows import TupleRow
 from psycopg_pool import ConnectionPool
@@ -41,6 +42,21 @@ def app_role_from_dsn(dsn: str) -> tuple[str, str | None]:
         raise ScriptError("config_invalid", f"앱 롤 이름은 소문자·숫자·밑줄로 63자 이내여야 합니다: {name!r}")
     password = params.get("password")
     return name, (str(password) if password is not None else None)
+
+
+def role_password_sql(conn: Conn, role: str, password: str) -> sql.Composed:
+    """`ALTER ROLE <role> PASSWORD '<SCRAM 검증자>'`. 평문은 클라이언트에서 해시하고 서버로 보내지 않는다
+    (문장 로그·pg_stat_statements·오류 메시지에 평문이 남지 않게)."""
+    verifier = conn.pgconn.encrypt_password(password.encode("utf-8"), role.encode("utf-8"), b"scram-sha-256")
+    return sql.SQL("ALTER ROLE {} PASSWORD {}").format(sql.Identifier(role), sql.Literal(verifier.decode("ascii")))
+
+
+def role_memberships(conn: Conn, role: str) -> list[str]:
+    """`role`이 속한 롤 이름들(pg_auth_members). 앱 롤은 비어 있어야 한다: 소속 롤로 SET ROLE 하거나
+    pg_read_all_data 같은 내장 롤 권한을 얻으면 RLS·최소 권한이 무너진다."""
+    rows = conn.execute("SELECT g.rolname FROM pg_auth_members m JOIN pg_roles g ON g.oid = m.roleid "
+                        "JOIN pg_roles r ON r.oid = m.member WHERE r.rolname = %s ORDER BY 1", (role,)).fetchall()
+    return [str(r[0]) for r in rows]
 
 
 def _as_uuid(user_id: uuid.UUID | str) -> uuid.UUID:
@@ -90,10 +106,14 @@ class Db:
         with self._pool.connection() as conn:
             row = conn.execute("SELECT current_user, rolsuper, rolbypassrls FROM pg_roles "
                                "WHERE rolname = current_user").fetchone()
+            name = str(row[0]) if row else "?"
+            groups = role_memberships(conn, name)
         if row is None or row[1] or row[2]:
-            name = row[0] if row else "?"
             raise ScriptError("db_role_unsafe",
                               f"YTC_DB_DSN의 롤({name})이 슈퍼유저이거나 RLS를 건너뜁니다. 앱은 NOBYPASSRLS 롤(ytc_app)로 접속해야 합니다.")
+        if groups:
+            raise ScriptError("db_role_unsafe",
+                              f"YTC_DB_DSN의 롤({name})이 다른 롤에 속해 있습니다({', '.join(groups)}). 앱 롤은 어떤 롤에도 속하지 않아야 합니다.")
 
     @contextmanager
     def user_tx(self, user_id: uuid.UUID | str) -> Iterator[Conn]:
