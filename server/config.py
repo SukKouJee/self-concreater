@@ -7,8 +7,10 @@
   가격표(`server.usage.PRICES`)에 있어야 시작한다, `YTC_LLM_MAX_TOKENS`(호출당 상한, 기본 16000 = 코드가 요청하는 최댓값),
   `YTC_DAILY_USD`(기본 1.00), `YTC_MEDIA_SLOTS`(2), `YTC_LLM_SLOTS`(4). 사용자 `yt-coach.json`의 `llm` 절은 무시한다(ADR-S10).
 - `GoogleSettings`(T12, §4.2): `YTC_GOOGLE_CLIENT_ID`·`YTC_GOOGLE_CLIENT_SECRET`(둘 다 있거나 둘 다 없거나). 리디렉션 URI는
-  `YTC_PUBLIC_URL` + `/auth/google/callback`. 없으면 Google 로그인을 내놓지 않는다. production은 로그인 방법이 하나는 있어야 하는데
-  dev 로그인은 production에서 못 쓰므로 Google 설정이 없으면 시작하지 않는다(`config_missing`).
+  `YTC_PUBLIC_URL` + `/auth/google/callback`. 없으면 Google 로그인을 내놓지 않는다.
+- 이메일+비밀번호 로그인(T15): `YTC_PASSWORD_LOGIN`(0/1, 코드 기본 0, 서버 compose의 .env.example은 1). 비밀번호는 관리 CLI가 정한다.
+  production은 로그인 방법이 하나는 있어야 하는데 dev 로그인은 production에서 못 쓰므로, Google 설정도 비밀번호 로그인도 없으면
+  시작하지 않는다(`config_missing`).
 - `ServerSettings`: 앱이 쓰는 설정 묶음(storage + auth + llm).
 연결 풀: 앱 요청 스레드(anyio 기본 40)와 작업 스레드가 같은 풀을 나눠 쓴다. 풀이 모자라면 `YTC_DB_POOL_MAX`·
 `YTC_S3_MAX_POOL_CONNECTIONS`를 올린다(boto3 기본 10, 넘으면 "Connection pool is full" 경고 후 연결을 버린다).
@@ -43,6 +45,7 @@ DEFAULT_DAILY_USD: Final = Decimal("1.00")
 MAX_DAILY_USD: Final = Decimal("999999.99")    # users.daily_usd_limit numeric(8,2)
 GOOGLE_CALLBACK_PATH: Final = "/auth/google/callback"
 GOOGLE_ENV: Final = ("YTC_GOOGLE_CLIENT_ID", "YTC_GOOGLE_CLIENT_SECRET")
+PASSWORD_ENV: Final = "YTC_PASSWORD_LOGIN"
 DEFAULT_MEDIA_SLOTS: Final = 2
 DEFAULT_LLM_SLOTS: Final = 4
 
@@ -162,6 +165,7 @@ class AuthSettings:
     session_secret: str = field(repr=False)
     dev_login: bool = False
     google: GoogleSettings | None = None
+    password_login: bool = False
 
     @property
     def production(self) -> bool:
@@ -189,10 +193,13 @@ class AuthSettings:
         if name == PRODUCTION and not origin.startswith("https://"):
             raise ScriptError("config_invalid", "YTC_ENV=production에서는 YTC_PUBLIC_URL이 https여야 합니다(세션 쿠키 Secure).")
         google = GoogleSettings.from_env(env, origin)
-        if name == PRODUCTION and google is None:
-            raise ScriptError("config_missing", f"서버 설정 {GOOGLE_ENV[0]}·{GOOGLE_ENV[1]}이(가) 없습니다. "
-                                                "YTC_ENV=production에는 로그인 방법(Google)이 있어야 합니다. deploy/server/.env에 넣으세요.")
-        return cls(env=name, public_origin=origin, session_secret=secret, dev_login=dev, google=google)
+        password = _flag(env, PASSWORD_ENV)
+        if name == PRODUCTION and google is None and not password:
+            raise ScriptError("config_missing", f"로그인 방법이 없습니다. YTC_ENV=production에는 {PASSWORD_ENV}=1(이메일+비밀번호) 또는 "
+                                                f"{GOOGLE_ENV[0]}·{GOOGLE_ENV[1]}(Google 로그인)이 있어야 합니다. "
+                                                "deploy/server/.env에 넣으세요.")
+        return cls(env=name, public_origin=origin, session_secret=secret, dev_login=dev, google=google,
+                   password_login=password)
 
 
 def _usd(env: Mapping[str, str], name: str, default: Decimal) -> Decimal:

@@ -172,11 +172,13 @@ def test_app_reads_users_and_updates_only_login_columns(db: Db, seeded: tuple[Te
     tdb, a, _ = seeded
     with db.user_tx(a) as conn:
         assert conn.execute("SELECT count(*) FROM users").fetchone() == (2,)
+        assert conn.execute("SELECT password_hash FROM users WHERE id = %s", (a,)).fetchone() == (None,)  # login reads it
         assert conn.execute("UPDATE users SET google_sub = 'sub-a', display_name = 'A' WHERE id = %s",
                             (a,)).rowcount == 1
     for stmt in ("UPDATE users SET is_admin = true", "UPDATE users SET disabled = false",
                  "UPDATE users SET session_epoch = 0", "UPDATE users SET daily_usd_limit = 99",
                  "UPDATE users SET email = 'z@example.com'", "DELETE FROM users",
+                 "UPDATE users SET password_hash = NULL",                       # only the owner (admin CLI) sets it
                  "INSERT INTO users (email) VALUES ('c@example.com')"):
         with pytest.raises(DENIED), db.user_tx(a) as conn:
             conn.execute(stmt)

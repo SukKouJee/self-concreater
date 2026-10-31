@@ -229,3 +229,50 @@ def test_production_without_any_login_method_refuses_to_start():
 def test_outside_production_google_is_optional():
     s = AuthSettings.from_env({"YTC_PUBLIC_URL": "http://localhost:8080", "YTC_SESSION_SECRET": SECRET, "YTC_ENV": "dev"})
     assert s.google is None and not s.dev_login
+
+
+# ---- 이메일+비밀번호 로그인 설정(T15) -------------------------------------------------------
+
+def _no_google(**over: str) -> dict[str, str]:
+    env = _env(**over)
+    for key in GOOGLE:
+        env.pop(key, None)
+    return env
+
+
+@pytest.mark.parametrize(("google", "password", "starts"), [
+    (True, False, True),            # google only
+    (False, True, True),            # password only
+    (True, True, True),             # both
+    (False, False, False),          # neither: no way to sign in
+])
+def test_production_login_method_matrix(google, password, starts):
+    env = _env() if google else _no_google()
+    if password:
+        env["YTC_PASSWORD_LOGIN"] = "1"
+    if not starts:
+        with pytest.raises(ScriptError) as e:
+            AuthSettings.from_env(env)
+        assert e.value.code == "config_missing"
+        assert "YTC_PASSWORD_LOGIN" in e.value.message and "YTC_GOOGLE_CLIENT_ID" in e.value.message
+        return
+    s = AuthSettings.from_env(env)
+    assert s.production and s.password_login is password and (s.google is not None) is google
+
+
+def test_password_login_is_off_unless_enabled():
+    assert AuthSettings.from_env(_env()).password_login is False
+    assert AuthSettings.from_env(_env(YTC_PASSWORD_LOGIN="")).password_login is False
+    assert AuthSettings.from_env(_env(YTC_PASSWORD_LOGIN="0")).password_login is False
+
+
+@pytest.mark.parametrize("value", ["yes", "true", "2", "on"])
+def test_password_login_flag_values(value):
+    with pytest.raises(ScriptError) as e:
+        AuthSettings.from_env(_env(YTC_PASSWORD_LOGIN=value))
+    assert e.value.code == "config_invalid" and "YTC_PASSWORD_LOGIN" in e.value.message
+
+
+def test_password_login_works_outside_production_too():
+    s = AuthSettings.from_env(_no_google(YTC_ENV="dev", YTC_PUBLIC_URL="http://localhost:8080", YTC_PASSWORD_LOGIN="1"))
+    assert s.password_login and not s.production

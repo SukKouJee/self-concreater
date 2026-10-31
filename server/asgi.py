@@ -4,7 +4,7 @@
 1. 경로는 **퍼센트 인코딩 그대로**(`scope["raw_path"]`, 쿼리 제외)를 쓴다. stdlib 서버의 `urlsplit(self.path).path`와 같아서
    기능 가드(`feature_guard`)와 라우팅(`match`, 그룹만 디코딩)이 같은 문자열을 본다(`/api/%6Cibrary`는 가드에도 라우트에도 안 걸려 404).
 2. `/healthz`(인증 없음, PG·MinIO 확인) → CSRF(안전하지 않은 메서드: Origin + JSON, `auth.csrf_error`) → `/auth/*`
-   (로그인 화면, Google 로그인 시작·콜백, dev 로그인, 로그아웃) → 세션 확인(**요청마다** users의 disabled·session_epoch, Ctx를 만들기 전) →
+   (로그인 화면, Google 로그인 시작·콜백, 이메일+비밀번호 로그인, dev 로그인, 로그아웃) → 세션 확인(**요청마다** users의 disabled·session_epoch, Ctx를 만들기 전) →
    서버가 덮어쓰는 기본 라우트(`/`, `/api/ping`, `/api/shutdown` 404, `/files/<key>`) → `match` → 기능 가드(서버판은 §8 전부 끔)
    → 본문(10MB, `parse_json_body`) → 작업 스레드에서 `edition("server")` + `ctx.use(Ctx(user_id, backend))` 안에서 `call`.
    핸들러가 시작한 작업 스레드는 `copy_context()`로 Ctx·판 문맥을 이어받는다(JobManager.start).
@@ -20,9 +20,11 @@ from __future__ import annotations
 import html
 import json
 import logging
+import math
 import os
 import string
 import sys
+import threading
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import asynccontextmanager
@@ -45,7 +47,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from scripts import ctx
 from scripts.common import ScriptError
 from scripts.ui import server as ui
-from server import auth, files, oidc
+from server import auth, files, login_limit, oidc, passwords
 from server.backend import ServerBackend
 from server.config import DEFAULT_ENV, PRODUCTION, AuthSettings, LlmSettings, ServerSettings
 from server.jobs_registry import Registry, install_runtime, uninstall_runtime
@@ -67,10 +69,22 @@ UNHEALTHY: Final = "unhealthy"
 # 500 bodies in the server edition: details (exception text may carry paths or values) stay in the log only
 INTERNAL_MESSAGE: Final = "서버 오류가 났습니다. 잠시 뒤 다시 시도해 주세요"
 STARTING: Final = {"error": "starting", "message": "서버가 아직 시작하는 중입니다. 잠시 뒤 새로고침하세요"}
+PASSWORD_PATH: Final = "/auth/password"
+# scrypt needs ~32 MiB and tens of ms per call: at most this many run at once (others wait in their worker thread)
+HASH_SLOTS: Final = threading.BoundedSemaphore(2)
+UNKNOWN_CLIENT: Final = "unknown"
+LOGIN_UNAVAILABLE: Final = {"error": "unavailable", "message": "지금은 로그인할 수 없습니다. 잠시 뒤 다시 시도하세요"}
 
 
 def _web(name: str) -> bytes:
     return resources.files("server").joinpath("web", name).read_bytes()
+
+
+def too_many_attempts(retry_after: int) -> tuple[int, dict[str, Any], list[tuple[str, str]]]:
+    """429 응답(본문, Retry-After 헤더). 분은 올림."""
+    minutes = max(1, math.ceil(retry_after / 60))
+    return 429, {"error": "too_many_attempts", "message": f"로그인 시도가 너무 많습니다. {minutes}분 뒤 다시 시도하세요",
+                 "retry_after": retry_after}, [("Retry-After", str(retry_after))]
 
 
 def raw_path(scope: Scope) -> str:
@@ -94,12 +108,14 @@ class _ServerApp:
     """요청 처리기. Starlette 라우트 하나(`/{path:path}`)가 모든 요청을 여기로 보낸다."""
 
     def __init__(self, settings: AuthSettings, backend: ServerBackend, users: auth.UserDirectory,
-                 registry: Registry, google: oidc.GoogleOidc | None = None) -> None:
+                 registry: Registry, google: oidc.GoogleOidc | None = None,
+                 login_limits: login_limit.LoginLimiter | None = None) -> None:
         self.settings = settings
         self.backend = backend
         self.users = users
         self.registry = registry
         self.google = google
+        self.login_limits = login_limits or login_limit.LoginLimiter()
 
     # ---- 응답 --------------------------------------------------------------------
 
@@ -254,8 +270,14 @@ class _ServerApp:
             return self._reply(ui.Response(200, _web("login.html"), "text/html; charset=utf-8"), path)
         if method == "GET" and path == "/auth/login.js":
             return self._reply(ui.Response(200, _web("login.js"), "text/javascript; charset=utf-8"), path)
+        if method == "GET" and path == "/auth/dom.js":         # the app's h() helper, public for the login screen
+            return self._reply(ui.Response(200, (ui.STATIC_DIR / "dom.js").read_bytes(),
+                                           "text/javascript; charset=utf-8"), path)
         if method == "GET" and path == "/auth/methods":
-            return self._reply({"dev_login": self.settings.dev_login, "google": self.google is not None}, path)
+            return self._reply({"dev_login": self.settings.dev_login, "google": self.google is not None,
+                                "password": self.settings.password_login}, path)
+        if method == "POST" and path == PASSWORD_PATH and self.settings.password_login:
+            return await self._password_login(request, path)
         if method == "GET" and path == "/auth/google" and self.google is not None:
             return self._google_start(request, self.google, path)
         if method == "GET" and path == oidc.CALLBACK_PATH and self.google is not None:
@@ -280,6 +302,62 @@ class _ServerApp:
         if row is None or row.disabled:
             return self._json(403, dict(auth.LOGIN_DENIED), path)
         auth.start_session(request.session, row)
+        return self._reply({"ok": True, "email": row.email}, path)
+
+    # ---- 이메일+비밀번호 -------------------------------------------------------------
+
+    def _password_attempt(self, email: str, password: str) -> tuple[auth.UserRow | None, str]:
+        """작업 스레드에서: 행 조회 → (항상) scrypt 한 번 → 판정. 모르는 이메일·비밀번호 없는 계정은 더미 해시로 같은 비용.
+        비활성 계정도 검증을 끝낸 뒤 거부한다. 돌려주는 이유 코드는 로그에만 쓴다."""
+        found = self.users.password_login(email)
+        row, stored = found if found is not None else (None, None)
+        with HASH_SLOTS:
+            try:
+                ok = passwords.verify_password(password, stored)
+            except passwords.BadHash as e:
+                auth_log.error("password login refused: bad_hash (user %s: %s)", row.id if row else "?", e)
+                return None, "bad_hash"
+        if row is None:
+            return None, "not_invited"
+        if stored is None:
+            return None, "no_password"
+        if not ok:
+            return None, "wrong_password"
+        if row.disabled:
+            return None, "disabled"
+        return row, "ok"
+
+    async def _password_login(self, request: StarletteRequest, path: str) -> StarletteResponse:
+        """`POST /auth/password {email, password}`: 초대·비활성 판정은 Google과 같고, 실패는 모두 `LOGIN_FAILED`.
+        이메일별·IP별 실패 횟수가 넘으면 비밀번호를 확인하지 않고 429. 성공하면 그 이메일의 실패 기록을 지운다."""
+        try:
+            body = await self._json_body(request)
+        except ScriptError as e:
+            return self._reply(ui.error_result(e), path)
+        email, password = body.get("email"), body.get("password")
+        if not isinstance(email, str) or not email.strip() or not isinstance(password, str):
+            return self._json(400, {"error": "bad_request", "message": "email과 password가 필요합니다"}, path)
+        ip = request.client.host if request.client is not None else UNKNOWN_CLIENT
+        wait = self.login_limits.begin(email, ip)        # counts this attempt while it runs (parallel requests)
+        if wait is not None:
+            auth_log.warning("password login refused: throttled")
+            status, payload, headers = too_many_attempts(wait)
+            body_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            return self._reply(ui.Response(status, body_bytes, "application/json; charset=utf-8", headers), path)
+        outcome = "aborted"                                # an exception (e.g. database down) is not a failed guess
+        try:
+            row, reason = await anyio.to_thread.run_sync(self._password_attempt, email, password)
+            outcome = "failed" if row is None else "succeeded"
+        except psycopg.Error as e:
+            auth_log.error("password login unavailable: %s", type(e).__name__)
+            return self._json(503, dict(LOGIN_UNAVAILABLE), path)
+        finally:
+            self.login_limits.end(email, ip, outcome)
+        if row is None:
+            auth_log.warning("password login refused: %s", reason)
+            return self._json(401, dict(auth.LOGIN_FAILED), path)
+        auth.start_session(request.session, row)
+        auth_log.info("password login: user %s", row.id)
         return self._reply({"ok": True, "email": row.email}, path)
 
     # ---- Google OIDC -------------------------------------------------------------
@@ -365,15 +443,17 @@ def _file_chunks(part: ui.FileSlice) -> Iterator[bytes]:
 
 def create_app(settings: AuthSettings, backend: ServerBackend, *, users: auth.UserDirectory | None = None,
                registry: Registry | None = None, close_backend: bool = False,
-               runtime: LlmSettings | None = None, google: oidc.GoogleOidc | None = None) -> Starlette:
+               runtime: LlmSettings | None = None, google: oidc.GoogleOidc | None = None,
+               login_limits: login_limit.LoginLimiter | None = None) -> Starlette:
     """설정·저장소로 앱을 만든다. users 기본값은 PG(`auth.PgUsers`). close_backend면 종료 때 저장소를 닫는다.
     runtime을 주면 지금 전역 자원 슬롯·수집 잠금·LLM 고정을 설치하고 종료 때 걷는다(`jobs_registry.install_runtime`).
     google 기본값은 설정에 Google 클라이언트가 있으면 실제 Google(`oidc.GoogleOidc`), 없으면 Google 로그인 없음.
-    테스트는 가짜 IdP 전송 계층을 넣은 GoogleOidc를 준다."""
+    테스트는 가짜 IdP 전송 계층을 넣은 GoogleOidc를 준다. login_limits 기본값은 이메일 10분에 5번·IP 10분에 20번(`server.login_limit`)."""
     ui.register_routes()
     if google is None and settings.google is not None:
         google = oidc.GoogleOidc(settings.google)
-    handler = _ServerApp(settings, backend, users or auth.PgUsers(backend.db), registry or Registry(), google)
+    handler = _ServerApp(settings, backend, users or auth.PgUsers(backend.db), registry or Registry(), google,
+                         login_limits)
     if runtime is not None:
         install_runtime(runtime, backend.db)
 

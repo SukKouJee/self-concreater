@@ -620,3 +620,137 @@ def test_plan_tree_write_streams_to_disk(request: pytest.FixtureRequest, env: di
 def test_pg_user_helper_users_are_visible_to_admin_usage(env: dict[str, str], migrated_db: TestDb) -> None:
     pg_user(migrated_db.owner_dsn, "helper@example.com")
     assert admin.main(["usage"], env)["rows"] == []
+
+
+# --- 비밀번호(T15) ---------------------------------------------------------------------------
+
+import io  # noqa: E402
+
+from server import passwords  # noqa: E402
+
+PW = "correct horse battery"
+
+
+def _stdin(text: str) -> io.StringIO:
+    return io.StringIO(text)
+
+
+def _no_prompt(_label: str) -> str:
+    raise AssertionError("prompted although the password came from stdin")
+
+
+def _prompts(*answers: str) -> Any:
+    left = list(answers)
+
+    def prompt(_label: str) -> str:
+        return left.pop(0)
+
+    return prompt
+
+
+def _hash_of(env: dict[str, str], email: str) -> str | None:
+    with psycopg.connect(env["YTC_DB_OWNER_DSN"]) as conn:
+        row = conn.execute("SELECT password_hash FROM users WHERE email = %s", (email,)).fetchone()
+    assert row is not None
+    return row[0]
+
+
+def test_read_password_from_stdin_strips_only_the_line_ending() -> None:
+    assert admin.read_password(stdin=_stdin("  spaced pass  \r\n"), from_stdin=True, prompt=_no_prompt) == "  spaced pass  "
+
+
+def test_read_password_prompts_twice_and_needs_the_same_answer() -> None:
+    assert admin.read_password(stdin=_stdin(""), from_stdin=False, prompt=_prompts(PW, PW), tty=True) == PW
+    with pytest.raises(ScriptError) as e:
+        admin.read_password(stdin=_stdin(""), from_stdin=False, prompt=_prompts(PW, PW + "x"), tty=True)
+    assert e.value.code == "password_mismatch" and PW not in e.value.message
+
+
+def test_read_password_without_a_terminal_asks_for_password_stdin() -> None:
+    with pytest.raises(ScriptError) as e:
+        admin.read_password(stdin=_stdin(PW), from_stdin=False, prompt=_no_prompt, tty=False)
+    assert e.value.code == "no_tty" and "--password-stdin" in e.value.message
+
+
+@pytest.mark.parametrize("argv", [["add-user", "a@example.com", "--password-stdin"],
+                                  ["set-password", "a@example.com", "--password-stdin"]])
+def test_short_password_is_refused_before_touching_the_db(argv: list[str]) -> None:
+    with pytest.raises(ScriptError) as e:
+        admin.main(argv, {}, stdin=_stdin("short\n"), prompt=_no_prompt)
+    assert e.value.code == "weak_password"
+
+
+def test_password_and_password_stdin_are_exclusive() -> None:
+    with pytest.raises(ScriptError) as e:
+        admin.main(["add-user", "a@example.com", "--password", "-", "--password-stdin"], {}, stdin=_stdin(PW))
+    assert e.value.code == "usage"
+
+
+@pytest.mark.parametrize("command", ["set-password", "clear-password"])
+def test_password_commands_need_the_owner_dsn(command: str) -> None:
+    with pytest.raises(ScriptError) as e:
+        admin.main([command, "a@example.com", *(["--password-stdin"] if command == "set-password" else [])], {},
+                   stdin=_stdin(PW + "\n"))
+    assert e.value.code == "config_missing"
+
+
+def test_add_user_with_password_stdin_stores_a_scrypt_hash_and_never_prints_it(env: dict[str, str],
+                                                                               capsys: pytest.CaptureFixture[str]) -> None:
+    out = admin.main(["add-user", EMAIL, "--password-stdin"], env, stdin=_stdin(PW + "\n"), prompt=_no_prompt)
+
+    stored = _hash_of(env, LOWER)
+    assert out["password"] is True and stored is not None and stored.startswith("scrypt$")
+    assert passwords.verify_password(PW, stored)
+    text = repr(out) + capsys.readouterr().out
+    assert PW not in text and stored not in text
+
+
+@pytest.mark.parametrize("argv", [["--password"], ["--password", "-"]])
+def test_add_user_password_flag_without_value_or_dash_prompts(env: dict[str, str], argv: list[str]) -> None:
+    out = admin.main(["add-user", LOWER, *argv], env, stdin=_stdin(""), prompt=_prompts(PW, PW), tty=True)
+    assert out["password"] is True and passwords.verify_password(PW, _hash_of(env, LOWER))
+
+
+def test_add_user_without_password_has_no_hash(env: dict[str, str]) -> None:
+    out = admin.main(["add-user", LOWER], env)
+    assert out["password"] is False and _hash_of(env, LOWER) is None
+
+
+def test_set_password_replaces_the_hash_and_bumps_session_epoch(env: dict[str, str]) -> None:
+    from server.auth import SessionClaim, UserRow, session_valid
+    admin.main(["add-user", LOWER, "--password-stdin"], env, stdin=_stdin(PW))
+    before = _user_row(env, LOWER)
+    claim = SessionClaim(before[0], before[5], 1000)
+    assert session_valid(claim, UserRow(before[0], before[1], before[4], before[5]), now=1001)
+
+    out = admin.main(["set-password", EMAIL, "--password-stdin"], env, stdin=_stdin("a brand new secret\n"))
+
+    after = _user_row(env, LOWER)
+    assert out == {"id": str(before[0]), "email": LOWER, "password": True, "session_epoch": before[5] + 1}
+    assert not session_valid(claim, UserRow(after[0], after[1], after[4], after[5]), now=1001)   # old sessions die
+    stored = _hash_of(env, LOWER)
+    assert passwords.verify_password("a brand new secret", stored) and not passwords.verify_password(PW, stored)
+
+
+def test_set_password_prompts_by_default(env: dict[str, str]) -> None:
+    admin.main(["add-user", LOWER], env)
+    admin.main(["set-password", LOWER], env, stdin=_stdin(""), prompt=_prompts(PW, PW), tty=True)
+    assert passwords.verify_password(PW, _hash_of(env, LOWER))
+
+
+def test_clear_password_disables_password_login_and_bumps_epoch(env: dict[str, str]) -> None:
+    admin.main(["add-user", LOWER, "--password-stdin"], env, stdin=_stdin(PW))
+    before = _user_row(env, LOWER)
+
+    out = admin.main(["clear-password", EMAIL], env)
+
+    assert out == {"id": str(before[0]), "email": LOWER, "password": False, "session_epoch": before[5] + 1}
+    assert _hash_of(env, LOWER) is None and _user_row(env, LOWER)[4] is False      # account stays enabled
+
+
+@pytest.mark.parametrize("command", ["set-password", "clear-password"])
+def test_password_commands_for_unknown_user_are_user_not_found(env: dict[str, str], command: str) -> None:
+    with pytest.raises(ScriptError) as e:
+        admin.main([command, "ghost@example.com", *(["--password-stdin"] if command == "set-password" else [])], env,
+                   stdin=_stdin(PW))
+    assert e.value.code == "user_not_found"

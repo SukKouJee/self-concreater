@@ -10,6 +10,9 @@
   모르는 이메일로 계정을 만들지 않는다), 비활성이 아니고, `google_sub`가 비었으면 이번 sub로 고정(`pin_google_sub`, 비어 있을 때만
   UPDATE), 이미 있으면 같아야 한다. 같은 sub가 다른 사용자 행에 있으면(UNIQUE) 거부. 거부는 `LoginDenied(reason)`.
   프로토콜 검증(state·서명·클레임)은 `server.oidc`.
+- 이메일+비밀번호 로그인(T15, `YTC_PASSWORD_LOGIN=1`): `PgUsers.password_login`이 행과 `password_hash`를 함께 읽는다(해시는
+  `UserRow`에 넣지 않는다: 세션 확인 경로에는 해시가 오가지 않는다). 해시·검증은 `server.passwords`, 실패 횟수 제한은
+  `server.login_limit`, 경로는 `server.asgi`(`POST /auth/password`). 모든 실패는 같은 문구(`LOGIN_FAILED`).
 """
 from __future__ import annotations
 
@@ -34,6 +37,8 @@ LOGIN_REQUIRED: Final = {"error": "login_required", "message": "로그인이 필
 BAD_ORIGIN: Final = {"error": "bad_origin", "message": "다른 사이트에서 온 요청은 받지 않습니다"}
 BAD_CONTENT_TYPE: Final = {"error": "bad_content_type", "message": "요청 형식이 맞지 않습니다(JSON 요청만 받습니다)"}
 LOGIN_DENIED: Final = {"error": "login_denied", "message": "초대되지 않았거나 쓸 수 없는 계정입니다. 관리자에게 문의하세요"}
+# every password login failure (unknown email, no password, wrong password, disabled) gets exactly this
+LOGIN_FAILED: Final = {"error": "login_failed", "message": "이메일 또는 비밀번호가 맞지 않습니다"}
 
 
 @dataclass(frozen=True)
@@ -57,6 +62,7 @@ class UserDirectory(Protocol):
     def by_id(self, user_id: uuid.UUID) -> UserRow | None: ...
     def by_email(self, email: str) -> UserRow | None: ...
     def pin_google_sub(self, user_id: uuid.UUID, sub: str) -> UserRow | None: ...
+    def password_login(self, email: str) -> tuple[UserRow, str | None] | None: ...
 
 
 class PgUsers:
@@ -79,6 +85,15 @@ class PgUsers:
 
     def by_email(self, email: str) -> UserRow | None:
         return self._one("email", email.strip().lower())
+
+    def password_login(self, email: str) -> tuple[UserRow, str | None] | None:
+        """비밀번호 로그인용: (행, `password_hash` 또는 None). 없는 이메일이면 None. 앱 롤은 users를 읽기만 한다."""
+        with self._db.public_tx() as conn:
+            row = conn.execute(f"SELECT {self._COLUMNS}, password_hash FROM users WHERE email = %s",
+                               (email.strip().lower(),)).fetchone()
+        if row is None:
+            return None
+        return _row(row[:5]), None if row[5] is None else str(row[5])
 
     def pin_google_sub(self, user_id: uuid.UUID, sub: str) -> UserRow | None:
         """`google_sub`가 비었을 때만 sub를 넣고(경합해도 먼저 넣은 쪽이 남는다) 그 뒤의 행을 돌려준다. 이미 있으면 바꾸지 않는다

@@ -160,7 +160,7 @@ def test_login_page_and_script_need_no_session(client):
     js = client.get("/auth/login.js")
     assert js.status_code == 200 and js.headers["content-type"].startswith("text/javascript")
     assert "innerHTML" not in js.text
-    assert client.get("/auth/methods").json() == {"dev_login": True, "google": False}
+    assert client.get("/auth/methods").json() == {"dev_login": True, "google": False, "password": False}
 
 
 def test_healthz_needs_no_session(client, backend):
@@ -202,7 +202,7 @@ def test_dev_login_route_absent_when_not_enabled(users, backend):
     app = asgi.create_app(_settings(YTC_DEV_LOGIN="0"), backend, users=users)   # type: ignore[arg-type]
     users.add("a@example.com")
     with TestClient(app, base_url=ORIGIN, headers={"Origin": ORIGIN}) as c:
-        assert c.get("/auth/methods").json() == {"dev_login": False, "google": False}
+        assert c.get("/auth/methods").json() == {"dev_login": False, "google": False, "password": False}
         r = _login(c, "a@example.com")
         assert r.status_code == 404 and "set-cookie" not in r.headers
 

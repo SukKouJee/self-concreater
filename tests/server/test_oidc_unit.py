@@ -452,7 +452,7 @@ def test_no_next_or_return_parameter_changes_where_login_lands(client, idp, user
 # ---- configuration · methods · logging --------------------------------------------------
 
 def test_methods_offer_google_when_configured(client):
-    assert client.get("/auth/methods").json() == {"dev_login": False, "google": True}
+    assert client.get("/auth/methods").json() == {"dev_login": False, "google": True, "password": False}
 
 
 def test_google_routes_are_404_when_not_configured(users):
@@ -460,7 +460,7 @@ def test_google_routes_are_404_when_not_configured(users):
                                       "YTC_ENV": "dev", "YTC_DEV_LOGIN": "1"})
     app = asgi.create_app(settings, FakeBackend(), users=users)   # type: ignore[arg-type]
     with TestClient(app, base_url="http://127.0.0.1:8080") as c:
-        assert c.get("/auth/methods").json() == {"dev_login": True, "google": False}
+        assert c.get("/auth/methods").json() == {"dev_login": True, "google": False, "password": False}
         assert c.get("/auth/google", follow_redirects=False).status_code == 404
         assert c.get("/auth/google/callback?code=x&state=y", follow_redirects=False).status_code == 404
 

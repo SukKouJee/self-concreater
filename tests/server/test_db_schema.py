@@ -1,4 +1,4 @@
-"""Alembic `0001`이 서버 설계 §3.1 스키마를 정확히 만들고, 되돌리면 깨끗이 지우는지(T5)."""
+"""Alembic `0001`(+ `0002` 비밀번호 열, T15)이 서버 설계 §3.1 스키마를 정확히 만들고, 되돌리면 깨끗이 지우는지(T5)."""
 from __future__ import annotations
 
 from typing import Any
@@ -20,7 +20,8 @@ EXPECTED_COLUMNS: dict[str, list[tuple[str, str, str, str | None]]] = {
         ("id", "uuid", "NO", None), ("email", "text", "NO", None), ("google_sub", "text", "YES", None),
         ("display_name", "text", "YES", None), ("is_admin", "boolean", "NO", None),
         ("disabled", "boolean", "NO", None), ("session_epoch", "integer", "NO", None),
-        ("daily_usd_limit", "numeric(8,2)", "YES", None), ("created_at", "timestamp with time zone", "NO", None)],
+        ("daily_usd_limit", "numeric(8,2)", "YES", None), ("created_at", "timestamp with time zone", "NO", None),
+        ("password_hash", "text", "YES", None)],                                          # 0002
     "docs": [
         ("user_id", "uuid", "NO", None), ("key", "text", "NO", "C"), ("raw", "bytea", "NO", None),
         ("version", "character(64)", "NO", None), ("size", "integer", "NO", None), ("mtime_ns", "bigint", "NO", None)],
@@ -95,7 +96,7 @@ def _role(dsn: str, role: str) -> tuple[Any, ...] | None:
 
 def test_upgrade_creates_exactly_the_design_tables(migrated_db: TestDb) -> None:
     assert _tables(migrated_db.owner_dsn) == ALL_TABLES | {"alembic_version"}
-    assert _q(migrated_db.owner_dsn, "SELECT version_num FROM alembic_version") == [("0001",)]
+    assert _q(migrated_db.owner_dsn, "SELECT version_num FROM alembic_version") == [("0002",)]
 
 
 @pytest.mark.parametrize("table", sorted(EXPECTED_COLUMNS))
@@ -114,11 +115,12 @@ def test_upgrade_defaults_constraints_and_foreign_keys(migrated_db: TestDb) -> N
         SELECT conrelid::regclass::text, pg_get_constraintdef(oid) FROM pg_constraint
          WHERE contype = 'c' AND connamespace = 'public'::regnamespace""")}
     plain = {("users", "CHECK ((email = lower(email)))"),
+             ("users", "CHECK (((password_hash IS NULL) OR (password_hash ~~ 'scrypt$%'::text)))"),
              ("trash_items", "CHECK ((kind = ANY (ARRAY['doc'::text, 'object'::text])))")}
     assert plain <= checks
     # s3_key ties (one per table, behaviour tested in test_db_rls)
     assert sorted(t for t, d in checks - plain if "s3_key" in d) == ["objects", "trash_items"]
-    assert len(checks) == 4
+    assert len(checks) == 5
     fks = {(r[0], r[1]) for r in _q(dsn, """
         SELECT conrelid::regclass::text, pg_get_constraintdef(oid) FROM pg_constraint
          WHERE contype = 'f' AND connamespace = 'public'::regnamespace""")}
@@ -169,6 +171,22 @@ def test_downgrade_removes_everything_and_upgrade_reapplies(migrated_db: TestDb)
     run_alembic(migrated_db, "upgrade", "head")
     assert _tables(migrated_db.owner_dsn) == ALL_TABLES | {"alembic_version"}
     assert _role(migrated_db.owner_dsn, migrated_db.app_role) is not None
+
+
+def test_0002_downgrade_drops_only_the_password_column_and_upgrade_restores_it(migrated_db: TestDb) -> None:
+    with psycopg.connect(migrated_db.owner_dsn) as conn:
+        conn.execute("INSERT INTO users (email, password_hash) VALUES ('a@x.com', 'scrypt$1$1$1$a$b')")
+    with psycopg.connect(migrated_db.owner_dsn) as conn:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            conn.execute("UPDATE users SET password_hash = 'plain-text'")
+    run_alembic(migrated_db, "downgrade", "0001")
+    assert _q(migrated_db.owner_dsn, "SELECT version_num FROM alembic_version") == [("0001",)]
+    assert [c[0] for c in _columns(migrated_db.owner_dsn, "users")] == [c[0] for c in EXPECTED_COLUMNS["users"][:-1]]
+    assert _q(migrated_db.owner_dsn, "SELECT email FROM users") == [("a@x.com",)]          # users are kept
+    assert _q(migrated_db.app_dsn, "SELECT count(*) FROM users") == [(1,)]                 # grants unchanged
+    run_alembic(migrated_db, "upgrade", "head")
+    assert _columns(migrated_db.owner_dsn, "users") == EXPECTED_COLUMNS["users"]
+    assert _q(migrated_db.owner_dsn, "SELECT password_hash FROM users") == [(None,)]
 
 
 def test_upgrade_is_idempotent_for_existing_app_role(test_db: TestDb) -> None:

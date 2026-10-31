@@ -1,6 +1,11 @@
 """서버 관리 CLI(서버 설계 §7 S9 최소): `python -m server.admin <명령>`. 결과는 JSON을 stdout으로, 실패는 `{"error", "message"}` + 종료 코드.
 
-- `add-user <email> [--name N] [--daily-limit USD] [--admin]`: 초대. 이메일은 소문자로 저장.
+- `add-user <email> [--name N] [--daily-limit USD] [--admin] [--password [-] | --password-stdin]`: 초대. 이메일은 소문자로 저장.
+  `--password`(값 없이 또는 `-`)면 터미널에서 두 번 묻고(화면에 보이지 않음), `--password-stdin`이면 표준 입력 한 줄(스크립트용).
+  `--password <값>`도 받지만 셸 기록·프로세스 목록에 남으므로 권하지 않는다.
+- `set-password <email> [--password-stdin]`: 비밀번호를 정하거나 바꾼다(기본은 터미널에서 묻기). `session_epoch`도 올려 이전 세션을 모두 끊는다.
+- `clear-password <email>`: 비밀번호를 지운다(그 계정은 비밀번호로 로그인할 수 없다, Google 로그인은 그대로). `session_epoch`도 올린다.
+  비밀번호 규칙은 10자 이상(`server.passwords.check_policy`). 비밀번호와 해시는 출력·로그 어디에도 남기지 않는다.
 - `disable-user <email>`: 비활성 + `session_epoch` 증가(이미 나간 세션 쿠키가 다음 요청에서 죽는다).
 - `logout-all <email>`: `session_epoch`만 증가(모든 기기의 세션이 끊기고, 다시 로그인하면 된다. 기기 분실 등).
 - `import <작업 폴더> --user <email> [--dry-run] [--overwrite] [--overwrite-memo] [--no-verify]`: 로컬 작업 폴더를 그 사용자 계정으로 올린다.
@@ -27,19 +32,20 @@
 """
 from __future__ import annotations
 
+import getpass
 import os
 import re
 import stat
 import sys
 import tempfile
 import uuid
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, TextIO
 
 import psycopg
 from psycopg.errors import UniqueViolation
@@ -48,6 +54,7 @@ from scripts import ctx as ctx_mod
 from scripts import keys, status
 from scripts.common import ArgParser, ScriptError, run
 from scripts.ctx import Ctx
+from server import passwords
 from server.backend import ServerBackend
 from server.config import StorageSettings
 from server.db import Conn, Db
@@ -286,19 +293,57 @@ def _limit(text: str | None) -> Decimal | None:
     return value
 
 
+Prompt = Callable[[str], str]
+PROMPT_DASH: Final = "-"
+
+
+def read_password(*, stdin: TextIO, from_stdin: bool, prompt: Prompt, tty: bool | None = None) -> str:
+    """새 비밀번호를 읽는다: 표준 입력 한 줄(줄 끝만 뗀다) 또는 터미널에서 두 번(같아야 한다). 규칙 검사 전의 값."""
+    if from_stdin:
+        return stdin.readline().removesuffix("\n").removesuffix("\r")
+    if not (stdin.isatty() if tty is None else tty):
+        raise ScriptError("no_tty", "비밀번호를 물을 터미널이 없습니다. 스크립트에서는 --password-stdin으로 표준 입력에 넘기세요.")
+    first = prompt("새 비밀번호(10자 이상): ")
+    if prompt("한 번 더: ") != first:
+        raise ScriptError("password_mismatch", "두 번 입력한 비밀번호가 다릅니다. 다시 실행하세요.")
+    return first
+
+
+def new_password_hash(value: str | None, *, from_stdin: bool, stdin: TextIO, prompt: Prompt,
+                      tty: bool | None = None) -> str | None:
+    """`--password`의 값(None이면 비밀번호 없음, `-`면 묻기)·`--password-stdin` → 규칙을 통과한 비밀번호의 해시."""
+    if value is None and not from_stdin:
+        return None
+    if from_stdin or value == PROMPT_DASH:
+        value = read_password(stdin=stdin, from_stdin=from_stdin, prompt=prompt, tty=tty)
+    return passwords.hash_password(passwords.check_policy(value))
+
+
 def add_user(env: Mapping[str, str], email: str, name: str | None, daily_limit: str | None,
-             admin: bool) -> dict[str, Any]:
+             admin: bool, password_hash: str | None = None) -> dict[str, Any]:
     address = _email(email)
     limit = _limit(daily_limit)
     try:
         with _owner_tx(env) as conn:
-            row = conn.execute("INSERT INTO users (email, display_name, daily_usd_limit, is_admin) "
-                               "VALUES (%s, %s, %s, %s) RETURNING id", (address, name, limit, admin)).fetchone()
+            row = conn.execute("INSERT INTO users (email, display_name, daily_usd_limit, is_admin, password_hash) "
+                               "VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                               (address, name, limit, admin, password_hash)).fetchone()
     except UniqueViolation as e:
         raise ScriptError("user_exists", f"이미 있는 사용자입니다: {address}") from e
     assert row is not None
     return {"id": str(row[0]), "email": address, "display_name": name, "is_admin": admin,
-            "daily_usd_limit": None if limit is None else float(limit)}
+            "daily_usd_limit": None if limit is None else float(limit), "password": password_hash is not None}
+
+
+def set_password(env: Mapping[str, str], email: str, password_hash: str | None) -> dict[str, Any]:
+    """비밀번호를 정하거나(해시) 지우고(None) `session_epoch`를 올린다(이전 세션은 다음 요청에서 끊긴다)."""
+    address = _email(email)
+    with _owner_tx(env) as conn:
+        row = conn.execute("UPDATE users SET password_hash = %s, session_epoch = session_epoch + 1 "
+                           "WHERE email = %s RETURNING id, session_epoch", (password_hash, address)).fetchone()
+    if row is None:
+        raise ScriptError("user_not_found", f"없는 사용자입니다: {address}. 먼저 add-user로 만드세요.")
+    return {"id": str(row[0]), "email": address, "password": password_hash is not None, "session_epoch": int(row[1])}
 
 
 def disable_user(env: Mapping[str, str], email: str) -> dict[str, Any]:
@@ -404,6 +449,16 @@ def _parser() -> ArgParser:
     add.add_argument("--name")
     add.add_argument("--daily-limit", dest="daily_limit")
     add.add_argument("--admin", action="store_true")
+    secret = add.add_mutually_exclusive_group()
+    secret.add_argument("--password", nargs="?", const=PROMPT_DASH,
+                        help="비밀번호 로그인용 비밀번호. 값 없이(또는 -) 주면 터미널에서 묻는다")
+    secret.add_argument("--password-stdin", dest="password_stdin", action="store_true",
+                        help="비밀번호를 표준 입력 한 줄에서 읽는다(스크립트용)")
+    setpw = sub.add_parser("set-password", help="비밀번호를 정하거나 바꾼다(모든 기기의 세션도 끊는다)")
+    setpw.add_argument("email")
+    setpw.add_argument("--password-stdin", dest="password_stdin", action="store_true")
+    clear = sub.add_parser("clear-password", help="비밀번호를 지워 비밀번호 로그인을 막는다(세션도 끊는다)")
+    clear.add_argument("email")
     dis = sub.add_parser("disable-user")
     dis.add_argument("email")
     out = sub.add_parser("logout-all", help="그 사용자의 모든 기기 세션을 끊는다(계정은 그대로)")
@@ -422,11 +477,21 @@ def _parser() -> ArgParser:
     return parser
 
 
-def main(argv: list[str], env: Mapping[str, str] | None = None) -> dict[str, Any]:
+def main(argv: list[str], env: Mapping[str, str] | None = None, *, stdin: TextIO | None = None,
+         prompt: Prompt | None = None, tty: bool | None = None) -> dict[str, Any]:
+    """stdin·prompt·tty는 테스트용(기본: sys.stdin, getpass.getpass, stdin이 터미널인지)."""
     args = _parser().parse_args(argv)
     environ = os.environ if env is None else env
+    reader = {"stdin": sys.stdin if stdin is None else stdin, "prompt": getpass.getpass if prompt is None else prompt,
+              "tty": tty}
     if args.command == "add-user":
-        return add_user(environ, args.email, args.name, args.daily_limit, args.admin)
+        hashed = new_password_hash(args.password, from_stdin=args.password_stdin, **reader)
+        return add_user(environ, args.email, args.name, args.daily_limit, args.admin, hashed)
+    if args.command == "set-password":
+        return set_password(environ, args.email,
+                            new_password_hash(PROMPT_DASH, from_stdin=args.password_stdin, **reader))
+    if args.command == "clear-password":
+        return set_password(environ, args.email, None)
     if args.command == "disable-user":
         return disable_user(environ, args.email)
     if args.command == "logout-all":
