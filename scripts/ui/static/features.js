@@ -21,14 +21,21 @@ export function applyFeatures(root, disabled, makeNote = defaultNote) {
   }
 }
 
-// Read the disabled list. An older or unreachable server means "nothing disabled" (the local edition's default).
-export async function loadFeatures(api) {
+// Read the edition and the disabled list. An older or unreachable server means the local edition with nothing
+// disabled (the local edition's default).
+export async function loadFeatureInfo(api) {
   try {
     const data = await api("GET", "/api/features");
-    return data && typeof data.disabled === "object" && data.disabled ? data.disabled : {};
+    const disabled = data && typeof data.disabled === "object" && data.disabled ? data.disabled : {};
+    return { edition: data && data.edition === "server" ? "server" : "local", disabled };
   } catch {
-    return {};
+    return { edition: "local", disabled: {} };
   }
+}
+
+// Read the disabled list only.
+export async function loadFeatures(api) {
+  return (await loadFeatureInfo(api)).disabled;
 }
 
 // Pages draw their boxes late and redraw them (replaceWith), so keep applying while the DOM changes.

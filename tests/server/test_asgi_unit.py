@@ -428,7 +428,8 @@ import(%s).then(async (m) => {
 def test_app_shows_the_notice_for_disabled_screens():
     text = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
     assert "const PAGE_FEATURES = { library: \"library\" };" in text
-    assert "disabledNote(page)" in text and "disabledFeatures = await loadFeatures(api);" in text
+    assert "disabledNote(page)" in text and "disabledFeatures = features.disabled;" in text
+    assert "const features = await loadFeatureInfo(api);" in text
     assert "innerHTML" not in text
 
 

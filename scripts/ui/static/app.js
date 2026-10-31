@@ -21,7 +21,8 @@
 // Rule: after EVERY await in mount/handlers, `if (!ctx.isCurrent()) return;` before touching the DOM.
 import { api, showBanner } from "/static/api.js";
 import { h } from "/static/dom.js";
-import { loadFeatures, watchFeatures } from "/static/features.js";
+import { loadIsAdmin } from "/static/admin-utils.js";
+import { loadFeatureInfo, watchFeatures } from "/static/features.js";
 import { createHelpPanel, helpPage } from "/static/help-panel.js";
 import { createStatusChip } from "/static/status-chip.js";
 import { legacyRoute, parseVideoHash } from "/static/video-utils.js";
@@ -54,6 +55,10 @@ const SCREENS = [
 // once it is loaded.
 const VIDEO_SCREENS = [
   { route: "#/video", name: "영상" },
+];
+// Server edition, admins only (not in the help chatbot's menu either): reached from the header / help menu.
+const ADMIN_SCREENS = [
+  { route: "#/admin", name: "관리" },
 ];
 
 const $ = (id) => document.getElementById(id);
@@ -324,8 +329,8 @@ function markActive() {
 function screenName(hash) {
   // "#/refs?tab=library" is the 공용 라이브러리 screen; other queries do not change the screen
   const key = helpPage(hash) === "library" ? "#/library" : hash.split("?")[0];
-  const s = VIDEO_SCREENS.find((it) => isActive(it.route, key)) || SCREENS.find((it) => isActive(it.route, key))
-    || SCREENS[0];
+  const s = VIDEO_SCREENS.find((it) => isActive(it.route, key)) || ADMIN_SCREENS.find((it) => isActive(it.route, key))
+    || SCREENS.find((it) => isActive(it.route, key)) || SCREENS[0];
   return s.name;
 }
 
@@ -340,6 +345,8 @@ function buildTopbar() {
     h("div", { class: "topbar-gap" }),
     // Claude job status chip (status-chip.js): empty (hidden) while nothing runs.
     h("div", { id: "status-chip", class: "status-chip" }),
+    // server edition admins only (showAdminEntry): the 관리 screen. Phones reach it from the help menu.
+    h("a", { class: "btn btn-ghost topbar-admin", id: "admin-link", href: "#/admin", hidden: true }, "관리"),
     helpMenu(),
   );
   updateTopbar();
@@ -395,11 +402,13 @@ function fillHelpPop(pop) {
   });
   const guide = h("a", { class: "pop-item", href: "#/guide" }, "사용 가이드");
   guide.addEventListener("click", () => setHelpMenu(false));
+  const admin = h("a", { class: "pop-item", id: "admin-pop", href: "#/admin", hidden: true }, "관리");
+  admin.addEventListener("click", () => setHelpMenu(false));
   const off = h("button", { type: "button", class: "pop-item pop-danger" }, "서버 끄기");
   off.addEventListener("click", onShutdownClick);
   // a shutdown confirm (only while a collect job runs) appears here
   const confirm = h("div", { class: "pop-confirm", id: "help-confirm", hidden: true });
-  pop.replaceChildren(toggle, guide, h("div", { class: "pop-sep", role: "separator" }), off, confirm);
+  pop.replaceChildren(toggle, guide, admin, h("div", { class: "pop-sep", role: "separator" }), off, confirm);
 }
 
 function setHelpMenu(open) {
@@ -475,6 +484,7 @@ function parseHash() {
     }
     case "add": return { page: "refs", params: { add: true } };
     case "library": return { page: "library", params: {} };
+    case "admin": return { page: "admin", params: {} };
     case "guide": return { page: "guide", params: { tab: tail === "long" ? "long" : "shorts" } };
     case "typify": return { page: "typify", params: {} };
     case "motif": return { page: "motif", params: {} };
@@ -673,6 +683,14 @@ function onHashChange() {
   route();
 }
 
+// The 관리 entry (header link + help menu item) for server-edition admins. The server checks again on every call.
+function showAdminEntry(on) {
+  for (const id of ["admin-link", "admin-pop"]) {
+    const el = $(id);
+    if (el) el.hidden = !on;
+  }
+}
+
 // ---- start ----------------------------------------------------------------
 
 async function start() {
@@ -686,8 +704,10 @@ async function start() {
     e.preventDefault();
     $("main").focus();
   });
-  disabledFeatures = await loadFeatures(api);
+  const features = await loadFeatureInfo(api);
+  disabledFeatures = features.disabled;
   watchFeatures(document.body, disabledFeatures);   // hides what this edition cannot do (/api/features)
+  showAdminEntry(await loadIsAdmin(api, features.edition));   // server edition: GET /api/me (local: no request)
   await refreshCategories();
   await route();
 }
