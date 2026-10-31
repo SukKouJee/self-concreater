@@ -142,3 +142,11 @@ def test_ask_spawn_failure_is_claude_missing(home, monkeypatch, exc):
     with pytest.raises(ScriptError) as e:
         claude_cli.ask([], {}, "t")
     assert e.value.code == "claude_missing"
+
+
+def test_ask_broken_json_has_dedicated_code(home, monkeypatch):
+    bad = '{"svg": "<rect fill="#fff"/>"}'
+    _install(monkeypatch, Fake(_proc(json.dumps({"is_error": False, "result": bad}))))
+    with pytest.raises(ScriptError) as e:
+        claude_cli.ask([], {}, "t")
+    assert e.value.code == "llm_bad_json" and "JSON을 읽지 못했습니다" in e.value.message

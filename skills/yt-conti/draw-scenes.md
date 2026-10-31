@@ -37,7 +37,8 @@
 
 ## SVG 형식
 
-- 뿌리는 `<svg xmlns="http://www.w3.org/2000/svg" viewBox="...">`. `viewBox`는 `format`이 `16:9`면 `0 0 1600 900`, `9:16`이면 `0 0 900 1600`.
+- **SVG의 모든 속성값은 작은따옴표로 쓴다**(예: `<rect fill='#e5484d' x='0'/>`). 큰따옴표를 쓰면 JSON 문자열 안에서 이스케이프를 빠뜨려 답 전체가 깨진다. 작은따옴표면 이스케이프가 필요 없다.
+- 뿌리는 `<svg xmlns='http://www.w3.org/2000/svg' viewBox='...'>`. `viewBox`는 `format`이 `16:9`면 `0 0 1600 900`, `9:16`이면 `0 0 900 1600`.
 - 쓸 수 있는 요소: `svg g path rect circle ellipse line polyline polygon text tspan defs linearGradient radialGradient stop clipPath title marker use`.
   `script`, `style` 요소, `image`, `filter`, `foreignObject`, 외부 주소(`href`는 `#`로 시작하는 내부 참조만), `on...` 속성은 쓰면 버려진다.
 - **장면 하나당 12KB 이하, 요소 150개 이하.** 단순하게 그린다. 크기를 넘으면 그 장면은 버려진다.
@@ -49,7 +50,7 @@
 ```json
 {
   "scenes": [
-    {"id": "k3m9x2qa", "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1600 900\"><rect x=\"0\" y=\"700\" width=\"1600\" height=\"200\" fill=\"#ddd\"/><circle cx=\"800\" cy=\"450\" r=\"120\" fill=\"#e5484d\" stroke=\"#111\" stroke-width=\"8\"/></svg>"},
+    {"id": "k3m9x2qa", "svg": "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1600 900'><rect x='0' y='700' width='1600' height='200' fill='#ddd'/><circle cx='800' cy='450' r='120' fill='#e5484d' stroke='#111' stroke-width='8'/></svg>"},
     {"id": "a1b2c3d4", "svg": null}
   ]
 }

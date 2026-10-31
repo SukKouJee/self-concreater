@@ -431,3 +431,10 @@ def test_anthropic_stop_reason_is_llm_failed(api, stop, fragment):
     with pytest.raises(ScriptError) as e:
         llm.ask([], {}, "t", schema={"type": "object"})
     assert e.value.code == "llm_failed" and fragment in e.value.message
+
+
+def test_anthropic_broken_json_text_is_llm_bad_json(api):
+    api(_text_reply('{"svg": "<rect fill="#fff"/>"}'))
+    with pytest.raises(ScriptError) as e:
+        llm.ask([], {}, "t")
+    assert e.value.code == "llm_bad_json" and "JSON을 읽지 못했습니다" in e.value.message
