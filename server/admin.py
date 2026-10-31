@@ -8,6 +8,9 @@
   비밀번호 규칙은 10자 이상(`server.passwords.check_policy`). 비밀번호와 해시는 출력·로그 어디에도 남기지 않는다.
 - `disable-user <email>`: 비활성 + `session_epoch` 증가(이미 나간 세션 쿠키가 다음 요청에서 죽는다).
 - `logout-all <email>`: `session_epoch`만 증가(모든 기기의 세션이 끊기고, 다시 로그인하면 된다. 기기 분실 등).
+- `make-admin <email>` / `revoke-admin <email>`: 관리자 권한을 주거나 걷는다(owner 경로, 첫 관리자 만들기·잠긴 관리 화면 되살리기).
+  감사 기록(`admin_audit`, 행위자 NULL, detail `via: cli`)을 남기고, 출력의 `admins`는 남은 활성 관리자 수다. 웹 관리 화면(T16)과 달리
+  마지막 관리자도 걷을 수 있다(운영자의 탈출구). 세션은 끊지 않는다(관리자 여부는 요청마다 읽는다).
 - `import <작업 폴더> --user <email> [--dry-run] [--overwrite] [--overwrite-memo] [--no-verify]`: 로컬 작업 폴더를 그 사용자 계정으로 올린다.
 - `usage [--days N]`: 사용자·날짜(Asia/Seoul)별 LLM 사용량 합계(`llm_usage`, 아직 기록이 없으면 빈 목록).
 
@@ -367,6 +370,21 @@ def logout_all(env: Mapping[str, str], email: str) -> dict[str, Any]:
     return {"id": str(row[0]), "email": address, "disabled": bool(row[2]), "session_epoch": int(row[1])}
 
 
+def set_admin(env: Mapping[str, str], email: str, is_admin: bool) -> dict[str, Any]:
+    """owner로 `is_admin`을 바꾸고 감사 행(행위자 없음)을 남긴다. 남은 활성 관리자 수를 함께 돌려준다."""
+    address = _email(email)
+    with _owner_tx(env) as conn:
+        row = conn.execute("UPDATE users SET is_admin = %s WHERE email = %s RETURNING id", (is_admin, address)).fetchone()
+        if row is None:
+            raise ScriptError("user_not_found", f"없는 사용자입니다: {address}. 먼저 add-user로 만드세요.")
+        conn.execute("INSERT INTO admin_audit (actor_id, action, target_user_id, detail) "
+                     "VALUES (NULL, 'set_admin', %s, jsonb_build_object('is_admin', %s::boolean, 'via', 'cli'))",
+                     (row[0], is_admin))
+        left = conn.execute("SELECT count(*) FROM users WHERE is_admin AND NOT disabled").fetchone()
+    assert left is not None
+    return {"id": str(row[0]), "email": address, "is_admin": is_admin, "admins": int(left[0])}
+
+
 def usage(env: Mapping[str, str], days: int) -> dict[str, Any]:
     if days < 1:
         raise ScriptError("bad_days", "--days는 1 이상이어야 합니다")
@@ -463,6 +481,10 @@ def _parser() -> ArgParser:
     dis.add_argument("email")
     out = sub.add_parser("logout-all", help="그 사용자의 모든 기기 세션을 끊는다(계정은 그대로)")
     out.add_argument("email")
+    make = sub.add_parser("make-admin", help="관리자로 만든다(웹 관리 화면을 쓸 수 있다)")
+    make.add_argument("email")
+    revoke = sub.add_parser("revoke-admin", help="관리자 권한을 걷는다")
+    revoke.add_argument("email")
     imp = sub.add_parser("import")
     imp.add_argument("folder")
     imp.add_argument("--user", required=True)
@@ -496,6 +518,8 @@ def main(argv: list[str], env: Mapping[str, str] | None = None, *, stdin: TextIO
         return disable_user(environ, args.email)
     if args.command == "logout-all":
         return logout_all(environ, args.email)
+    if args.command in ("make-admin", "revoke-admin"):
+        return set_admin(environ, args.email, args.command == "make-admin")
     if args.command == "import":
         return import_workfolder(environ, args.folder, args.user, dry_run=args.dry_run, overwrite=args.overwrite,
                                  overwrite_memo=args.overwrite_memo, verify=args.verify)

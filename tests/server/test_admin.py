@@ -136,7 +136,7 @@ def test_add_user_rejects_bad_daily_limit(bad: str) -> None:
     assert e.value.code == "bad_limit"
 
 
-@pytest.mark.parametrize("command", ["disable-user", "logout-all"])
+@pytest.mark.parametrize("command", ["disable-user", "logout-all", "make-admin", "revoke-admin"])
 def test_admin_commands_need_the_owner_dsn(command: str) -> None:
     with pytest.raises(ScriptError) as e:
         admin.main([command, "a@example.com"], {})
@@ -175,6 +175,38 @@ def test_add_user_twice_is_user_exists(env: dict[str, str]) -> None:
         admin.main(["add-user", EMAIL], env)
 
     assert e.value.code == "user_exists"
+
+
+def _audit_rows(env: dict[str, str]) -> list[tuple[Any, ...]]:
+    with psycopg.connect(env["YTC_DB_OWNER_DSN"]) as conn:
+        return [tuple(r) for r in conn.execute(
+            "SELECT actor_id, action, target_user_id, detail FROM admin_audit ORDER BY id").fetchall()]
+
+
+def test_make_admin_and_revoke_admin_flip_is_admin_and_audit_as_the_owner(env: dict[str, str]) -> None:
+    admin.main(["add-user", LOWER], env)
+    uid = _user_row(env, LOWER)[0]
+
+    made = admin.main(["make-admin", EMAIL], env)
+    assert made == {"id": str(uid), "email": LOWER, "is_admin": True, "admins": 1}
+    assert _user_row(env, LOWER)[3] is True
+    again = admin.main(["make-admin", LOWER], env)                 # idempotent
+    assert again["is_admin"] is True and again["admins"] == 1
+
+    revoked = admin.main(["revoke-admin", LOWER], env)
+    assert revoked == {"id": str(uid), "email": LOWER, "is_admin": False, "admins": 0}
+    assert _user_row(env, LOWER)[3] is False and _user_row(env, LOWER)[5] == 0          # sessions are kept
+    assert _audit_rows(env) == [(None, "set_admin", uid, {"is_admin": True, "via": "cli"}),
+                                (None, "set_admin", uid, {"is_admin": True, "via": "cli"}),
+                                (None, "set_admin", uid, {"is_admin": False, "via": "cli"})]
+
+
+@pytest.mark.parametrize("command", ["make-admin", "revoke-admin"])
+def test_make_admin_unknown_user_is_user_not_found(env: dict[str, str], command: str) -> None:
+    with pytest.raises(ScriptError) as e:
+        admin.main([command, "ghost@example.com"], env)
+    assert e.value.code == "user_not_found"
+    assert _audit_rows(env) == []
 
 
 def test_disable_user_disables_and_bumps_session_epoch(env: dict[str, str]) -> None:
