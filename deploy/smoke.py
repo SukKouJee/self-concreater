@@ -368,6 +368,20 @@ new Promise((resolve, reject) => {
 """
 
 
+class BrowserUnavailable(Exception):
+    """Chrome이 있지만 이 환경에서 뜨지 않는다(샌드박스·디스플레이 문제 등): 점검을 건너뛴다(실패 아님)."""
+
+
+def collect_csp_violations(page: Any) -> list[str]:
+    """지금까지 받은 로그 중 CSP 위반 문구. wait_event가 꺼낸 이벤트도 되돌려 놓고 훑는다(꺼낸 것을 버리면 위반 1건을 놓친다)."""
+    try:
+        page.events.append(page.wait_event("Log.entryAdded", timeout=1.0))   # 이미 와 있으면 바로, 없으면 시간 초과
+    except SmokeFailure:
+        pass
+    texts = [str(e["params"]["entry"].get("text")) for e in page.events if e.get("method") == "Log.entryAdded"]
+    return [text for text in texts if "Content Security Policy" in text]
+
+
 def browser_check(chrome: str, base: str, cookie: tuple[str, str], files_path: str) -> None:
     """실제 브라우저로 /files의 HTML(콘티·리포트)이 FILES_CSP 아래서 이미지를 그리는지 본다:
     (1) 최상위로 열 때 (2) 앱 화면 안의 iframe으로 열 때(같은 출처 접근 포함). CSP 위반 로그가 있으면 실패."""
@@ -377,11 +391,16 @@ def browser_check(chrome: str, base: str, cookie: tuple[str, str], files_path: s
                 "--disable-gpu", "--disable-extensions", "about:blank"]
         if hasattr(os, "geteuid") and os.geteuid() == 0:
             args.insert(1, "--no-sandbox")
-        proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError as e:
+            raise BrowserUnavailable(f"Chrome을 실행하지 못했습니다: {e}") from e
         cdp: Cdp | None = None
         try:
             ws_url = ""
             for _ in range(60):
+                if proc.poll() is not None:
+                    raise BrowserUnavailable(f"Chrome이 바로 종료했습니다(종료 코드 {proc.returncode})")
                 try:
                     with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list", timeout=2) as r:
                         pages = [p for p in json.load(r) if p.get("type") == "page"]
@@ -392,7 +411,7 @@ def browser_check(chrome: str, base: str, cookie: tuple[str, str], files_path: s
                     pass
                 time.sleep(0.5)
             if not ws_url:
-                raise SmokeFailure("headless Chrome의 DevTools가 열리지 않았습니다")
+                raise BrowserUnavailable("headless Chrome의 DevTools가 30초 안에 열리지 않았습니다")
             page = Cdp(ws_url)
             cdp = page
             for domain in ("Page", "Network", "Log"):
@@ -406,12 +425,7 @@ def browser_check(chrome: str, base: str, cookie: tuple[str, str], files_path: s
                 time.sleep(0.5)
 
             def csp_violations() -> list[str]:
-                try:
-                    page.wait_event("Log.entryAdded", timeout=1.0)        # 이미 쌓인 로그를 읽어 온다(없으면 시간 초과)
-                except SmokeFailure:
-                    pass
-                return [str(e["params"]["entry"].get("text")) for e in page.events
-                        if e.get("method") == "Log.entryAdded" and "Content Security Policy" in str(e["params"]["entry"].get("text"))]
+                return collect_csp_violations(page)
 
             navigate(files_path)
             top = json.loads(page.evaluate(IMAGES_JS))
@@ -471,7 +485,9 @@ def smoke_server(project: str, image: str, with_browser: bool) -> None:
             f"YTC_DB_OWNER_PASSWORD={secrets.token_urlsafe(24)}", f"YTC_DB_APP_PASSWORD={secrets.token_urlsafe(24)}",
             f"YTC_S3_ACCESS_KEY=smoke{secrets.token_hex(4)}", f"YTC_S3_SECRET_KEY={secrets.token_urlsafe(24)}",
             f"ANTHROPIC_API_KEY={FAKE_KEY}", "YTC_DAILY_USD=1.00", "YTC_MEDIA_SLOTS=1", "YTC_LLM_SLOTS=2", ""]), encoding="utf-8")
-        env = dict(os.environ)
+        # 셸 환경 변수가 --env-file보다 우선하므로, 이 스모크가 정하는 이름은 상속하지 않는다
+        env = {k: v for k, v in os.environ.items()
+               if not (k.startswith(("YTC_", "YT_")) or k == "ANTHROPIC_API_KEY" or k.startswith("POSTGRES_"))}
         compose = ["docker", "compose", "-p", project, "--env-file", str(env_file), "-f", str(SERVER_DIR / "docker-compose.yml")]
         failure: BaseException | None = None
         try:
@@ -546,7 +562,10 @@ def smoke_server(project: str, image: str, with_browser: bool) -> None:
             elif chrome is None:
                 print("SKIP 브라우저 점검: Chrome을 찾지 못했습니다(YTC_CHROME으로 경로를 주면 한다)", flush=True)
             else:
-                browser_check(chrome, base, alice.session_cookie(), html)
+                try:
+                    browser_check(chrome, base, alice.session_cookie(), html)
+                except BrowserUnavailable as e:
+                    print(f"SKIP 브라우저 점검: {e}", flush=True)
         except BaseException as e:
             failure = e
             raise

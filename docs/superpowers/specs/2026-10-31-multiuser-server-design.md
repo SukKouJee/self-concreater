@@ -97,8 +97,8 @@ class DocStore:                 # 경로 대신 "문서 키"
 ### 3.2 PostgreSQL 스키마 골격
 
 > **실제 구현(2026-11-01)은 이 골격보다 작다.** 문서는 종류별 테이블 대신 `docs` 한 테이블(원문 바이트 + version + mtime), 객체는 `objects`·`shared_objects`
-> 인덱스 + MinIO, 그 밖에 `users`·`folders`·`trash`·`usage` 정도다. `projects`·`doc_versions`·`analysis_runs`·`jobs`·`library_items`는 만들지 않았다
-> (버전은 문서 쪽 규칙이 이미 있고, 작업은 프로세스 메모리, 사용량은 `usage`). 정확한 DDL은 구현 설계 §3.1(`server/migrations`)을 본다.
+> 인덱스 + MinIO, 그 밖에 `users`·`folders`·`trash_items`·`llm_usage`다. `projects`·`doc_versions`·`analysis_runs`·`jobs`·`library_items`는 만들지 않았다
+> (버전은 문서 쪽 규칙이 이미 있고, 작업은 프로세스 메모리, 사용량은 `llm_usage`). 정확한 DDL은 구현 설계 §3.1(`server/migrations`)을 본다.
 > 아래는 처음 골격이며 S10·S11에서 필요하면 되살린다.
 
 ```sql
@@ -176,7 +176,7 @@ trash/{uid}/{date}/…                                           30일 뒤 삭�
 | 인증 | Google 로그인(OIDC, PKCE·state·nonce), 초대한 이메일만, 첫 로그인에 `google_sub` 고정. 세션 쿠키 + CSRF(Origin·JSON). 로컬판의 주소 key는 쓰지 않는다 |
 | 작업 실행 (ADR-S6) | **앱 프로세스 안 `JobManager`를 사용자마다 하나**(`jobs_registry.Registry.for_user`, uvicorn `--workers 1`). `SINGLE_KINDS`·`EXCLUSIVE`가 사용자별로 적용되고, 진행 표시·확인 대기·취소는 기존 메모리 구조 그대로(화면은 폴링). 전역 자원은 `scripts/limits.py` 슬롯: media 2, llm 4, 유튜브 수집은 서버 전체 1개 순번. 재시작하면 진행 중 작업은 사라진다(저장된 md는 그대로) |
 | S7b (보류) | PG `jobs` 큐 + 별도 `media` 워커 프로세스. 조건: media 대기 p95가 5분을 넘거나, 재시작으로 작업을 잃는 일이 주 1회 이상 |
-| LLM | `anthropic-api` 엔진만(엔진·모델·max_tokens는 env로 고정, 사용자 설정 무시). 호출마다 `usage` 기록, 사용자별 일 한도(한국 시간, `YTC_DAILY_USD`), 가격표에 없는 모델은 시작 거부. `claude-cli`는 로컬판 전용 |
+| LLM | `anthropic-api` 엔진만(엔진·모델·max_tokens는 env로 고정, 사용자 설정 무시). 호출마다 `llm_usage` 기록, 사용자별 일 한도(한국 시간, `YTC_DAILY_USD`), 가격표에 없는 모델은 시작 거부. `claude-cli`는 로컬판 전용 |
 | YouTube 수집 | `YT_PROXY`, `YT_FETCH_INTERVAL`을 서버 전체 순번으로. 같은 영상 수집은 PG advisory lock, 공유 캐시에 있으면 생략 |
 | 비활성 | 공용 라이브러리, 자막 영상, 촬영 영상, srtfit(`/api/features`로 숨기고 API는 403 `feature_disabled`) |
 | 도움말 챗봇 | 지금처럼 개수·상태만 입력(본문·메모·경로 제외) |
