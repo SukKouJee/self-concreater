@@ -137,6 +137,19 @@ def transcribe(video_id: str, force: bool = False, progress: Progress | None = N
     segments는 순서대로 나오는 생성기라 끝 시각이 곧 처리한 음성 위치다. 길이는 Whisper가 잰
     오디오 길이, 없으면 raw 메타의 duration. 둘 다 없으면 진행률은 None.
     """
+    report = safe_progress(progress)
+    # raw 읽기부터 저장까지 같은 영상 수집 잠금 안에서(다른 사용자의 수집·STT와 raw를 서로 덮지 않게, 설계 §3.3)
+    with limits.collecting(video_id, on_wait=_collect_waiter(report)):
+        return _transcribe(video_id, force, report)
+
+
+def _collect_waiter(report: Progress | None) -> Callable[[], None] | None:
+    if report is None:
+        return None
+    return lambda: report("wait", None, limits.COLLECT_WAIT_TEXT)
+
+
+def _transcribe(video_id: str, force: bool, report: Progress | None) -> dict:
     data = load_raw(video_id)
     if data.get("transcript") and not force:
         return {"id": video_id, "status": "exists", "source": data["transcript"]["source"]}
@@ -144,7 +157,6 @@ def transcribe(video_id: str, force: bool = False, progress: Progress | None = N
     WhisperModel = _load_whisper()
     model_name = os.environ.get("YT_STT_MODEL") or DEFAULT_MODEL
     tmp_dir = ctx.here().scratch.local_path("tmp")
-    report = safe_progress(progress)
     try:
         with limits.slot("media", on_wait=_wait_reporter(report)):
             if report is not None:

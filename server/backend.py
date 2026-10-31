@@ -3,7 +3,7 @@
 - 사용자 id는 **호출자가 넘긴 인증된 값(`Ctx.user_id`)만** 쓴다. env·요청 본문·전역 상태에서 찾지 않는다.
   없거나 UUID가 아니면 `login_required`(fail closed). 실제 격리는 RLS(`Db.user_tx(uid)`)가 맡는다.
 - store = PgDocStore(라벨 `ytc:{email}`), objects = S3ObjectStore, shared = S3SharedCache, scratch = ServerScratch,
-  trash = PgTrash, usage = NullMeter(T11에서 UsageMeter로 바꾼다).
+  trash = PgTrash, usage = PgUsageMeter(T11: 가격표·일 한도, `server.usage`).
 - `export_tree(backend, uid)`: 한 사용자의 문서·객체·휴지통과 그 사용자의 영상 md가 가리키는 공유 캐시를 작업 폴더 모양
   (`{키: 바이트}` + 폴더 목록)으로 꺼낸다. 동등성 검사(§10-2)·가져오기 검증(§7)·나중의 내보내기가 쓴다.
 """
@@ -16,18 +16,19 @@ import threading
 import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path, PurePosixPath
 from typing import Final
 
 from scripts import keys as _keys
 from scripts.common import ScriptError
-from scripts.stores import NullMeter, UsageMeter
-from server.config import StorageSettings
+from server.config import DEFAULT_DAILY_USD, StorageSettings
 from server.db import Conn, Db
 from server.keyindex import ancestors
 from server.pgstore import PgDocStore, PgTrash
 from server.s3store import S3Bucket, S3ObjectStore, S3SharedCache
 from server.scratch import ServerScratch, clear_scratch_root
+from server.usage import PgUsageMeter
 
 _VID_RE: Final = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
@@ -39,16 +40,18 @@ def _login_required() -> ScriptError:
 class ServerBackend:
     """`scripts.stores.Backend`의 서버 구현. 저장소 객체는 가볍게 매번 만든다(상태는 Db 풀·버킷 클라이언트뿐)."""
 
-    def __init__(self, db: Db, bucket: S3Bucket, *, scratch_dir: Path, state_dir: Path) -> None:
+    def __init__(self, db: Db, bucket: S3Bucket, *, scratch_dir: Path, state_dir: Path,
+                 daily_usd: Decimal = DEFAULT_DAILY_USD) -> None:
         self.db = db
         self.bucket = bucket
+        self.daily_usd = daily_usd                      # YTC_DAILY_USD (users.daily_usd_limit NULL)
         self._scratch_dir = Path(scratch_dir)
         self._state_dir = Path(state_dir)
         self._emails: dict[uuid.UUID, str] = {}
         self._emails_lock = threading.Lock()
 
     @classmethod
-    def open(cls, settings: StorageSettings) -> ServerBackend:
+    def open(cls, settings: StorageSettings, *, daily_usd: Decimal = DEFAULT_DAILY_USD) -> ServerBackend:
         """설정으로 PG 풀을 열고(앱 롤 안전 검사 포함) 버킷 클라이언트를 만들고 임시 폴더를 비운다
         (§3.4 "시작 때 비움")."""
         db = Db(settings.db_dsn, settings.db_owner_dsn, min_size=settings.db_pool_min, max_size=settings.db_pool_max)
@@ -60,7 +63,7 @@ class ServerBackend:
         except BaseException:
             db.close()
             raise
-        return cls(db, bucket, scratch_dir=settings.scratch_dir, state_dir=settings.state_dir)
+        return cls(db, bucket, scratch_dir=settings.scratch_dir, state_dir=settings.state_dir, daily_usd=daily_usd)
 
     def close(self) -> None:
         self.db.close()
@@ -112,9 +115,8 @@ class ServerBackend:
     def trash(self, user_id: str | None) -> PgTrash:
         return PgTrash(self.db, self.bucket, self._uid(user_id))
 
-    def usage(self, user_id: str | None) -> UsageMeter:
-        self._uid(user_id)
-        return NullMeter()
+    def usage(self, user_id: str | None) -> PgUsageMeter:
+        return PgUsageMeter(self.db, self._uid(user_id), self.daily_usd)
 
 
 # --- 내보내기 --------------------------------------------------------------------------------

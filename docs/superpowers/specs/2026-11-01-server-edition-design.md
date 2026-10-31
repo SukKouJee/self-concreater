@@ -185,8 +185,13 @@ CREATE POLICY own ON <t> USING (user_id = nullif(current_setting('app.user_id', 
   구현(T7): 같은 키의 put·delete는 `pg_advisory_xact_lock(class, hashtext(uid/key))`로 한 번에 하나씩, 새 키의 행 upsert가 실패하면
   올린 객체를 지운다. `delete_prefix`는 지울 키마다 잠금을 하나씩(키 순서) 잡는다 — 지금 호출부(프레임 ≤ 40장, 이력·컷 폴더 수십 개)에는
   충분하고, 수천 개 키의 접두사를 지우게 되면 put·delete도 함께 잡는 접두사 잠금 하나로 바꾼다.
-- **SharedCache 쓰기**: 누구나 덮어쓸 수 있다(원본 데이터, 교정은 사용자 md에). 같은 영상 수집 경합은 `pg_advisory_xact_lock(hashtext(vid))`로
+- **SharedCache 쓰기**: 누구나 덮어쓸 수 있다(원본 데이터, 교정은 사용자 md에). 같은 영상 수집 경합은 advisory lock으로
   수집 단계에서 직렬화. `Trash.move`는 shared 키를 옮기지 않고 `moved`에서 뺀다(다른 사용자 데이터).
+  구현(T11): 코어 이음매 `limits.collecting(vid)`(로컬 no-op)가 `fetch.fetch`(캐시 확인 → 메타·자막 → `save_raw`),
+  `cuts.cut_stats`(캐시 확인 → 프레임 폴더 비우기 → 다운로드·분석 → `cuts.json`), `stt.transcribe`(raw 읽기 → STT → `save_raw`)를 감싼다.
+  서버는 `Db.collect_lock`: 앱 롤로 **풀 밖 연결 하나**를 열어 세션 잠금 `pg_advisory_lock(bigint)`(키 = sha256("ytc:collect:"+vid) 앞 8바이트) —
+  몇 분짜리 다운로드가 풀 연결을 붙잡지 않고, 연결이 죽으면 PG가 푼다. bigint 한 개 형식이라 T7 객체 잠금(int 두 개)과 키 공간이 겹치지 않는다.
+  같은 스레드의 재진입은 통과. 뒤에 온 쪽은 "다른 사용자가 같은 영상을 받는 중"(진행 단계 `wait`)을 보고, 앞쪽이 끝나면 캐시를 쓴다.
 - **프로세스 잠금**(`INDEX_LOCK`, `HISTORY_LOCK`, `_RELABEL_LOCK`): 프로세스가 하나라 그대로 유효(사용자 간 과잉 직렬화는 수십 명 규모에서 허용).
 
 ### 3.4 Scratch (서버)
@@ -263,7 +268,7 @@ CREATE POLICY own ON <t> USING (user_id = nullif(current_setting('app.user_id', 
 
 `YTC_EDITION=server`, `YTC_ENV`, `YTC_PUBLIC_URL`, `YTC_SESSION_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `YTC_DB_DSN`(ytc_app),
 `YTC_DB_OWNER_DSN`(migrate·admin만), `YTC_S3_ENDPOINT`, `YTC_S3_BUCKET`, `YTC_S3_ACCESS_KEY`, `YTC_S3_SECRET_KEY`, `ANTHROPIC_API_KEY`,
-`YTC_LLM_ENGINE=anthropic-api`, `YTC_LLM_MODEL`, `YTC_LLM_MAX_TOKENS`, `YTC_DAILY_USD`(기본 1.00), `YTC_MEDIA_SLOTS`(2), `YTC_LLM_SLOTS`(4),
+`YTC_LLM_ENGINE=anthropic-api`, `YTC_LLM_MODEL`(기본 claude-sonnet-5-5, 가격표에 있어야 함), `YTC_LLM_MAX_TOKENS`(호출당 상한, 기본 16000), `YTC_DAILY_USD`(기본 1.00), `YTC_MEDIA_SLOTS`(2), `YTC_LLM_SLOTS`(4),
 `YT_PROXY`, `YT_FETCH_INTERVAL`, `YTC_DEV_LOGIN`. 필수 값이 없으면 시작하지 않는다(`config_missing`).
 저장소(T8, `StorageSettings`): `YTC_DB_POOL_MIN`(1)·`YTC_DB_POOL_MAX`(10), `YTC_S3_MAX_POOL_CONNECTIONS`(10, boto 연결 풀),
 `YTC_SCRATCH_DIR`(`/tmp/ytc`), `YTC_STATE_DIR`(`/var/lib/ytc/state`). 잘못된 값은 `config_invalid`.
@@ -285,11 +290,25 @@ def slot(name: Literal["media", "llm"]) -> ContextManager[None]   # 기본 no-op
 ```
 | 종류 | 어디서 잡나 | 서버 기본 | 근거 |
 |---|---|---|---|
-| media | 영상 다운로드+컷·프레임 추출(cuts/OpenCV), STT(PyAV 디코드), 샷용 프레임 처리 | 2 | 360p 영상 1개 처리 ≈ CPU 1코어·RAM 300~500MB(T11에서 travel 영상으로 측정해 고침). 4 vCPU·8GB VM에서 UI 응답 여지를 남긴다 |
+| media | 영상 다운로드+컷·프레임 추출(cuts/OpenCV), STT(PyAV 디코드), 샷용 프레임 처리 | 2 | 측정(T11, 아래) 결과 2를 유지: 2개 동시가 처리량 이득의 대부분이고 4개는 거의 늘지 않는다. 4 vCPU·8GB VM에서 UI 응답 여지를 남긴다 |
 | llm | `llm.ask` 한 번 | 4 | 운영자 키 rate limit·비용 폭주 방지 |
 | fetch | 기존 `.last_fetch` 간격(`YT_FETCH_INTERVAL`) + 프로세스 잠금 | 서버 전체 1개 | YouTube 차단 대비(상위 §4) |
 
 자리를 기다리는 동안 항목 `message="다른 사용자 작업이 끝나기를 기다리는 중"`. 같은 영상 수집 중복은 §3.3 advisory lock.
+
+구현(T11):
+- 설치: `server.jobs_registry.install_runtime(LlmSettings, db)`를 `asgi.from_env`가 앱을 만들 때 한 번 부른다(`create_app(runtime=…)`,
+  lifespan 종료 때 `uninstall_runtime`). media·llm `Semaphore(YTC_MEDIA_SLOTS·YTC_LLM_SLOTS)`, 수집 잠금(§3.3), `llm.pin`(§6).
+- fetch: `fetch.wait_turn`이 프로세스 잠금 안에서 **순번을 예약**한다(`.last_fetch` = max(지금, 마지막 예약 + 간격)을 쓰고 기다림은 잠금 밖).
+  같은 프로세스의 작업 스레드들이 같은 `.last_fetch`를 읽고 동시에 받던 경합이 없어진다. 서버는 프로세스 하나 + `.last_fetch`가
+  `YTC_STATE_DIR`라 이것이 서버 전체 1개다. 로컬판은 한 스레드면 예전과 같다(예약 시각 = 기다린 뒤 시각). STT 음성 받기(`stt.download_audio`)는
+  예전처럼 간격 밖이다(로컬 동작 유지).
+- llm 슬롯 대기 문구는 넣지 않았다: `llm.ask`에는 진행 채널이 없고(호출부 27곳이 작업 항목·단계를 따로 관리), 한 호출은 수십 초라
+  기다림이 짧다. 필요하면 작업 문맥 ContextVar + `limits.slot(on_wait)`로 붙인다.
+- media 측정(2026-11-01, Windows 20코어 개발 PC, 합성 360p 60초 30fps 영상, 장면 3초마다, `cuts.analyze_video`만 — 다운로드·STT 제외):
+  1개 6.5초·CPU 1.3~1.5코어·RSS +45MB, 2개 동시 9.0초(영상당 4.5초, 2.6코어), 4개 동시 17.4초(영상당 4.35초, 2.75코어, RSS +120MB).
+  장면 감지가 GIL을 많이 잡아 3개 이상은 처리량이 거의 늘지 않고 각 작업만 느려진다. 설계 초안의 RAM 300~500MB는 다운로드·STT(Whisper 모델)를
+  포함한 추정이라 분석만으로는 훨씬 작다. VM에서 실제 영상으로 다시 재는 것은 T13 스모크(`--with-youtube`)에서 한다.
 
 ### 5.3 어디서 도나
 
@@ -314,6 +333,20 @@ media 대기 p95가 5분을 넘거나, 앱 재시작으로 작업을 잃는 일�
   모델이면 시작을 거부한다(비용 모르는 호출 금지). 비용은 `numeric`으로 저장.
 - 한도: 오늘(Asia/Seoul 0시 기준) `sum(cost_usd) >= coalesce(users.daily_usd_limit, YTC_DAILY_USD)`이면 거절. 한 호출이 넘칠 수 있으므로
   `YTC_LLM_MAX_TOKENS`로 호출당 상한을 둔다. 월 한도는 같은 질의로 S8 정식판에서.
+- 구현(T11):
+  - 서버 LLM 고정(ADR-S10): `llm.pin(engine, model, max_tokens)` — `llm.config()`가 사용자 `yt-coach.json`·env를 읽지 않는다.
+    `YTC_LLM_ENGINE`은 `anthropic-api`만, `YTC_LLM_MODEL` 기본 `llm_anthropic.DEFAULT_MODEL`(claude-sonnet-5-5), 가격표에 없으면 `config_invalid`로 시작 거부.
+    `YTC_LLM_MAX_TOKENS`(기본 16000 = 코드의 최대 요청 `conti_art.MAX_TOKENS`)는 **상한**: 호출 값(없으면 엔진 기본 8000)과 상한 중 작은 값.
+    `ANTHROPIC_API_KEY`는 시작 때 요구하지 않는다(없으면 호출 때 기존 `llm_not_configured`).
+  - 가격표 `server.usage.PRICES`(2026-09-25 공식 가격, USD/MTok): 입력·출력·캐시 읽기(모델별: Opus 5.5 $0.20, Sonnet 5.5 $0.20, Fable 5.1 $0.25, 그 밖 입력의 0.1배)·
+    캐시 쓰기(5분 TTL = 입력의 1.25배; 엔진이 `cache_control`을 쓰지 않음). 비용은 numeric(10,6) 반올림.
+  - `check()`는 llm 슬롯을 잡은 **뒤** 한다(`llm.ask`). 검사가 DB 오류면 그 오류를 올린다(비용 모르는 호출 금지).
+    `record()`는 최선만: DB 오류·가격 없음은 `ytc.usage` 로그로 남기고 올리지 않는다 — LLM 결과나 원래 오류를 가리지 않는다. 그 호출 비용은 한도에서 빠진다.
+    `at`은 검사와 같은 시계(앱 시각)로 쓴다. `job_kind`는 지금 NULL(`llm.ask`가 작업 종류를 모른다).
+  - **초과 한계**: 검사를 통과하고 아직 기록되지 않은 호출은 프로세스 전체에서 `YTC_LLM_SLOTS`개 이하다. 그래서 한 사용자의 하루 사용은
+    최대 `한도 + k × C_max`, k = 그 사용자의 동시 LLM 호출 수(≤ `YTC_LLM_SLOTS`, 기본 4), C_max = 호출 하나의 최대 비용 =
+    입력 토큰 × 입력 단가 + `YTC_LLM_MAX_TOKENS` × 출력 단가. 기본값(Sonnet 5.5, 16000)에서 출력 몫은 호출당 $0.16, 입력 5만 토큰이면 $0.10 →
+    최악 약 $1.04 초과. 더 조이려면 `YTC_LLM_SLOTS`·`YTC_LLM_MAX_TOKENS`를 낮춘다. 기록 실패(로그)는 이 한계 밖이다.
 - 오류(400, 화면은 기존 오류 표시 그대로):
   `ScriptError("llm_limit", "오늘 쓸 수 있는 AI 사용량(1.00달러)을 다 썼습니다. 내일 0시(한국 시간)에 다시 쓸 수 있습니다. 오늘 사용: 1.02달러", used=1.02, limit=1.00, resets_at="2026-11-02T00:00:00+09:00")`
 - 관리: `python -m server.admin usage [--days 7]` → 사용자별 일 합계 JSON. 관리자 화면은 S8 정식판.

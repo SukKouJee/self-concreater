@@ -431,3 +431,72 @@ def test_no_transcript_details_carry_raw_status(home, net):
     with pytest.raises(ScriptError) as exc:
         fetch.fetch(VID)
     assert exc.value.details["raw_status"] == "cached"
+
+
+# --- 서버판 이음매: 같은 영상 수집 잠금, 전역 간격 예약 -----------------------------------
+
+@pytest.fixture
+def collect_log(monkeypatch):
+    """limits.collecting에 기록용 잠금을 꽂는다: 잠금 안에서 일어난 일만 `inside`에 쌓인다."""
+    from contextlib import contextmanager
+
+    from scripts import limits
+
+    log = {"held": [], "inside": []}
+
+    @contextmanager
+    def lock(video_id, on_wait):
+        log["held"].append(video_id)
+        try:
+            yield
+        finally:
+            log["held"].remove(video_id)
+            log["inside"].append(("released", video_id))
+
+    limits.install(collect=lock)
+    yield log
+    limits.install()
+
+
+def test_fetch_checks_cache_and_saves_raw_inside_the_collect_lock(home, net, monkeypatch, collect_log):
+    real_save = fetch.save_raw
+    monkeypatch.setattr(fetch, "save_raw", lambda data: (collect_log["inside"].append(("save", list(collect_log["held"]))),
+                                                         real_save(data))[1])
+    fetch.fetch(f"https://youtu.be/{VID}")
+    assert collect_log["inside"] == [("save", [VID]), ("released", VID)]
+    # cached path also takes the lock (the exists check must not race a concurrent download)
+    assert fetch.fetch(f"https://youtu.be/{VID}")["status"] == "cached"
+    assert collect_log["inside"][-1] == ("released", VID) and len(collect_log["inside"]) == 3
+
+
+def test_fetch_existing_md_skips_without_taking_the_collect_lock(home, net, collect_log):
+    add_video_md(home, "cooking", "ref")
+    assert fetch.fetch(VID, category="cooking", role="ref")["status"] == "exists"
+    assert collect_log["inside"] == []
+
+
+def test_concurrent_wait_turns_reserve_distinct_slots(home, monkeypatch):
+    """한 프로세스 안 여러 작업 스레드가 같은 `.last_fetch`를 읽어 동시에 받지 않는다(서버 전체 1개, §5.2)."""
+    import threading
+    import time as real_time
+
+    monkeypatch.setenv("YT_FETCH_INTERVAL", "0.3")
+    starts: list[float] = []
+    lock = threading.Lock()
+    from scripts import ctx as ctx_mod
+    c = ctx_mod.here()
+
+    def one() -> None:
+        with ctx_mod.use(c):
+            fetch.wait_turn()
+        with lock:
+            starts.append(real_time.monotonic())
+
+    threads = [threading.Thread(target=one) for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    starts.sort()
+    assert len(starts) == 3
+    assert all(b - a >= 0.25 for a, b in zip(starts, starts[1:])), starts

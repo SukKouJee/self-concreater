@@ -3,7 +3,10 @@
 - `StorageSettings`: PG·MinIO·임시/상태 폴더·연결 풀 크기(T8).
 - `AuthSettings`(T10): `YTC_ENV`(production|dev|test, 기본 production), `YTC_PUBLIC_URL`(출처 = CSRF Origin 비교 기준), `YTC_SESSION_SECRET`(32바이트 이상),
   `YTC_DEV_LOGIN`(1이면 dev 로그인. production에서는 시작 거부). production은 https 공개 주소만(쿠키 Secure).
-- `ServerSettings`: 앱이 쓰는 설정 묶음(storage + auth). Google OIDC(T12)·LLM·한도(T11)는 그 Task가 더한다.
+- `LlmSettings`(T11, §4.4·§5.2·§6): 엔진은 `anthropic-api`만, `YTC_LLM_MODEL`(기본 `llm_anthropic.DEFAULT_MODEL`)은
+  가격표(`server.usage.PRICES`)에 있어야 시작한다, `YTC_LLM_MAX_TOKENS`(호출당 상한, 기본 16000 = 코드가 요청하는 최댓값),
+  `YTC_DAILY_USD`(기본 1.00), `YTC_MEDIA_SLOTS`(2), `YTC_LLM_SLOTS`(4). 사용자 `yt-coach.json`의 `llm` 절은 무시한다(ADR-S10).
+- `ServerSettings`: 앱이 쓰는 설정 묶음(storage + auth + llm). Google OIDC(T12)는 그 Task가 더한다.
 연결 풀: 앱 요청 스레드(anyio 기본 40)와 작업 스레드가 같은 풀을 나눠 쓴다. 풀이 모자라면 `YTC_DB_POOL_MAX`·
 `YTC_S3_MAX_POOL_CONNECTIONS`를 올린다(boto3 기본 10, 넘으면 "Connection pool is full" 경고 후 연결을 버린다).
 """
@@ -11,11 +14,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from pathlib import Path, PurePosixPath
 from typing import Final
 from urllib.parse import urlsplit
 
+from scripts import llm_anthropic
 from scripts.common import ScriptError
+from server.usage import PRICES
 
 DEFAULT_SCRATCH_DIR: Final = "/tmp/ytc"
 DEFAULT_STATE_DIR: Final = "/var/lib/ytc/state"
@@ -28,6 +34,12 @@ PRODUCTION: Final = "production"
 ENV_NAMES: Final = ("production", "dev", "test")
 MIN_SECRET_BYTES: Final = 32
 _DEFAULT_PORTS: Final = {"http": 80, "https": 443}
+LLM_ENGINE: Final = "anthropic-api"
+DEFAULT_LLM_MAX_TOKENS: Final = 16000          # largest per-call request in the code (conti_art.MAX_TOKENS)
+DEFAULT_DAILY_USD: Final = Decimal("1.00")
+MAX_DAILY_USD: Final = Decimal("999999.99")    # users.daily_usd_limit numeric(8,2)
+DEFAULT_MEDIA_SLOTS: Final = 2
+DEFAULT_LLM_SLOTS: Final = 4
 
 
 def _required(env: Mapping[str, str], name: str) -> str:
@@ -153,11 +165,53 @@ class AuthSettings:
         return cls(env=name, public_origin=origin, session_secret=secret, dev_login=dev)
 
 
+def _usd(env: Mapping[str, str], name: str, default: Decimal) -> Decimal:
+    text = (env.get(name) or "").strip()
+    if not text:
+        return default
+    try:
+        value = Decimal(text)
+    except InvalidOperation as e:
+        raise ScriptError("config_invalid", f"{name}은(는) 달러 금액이어야 합니다(예: 1.00): {text!r}") from e
+    if not value.is_finite() or value < 0 or value > MAX_DAILY_USD:
+        raise ScriptError("config_invalid", f"{name}은(는) 0 이상 {MAX_DAILY_USD} 이하의 금액이어야 합니다: {text!r}")
+    return value
+
+
+@dataclass(frozen=True)
+class LlmSettings:
+    engine: str = LLM_ENGINE
+    model: str = llm_anthropic.DEFAULT_MODEL
+    max_tokens: int = DEFAULT_LLM_MAX_TOKENS        # per-call cap (llm.pin)
+    daily_usd: Decimal = DEFAULT_DAILY_USD          # users.daily_usd_limit NULL -> this
+    media_slots: int = DEFAULT_MEDIA_SLOTS
+    llm_slots: int = DEFAULT_LLM_SLOTS
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str]) -> LlmSettings:
+        engine = (env.get("YTC_LLM_ENGINE") or "").strip() or LLM_ENGINE
+        if engine != LLM_ENGINE:
+            raise ScriptError("config_invalid", f"서버판의 YTC_LLM_ENGINE은 {LLM_ENGINE}만 됩니다: {engine!r}")
+        model = (env.get("YTC_LLM_MODEL") or "").strip() or llm_anthropic.DEFAULT_MODEL
+        if model not in PRICES:
+            raise ScriptError("config_invalid", f"YTC_LLM_MODEL {model!r}은(는) 가격표에 없는 모델입니다(비용을 모르는 호출 금지). "
+                                                f"쓸 수 있는 모델: {', '.join(sorted(PRICES))}")
+        return cls(
+            engine=engine,
+            model=model,
+            max_tokens=_int(env, "YTC_LLM_MAX_TOKENS", DEFAULT_LLM_MAX_TOKENS, 1),
+            daily_usd=_usd(env, "YTC_DAILY_USD", DEFAULT_DAILY_USD),
+            media_slots=_int(env, "YTC_MEDIA_SLOTS", DEFAULT_MEDIA_SLOTS, 1),
+            llm_slots=_int(env, "YTC_LLM_SLOTS", DEFAULT_LLM_SLOTS, 1),
+        )
+
+
 @dataclass(frozen=True)
 class ServerSettings:
     storage: StorageSettings
     auth: AuthSettings
+    llm: LlmSettings = field(default_factory=LlmSettings)
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> ServerSettings:
-        return cls(storage=StorageSettings.from_env(env), auth=AuthSettings.from_env(env))
+        return cls(storage=StorageSettings.from_env(env), auth=AuthSettings.from_env(env), llm=LlmSettings.from_env(env))

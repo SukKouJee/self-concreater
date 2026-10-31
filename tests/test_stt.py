@@ -334,3 +334,28 @@ def test_transcribe_holds_media_slot_during_work(home, fake_whisper, fake_audio)
         stt.decode_audio = orig
         limits.install()
     assert held == [True] and sem.acquire(blocking=False)
+
+
+def test_transcribe_holds_the_collect_lock_from_raw_read_to_save(home, fake_whisper, fake_audio, monkeypatch):
+    from contextlib import contextmanager
+
+    from scripts import limits
+
+    log = []
+
+    @contextmanager
+    def lock(video_id, on_wait):
+        log.append(("enter", video_id))
+        try:
+            yield
+        finally:
+            log.append(("exit", video_id))
+
+    real_save = stt.save_raw
+    monkeypatch.setattr(stt, "save_raw", lambda data: (log.append(("save", data["id"])), real_save(data))[1])
+    limits.install(collect=lock)
+    try:
+        stt.transcribe(VID)
+    finally:
+        limits.install()
+    assert log == [("enter", VID), ("save", VID), ("exit", VID)]

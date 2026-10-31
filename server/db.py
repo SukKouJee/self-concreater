@@ -6,12 +6,18 @@
 - 관리 작업(사용자 추가·비활성, 전체 사용량)은 `Db.admin_tx()`: owner 롤(`YTC_DB_OWNER_DSN`)로 연결 하나를 따로 연다.
   풀에 섞지 않는다(앱 요청이 owner 연결을 빌리는 일이 없게).
 - `open()`은 앱 롤이 슈퍼유저·BYPASSRLS이거나 다른 롤에 속해 있으면 거부한다(`db_role_unsafe`). 격리의 최종 방어선이 RLS이기 때문이다.
+- `collect_lock(video_id)`(T11, 설계 §3.3): 같은 영상 수집을 사용자·스레드를 가리지 않고 한 번에 하나씩. 앱 롤로 **풀 밖의 연결을
+  하나 따로** 열어 세션 advisory lock(`pg_advisory_lock(bigint)`)을 잡는다 — 다운로드·컷 추출이 몇 분 걸려도 풀 연결을 붙잡지 않고,
+  프로세스·연결이 죽으면 PG가 잠금을 푼다. 키는 bigint 한 개 형식이라 T7 객체 잠금(int 두 개 형식)과 키 공간이 겹치지 않는다.
 """
 from __future__ import annotations
 
+import hashlib
+import logging
 import re
+import threading
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from types import TracebackType
 from typing import Final
@@ -29,6 +35,15 @@ USER_SETTING: Final = "app.user_id"
 ROLE_NAME_RE: Final = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 
 Conn = psycopg.Connection[TupleRow]
+
+COLLECT_LOCK_NAMESPACE: Final = b"ytc:collect:"
+log = logging.getLogger("ytc.db")
+
+
+def collect_lock_key(video_id: str) -> int:
+    """영상 id → advisory lock 키(부호 있는 64비트). 같은 값이면 같은 잠금, 충돌은 직렬화가 조금 늘 뿐이다."""
+    digest = hashlib.sha256(COLLECT_LOCK_NAMESPACE + video_id.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big", signed=True)
 
 
 def app_role_from_dsn(dsn: str) -> tuple[str, str | None]:
@@ -79,6 +94,8 @@ class Db:
     def __init__(self, app_dsn: str, owner_dsn: str | None = None, *, min_size: int = 1, max_size: int = 8,
                  timeout: float = 10.0) -> None:
         self._owner_dsn = owner_dsn
+        self._app_dsn = app_dsn
+        self._collecting = threading.local()        # video ids this thread already holds (re-entry)
         self._pool: ConnectionPool[Conn] = ConnectionPool(
             app_dsn, min_size=min_size, max_size=max_size, timeout=timeout, open=False, reset=_reset,
             check=ConnectionPool.check_connection, name="ytc-app")
@@ -129,6 +146,36 @@ class Db:
         RLS 테이블은 정책이 NULL과 비교해 행 0개(fail closed)라 여기서 사용자 데이터는 보이지 않는다."""
         with self._pool.connection() as conn, conn.transaction():
             yield conn
+
+    @property
+    def app_dsn(self) -> str:
+        return self._app_dsn
+
+    @contextmanager
+    def collect_lock(self, video_id: str, on_wait: Callable[[], None] | None = None) -> Iterator[None]:
+        """같은 영상 수집 잠금(`scripts.limits.collecting`의 서버 구현). 잠겨 있으면 기다리기 전에 `on_wait()`를 한 번 부른다.
+        같은 스레드가 이미 잡은 영상이면 그대로 들어간다(다른 연결로 다시 잡으면 자기 자신을 기다린다)."""
+        held: set[str] = self._collecting.__dict__.setdefault("ids", set())
+        if video_id in held:
+            yield
+            return
+        key = collect_lock_key(video_id)
+        with psycopg.connect(self._app_dsn, autocommit=True) as conn:
+            row = conn.execute("SELECT pg_try_advisory_lock(%s::bigint)", (key,)).fetchone()
+            if not (row and row[0]):
+                if on_wait is not None:
+                    on_wait()
+                conn.execute("SELECT pg_advisory_lock(%s::bigint)", (key,))
+            held.add(video_id)
+            try:
+                yield
+            finally:
+                held.discard(video_id)
+                try:
+                    conn.execute("SELECT pg_advisory_unlock(%s::bigint)", (key,))
+                except psycopg.Error as e:
+                    # closing the connection (with-block exit) releases the session lock anyway
+                    log.warning("collect lock unlock failed for %s: %s: %s", video_id, type(e).__name__, e)
 
     @contextmanager
     def admin_tx(self) -> Iterator[Conn]:

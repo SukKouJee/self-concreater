@@ -58,3 +58,34 @@ def test_on_wait_called_only_when_blocked() -> None:
         t.start()
         t.join(0.3)
         assert waited == [2]
+
+
+# --- collecting(video_id): 같은 영상 수집 직렬화 이음매(서버 설계 §3.3, 서버는 PG advisory lock) ---
+
+def test_collecting_is_noop_by_default() -> None:
+    with limits.collecting("AAAAAAAAAAA"), limits.collecting("AAAAAAAAAAA"):
+        pass
+
+
+def test_installed_collect_lock_receives_video_and_on_wait() -> None:
+    from contextlib import contextmanager
+
+    seen: list[tuple[str, object]] = []
+
+    @contextmanager
+    def lock(video_id, on_wait):
+        seen.append(("enter", video_id))
+        if on_wait is not None:
+            on_wait()
+        yield
+        seen.append(("exit", video_id))
+
+    limits.install(collect=lock)
+    waited: list[int] = []
+    with limits.collecting("BBBBBBBBBBB", on_wait=lambda: waited.append(1)):
+        assert seen == [("enter", "BBBBBBBBBBB")]
+    assert seen[-1] == ("exit", "BBBBBBBBBBB") and waited == [1]
+    limits.install()
+    with limits.collecting("CCCCCCCCCCC"):
+        pass
+    assert len(seen) == 2                       # install() 뒤에는 다시 no-op

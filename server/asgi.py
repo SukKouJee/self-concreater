@@ -44,8 +44,8 @@ from scripts.common import ScriptError
 from scripts.ui import server as ui
 from server import auth, files
 from server.backend import ServerBackend
-from server.config import AuthSettings, ServerSettings
-from server.jobs_registry import Registry
+from server.config import AuthSettings, LlmSettings, ServerSettings
+from server.jobs_registry import Registry, install_runtime, uninstall_runtime
 
 EDITION: Final = "server"
 SERVER_FEATURES: Final = tuple(ui.FEATURE_PREFIXES)      # §8: server v1 turns every optional feature off
@@ -316,10 +316,14 @@ def _file_chunks(part: ui.FileSlice) -> Iterator[bytes]:
 
 
 def create_app(settings: AuthSettings, backend: ServerBackend, *, users: auth.UserDirectory | None = None,
-               registry: Registry | None = None, close_backend: bool = False) -> Starlette:
-    """설정·저장소로 앱을 만든다. users 기본값은 PG(`auth.PgUsers`). close_backend면 종료 때 저장소를 닫는다."""
+               registry: Registry | None = None, close_backend: bool = False,
+               runtime: LlmSettings | None = None) -> Starlette:
+    """설정·저장소로 앱을 만든다. users 기본값은 PG(`auth.PgUsers`). close_backend면 종료 때 저장소를 닫는다.
+    runtime을 주면 지금 전역 자원 슬롯·수집 잠금·LLM 고정을 설치하고 종료 때 걷는다(`jobs_registry.install_runtime`)."""
     ui.register_routes()
     handler = _ServerApp(settings, backend, users or auth.PgUsers(backend.db), registry or Registry())
+    if runtime is not None:
+        install_runtime(runtime, backend.db)
 
     @asynccontextmanager
     async def lifespan(app: Starlette) -> AsyncIterator[None]:
@@ -328,6 +332,8 @@ def create_app(settings: AuthSettings, backend: ServerBackend, *, users: auth.Us
         finally:
             handler.registry.close()
             await anyio.to_thread.run_sync(handler.registry.shutdown, SHUTDOWN_TIMEOUT)
+            if runtime is not None:
+                uninstall_runtime()
             if close_backend:
                 backend.close()
 
@@ -345,8 +351,8 @@ def create_app(settings: AuthSettings, backend: ServerBackend, *, users: auth.Us
 def from_env() -> Starlette:
     """env → 설정(틀리면 ScriptError로 시작 거부) → 저장소 열기 → 앱."""
     settings = ServerSettings.from_env(os.environ)
-    backend = ServerBackend.open(settings.storage)
-    return create_app(settings.auth, backend, close_backend=True)
+    backend = ServerBackend.open(settings.storage, daily_usd=settings.llm.daily_usd)
+    return create_app(settings.auth, backend, close_backend=True, runtime=settings.llm)
 
 
 class _LazyApp:

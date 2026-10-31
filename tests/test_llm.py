@@ -580,3 +580,76 @@ def test_local_ctx_usage_is_null_meter(tmp_path):
     assert isinstance(m, stores.NullMeter)
     m.check("add")
     m.record("m", {"input_tokens": 1}, True)
+
+
+# ---- 서버판 고정 정책(ADR-S10): pin(engine, model, max_tokens) -------------------------------
+
+@pytest.fixture
+def pinned():
+    llm.pin(engine="anthropic-api", model="claude-sonnet-5-5", max_tokens=1000)
+    yield
+    llm.unpin()
+
+
+def test_pin_ignores_the_users_llm_section_and_env(home, pinned, monkeypatch):
+    _write_config(home, {"llm": {"engine": "claude-cli", "model": "claude-fable-5-1", "max_tokens": 99999}})
+    monkeypatch.setenv("YTC_LLM_MODEL", "other-model")
+    assert llm.config() == {"engine": "anthropic-api", "model": "claude-sonnet-5-5", "max_tokens": 1000}
+
+
+def test_pin_ignores_a_broken_yt_coach_json(home, pinned):
+    _write_config(home, "{not json")
+    assert llm.config()["engine"] == "anthropic-api"
+
+
+def test_unpin_restores_local_config(home):
+    llm.pin(engine="anthropic-api", model="m", max_tokens=5)
+    llm.unpin()
+    assert llm.config() == {"engine": "claude-cli"}
+
+
+def test_pin_rejects_unknown_engine_and_bad_cap():
+    with pytest.raises(ValueError):
+        llm.pin(engine="nope", model="m", max_tokens=5)
+    with pytest.raises(ValueError):
+        llm.pin(engine="anthropic-api", model="m", max_tokens=0)
+    assert llm.config() == {"engine": "claude-cli"}
+
+
+@pytest.mark.parametrize("asked, sent", [(None, 1000), (500, 500), (16000, 1000)])
+def test_pinned_max_tokens_caps_every_call(api, pinned, asked, sent):
+    fake = api(_tool_reply({"a": 1}))
+    llm.ask([], {}, "t", schema={"type": "object"}, max_tokens=asked)
+    assert fake.body["max_tokens"] == sent and fake.body["model"] == "claude-sonnet-5-5"
+
+
+def test_pinned_cap_above_engine_default_keeps_engine_default(api):
+    llm.pin(engine="anthropic-api", model="claude-sonnet-5-5", max_tokens=16000)
+    try:
+        fake = api(_tool_reply({"a": 1}))
+        llm.ask([], {}, "t", schema={"type": "object"})
+        assert fake.body["max_tokens"] == llm_anthropic.DEFAULT_MAX_TOKENS
+    finally:
+        llm.unpin()
+
+
+def test_meter_check_runs_inside_the_llm_slot(api, tmp_path, monkeypatch):
+    """한도 검사는 llm 자리를 잡은 뒤에 한다: 동시에 검사를 통과한 호출 수 ≤ YTC_LLM_SLOTS(설계 §6 초과 한계)."""
+    from contextlib import contextmanager
+
+    from scripts import limits
+
+    api(_usage_reply({"a": 1}, {"input_tokens": 1, "output_tokens": 2}))
+    meter = _Meter()
+
+    @contextmanager
+    def slot(name, on_wait=None):
+        meter.events.append(("slot", name))
+        yield
+        meter.events.append(("slot_exit", name))
+
+    monkeypatch.setattr(limits, "slot", slot)
+    c, ctx = _meter_ctx(tmp_path, meter)
+    with ctx.use(c):
+        llm.ask([], {}, "t", schema={"type": "object"})
+    assert [e[0] for e in meter.events] == ["slot", "check", "slot_exit", "record"]

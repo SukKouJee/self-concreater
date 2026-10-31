@@ -12,7 +12,6 @@ from scripts import ctx as ctx_mod
 from scripts import keys
 from scripts.common import ScriptError
 from scripts.ctx import Ctx
-from scripts.stores import NullMeter
 from tests.helpers.pg import Stack, TestDb, pg_ctx, pg_user
 
 VID = "Q8PSsikq8PA"
@@ -41,12 +40,13 @@ def test_ctx_stores_are_the_server_implementations_for_that_user(request: pytest
     from server.pgstore import PgDocStore, PgTrash
     from server.s3store import S3ObjectStore, S3SharedCache
     from server.scratch import ServerScratch
+    from server.usage import PgUsageMeter
 
     c = pg_ctx(request, "a@example.com")
     assert isinstance(c.store, PgDocStore) and c.store.label() == "ytc:a@example.com"
     assert isinstance(c.objects, S3ObjectStore) and isinstance(c.shared, S3SharedCache)
     assert isinstance(c.scratch, ServerScratch) and isinstance(c.trash, PgTrash)
-    assert isinstance(c.usage, NullMeter)
+    assert isinstance(c.usage, PgUsageMeter)
     assert c.scratch.tmp_path("x.json").parent.name == c.user_id
 
 

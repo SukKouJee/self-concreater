@@ -4,7 +4,10 @@
   남의 job_id는 그 사용자의 매니저에 없으므로 `job_not_found`다(격리).
 - 종료: `close()` 뒤에는 새 매니저를 만들지 않고(`closing`) 어댑터가 상태를 바꾸는 요청을 503 `restarting`으로 거절한다.
   `shutdown(timeout)`은 모든 사용자의 작업을 멈추고 기다린다.
-- 전역 자원 슬롯(media·llm) 설치는 T11.
+- 전역 자원(T11, 설계 §5.2): `install_runtime(llm_settings, db)`가 시작 때 한 번 media·llm 세마포어(`YTC_MEDIA_SLOTS`·`YTC_LLM_SLOTS`),
+  같은 영상 수집 잠금(`Db.collect_lock`, PG advisory lock), LLM 고정(`llm.pin`: 엔진·모델·호출당 max_tokens 상한)을 꽂는다.
+  YouTube 간격은 `fetch.wait_turn`의 프로세스 잠금 + `.last_fetch`(서버 상태 폴더)라 따로 설치할 것이 없다(프로세스 하나 = 서버 전체 1개).
+  `uninstall_runtime()`은 로컬판 기본(no-op)으로 되돌린다.
 """
 from __future__ import annotations
 
@@ -12,8 +15,23 @@ import threading
 import uuid
 from collections.abc import Callable
 
+from scripts import limits, llm
 from scripts.common import ScriptError
 from scripts.ui.jobs import JobManager
+from server.config import LlmSettings
+from server.db import Db
+
+
+def install_runtime(settings: LlmSettings, db: Db) -> None:
+    """프로세스 전역 자원 제한과 LLM 정책을 설치한다(서버 시작 때 한 번)."""
+    llm.pin(engine=settings.engine, model=settings.model, max_tokens=settings.max_tokens)
+    limits.install(media=threading.Semaphore(settings.media_slots), llm=threading.Semaphore(settings.llm_slots),
+                   collect=db.collect_lock)
+
+
+def uninstall_runtime() -> None:
+    limits.install()
+    llm.unpin()
 
 
 class Registry:

@@ -596,3 +596,41 @@ def test_cut_stats_holds_media_slot_and_reports_wait_when_full(home, fake_downlo
     assert out["status"] == "analyzed"
     assert ("wait", None, limits.WAIT_TEXT) in rec.calls
     assert sem.acquire(blocking=False)      # 끝나면 반납됨
+
+
+# --- 서버판 이음매: 같은 영상 수집 잠금(§3.3) -------------------------------------------
+
+def _recording_collect_lock(log):
+    from contextlib import contextmanager
+
+    @contextmanager
+    def lock(video_id, on_wait):
+        log.append(("enter", video_id))
+        if on_wait is not None:
+            on_wait()
+        try:
+            yield
+        finally:
+            log.append(("exit", video_id))
+    return lock
+
+
+def test_cut_stats_runs_cache_check_download_and_save_inside_the_collect_lock(home, fake_download, monkeypatch):
+    from scripts import limits
+
+    log: list[tuple[str, str]] = []
+    limits.install(collect=_recording_collect_lock(log))
+    try:
+        real_download = cuts.download_video
+        monkeypatch.setattr(cuts, "download_video",
+                            lambda *a, **k: (log.append(("download", a[0])), real_download(*a, **k))[1])
+        rec = Recorder()
+        cuts.cut_stats(VID, progress=rec)
+        assert log == [("enter", VID), ("download", VID), ("exit", VID)]
+        # the wait for another collector is shown as a "wait" step (not counted in timings)
+        assert ("wait", None, limits.COLLECT_WAIT_TEXT) in rec.calls
+        log.clear()
+        assert cuts.cut_stats(VID)["status"] == "cached"
+        assert log == [("enter", VID), ("exit", VID)]
+    finally:
+        limits.install()

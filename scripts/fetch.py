@@ -22,12 +22,14 @@ import json
 import math
 import os
 import re
+import threading
 import time
 from datetime import datetime, timezone
-from typing import Any
+from pathlib import Path
+from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
-from scripts import ctx, keys, refstore
+from scripts import ctx, keys, limits, refstore
 from scripts.common import ArgParser, Progress, ScriptError, run, safe_progress
 
 SHORTS_MAX_SEC = 180
@@ -220,28 +222,50 @@ def get_transcript(video_id: str, proxy: str | None, original: str | None = None
 META_TEXT = "영상 정보·자막 받는 중"
 
 
+# 한 프로세스 안 작업 스레드들이 `.last_fetch`를 동시에 읽고 같은 순간에 받지 않게 한다(서버판은 프로세스 하나라
+# 이것이 서버 전체 YouTube 간격이다, 서버 설계 §5.2). 잠금은 순번 예약만 하고, 기다림은 잠금 밖에서 한다.
+_TURN_LOCK = threading.Lock()
+
+
+def _reserve_turn(stamp: Path, interval: float) -> float:
+    """다음 수집 시각(마지막 예약 + 간격, 지났으면 지금)을 예약해 `.last_fetch`에 쓰고 돌려준다."""
+    with _TURN_LOCK:
+        now = time.time()
+        turn = now
+        if stamp.exists():
+            try:
+                turn = max(now, float(stamp.read_text("utf-8")) + interval)
+            except ValueError:
+                turn = now
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.write_text(str(turn), encoding="utf-8")
+        return turn
+
+
 def wait_turn(progress: Progress | None = None) -> None:
     """마지막 네트워크 수집 이후 최소 간격이 지날 때까지 기다린다 (프로세스 간 공유).
 
     progress가 있으면 1초마다 ("wait", None, "차단 방지 대기 N초")로 남은 대기를 알린다.
+    같은 프로세스의 여러 스레드는 순번을 하나씩 예약하므로 간격을 두고 차례로 받는다.
     """
     interval = float(os.environ.get("YT_FETCH_INTERVAL") or FETCH_INTERVAL_SEC)
     stamp = ctx.here().scratch.local_path(".last_fetch")
     report = safe_progress(progress)
-    if stamp.exists():
-        try:
-            wait = float(stamp.read_text("utf-8")) + interval - time.time()
-        except ValueError:
-            wait = 0
-        if wait > 0 and report is None:
-            time.sleep(wait)
-        while wait > 0 and report is not None:
-            report("wait", None, f"차단 방지 대기 {math.ceil(wait)}초")
-            step = min(1.0, wait)
-            time.sleep(step)
-            wait -= step
-    stamp.parent.mkdir(parents=True, exist_ok=True)
-    stamp.write_text(str(time.time()), encoding="utf-8")
+    wait = _reserve_turn(stamp, interval) - time.time()
+    if wait > 0 and report is None:
+        time.sleep(wait)
+    while wait > 0 and report is not None:
+        report("wait", None, f"차단 방지 대기 {math.ceil(wait)}초")
+        step = min(1.0, wait)
+        time.sleep(step)
+        wait -= step
+
+
+def _collect_waiter(report: Progress | None) -> Callable[[], None] | None:
+    """같은 영상을 받는 다른 작업을 기다리는 동안 보일 문구(진행 단계 "wait": 걸린 시간에 넣지 않는다)."""
+    if report is None:
+        return None
+    return lambda: report("wait", None, limits.COLLECT_WAIT_TEXT)
 
 
 def load_raw(video_id: str) -> dict:
@@ -316,26 +340,28 @@ def fetch(url: str, category: str | None = None, role: str = "ref", force: bool 
         if same and not (force or reanalyze):
             return {"id": video_id, "status": "exists", "md": same["md"], "also_in": also_in}
 
-    if ctx.here().shared.exists(keys.raw(video_id)) and not force:
-        data, status = load_raw(video_id), "cached"
-    else:
-        proxy = os.environ.get("YT_PROXY") or None
-        report = safe_progress(progress)
-        wait_turn(report)
-        if report is not None:
-            report("meta", None, META_TEXT)
-        meta = get_metadata(video_id, proxy)
-        transcript = get_transcript(video_id, proxy, meta.get("language"))
-        data = {
-            "id": video_id,
-            "url": canonical_url(video_id),
-            "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "format": detect_format(meta, url),
-            "meta": meta,
-            "transcript": transcript,
-        }
-        save_raw(data)
-        status = "fetched"
+    report = safe_progress(progress)
+    # 캐시 확인 → 받기 → 저장을 한 잠금 안에서: 같은 영상을 동시에 넣은 다른 사용자는 기다렸다가 캐시를 쓴다
+    with limits.collecting(video_id, on_wait=_collect_waiter(report)):
+        if ctx.here().shared.exists(keys.raw(video_id)) and not force:
+            data, status = load_raw(video_id), "cached"
+        else:
+            proxy = os.environ.get("YT_PROXY") or None
+            wait_turn(report)
+            if report is not None:
+                report("meta", None, META_TEXT)
+            meta = get_metadata(video_id, proxy)
+            transcript = get_transcript(video_id, proxy, meta.get("language"))
+            data = {
+                "id": video_id,
+                "url": canonical_url(video_id),
+                "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "format": detect_format(meta, url),
+                "meta": meta,
+                "transcript": transcript,
+            }
+            save_raw(data)
+            status = "fetched"
 
     summary = _summary(data, status, also_in)
     if not data["transcript"]:
