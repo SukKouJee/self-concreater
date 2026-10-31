@@ -67,7 +67,7 @@ def parse_result_text(text: str) -> dict:
     try:
         data = json.loads(text[start : end + 1])
     except json.JSONDecodeError as e:
-        raise ScriptError("claude_failed", f"Claude 응답 JSON을 읽지 못했습니다: {e}") from e
+        raise ScriptError("llm_bad_json", f"Claude 응답 JSON을 읽지 못했습니다: {e}") from e
     if not isinstance(data, dict):
         raise ScriptError("claude_failed", "Claude 응답이 JSON 객체가 아닙니다")
     return data

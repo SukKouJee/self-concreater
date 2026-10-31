@@ -40,6 +40,9 @@ MAX_SCENES = 300                                # 한 번에 그리는 최대 �
 CONCURRENCY = 3                                 # 동시에 Claude에 보내는 묶음 수
 MAX_TOKENS = 16000
 DRAW_TASK = "draw-scenes 규칙대로 장면마다 SVG 그림 하나를 그린 JSON을 만드세요."
+# JSON이 깨져 다시 물을 때 덧붙인다(SVG 속성의 큰따옴표를 이스케이프하지 않아 깨지는 경우가 대부분)
+DRAW_JSON_RETRY = ("\n\n이전 답은 JSON으로 읽히지 않았습니다. SVG의 모든 속성값을 작은따옴표로 쓰세요"
+                   "(예: <rect fill='#e5484d'/>). 그러면 JSON 문자열 안에서 이스케이프할 필요가 없습니다.")
 MERGE_FIRST_MESSAGE = "반복 컷을 먼저 장면으로 합쳐 주세요"
 
 
@@ -305,11 +308,20 @@ def _draw_batch(key: str, number: int, batch_ids: list[str], tally: _Tally) -> N
         got: dict[str, str | None] = {}
         asked = True
         try:
-            _, got = llm.ask_validated(rules(), _payload(fm, batch), DRAW_TASK,
-                                       lambda d, s=scene_ids: _validated(d, s), max_tokens=MAX_TOKENS)
+            try:
+                _, got = llm.ask_validated(rules(), _payload(fm, batch), DRAW_TASK,
+                                           lambda d, s=scene_ids: _validated(d, s), max_tokens=MAX_TOKENS)
+            except ScriptError as first:
+                if first.code != "llm_bad_json":
+                    raise
+                # 깨진 JSON은 한 번만 작은따옴표 안내를 붙여 다시 묻는다
+                _, got = llm.ask_validated(rules(), _payload(fm, batch), DRAW_TASK + DRAW_JSON_RETRY,
+                                           lambda d, s=scene_ids: _validated(d, s), max_tokens=MAX_TOKENS)
         except ScriptError as e:
+            reason = ("Claude 답이 JSON 형식이 아니었어요. 남은 장면 그리기를 다시 눌러 주세요"
+                      if e.code == "llm_bad_json" else e.message)
             with tally.lock:
-                tally.warnings.append(f"{number}번째 묶음({len(batch)}장면)을 그리지 못했어요: {e.message}")
+                tally.warnings.append(f"{number}번째 묶음({len(batch)}장면)을 그리지 못했어요: {reason}")
                 tally.failed += len(batch)
             asked = False
         results: dict[str, tuple[str, str]] = {}

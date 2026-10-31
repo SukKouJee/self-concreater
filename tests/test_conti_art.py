@@ -172,7 +172,7 @@ import json  # noqa: E402
 import re  # noqa: E402
 import threading  # noqa: E402
 
-from scripts import conti_history, llm, refstore  # noqa: E402
+from scripts import claude_cli, conti_history, llm, refstore  # noqa: E402
 from tests.test_conti import conti_file, draft_md, home, saved  # noqa: E402,F401 - fixtures
 
 GOOD_SVG = f'<svg xmlns="{SVG_NS}" viewBox="0 0 1600 900"><rect x="1" y="1" width="9" height="9"/></svg>'
@@ -577,3 +577,62 @@ def test_draw_workers_inherit_the_ctx_root(saved, home, fake, monkeypatch, tmp_p
     assert out["drawn"] == len(ids)
     assert list((home / "workspace" / "conti-art").rglob("*.svg"))
     assert not (other / "workspace").exists()
+
+
+# --- JSON 깨짐 재시도 ------------------------------------------------------------------------
+
+def _bad_json_hook(fail_times, code="llm_bad_json"):
+    """같은 묶음에 대해 처음 fail_times번은 JSON 오류를 낸다."""
+    seen: dict[tuple, int] = {}
+
+    def hook(payload, call_no, data):
+        k = tuple(scene_ids(payload))
+        seen[k] = seen.get(k, 0) + 1
+        if seen[k] <= fail_times:
+            raise ScriptError(code, "Claude 응답 JSON을 읽지 못했습니다: Expecting ',' delimiter")
+
+    return hook
+
+
+def test_draw_retries_bad_json_once_with_single_quote_reminder(saved, monkeypatch):
+    f = FakeDraw(_bad_json_hook(1))
+    monkeypatch.setattr(llm, "ask_validated", f)
+    ids = [c["id"] for c in cuts_of(saved)]
+    out = conti_art.draw(saved, ids[:2], False)
+    assert out["drawn"] == 2 and out["failed"] == 0 and out["warnings"] == []
+    assert len(f.calls) == 2
+    assert f.calls[0]["task"] == conti_art.DRAW_TASK
+    assert f.calls[1]["task"].startswith(conti_art.DRAW_TASK) and "작은따옴표" in f.calls[1]["task"]
+
+
+def test_draw_bad_json_twice_fails_with_one_warning(saved, monkeypatch):
+    f = FakeDraw(_bad_json_hook(2))
+    monkeypatch.setattr(llm, "ask_validated", f)
+    ids = [c["id"] for c in cuts_of(saved)]
+    out = conti_art.draw(saved, ids[:2], False)
+    assert out["drawn"] == 0 and out["failed"] == 2 and len(out["warnings"]) == 1
+    assert "JSON 형식이 아니었어요" in out["warnings"][0] and "Expecting" not in out["warnings"][0]
+    assert len(f.calls) == 2
+
+
+def test_draw_other_errors_are_not_retried(saved, monkeypatch):
+    f = FakeDraw(_bad_json_hook(5, code="llm_failed"))
+    monkeypatch.setattr(llm, "ask_validated", f)
+    ids = [c["id"] for c in cuts_of(saved)]
+    out = conti_art.draw(saved, ids[:2], False)
+    assert out["failed"] == 2 and len(out["warnings"]) == 1 and len(f.calls) == 1
+
+
+def test_sanitize_accepts_single_quoted_attributes():
+    text = (f"<svg xmlns='{SVG_NS}' viewBox='0 0 10 10'>"
+            "<rect x='1' y='1' width='9' height='9' fill='#e5484d' onclick='x()'/></svg>")
+    out = conti_art.sanitize_svg(text, "16:9")
+    assert 'fill="#e5484d"' in out and "onclick" not in out and 'viewBox="0 0 1600 900"' in out
+
+
+def test_draw_rule_requires_single_quoted_svg_attributes():
+    text = (claude_cli.SKILLS_DIR / "yt-conti" / "draw-scenes.md").read_text(encoding="utf-8")
+    assert "작은따옴표" in text
+    example = text[text.index("## 출력"):]
+    assert "<rect fill='#e5484d'" in text and "fill='#e5484d'" in example
+    assert '\\"' not in example and "fill=\\" not in example

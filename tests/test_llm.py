@@ -678,3 +678,10 @@ def test_failed_call_is_recorded_inside_the_slot_and_the_original_error_wins(api
     assert e.value.code == "llm_failed"
     assert [ev[0] for ev in meter.events] == ["slot", "check", "record", "slot_exit"]
     assert meter.events[2][3] is False
+
+
+def test_anthropic_broken_json_text_is_llm_bad_json(api):
+    api(_text_reply('{"svg": "<rect fill="#fff"/>"}'))
+    with pytest.raises(ScriptError) as e:
+        llm.ask([], {}, "t")
+    assert e.value.code == "llm_bad_json" and "JSON을 읽지 못했습니다" in e.value.message

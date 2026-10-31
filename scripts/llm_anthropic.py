@@ -146,7 +146,7 @@ def _extract(response: Any, schema: dict | None) -> dict:
     try:
         return parse_result_text(text)
     except ScriptError as e:
-        raise ScriptError("llm_failed", e.message) from e
+        raise ScriptError("llm_bad_json" if e.code == "llm_bad_json" else "llm_failed", e.message) from e
 
 
 def ask(
