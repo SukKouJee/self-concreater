@@ -246,6 +246,28 @@ def test_add_user_refuses_duplicates_and_bad_values(db: Db, people: dict[str, uu
     assert _audit(migrated_db.owner_dsn) == []
 
 
+@pytest.mark.parametrize("limit", [Decimal("-0.01"), Decimal("1000000"), Decimal("1.234")])
+def test_add_user_limit_uses_the_same_rule_as_set_limit(db: Db, people: dict[str, uuid.UUID], migrated_db: TestDb,
+                                                        limit: Decimal) -> None:
+    with pytest.raises(psycopg.Error) as e:
+        _call(db, people["root"], "SELECT admin_add_user('n@example.com', NULL, %s, NULL, false)", limit)
+    assert _sqlstate(e) == "YTA05"
+    assert _owner(migrated_db.owner_dsn, "SELECT count(*) FROM users WHERE email = 'n@example.com'") == [(0,)]
+    assert _audit(migrated_db.owner_dsn) == []
+
+
+def test_usage_window_edges_follow_kst_days(db: Db, people: dict[str, uuid.UUID], migrated_db: TestDb) -> None:
+    """days=N covers KST today and the N-1 days before it: the first instant of the window counts, the one before not."""
+    start = "(date_trunc('day', now() AT TIME ZONE 'Asia/Seoul') - interval '6 days') AT TIME ZONE 'Asia/Seoul'"
+    with psycopg.connect(migrated_db.owner_dsn) as conn:
+        for at, cost in ((start, 1), (f"{start} - interval '1 microsecond'", 100)):
+            conn.execute(f"INSERT INTO llm_usage (user_id, at, model, input_tokens, output_tokens, cost_usd, ok) "
+                         f"VALUES (%s, {at}, 'm', 1, 1, %s, true)", (people["bob"], cost))
+    rows = _call(db, people["root"], "SELECT cost_usd FROM admin_usage(7)")
+    assert [float(r[0]) for r in rows] == [1.0]
+    assert sum(float(r[0]) for r in _call(db, people["root"], "SELECT cost_usd FROM admin_usage(8)")) == 101.0
+
+
 def test_set_and_clear_password_bump_the_epoch(db: Db, people: dict[str, uuid.UUID], migrated_db: TestDb) -> None:
     bob = people["bob"]
     new_hash = "scrypt$32768$8$1$bmV3$bmV3"
@@ -314,7 +336,10 @@ def test_admin_cannot_disable_or_demote_self(db: Db, people: dict[str, uuid.UUID
     _call(db, root, "SELECT admin_set_limit(%s, 9)", root)
 
 
-def test_last_enabled_admin_cannot_be_removed(db: Db, people: dict[str, uuid.UUID], migrated_db: TestDb) -> None:
+def test_sole_enabled_admin_is_kept_by_self_protection_and_a_demoted_actor_is_refused(
+        db: Db, people: dict[str, uuid.UUID], migrated_db: TestDb) -> None:
+    """Through the functions the last enabled admin can only be removed by themself, which YTA03 refuses first;
+    an actor demoted behind their back is no longer an admin (YTA01). YTA04 is the backstop below."""
     root, bob = people["root"], people["bob"]
     _call(db, root, "SELECT admin_set_admin(%s, true)", bob)
     _owner(migrated_db.owner_dsn, "UPDATE users SET is_admin = false WHERE id = %s RETURNING id", root)
@@ -328,6 +353,15 @@ def test_last_enabled_admin_cannot_be_removed(db: Db, people: dict[str, uuid.UUI
         with pytest.raises(psycopg.Error) as e:
             _call(db, bob, sql, bob)
         assert _sqlstate(e) == "YTA03"
+
+
+def test_keep_one_backstop_refuses_removing_the_only_enabled_admin(people: dict[str, uuid.UUID],
+                                                                   migrated_db: TestDb) -> None:
+    """admin_keep_one (internal, owner only) is a backstop under the self-protection rule: called directly it refuses."""
+    with pytest.raises(psycopg.Error) as e:
+        _owner(migrated_db.owner_dsn, "SELECT public.admin_keep_one(%s)", people["root"])
+    assert _sqlstate(e) == "YTA04"
+    assert _owner(migrated_db.owner_dsn, "SELECT public.admin_keep_one(%s)", people["bob"]) == [("",)]
 
 
 def test_last_admin_check_counts_enabled_admins(db: Db, people: dict[str, uuid.UUID], migrated_db: TestDb) -> None:

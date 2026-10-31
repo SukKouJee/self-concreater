@@ -136,7 +136,7 @@ def test_add_user_rejects_bad_daily_limit(bad: str) -> None:
     assert e.value.code == "bad_limit"
 
 
-@pytest.mark.parametrize("command", ["disable-user", "logout-all", "make-admin", "revoke-admin"])
+@pytest.mark.parametrize("command", ["disable-user", "logout-all", "make-admin", "revoke-admin", "enable-user"])
 def test_admin_commands_need_the_owner_dsn(command: str) -> None:
     with pytest.raises(ScriptError) as e:
         admin.main([command, "a@example.com"], {})
@@ -188,20 +188,34 @@ def test_make_admin_and_revoke_admin_flip_is_admin_and_audit_as_the_owner(env: d
     uid = _user_row(env, LOWER)[0]
 
     made = admin.main(["make-admin", EMAIL], env)
-    assert made == {"id": str(uid), "email": LOWER, "is_admin": True, "admins": 1}
+    assert made == {"id": str(uid), "email": LOWER, "is_admin": True, "disabled": False, "admins": 1}
     assert _user_row(env, LOWER)[3] is True
     again = admin.main(["make-admin", LOWER], env)                 # idempotent
     assert again["is_admin"] is True and again["admins"] == 1
 
     revoked = admin.main(["revoke-admin", LOWER], env)
-    assert revoked == {"id": str(uid), "email": LOWER, "is_admin": False, "admins": 0}
+    assert revoked == {"id": str(uid), "email": LOWER, "is_admin": False, "disabled": False, "admins": 0}
     assert _user_row(env, LOWER)[3] is False and _user_row(env, LOWER)[5] == 0          # sessions are kept
     assert _audit_rows(env) == [(None, "set_admin", uid, {"is_admin": True, "via": "cli"}),
                                 (None, "set_admin", uid, {"is_admin": True, "via": "cli"}),
                                 (None, "set_admin", uid, {"is_admin": False, "via": "cli"})]
 
 
-@pytest.mark.parametrize("command", ["make-admin", "revoke-admin"])
+def test_make_admin_of_a_disabled_user_says_so_and_enable_user_brings_them_back(env: dict[str, str]) -> None:
+    admin.main(["add-user", LOWER], env)
+    uid = _user_row(env, LOWER)[0]
+    admin.main(["disable-user", LOWER], env)
+    epoch = _user_row(env, LOWER)[5]
+    made = admin.main(["make-admin", LOWER], env)
+    assert made["disabled"] is True and made["admins"] == 0          # an admin who cannot log in yet
+    enabled = admin.main(["enable-user", EMAIL], env)
+    assert enabled == {"id": str(uid), "email": LOWER, "disabled": False, "session_epoch": epoch}
+    row = _user_row(env, LOWER)
+    assert row[4] is False and row[5] == epoch                          # no epoch change
+    assert _audit_rows(env)[-1] == (None, "enable", uid, {"via": "cli"})
+
+
+@pytest.mark.parametrize("command", ["make-admin", "revoke-admin", "enable-user"])
 def test_make_admin_unknown_user_is_user_not_found(env: dict[str, str], command: str) -> None:
     with pytest.raises(ScriptError) as e:
         admin.main([command, "ghost@example.com"], env)

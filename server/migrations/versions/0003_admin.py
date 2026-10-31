@@ -12,7 +12,8 @@ Create Date: 2026-11-02
   관리자가 아니거나 비활성이면 SQLSTATE `YTA01`(fail closed). 앱은 요청마다 `Db.user_tx(로그인한 사용자)`로 부르므로
   RLS와 같은 신뢰 모델이다(앱 코드가 다른 사용자 id를 설정하지 않는다).
   쓰는 함수는 `pg_advisory_xact_lock(ADMIN_LOCK)`으로 서로 직렬화한 뒤 호출자를 확인한다 — 두 관리자가 서로를 동시에 강등해도
-  관리자가 0명이 되지 않는다. 자기 비활성·자기 강등은 `YTA03`, 마지막 활성 관리자를 없애는 변경은 `YTA04`,
+  관리자가 0명이 되지 않는다. 자기 비활성·자기 강등은 `YTA03`. 호출자는 늘 활성 관리자이고 자기 자신은 뺄 수 없으므로 함수 경로로는
+  마지막 활성 관리자가 남는다. `admin_keep_one`(`YTA04`)은 그 규칙 밑의 받침(backstop)일 뿐 따로 닿는 경로가 아니다.
   없는 대상은 `YTA02`, 잘못된 값은 `YTA05`. 바꾸는 함수는 감사 행을 하나 쓴다(목록·사용량·감사 읽기는 기록하지 않는다).
 - EXECUTE는 PUBLIC에서 걷고 앱 롤에만 준다(내부 `admin_actor()`는 앱 롤도 못 부른다). 앱 롤은 여전히 users에 직접 쓰지 못한다.
 - 비밀번호 해시는 앱(`server.passwords`)이 만들고 함수는 해시만 받는다(0002의 CHECK가 형식을 묶는다).
@@ -95,7 +96,8 @@ BEGIN
   RETURN row;
 END $fn$;
 
--- refuse a change that would leave no enabled admin other than p_leaving
+-- Backstop under the self-protection rule: the caller is always an enabled admin and cannot remove themself (YTA03),
+-- so through these functions this never fires today. It stays so that a future rule change cannot leave zero admins.
 CREATE FUNCTION public.admin_keep_one(p_leaving uuid) RETURNS void
 LANGUAGE plpgsql VOLATILE SECURITY DEFINER {PATH} AS $fn$
 BEGIN
@@ -131,7 +133,8 @@ DECLARE
 BEGIN
   PERFORM pg_advisory_xact_lock({ADMIN_LOCK});
   actor := public.admin_actor();
-  IF p_email IS NULL OR p_is_admin IS NULL OR (p_daily_limit IS NOT NULL AND p_daily_limit < 0) THEN
+  IF p_email IS NULL OR p_is_admin IS NULL OR (p_daily_limit IS NOT NULL AND (
+      p_daily_limit < 0 OR p_daily_limit > 999999.99 OR p_daily_limit <> round(p_daily_limit, 2))) THEN
     RAISE EXCEPTION 'bad input' USING ERRCODE = 'YTA05';
   END IF;
   INSERT INTO public.users (email, display_name, daily_usd_limit, password_hash, is_admin)
@@ -272,7 +275,9 @@ BEGIN
     SELECT u.email, (l.at AT TIME ZONE 'Asia/Seoul')::date AS d, count(*), count(*) FILTER (WHERE NOT l.ok),
            sum(l.input_tokens)::bigint, sum(l.output_tokens)::bigint, sum(l.cost_usd)
       FROM public.llm_usage l JOIN public.users u ON u.id = l.user_id
-     WHERE (l.at AT TIME ZONE 'Asia/Seoul')::date > (now() AT TIME ZONE 'Asia/Seoul')::date - p_days
+     -- timestamptz lower bound (KST midnight p_days-1 days ago) so the (user_id, at) index applies
+     WHERE l.at >= (date_trunc('day', now() AT TIME ZONE 'Asia/Seoul') - make_interval(days => p_days - 1))
+                   AT TIME ZONE 'Asia/Seoul'
      GROUP BY u.email, d ORDER BY d DESC, u.email;
 END $fn$;
 

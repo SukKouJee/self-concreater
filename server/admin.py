@@ -10,7 +10,9 @@
 - `logout-all <email>`: `session_epoch`만 증가(모든 기기의 세션이 끊기고, 다시 로그인하면 된다. 기기 분실 등).
 - `make-admin <email>` / `revoke-admin <email>`: 관리자 권한을 주거나 걷는다(owner 경로, 첫 관리자 만들기·잠긴 관리 화면 되살리기).
   감사 기록(`admin_audit`, 행위자 NULL, detail `via: cli`)을 남기고, 출력의 `admins`는 남은 활성 관리자 수다. 웹 관리 화면(T16)과 달리
-  마지막 관리자도 걷을 수 있다(운영자의 탈출구). 세션은 끊지 않는다(관리자 여부는 요청마다 읽는다).
+  마지막 관리자도 걷을 수 있다(운영자의 탈출구). 세션은 끊지 않는다(관리자 여부는 요청마다 읽는다). 출력의 `disabled`가 true면
+  그 계정은 로그인할 수 없으니 `enable-user`를 먼저(또는 함께) 실행한다.
+- `enable-user <email>`: 비활성을 푼다(owner 경로, 감사 기록 `enable`·`via: cli`). 세션 epoch는 그대로(끊긴 세션은 이미 끊겼다).
 - `import <작업 폴더> --user <email> [--dry-run] [--overwrite] [--overwrite-memo] [--no-verify]`: 로컬 작업 폴더를 그 사용자 계정으로 올린다.
 - `usage [--days N]`: 사용자·날짜(Asia/Seoul)별 LLM 사용량 합계(`llm_usage`, 아직 기록이 없으면 빈 목록).
 
@@ -374,7 +376,8 @@ def set_admin(env: Mapping[str, str], email: str, is_admin: bool) -> dict[str, A
     """owner로 `is_admin`을 바꾸고 감사 행(행위자 없음)을 남긴다. 남은 활성 관리자 수를 함께 돌려준다."""
     address = _email(email)
     with _owner_tx(env) as conn:
-        row = conn.execute("UPDATE users SET is_admin = %s WHERE email = %s RETURNING id", (is_admin, address)).fetchone()
+        row = conn.execute("UPDATE users SET is_admin = %s WHERE email = %s RETURNING id, disabled",
+                           (is_admin, address)).fetchone()
         if row is None:
             raise ScriptError("user_not_found", f"없는 사용자입니다: {address}. 먼저 add-user로 만드세요.")
         conn.execute("INSERT INTO admin_audit (actor_id, action, target_user_id, detail) "
@@ -382,7 +385,20 @@ def set_admin(env: Mapping[str, str], email: str, is_admin: bool) -> dict[str, A
                      (row[0], is_admin))
         left = conn.execute("SELECT count(*) FROM users WHERE is_admin AND NOT disabled").fetchone()
     assert left is not None
-    return {"id": str(row[0]), "email": address, "is_admin": is_admin, "admins": int(left[0])}
+    return {"id": str(row[0]), "email": address, "is_admin": is_admin, "disabled": bool(row[1]), "admins": int(left[0])}
+
+
+def enable_user(env: Mapping[str, str], email: str) -> dict[str, Any]:
+    """owner로 비활성을 푼다(감사 행, 행위자 없음). epoch는 바꾸지 않는다."""
+    address = _email(email)
+    with _owner_tx(env) as conn:
+        row = conn.execute("UPDATE users SET disabled = false WHERE email = %s RETURNING id, session_epoch",
+                           (address,)).fetchone()
+        if row is None:
+            raise ScriptError("user_not_found", f"없는 사용자입니다: {address}")
+        conn.execute("INSERT INTO admin_audit (actor_id, action, target_user_id, detail) "
+                     "VALUES (NULL, 'enable', %s, jsonb_build_object('via', 'cli'))", (row[0],))
+    return {"id": str(row[0]), "email": address, "disabled": False, "session_epoch": int(row[1])}
 
 
 def usage(env: Mapping[str, str], days: int) -> dict[str, Any]:
@@ -485,6 +501,8 @@ def _parser() -> ArgParser:
     make.add_argument("email")
     revoke = sub.add_parser("revoke-admin", help="관리자 권한을 걷는다")
     revoke.add_argument("email")
+    enable = sub.add_parser("enable-user", help="비활성을 푼다(관리자로 되살릴 계정은 먼저 이것으로)")
+    enable.add_argument("email")
     imp = sub.add_parser("import")
     imp.add_argument("folder")
     imp.add_argument("--user", required=True)
@@ -518,6 +536,8 @@ def main(argv: list[str], env: Mapping[str, str] | None = None, *, stdin: TextIO
         return disable_user(environ, args.email)
     if args.command == "logout-all":
         return logout_all(environ, args.email)
+    if args.command == "enable-user":
+        return enable_user(environ, args.email)
     if args.command in ("make-admin", "revoke-admin"):
         return set_admin(environ, args.email, args.command == "make-admin")
     if args.command == "import":
