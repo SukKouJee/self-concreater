@@ -200,3 +200,47 @@ def test_smoke_script_accepts_the_server_edition() -> None:
     text = (ROOT / "deploy" / "smoke.py").read_text(encoding="utf-8")
     assert 'choices=["local", "server"]' in text and "def smoke_server" in text
     assert "down" in text and "-v" in text
+
+
+# ---- fix round 1 -------------------------------------------------------------------------------------------------
+
+def test_compose_every_service_rotates_json_logs() -> None:
+    for name, svc in _services().items():
+        assert svc["logging"] == {"driver": "json-file", "options": {"max-size": "10m", "max-file": "3"}}, name
+
+
+def test_compose_app_has_a_configurable_memory_limit() -> None:
+    assert _services()["app"]["mem_limit"] == "${YTC_APP_MEM_LIMIT:-2g}"
+    assert "YTC_APP_MEM_LIMIT" in _env_names(ENV_EXAMPLE)
+
+
+def test_compose_stores_are_only_on_the_back_network_and_caddy_only_on_front() -> None:
+    services = _services()
+    for name in ("postgres", "minio", "minio-init", "migrate", "admin"):
+        assert services[name]["networks"] == ["back"], name
+    assert sorted(services["app"]["networks"]) == ["back", "front"]
+    assert services["caddy"]["networks"] == ["front"]          # caddy cannot reach postgres or minio
+
+
+def test_compose_caddy_fails_fast_with_a_clear_message_when_the_domain_is_empty() -> None:
+    caddy = _services()["caddy"]
+    script = caddy["entrypoint"][-1]
+    assert caddy["entrypoint"][:2] == ["sh", "-c"]
+    assert '[ -z "$$YTC_DOMAIN" ]' in script and "YTC_DOMAIN이 비어 있습니다" in script and "exit 64" in script
+    assert "exec caddy run" in script
+    assert caddy["restart"] == "on-failure:5"                  # no endless crash loop
+    assert "wget" in caddy["healthcheck"]["test"]
+    # only the tls profile needs the domain: the variable has a default, so the rest of the stack starts without it
+    assert _services()["caddy"]["environment"]["YTC_DOMAIN"] == "${YTC_DOMAIN:-}"
+    assert "YTC_DOMAIN:?" not in COMPOSE.read_text(encoding="utf-8")
+
+
+def test_env_example_says_s3_keys_must_be_url_safe() -> None:
+    text = ENV_EXAMPLE.read_text(encoding="utf-8")
+    assert "영문·숫자·-_" in text.split("YTC_S3_ACCESS_KEY=", 1)[0].rsplit("[필수] MinIO", 1)[1]
+
+
+def test_operations_notes_cover_backup_restore_passwords_digest_and_users() -> None:
+    text = (SERVER_DIR / "OPERATIONS.md").read_text(encoding="utf-8")
+    for needle in ("pg_dump", "mc", "mirror", "pg_restore", "복원 순서", "처음 초기화될 때만", "imagetools", "add-user", "import"):
+        assert needle in text, needle
