@@ -1697,6 +1697,7 @@ body.shoot-mode .toasts { bottom: var(--sp-4); }
   font: inherit; font-size: 14px; color: var(--ink); background: var(--surface); border: 1px solid var(--border-strong);
   border-radius: var(--radius-ctl); min-height: 36px; padding: 0 var(--sp-3); min-width: 0; }
 .admin-inline input { flex: 1 1 auto; }
+.admin-inline .btn { flex: none; white-space: nowrap; }
 .admin-inline input[aria-invalid="true"], .admin-invite input[aria-invalid="true"] { border-color: var(--danger); }
 .admin-invite { max-width: 480px; }
 .admin-check { display: flex; align-items: center; gap: var(--sp-2); font-size: 13px; cursor: pointer; }

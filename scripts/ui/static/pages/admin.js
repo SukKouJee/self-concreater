@@ -45,7 +45,7 @@ function errorBox(text, retry) {
 // ---- mount ------------------------------------------------------------------------
 
 export async function mount(el, params, ctx) {
-  const users = section("adm-users", "사용자", "상태, 로그인 방법, 오늘 AI 사용량. 이름 옆 관리 버튼으로 바꿉니다.");
+  const users = section("adm-users", "사용자", "상태, 로그인 방법, 오늘 AI 사용량. 줄 끝의 관리 버튼으로 바꿉니다.");
   const invite = section("adm-invite", "초대", "초대한 이메일만 로그인할 수 있습니다.");
   const usage = section("adm-usage", `최근 ${USAGE_DAYS}일 AI 사용량`, "한국 시간 날짜별 합계입니다.");
   const audit = section("adm-audit", "최근 관리 기록", `최근 ${AUDIT_LIMIT}개. 관리자가 바꾼 것만 남습니다.`);
