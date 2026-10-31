@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterator, NamedTuple
 
 from scripts import ctx, limits
 from scripts.common import ArgParser, Progress, ScriptError, run, safe_progress
+from scripts.edition import ed
 from scripts.fetch import load_raw, save_raw, ytdlp_error, ytdlp_options
 
 DEFAULT_MODEL = "small"
@@ -34,8 +35,9 @@ def _load_whisper():
     except ImportError as e:
         raise ScriptError(
             "stt_unavailable",
-            "음성 인식 기능이 설치돼 있지 않습니다. 플러그인 폴더에서 "
-            "`pip install faster-whisper`를 실행한 뒤 다시 시도하세요.",
+            ed("음성 인식 기능이 설치돼 있지 않습니다. 플러그인 폴더에서 "
+               "`pip install faster-whisper`를 실행한 뒤 다시 시도하세요.",
+               "이 서버에는 음성 인식 기능이 없습니다."),
         ) from e
     return WhisperModel
 

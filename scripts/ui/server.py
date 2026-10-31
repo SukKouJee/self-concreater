@@ -36,7 +36,6 @@ import urllib.error
 import urllib.request
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
-from contextvars import ContextVar
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -44,6 +43,7 @@ from typing import Any, Callable
 from urllib.parse import parse_qsl, unquote, urlsplit
 
 from scripts import ctx, refstore, status
+from scripts import edition as _edition
 from scripts.common import PLUGIN_ROOT, ScriptError
 from scripts.ui.jobs import JobManager
 
@@ -74,6 +74,13 @@ FEATURE_TEXT: dict[str, str] = {
     "caption_video": "자막 영상 만들기는 내 PC 판에서만 됩니다",
     "srtfit": "자막 시간 맞추기는 내 PC 판에서만 됩니다(영상 파일 필요)",
     "footage": "촬영 영상 처리는 내 PC 판에서 하고, 결과는 가져오기로 옮기세요",
+}
+# 서버판(웹)에서 보이는 같은 자리의 문구: 이 서버에서 쓸 수 없다는 것만 알린다.
+FEATURE_TEXT_SERVER: dict[str, str] = {
+    "library": "공용 라이브러리는 이 서버에서 아직 쓸 수 없습니다",
+    "caption_video": "자막 영상 만들기는 이 서버에서 쓸 수 없습니다",
+    "srtfit": "자막 시간 맞추기는 이 서버에서 쓸 수 없습니다(편집한 영상 파일이 필요해요)",
+    "footage": "촬영 영상 처리는 이 서버에서 쓸 수 없습니다",
 }
 
 # 라우트 모듈: Task 5/6이 여기에 이름을 더한다(예: "scripts.ui.api_add").
@@ -279,9 +286,9 @@ def range_response(path: Path, size: int, ctype: str, header: str | None, open_c
                     file=FileSlice(path, start, end - start + 1, chunk))
 
 
-# 판(edition) 문맥: (판 이름, 항상 끄는 기능). 기본은 로컬판 그대로. 서버판 어댑터가 요청마다 `edition()`으로 바꾼다
-# (스레드 문맥이라 프로세스 전역 상태가 아니다. 작업 스레드는 copy_context()로 이어받는다).
-_EDITION: ContextVar[tuple[str, frozenset[str]]] = ContextVar("ytc_edition", default=(EDITION, frozenset()))
+# 판(edition) 문맥: (판 이름, 항상 끄는 기능). 한 곳(`scripts.edition`)에 둔다. 기본은 로컬판 그대로.
+# 서버판 어댑터가 요청마다 `edition()`으로 바꾼다(스레드 문맥이라 프로세스 전역 상태가 아니다. 작업 스레드는
+# copy_context()로 이어받는다).
 
 
 @contextmanager
@@ -291,22 +298,20 @@ def edition(name: str, disabled: Iterable[str]) -> Iterator[None]:
     unknown = forced - FEATURE_PREFIXES.keys()
     if unknown:
         raise ValueError(f"unknown features: {sorted(unknown)}")
-    token = _EDITION.set((name, forced))
-    try:
+    with _edition.use(name, forced):
         yield
-    finally:
-        _EDITION.reset(token)
 
 
 def current_edition() -> str:
-    return _EDITION.get()[0]
+    return _edition.current()
 
 
 def disabled_features() -> dict[str, str]:
-    """env `YTC_DISABLE`에 든 기능(+ 판 문맥이 항상 끄는 기능) → 문구. 모르는 이름은 무시한다.
+    """env `YTC_DISABLE`에 든 기능(+ 판 문맥이 항상 끄는 기능) → 그 판의 문구. 모르는 이름은 무시한다.
     비어 있으면 모두 켜짐(로컬판 기본)."""
-    names = {n.strip() for n in os.environ.get(DISABLE_ENV, "").split(",")} | _EDITION.get()[1]
-    return {name: FEATURE_TEXT[name] for name in FEATURE_PREFIXES if name in names}
+    names = {n.strip() for n in os.environ.get(DISABLE_ENV, "").split(",")} | _edition.forced()
+    text = FEATURE_TEXT_SERVER if _edition.is_server() else FEATURE_TEXT
+    return {name: text[name] for name in FEATURE_PREFIXES if name in names}
 
 
 def feature_guard(path: str) -> tuple[int, dict] | None:

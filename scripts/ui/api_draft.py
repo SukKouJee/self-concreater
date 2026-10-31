@@ -19,6 +19,7 @@ from typing import Any
 
 from scripts import claude_cli, conti, ctx, draft, keys, library, llm, refstore, status
 from scripts.common import ScriptError
+from scripts.edition import ed
 from scripts.ui.api_conti import CONTI_SUFFIX, FILE_JOB_KINDS, _safe_key, job_running_on
 from scripts.ui.api_refs import _body_parts
 from scripts.ui.jobs import Job, new_item
@@ -316,7 +317,7 @@ def _filmed(req: Request) -> dict:
         raise ScriptError("bad_request", "hash가 필요합니다")
     raw = body.get("path")
     if isinstance(raw, str) and (Path(raw).is_absolute() or "\\" in raw):
-        raise ScriptError("bad_path", f"작업 폴더 기준 상대 경로만 쓸 수 있습니다: {raw}")
+        raise ScriptError("bad_path", ed(f"작업 폴더 기준 상대 경로만 쓸 수 있습니다: {raw}", "허용되지 않은 위치입니다"))
     key = _safe_key(raw, conti_file=False)
     if posixpath.dirname(key) + "/" != keys.DRAFTS:
         raise ScriptError("bad_path", "drafts 폴더 바로 아래의 기획안만 체크할 수 있습니다")

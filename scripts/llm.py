@@ -19,6 +19,7 @@ from typing import Any, Callable
 
 from scripts import claude_cli, ctx, keys, limits, llm_anthropic
 from scripts.common import ScriptError
+from scripts.edition import ed
 
 CONFIG_FILE = keys.CONFIG
 DEFAULT_ENGINE = "claude-cli"
@@ -53,7 +54,7 @@ def unpin() -> None:
 
 
 def _not_configured(message: str) -> ScriptError:
-    return ScriptError("llm_not_configured", message)
+    return ScriptError("llm_not_configured", ed(message, "AI 설정이 올바르지 않아 지금 쓸 수 없습니다. 관리자에게 문의하세요"))
 
 
 def _read_llm_section() -> dict[str, Any]:

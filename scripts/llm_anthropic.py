@@ -16,6 +16,7 @@ from typing import Any
 from scripts import ctx
 from scripts.claude_cli import parse_result_text
 from scripts.common import ScriptError, scrub
+from scripts.edition import ed
 
 API_URL = "https://api.anthropic.com/v1/messages"
 API_VERSION = "2023-06-01"
@@ -34,7 +35,7 @@ TEXT_SUFFIXES = {".md", ".txt"}
 def _api_key() -> str:
     key = os.environ.get(KEY_ENV, "").strip()
     if not key:
-        raise ScriptError("llm_not_configured", f"{KEY_ENV} 환경 변수가 없습니다. API 키를 환경 변수로 설정하세요")
+        raise ScriptError("llm_not_configured", ed(f"{KEY_ENV} 환경 변수가 없습니다. API 키를 환경 변수로 설정하세요", "AI를 지금 쓸 수 없습니다. 관리자에게 문의하세요"))
     return key
 
 
@@ -112,7 +113,7 @@ def _http_error(e: urllib.error.HTTPError, key: str) -> ScriptError:
         reason = ""
     detail = f"HTTP {e.code}" + (f", {_scrub(reason, key)}" if reason else "")
     if e.code in (401, 403):
-        return ScriptError("llm_auth", f"Anthropic API 인증에 실패했습니다({detail}). ANTHROPIC_API_KEY를 확인하세요")
+        return ScriptError("llm_auth", ed(f"Anthropic API 인증에 실패했습니다({detail}). ANTHROPIC_API_KEY를 확인하세요", "AI를 지금 쓸 수 없습니다(인증 실패). 관리자에게 문의하세요"))
     return ScriptError("llm_failed", f"Anthropic API 호출이 실패했습니다({detail})")
 
 
@@ -134,7 +135,7 @@ def _extract(response: Any, schema: dict | None) -> dict:
         raise ScriptError("llm_failed", "Anthropic API 응답 형식이 올바르지 않습니다")
     stop = response.get("stop_reason")
     if stop == "max_tokens":
-        raise ScriptError("llm_failed", "응답이 max_tokens에서 잘렸습니다. yt-coach.json의 llm.max_tokens를 늘리세요")
+        raise ScriptError("llm_failed", ed("응답이 max_tokens에서 잘렸습니다. yt-coach.json의 llm.max_tokens를 늘리세요", "AI 응답이 길이 상한에서 잘렸습니다. 다시 시도하고, 계속되면 관리자에게 알려 주세요"))
     if stop == "refusal":
         raise ScriptError("llm_failed", "모델이 요청을 거절했습니다")
     if schema is not None:

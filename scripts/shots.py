@@ -26,6 +26,7 @@ from typing import Any
 
 from scripts import ctx, keys, refstore
 from scripts.common import TEMPLATES_DIR, ArgParser, ScriptError, run
+from scripts.edition import ed
 from scripts.cuts import pick_frame_scenes
 from scripts.features import SHOT_ANGLES, SHOT_FLAGS, SHOT_SIZES
 from scripts.videomd import load_cuts
@@ -66,7 +67,7 @@ def _section_at(fm: dict, t: float) -> str | None:
 def context(video_id: str, category: str) -> dict:
     md = _video_key(video_id, category)
     if not ctx.here().store.exists(md):
-        raise ScriptError("video_not_found", f"영상 md가 없습니다: {video_id} (먼저 /yt-add)")
+        raise ScriptError("video_not_found", ed(f"영상 md가 없습니다: {video_id} (먼저 /yt-add)", f"영상 분석 기록이 없습니다: {video_id} (먼저 레퍼런스 화면에서 링크를 넣으세요)"))
     fm, _ = refstore.read(md)
     cuts = load_cuts(video_id)
     scenes = [s for s in (cuts or {}).get("scenes", []) if s.get("frame")]
@@ -210,7 +211,7 @@ def _undescribed(video_id: str) -> list[dict]:
 def _video_fm(video_id: str, category: str) -> dict:
     md = _video_key(video_id, category)
     if not ctx.here().store.exists(md):
-        raise ScriptError("video_not_found", f"영상 md가 없습니다: {video_id} (먼저 /yt-add)")
+        raise ScriptError("video_not_found", ed(f"영상 md가 없습니다: {video_id} (먼저 /yt-add)", f"영상 분석 기록이 없습니다: {video_id} (먼저 레퍼런스 화면에서 링크를 넣으세요)"))
     return refstore.read(md)[0]
 
 

@@ -306,7 +306,7 @@ def test_features_report_server_edition_with_everything_off(client, alice):
 def test_disabled_features_answer_403(client, alice, method, path, feature):
     r = client.request(method, path, json={} if method == "POST" else None)
     assert r.status_code == 403 and r.json() == {"error": "feature_disabled", "feature": feature,
-                                                 "message": ui.FEATURE_TEXT[feature]}
+                                                 "message": ui.FEATURE_TEXT_SERVER[feature]}
 
 
 @pytest.mark.parametrize("path", ["/api/%6Cibrary/status", "/api/footage%2Fprocess", "/api/Library/status"])
