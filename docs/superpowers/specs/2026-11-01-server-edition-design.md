@@ -271,7 +271,7 @@ CREATE POLICY own ON <t> USING (user_id = nullif(current_setting('app.user_id', 
 
 ### 4.4 설정(env, `server/config.py`)
 
-`YTC_EDITION=server`, `YTC_ENV`, `YTC_PUBLIC_URL`, `YTC_SESSION_SECRET`, `YTC_GOOGLE_CLIENT_ID`, `YTC_GOOGLE_CLIENT_SECRET`(production 필수), `YTC_DB_DSN`(ytc_app),
+`YTC_ENV`, `YTC_PUBLIC_URL`, `YTC_SESSION_SECRET`, `YTC_GOOGLE_CLIENT_ID`, `YTC_GOOGLE_CLIENT_SECRET`(production 필수), `YTC_DB_DSN`(ytc_app),
 `YTC_DB_OWNER_DSN`(migrate·admin만), `YTC_S3_ENDPOINT`, `YTC_S3_BUCKET`, `YTC_S3_ACCESS_KEY`, `YTC_S3_SECRET_KEY`, `ANTHROPIC_API_KEY`,
 `YTC_LLM_ENGINE=anthropic-api`, `YTC_LLM_MODEL`(기본 claude-sonnet-5-5, 가격표에 있어야 함), `YTC_LLM_MAX_TOKENS`(호출당 상한, 기본 16000), `YTC_DAILY_USD`(기본 1.00), `YTC_MEDIA_SLOTS`(2), `YTC_LLM_SLOTS`(4),
 `YT_PROXY`, `YT_FETCH_INTERVAL`, `YTC_DEV_LOGIN`. 필수 값이 없으면 시작하지 않는다(`config_missing`).

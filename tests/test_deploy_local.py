@@ -121,3 +121,16 @@ def test_env_example_documents_existing_work_folder_mount() -> None:
     text = ENV_EXAMPLE.read_text(encoding="utf-8")
     for needle in ("새 빈 작업 폴더", "C:/ai/projects/orca/nahon-workspace", "ui.lock", "ytc ui --stop", "id -u", "id -g"):
         assert needle in text
+
+
+def test_dockerfile_continuations_put_one_instruction_part_per_line() -> None:
+    # a collapsed continuation shows up as a run of spaces before `&&`, `CMD` or a next ENV pair mid-line
+    for n, line in enumerate(DOCKERFILE.read_text(encoding="utf-8").splitlines(), 1):
+        if line.lstrip().startswith("#"):
+            continue
+        assert not re.search(r"\S {3,}\S", line), f"line {n}: {line!r}"
+
+
+def test_dockerfile_sets_no_unused_edition_flag() -> None:
+    # nothing reads YTC_EDITION (server is selected by the uvicorn entry point, design §9.1)
+    assert "YTC_EDITION" not in DOCKERFILE.read_text(encoding="utf-8")
