@@ -28,7 +28,7 @@ from server.keyindex import ancestors
 from server.pgstore import PgDocStore, PgTrash
 from server.s3store import S3Bucket, S3ObjectStore, S3SharedCache
 from server.scratch import ServerScratch, clear_scratch_root
-from server.usage import PgUsageMeter
+from server.usage import PgUsageMeter, UnrecordedLedger
 
 _VID_RE: Final = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
@@ -45,6 +45,7 @@ class ServerBackend:
         self.db = db
         self.bucket = bucket
         self.daily_usd = daily_usd                      # YTC_DAILY_USD (users.daily_usd_limit NULL)
+        self.unrecorded = UnrecordedLedger()            # spend whose llm_usage INSERT failed (shared by every meter)
         self._scratch_dir = Path(scratch_dir)
         self._state_dir = Path(state_dir)
         self._emails: dict[uuid.UUID, str] = {}
@@ -116,7 +117,7 @@ class ServerBackend:
         return PgTrash(self.db, self.bucket, self._uid(user_id))
 
     def usage(self, user_id: str | None) -> PgUsageMeter:
-        return PgUsageMeter(self.db, self._uid(user_id), self.daily_usd)
+        return PgUsageMeter(self.db, self._uid(user_id), self.daily_usd, ledger=self.unrecorded)
 
 
 # --- 내보내기 --------------------------------------------------------------------------------

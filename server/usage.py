@@ -7,13 +7,16 @@
 - `check()`: 오늘(Asia/Seoul 0시~다음 0시, 고정 +09:00) `sum(cost_usd) >= coalesce(users.daily_usd_limit, YTC_DAILY_USD)`이면
   `ScriptError("llm_limit", …)`. 검사 자체가 DB 오류로 실패하면 그 오류를 그대로 올린다(비용을 모르는 호출은 하지 않는다).
 - `record()`: `llm_usage`에 토큰·비용(numeric(10,6), 반올림)과 시각(검사와 같은 시계)을 쓴다. **최선만**: DB 오류나 가격 없음은 로그(`ytc.usage`)로
-  남기고 올리지 않는다 — 기록 실패가 LLM 결과나 원래 오류를 가리지 않는다(T4 m-1). 그 호출의 비용은 한도에 안 잡힌다.
-- 초과 한계(설계 §6): `llm.ask`는 llm 슬롯을 잡은 뒤에 검사하므로, 검사를 통과하고 아직 기록하지 않은 호출은 프로세스 전체에서
+  남기고 올리지 않는다 — 기록 실패가 LLM 결과나 원래 오류를 가리지 않는다(T4 m-1). 기록하지 못한 비용(가격을 모르면 가격표의 가장 비싼 단가로 잡은
+  값)은 프로세스 안 장부(`UnrecordedLedger`, 사용자·한국 시간 날짜별, `ServerBackend`가 하나를 나눠 준다)에 남아 `check()`의 오늘 사용에 더해진다.
+  프로세스가 다시 시작하면 장부는 사라진다(로그에는 남는다).
+- 초과 한계(설계 §6): `llm.ask`는 llm 슬롯 안에서 검사·호출·기록하므로, 검사를 통과하고 아직 기록하지 않은 호출은 프로세스 전체에서
   `YTC_LLM_SLOTS`개 이하다. 한 사용자의 하루 사용은 한도 + (그 사용자의 동시 호출 수, 최대 `YTC_LLM_SLOTS`) × 호출 하나의 최대 비용까지 갈 수 있다.
 """
 from __future__ import annotations
 
 import logging
+import threading
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -91,6 +94,36 @@ def cost_usd(model: str, usage: Mapping[str, int]) -> Decimal:
     return (total / MILLION).quantize(COST_STEP, rounding=ROUND_HALF_UP)
 
 
+_WORST: Final = Price(*(max(getattr(p, f) for p in PRICES.values()) for f in ("input", "output", "cache_read", "cache_write")))
+
+
+def worst_case_cost(usage: Mapping[str, int]) -> Decimal:
+    """가격을 모르는 모델의 비용 추정: 가격표의 필드별 최고 단가(한도 계산에서 덜 세지 않게)."""
+    total = (_tokens(usage, "input_tokens") * _WORST.input + _tokens(usage, "output_tokens") * _WORST.output
+             + _tokens(usage, "cache_read_input_tokens") * _WORST.cache_read
+             + _tokens(usage, "cache_creation_input_tokens") * _WORST.cache_write)
+    return (total / MILLION).quantize(COST_STEP, rounding=ROUND_HALF_UP)
+
+
+class UnrecordedLedger:
+    """기록하지 못한 비용(사용자, 한국 시간 날짜의 0시) → USD. 프로세스 하나에 하나(ServerBackend), 스레드 안전.
+    지난 날짜 항목은 더할 때 지운다."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._spend: dict[tuple[uuid.UUID, datetime], Decimal] = {}
+
+    def add(self, user_id: uuid.UUID, day: datetime, cost: Decimal) -> None:
+        with self._lock:
+            for key in [k for k in self._spend if k[1] < day]:
+                del self._spend[key]
+            self._spend[(user_id, day)] = self._spend.get((user_id, day), Decimal(0)) + cost
+
+    def get(self, user_id: uuid.UUID, day: datetime) -> Decimal:
+        with self._lock:
+            return self._spend.get((user_id, day), Decimal(0))
+
+
 def kst_day(now: datetime) -> tuple[datetime, datetime]:
     """now가 속한 한국 시간 하루의 [0시, 다음 0시)."""
     local = now.astimezone(KST)
@@ -119,8 +152,9 @@ class PgUsageMeter:
     """한 사용자의 사용량 계량. 저장은 `Db.user_tx(uid)`(RLS: 그 사용자 행만)."""
 
     def __init__(self, db: Db, user_id: uuid.UUID | str, daily_usd: Decimal,
-                 *, now: Callable[[], datetime] = _utc_now) -> None:
+                 *, now: Callable[[], datetime] = _utc_now, ledger: UnrecordedLedger | None = None) -> None:
         self.db = db
+        self.ledger = ledger if ledger is not None else UnrecordedLedger()
         self.user_id = user_id if isinstance(user_id, uuid.UUID) else uuid.UUID(str(user_id))
         self.daily_usd = daily_usd
         self._now = now
@@ -135,21 +169,24 @@ class PgUsageMeter:
         if row is None:
             raise ScriptError("login_required", "로그인이 필요합니다")
         limit = Decimal(row[0]) if row[0] is not None else self.daily_usd
-        used = Decimal(row[1])
+        used = Decimal(row[1]) + self.ledger.get(self.user_id, start)
         if used >= limit:
             raise limit_error(used, limit, end)
 
     def record(self, model: str, usage: Mapping[str, int], ok: bool) -> None:
+        now = self._now()
+        cost: Decimal | None = None
         try:
             cost = cost_usd(model, usage)
             with self.db.user_tx(self.user_id) as conn:
                 conn.execute(
                     "INSERT INTO llm_usage (user_id, at, job_kind, model, input_tokens, output_tokens, cache_read_tokens, "
                     "cache_write_tokens, cost_usd, ok) VALUES (%s, %s, NULL, %s, %s, %s, %s, %s, %s, %s)",
-                    (self.user_id, self._now(), model, _tokens(usage, "input_tokens"), _tokens(usage, "output_tokens"),
+                    (self.user_id, now, model, _tokens(usage, "input_tokens"), _tokens(usage, "output_tokens"),
                      _tokens(usage, "cache_read_input_tokens"), _tokens(usage, "cache_creation_input_tokens"),
                      cost, ok))
         except (psycopg.Error, psycopg_pool.PoolTimeout, OSError, ScriptError) as e:
-            # best effort: the LLM result (or the original error) must win; the spend is lost from the daily sum
+            # best effort: the LLM result (or the original error) must win; the spend stays in the in-process ledger
+            self.ledger.add(self.user_id, kst_day(now)[0], cost if cost is not None else worst_case_cost(usage))
             log.error("llm_usage record failed (user %s, model %s, ok=%s, usage=%s): %s: %s",
                       self.user_id, model, ok, dict(usage), type(e).__name__, e)

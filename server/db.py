@@ -9,6 +9,8 @@
 - `collect_lock(video_id)`(T11, 설계 §3.3): 같은 영상 수집을 사용자·스레드를 가리지 않고 한 번에 하나씩. 앱 롤로 **풀 밖의 연결을
   하나 따로** 열어 세션 advisory lock(`pg_advisory_lock(bigint)`)을 잡는다 — 다운로드·컷 추출이 몇 분 걸려도 풀 연결을 붙잡지 않고,
   프로세스·연결이 죽으면 PG가 잠금을 푼다. 키는 bigint 한 개 형식이라 T7 객체 잠금(int 두 개 형식)과 키 공간이 겹치지 않는다.
+  기다림은 `pg_try_advisory_lock`을 `collect_poll`초마다 다시 묻는 방식이고 `collect_wait_max`초(기본 900)가 지나면
+  `collect_busy`로 포기한다(앞 수집이 멈춰도 뒤 작업이 영원히 걸리지 않게). 연결은 `connect_timeout=10`, TCP keepalive(60초).
 """
 from __future__ import annotations
 
@@ -16,6 +18,7 @@ import hashlib
 import logging
 import re
 import threading
+import time
 import uuid
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -37,6 +40,11 @@ ROLE_NAME_RE: Final = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 Conn = psycopg.Connection[TupleRow]
 
 COLLECT_LOCK_NAMESPACE: Final = b"ytc:collect:"
+COLLECT_WAIT_MAX: Final = 900.0          # seconds a second collector waits for the first one
+COLLECT_POLL: Final = 1.0
+COLLECT_BUSY_MESSAGE: Final = "다른 사용자가 같은 영상을 오래 받고 있습니다. 잠시 뒤 다시 시도하세요."
+# dedicated lock connection: fail fast when PG is unreachable, notice a dead peer while holding the lock for minutes
+LOCK_CONNECT_KW: Final = {"connect_timeout": 10, "keepalives": 1, "keepalives_idle": 60}
 log = logging.getLogger("ytc.db")
 
 
@@ -96,6 +104,8 @@ class Db:
         self._owner_dsn = owner_dsn
         self._app_dsn = app_dsn
         self._collecting = threading.local()        # video ids this thread already holds (re-entry)
+        self.collect_wait_max = COLLECT_WAIT_MAX
+        self.collect_poll = COLLECT_POLL
         self._pool: ConnectionPool[Conn] = ConnectionPool(
             app_dsn, min_size=min_size, max_size=max_size, timeout=timeout, open=False, reset=_reset,
             check=ConnectionPool.check_connection, name="ytc-app")
@@ -153,19 +163,29 @@ class Db:
 
     @contextmanager
     def collect_lock(self, video_id: str, on_wait: Callable[[], None] | None = None) -> Iterator[None]:
-        """같은 영상 수집 잠금(`scripts.limits.collecting`의 서버 구현). 잠겨 있으면 기다리기 전에 `on_wait()`를 한 번 부른다.
-        같은 스레드가 이미 잡은 영상이면 그대로 들어간다(다른 연결로 다시 잡으면 자기 자신을 기다린다)."""
+        """같은 영상 수집 잠금(`scripts.limits.collecting`의 서버 구현). 잠겨 있으면 기다리기 전에 `on_wait()`를 한 번 부르고
+        `collect_poll`초마다 다시 시도한다. `collect_wait_max`초 안에 못 잡으면 ScriptError("collect_busy").
+        같은 스레드가 이미 잡은 영상이면 그대로 들어간다(다른 연결로 다시 잡으면 자기 자신을 기다린다).
+        작업 취소는 기다리는 동안 보지 않는다(작업 문맥이 코어에 없다): 취소한 작업은 잠금을 얻거나 포기한 뒤 다음 단계에서 멈춘다."""
         held: set[str] = self._collecting.__dict__.setdefault("ids", set())
         if video_id in held:
             yield
             return
         key = collect_lock_key(video_id)
-        with psycopg.connect(self._app_dsn, autocommit=True) as conn:
-            row = conn.execute("SELECT pg_try_advisory_lock(%s::bigint)", (key,)).fetchone()
-            if not (row and row[0]):
+        with psycopg.connect(self._app_dsn, autocommit=True, **LOCK_CONNECT_KW) as conn:
+            def take() -> bool:
+                row = conn.execute("SELECT pg_try_advisory_lock(%s::bigint)", (key,)).fetchone()
+                return bool(row and row[0])
+
+            if not take():
                 if on_wait is not None:
                     on_wait()
-                conn.execute("SELECT pg_advisory_lock(%s::bigint)", (key,))
+                deadline = time.monotonic() + self.collect_wait_max
+                while not take():
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        raise ScriptError("collect_busy", COLLECT_BUSY_MESSAGE)
+                    time.sleep(min(self.collect_poll, left))
             held.add(video_id)
             try:
                 yield

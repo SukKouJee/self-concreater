@@ -38,6 +38,14 @@ def install(*, media: threading.Semaphore | None = None, llm: threading.Semaphor
         _collect.append(collect)
 
 
+def collect_waiter(report: Callable[[str, float | None, str], None] | None) -> Callable[[], None] | None:
+    """`collecting(on_wait=...)`용: 진행 콜백이 있으면 기다리는 동안 ("wait", None, COLLECT_WAIT_TEXT)를 한 번 알린다
+    (진행 단계 "wait"는 걸린 시간에 넣지 않는다)."""
+    if report is None:
+        return None
+    return lambda: report("wait", None, COLLECT_WAIT_TEXT)
+
+
 @contextmanager
 def collecting(video_id: str, on_wait: Callable[[], None] | None = None) -> Iterator[None]:
     """같은 영상을 다른 작업(다른 사용자 포함)이 받는 중이면 끝날 때까지 기다린 뒤 블록을 실행한다.

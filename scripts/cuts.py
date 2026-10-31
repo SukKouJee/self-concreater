@@ -383,13 +383,6 @@ def _wait_reporter(report: Progress | None) -> Callable[[], None] | None:
     return lambda: report("wait", None, limits.WAIT_TEXT)
 
 
-def _collect_waiter(report: Progress | None) -> Callable[[], None] | None:
-    """같은 영상을 받는 다른 작업(다른 사용자)을 기다리는 동안 보일 문구."""
-    if report is None:
-        return None
-    return lambda: report("wait", None, limits.COLLECT_WAIT_TEXT)
-
-
 def cut_stats(video_id: str, force: bool = False, progress: Progress | None = None) -> dict:
     """progress가 있으면 wait → download → scenes → camera 순서로 하위 구간 진행을 알린다.
 
@@ -397,7 +390,7 @@ def cut_stats(video_id: str, force: bool = False, progress: Progress | None = No
     동안 다른 사용자의 같은 영상 수집이 끼어들지 않고, 뒤에 온 쪽은 앞의 결과를 캐시로 쓴다.
     """
     report = safe_progress(progress)
-    with limits.collecting(video_id, on_wait=_collect_waiter(report)):
+    with limits.collecting(video_id, on_wait=limits.collect_waiter(report)):
         return _cut_stats(video_id, force, report)
 
 

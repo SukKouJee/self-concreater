@@ -192,6 +192,9 @@ CREATE POLICY own ON <t> USING (user_id = nullif(current_setting('app.user_id', 
   서버는 `Db.collect_lock`: 앱 롤로 **풀 밖 연결 하나**를 열어 세션 잠금 `pg_advisory_lock(bigint)`(키 = sha256("ytc:collect:"+vid) 앞 8바이트) —
   몇 분짜리 다운로드가 풀 연결을 붙잡지 않고, 연결이 죽으면 PG가 푼다. bigint 한 개 형식이라 T7 객체 잠금(int 두 개)과 키 공간이 겹치지 않는다.
   같은 스레드의 재진입은 통과. 뒤에 온 쪽은 "다른 사용자가 같은 영상을 받는 중"(진행 단계 `wait`)을 보고, 앞쪽이 끝나면 캐시를 쓴다.
+  기다림은 `pg_try_advisory_lock`을 1초마다 다시 묻고 900초(`Db.collect_wait_max`)가 지나면 `collect_busy`("다른 사용자가 같은 영상을 오래 받고
+  있습니다. 잠시 뒤 다시 시도하세요.")로 그 영상만 실패한다. 잠금 연결은 `connect_timeout=10`·TCP keepalive 60초. 기다리는 동안 작업 취소는 보지
+  않는다(코어에 작업 문맥이 없다) — 취소는 잠금을 얻거나 포기한 뒤 다음 `check_cancelled`에서 걸린다(최대 900초 늦음).
 - **프로세스 잠금**(`INDEX_LOCK`, `HISTORY_LOCK`, `_RELABEL_LOCK`): 프로세스가 하나라 그대로 유효(사용자 간 과잉 직렬화는 수십 명 규모에서 허용).
 
 ### 3.4 Scratch (서버)
@@ -337,16 +340,18 @@ media 대기 p95가 5분을 넘거나, 앱 재시작으로 작업을 잃는 일�
   - 서버 LLM 고정(ADR-S10): `llm.pin(engine, model, max_tokens)` — `llm.config()`가 사용자 `yt-coach.json`·env를 읽지 않는다.
     `YTC_LLM_ENGINE`은 `anthropic-api`만, `YTC_LLM_MODEL` 기본 `llm_anthropic.DEFAULT_MODEL`(claude-sonnet-5-5), 가격표에 없으면 `config_invalid`로 시작 거부.
     `YTC_LLM_MAX_TOKENS`(기본 16000 = 코드의 최대 요청 `conti_art.MAX_TOKENS`)는 **상한**: 호출 값(없으면 엔진 기본 8000)과 상한 중 작은 값.
-    `ANTHROPIC_API_KEY`는 시작 때 요구하지 않는다(없으면 호출 때 기존 `llm_not_configured`).
+    `ANTHROPIC_API_KEY`는 시작 때 요구하지 않는다(없으면 호출 때 기존 `llm_not_configured`). production에서 비어 있으면 시작 때 경고 로그(`ytc.server`).
   - 가격표 `server.usage.PRICES`(2026-09-25 공식 가격, USD/MTok): 입력·출력·캐시 읽기(모델별: Opus 5.5 $0.20, Sonnet 5.5 $0.20, Fable 5.1 $0.25, 그 밖 입력의 0.1배)·
     캐시 쓰기(5분 TTL = 입력의 1.25배; 엔진이 `cache_control`을 쓰지 않음). 비용은 numeric(10,6) 반올림.
-  - `check()`는 llm 슬롯을 잡은 **뒤** 한다(`llm.ask`). 검사가 DB 오류면 그 오류를 올린다(비용 모르는 호출 금지).
-    `record()`는 최선만: DB 오류·가격 없음은 `ytc.usage` 로그로 남기고 올리지 않는다 — LLM 결과나 원래 오류를 가리지 않는다. 그 호출 비용은 한도에서 빠진다.
+  - `check()`·호출·`record()`를 모두 llm 슬롯 **안에서** 한다(`llm.ask`). 검사가 DB 오류면 그 오류를 올린다(비용 모르는 호출 금지).
+    `record()`는 최선만: DB 오류·가격 없음은 `ytc.usage` 로그로 남기고 올리지 않는다 — LLM 결과나 원래 오류를 가리지 않는다. 기록 못 한 비용
+    (가격을 모르면 가격표 필드별 최고 단가로 잡은 값)은 프로세스 안 장부(`UnrecordedLedger`, `ServerBackend` 하나에 하나, 사용자·KST 날짜별)에 남아
+    `check()`의 오늘 사용에 더해진다. 재시작하면 장부는 사라진다.
     `at`은 검사와 같은 시계(앱 시각)로 쓴다. `job_kind`는 지금 NULL(`llm.ask`가 작업 종류를 모른다).
   - **초과 한계**: 검사를 통과하고 아직 기록되지 않은 호출은 프로세스 전체에서 `YTC_LLM_SLOTS`개 이하다. 그래서 한 사용자의 하루 사용은
     최대 `한도 + k × C_max`, k = 그 사용자의 동시 LLM 호출 수(≤ `YTC_LLM_SLOTS`, 기본 4), C_max = 호출 하나의 최대 비용 =
     입력 토큰 × 입력 단가 + `YTC_LLM_MAX_TOKENS` × 출력 단가. 기본값(Sonnet 5.5, 16000)에서 출력 몫은 호출당 $0.16, 입력 5만 토큰이면 $0.10 →
-    최악 약 $1.04 초과. 더 조이려면 `YTC_LLM_SLOTS`·`YTC_LLM_MAX_TOKENS`를 낮춘다. 기록 실패(로그)는 이 한계 밖이다.
+    최악 약 $1.04 초과. 더 조이려면 `YTC_LLM_SLOTS`·`YTC_LLM_MAX_TOKENS`를 낮춘다. 기록 실패도 장부로 잡히므로 한계 안이다(재시작 전까지).
 - 오류(400, 화면은 기존 오류 표시 그대로):
   `ScriptError("llm_limit", "오늘 쓸 수 있는 AI 사용량(1.00달러)을 다 썼습니다. 내일 0시(한국 시간)에 다시 쓸 수 있습니다. 오늘 사용: 1.02달러", used=1.02, limit=1.00, resets_at="2026-11-02T00:00:00+09:00")`
 - 관리: `python -m server.admin usage [--days 7]` → 사용자별 일 합계 JSON. 관리자 화면은 S8 정식판.

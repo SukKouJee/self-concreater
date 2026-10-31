@@ -18,10 +18,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import uuid
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from importlib import resources
@@ -44,7 +45,7 @@ from scripts.common import ScriptError
 from scripts.ui import server as ui
 from server import auth, files
 from server.backend import ServerBackend
-from server.config import AuthSettings, LlmSettings, ServerSettings
+from server.config import DEFAULT_ENV, PRODUCTION, AuthSettings, LlmSettings, ServerSettings
 from server.jobs_registry import Registry, install_runtime, uninstall_runtime
 
 EDITION: Final = "server"
@@ -348,9 +349,21 @@ def create_app(settings: AuthSettings, backend: ServerBackend, *, users: auth.Us
     return app
 
 
+log = logging.getLogger("ytc.server")
+
+
+def log_startup_warnings(env: Mapping[str, str]) -> None:
+    """시작은 막지 않지만 운영자가 알아야 할 설정: production에서 ANTHROPIC_API_KEY가 비면 모든 AI 호출이
+    `llm_not_configured`로 실패한다(키 없이 스모크·화면 점검은 할 수 있게 거부하지 않는다)."""
+    name = (env.get("YTC_ENV") or "").strip().lower() or DEFAULT_ENV
+    if name == PRODUCTION and not (env.get("ANTHROPIC_API_KEY") or "").strip():
+        log.warning("ANTHROPIC_API_KEY is empty: every AI call will fail with llm_not_configured until it is set")
+
+
 def from_env() -> Starlette:
     """env → 설정(틀리면 ScriptError로 시작 거부) → 저장소 열기 → 앱."""
     settings = ServerSettings.from_env(os.environ)
+    log_startup_warnings(os.environ)
     backend = ServerBackend.open(settings.storage, daily_usd=settings.llm.daily_usd)
     return create_app(settings.auth, backend, close_backend=True, runtime=settings.llm)
 

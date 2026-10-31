@@ -191,6 +191,54 @@ def test_collect_lock_key_space_is_separate_from_object_locks(pg_db: Any) -> Non
             conn.execute("SELECT pg_advisory_unlock_all()")
 
 
+def test_collect_lock_gives_up_after_the_deadline_with_collect_busy(pg_db: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(pg_db, "collect_wait_max", 0.6)
+    monkeypatch.setattr(pg_db, "collect_poll", 0.1)
+    inside, release = threading.Event(), threading.Event()
+
+    def holder() -> None:
+        with pg_db.collect_lock(VID, None):
+            inside.set()
+            release.wait(10)
+
+    t = threading.Thread(target=holder)
+    t.start()
+    try:
+        assert inside.wait(5)
+        waited: list[int] = []
+        started = time.monotonic()
+        with pytest.raises(ScriptError) as e:
+            with pg_db.collect_lock(VID, lambda: waited.append(1)):
+                pytest.fail("must not get the lock")
+        assert e.value.code == "collect_busy"
+        assert e.value.message == "다른 사용자가 같은 영상을 오래 받고 있습니다. 잠시 뒤 다시 시도하세요."
+        assert 0.5 <= time.monotonic() - started < 5 and waited == [1]
+    finally:
+        release.set()
+        t.join(5)
+    with pg_db.collect_lock(VID, lambda: pytest.fail("free again")):
+        pass
+
+
+def test_collect_lock_connects_with_timeout_and_keepalives(pg_db: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    import psycopg
+
+    from server import db as db_mod
+
+    seen: dict[str, Any] = {}
+    real = psycopg.connect
+
+    def spy(*a: Any, **k: Any) -> Any:
+        seen.update(k)
+        return real(*a, **k)
+
+    monkeypatch.setattr(db_mod.psycopg, "connect", spy)
+    with pg_db.collect_lock(VID, None):
+        pass
+    assert seen["connect_timeout"] == 10 and seen["keepalives"] == 1 and seen["keepalives_idle"] == 60
+    assert seen["autocommit"] is True
+
+
 # --- 슬롯 ----------------------------------------------------------------------------------------
 
 @pytest.fixture

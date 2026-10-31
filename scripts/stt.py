@@ -139,14 +139,8 @@ def transcribe(video_id: str, force: bool = False, progress: Progress | None = N
     """
     report = safe_progress(progress)
     # raw 읽기부터 저장까지 같은 영상 수집 잠금 안에서(다른 사용자의 수집·STT와 raw를 서로 덮지 않게, 설계 §3.3)
-    with limits.collecting(video_id, on_wait=_collect_waiter(report)):
+    with limits.collecting(video_id, on_wait=limits.collect_waiter(report)):
         return _transcribe(video_id, force, report)
-
-
-def _collect_waiter(report: Progress | None) -> Callable[[], None] | None:
-    if report is None:
-        return None
-    return lambda: report("wait", None, limits.COLLECT_WAIT_TEXT)
 
 
 def _transcribe(video_id: str, force: bool, report: Progress | None) -> dict:

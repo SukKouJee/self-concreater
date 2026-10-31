@@ -633,8 +633,8 @@ def test_pinned_cap_above_engine_default_keeps_engine_default(api):
         llm.unpin()
 
 
-def test_meter_check_runs_inside_the_llm_slot(api, tmp_path, monkeypatch):
-    """한도 검사는 llm 자리를 잡은 뒤에 한다: 동시에 검사를 통과한 호출 수 ≤ YTC_LLM_SLOTS(설계 §6 초과 한계)."""
+def test_meter_check_and_record_run_inside_the_llm_slot(api, tmp_path, monkeypatch):
+    """한도 검사·기록은 llm 자리 안에서: 검사를 통과하고 아직 기록되지 않은 호출 수 ≤ YTC_LLM_SLOTS(설계 §6 초과 한계)."""
     from contextlib import contextmanager
 
     from scripts import limits
@@ -652,4 +652,29 @@ def test_meter_check_runs_inside_the_llm_slot(api, tmp_path, monkeypatch):
     c, ctx = _meter_ctx(tmp_path, meter)
     with ctx.use(c):
         llm.ask([], {}, "t", schema={"type": "object"})
-    assert [e[0] for e in meter.events] == ["slot", "check", "slot_exit", "record"]
+    assert [e[0] for e in meter.events] == ["slot", "check", "record", "slot_exit"]
+
+
+def test_failed_call_is_recorded_inside_the_slot_and_the_original_error_wins(api, tmp_path, monkeypatch):
+    from contextlib import contextmanager
+
+    from scripts import limits
+
+    api(_usage_reply({}, {"input_tokens": 7}, stop_reason="max_tokens"))
+    meter = _Meter()
+
+    @contextmanager
+    def slot(name, on_wait=None):
+        meter.events.append(("slot", name))
+        try:
+            yield
+        finally:
+            meter.events.append(("slot_exit", name))
+
+    monkeypatch.setattr(limits, "slot", slot)
+    c, ctx = _meter_ctx(tmp_path, meter)
+    with ctx.use(c), pytest.raises(ScriptError) as e:
+        llm.ask([], {}, "t", schema={"type": "object"})
+    assert e.value.code == "llm_failed"
+    assert [ev[0] for ev in meter.events] == ["slot", "check", "record", "slot_exit"]
+    assert meter.events[2][3] is False

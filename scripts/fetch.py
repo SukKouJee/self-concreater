@@ -26,7 +26,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from scripts import ctx, keys, limits, refstore
@@ -261,13 +261,6 @@ def wait_turn(progress: Progress | None = None) -> None:
         wait -= step
 
 
-def _collect_waiter(report: Progress | None) -> Callable[[], None] | None:
-    """같은 영상을 받는 다른 작업을 기다리는 동안 보일 문구(진행 단계 "wait": 걸린 시간에 넣지 않는다)."""
-    if report is None:
-        return None
-    return lambda: report("wait", None, limits.COLLECT_WAIT_TEXT)
-
-
 def load_raw(video_id: str) -> dict:
     shared = ctx.here().shared
     key = keys.raw(video_id)
@@ -342,7 +335,7 @@ def fetch(url: str, category: str | None = None, role: str = "ref", force: bool 
 
     report = safe_progress(progress)
     # 캐시 확인 → 받기 → 저장을 한 잠금 안에서: 같은 영상을 동시에 넣은 다른 사용자는 기다렸다가 캐시를 쓴다
-    with limits.collecting(video_id, on_wait=_collect_waiter(report)):
+    with limits.collecting(video_id, on_wait=limits.collect_waiter(report)):
         if ctx.here().shared.exists(keys.raw(video_id)) and not force:
             data, status = load_raw(video_id), "cached"
         else:

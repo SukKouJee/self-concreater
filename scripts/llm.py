@@ -150,18 +150,18 @@ def ask(
     seen: list[dict[str, int]] = []
     options["on_usage"] = seen.append
     model = str(options.get("model") or getattr(engine, "DEFAULT_MODEL", ""))
-    try:
-        with limits.slot("llm"):
-            # 한도 초과면 엔진을 부르기 전에 거절(로컬판 NullMeter는 no-op). 자리를 잡은 뒤에 검사하므로
-            # 검사를 통과하고 아직 기록하지 않은 호출은 프로세스 전체에서 llm 슬롯 수 이하다(설계 §6 초과 한계).
-            meter.check()
+    with limits.slot("llm"):
+        # 한도 초과면 엔진을 부르기 전에 거절(로컬판 NullMeter는 no-op). 검사·호출·기록을 모두 자리 안에서 하므로
+        # 검사를 통과하고 아직 기록되지 않은 호출은 프로세스 전체에서 llm 슬롯 수 이하다(설계 §6 초과 한계).
+        meter.check()
+        try:
             result = engine.ask(rules, payload, task, schema=schema, files=file_keys, timeout=timeout, options=options)
-    except BaseException:
-        for usage in seen:                  # 실패 응답도 토큰은 썼다
-            meter.record(model, usage, False)
-        raise
-    for usage in seen:
-        meter.record(model, usage, True)
+        except BaseException:
+            for usage in seen:              # 실패 응답도 토큰은 썼다(서버 meter의 record는 오류를 올리지 않는다)
+                meter.record(model, usage, False)
+            raise
+        for usage in seen:
+            meter.record(model, usage, True)
     return result
 
 

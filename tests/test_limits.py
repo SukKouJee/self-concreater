@@ -89,3 +89,12 @@ def test_installed_collect_lock_receives_video_and_on_wait() -> None:
     with limits.collecting("CCCCCCCCCCC"):
         pass
     assert len(seen) == 2                       # install() 뒤에는 다시 no-op
+
+
+def test_collect_waiter_reports_a_wait_step_or_nothing() -> None:
+    calls: list[tuple] = []
+    assert limits.collect_waiter(None) is None
+    waiter = limits.collect_waiter(lambda *a: calls.append(a))
+    assert waiter is not None
+    waiter()
+    assert calls == [("wait", None, limits.COLLECT_WAIT_TEXT)]

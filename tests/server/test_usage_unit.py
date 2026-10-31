@@ -10,6 +10,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -245,3 +246,86 @@ def test_original_llm_error_survives_a_record_failure(monkeypatch: pytest.Monkey
     with ctx.use(_meter_ctx(tmp_path, meter)), pytest.raises(ScriptError) as e:
         llm.ask([], {}, "t", schema={"type": "object"})
     assert e.value.code == "llm_failed"
+
+
+# --- 기록하지 못한 비용은 프로세스 안 장부로 한도에 더한다(m-2) -----------------------------------------
+
+class _InsertFailsDb:
+    """SELECT(한도 조회)는 되고 INSERT(기록)만 실패하는 DB."""
+
+    def __init__(self, used: str, limit: str | None = None) -> None:
+        self.used, self.limit = Decimal(used), (Decimal(limit) if limit else None)
+
+    @contextmanager
+    def user_tx(self, user_id: Any) -> Iterator[Any]:
+        db = self
+
+        class _Cur:
+            @staticmethod
+            def fetchone() -> tuple[Any, Any]:
+                return (db.limit, db.used)
+
+        class _Conn:
+            @staticmethod
+            def execute(query: str, params: Any = None) -> Any:
+                import psycopg
+
+                if query.lstrip().upper().startswith("INSERT"):
+                    raise psycopg.OperationalError("disk full")
+                return _Cur()
+
+        yield _Conn()
+
+
+def _fixed_now() -> datetime:
+    return datetime(2026, 11, 1, 12, 0, tzinfo=KST)
+
+
+def test_unrecorded_spend_counts_toward_the_limit(caplog: pytest.LogCaptureFixture) -> None:
+    db = _InsertFailsDb("0.90")
+    ledger = usage.UnrecordedLedger()
+    meter = usage.PgUsageMeter(db, UID, Decimal("1.00"), now=_fixed_now, ledger=ledger)  # type: ignore[arg-type]
+    meter.check()                                                   # 0.90 < 1.00
+    with caplog.at_level(logging.ERROR, logger="ytc.usage"):
+        # sonnet 5.5: 10k out x $10/MTok = 0.10 -> the INSERT fails, the ledger keeps it
+        meter.record("claude-sonnet-5-5", {"output_tokens": 10_000}, True)
+    assert caplog.records
+    assert ledger.get(meter.user_id, usage.kst_day(_fixed_now())[0]) == Decimal("0.100000")
+    again = usage.PgUsageMeter(db, UID, Decimal("1.00"), now=_fixed_now, ledger=ledger)  # type: ignore[arg-type]
+    with pytest.raises(ScriptError) as e:
+        again.check()
+    assert e.value.details["used"] == 1.0
+    tomorrow = usage.PgUsageMeter(db, UID, Decimal("1.00"), ledger=ledger,  # type: ignore[arg-type]
+                                  now=lambda: _fixed_now() + timedelta(days=1))
+    tomorrow.check()                                                # another KST day starts clean
+
+
+def test_unknown_price_uses_the_worst_case_price_in_the_ledger() -> None:
+    ledger = usage.UnrecordedLedger()
+    meter = usage.PgUsageMeter(_InsertFailsDb("0"), UID, Decimal("1.00"), now=_fixed_now,  # type: ignore[arg-type]
+                               ledger=ledger)
+    meter.record("claude-unknown-9", {"input_tokens": 1_000_000}, False)
+    worst = max(p.input for p in usage.PRICES.values())
+    assert ledger.get(meter.user_id, usage.kst_day(_fixed_now())[0]) == worst.quantize(Decimal("0.000001"))
+
+
+def test_backend_meters_share_one_ledger() -> None:
+    from server.backend import ServerBackend
+
+    b = ServerBackend(object(), object(), scratch_dir=Path("/x"), state_dir=Path("/y"))  # type: ignore[arg-type]
+    assert b.usage(UID).ledger is b.usage(UID).ledger
+
+
+# --- 시작 경고: production에서 ANTHROPIC_API_KEY가 비면 경고만(m-3) ------------------------------------
+
+def test_production_without_api_key_logs_a_startup_warning(caplog: pytest.LogCaptureFixture) -> None:
+    from server.asgi import log_startup_warnings
+
+    with caplog.at_level(logging.WARNING, logger="ytc.server"):
+        log_startup_warnings({"YTC_ENV": "production", "ANTHROPIC_API_KEY": "  "})
+    assert any("ANTHROPIC_API_KEY" in r.getMessage() for r in caplog.records)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="ytc.server"):
+        log_startup_warnings({"ANTHROPIC_API_KEY": "sk-ant-TEST-NOT-A-REAL-KEY"})    # production by default
+        log_startup_warnings({"YTC_ENV": "dev"})
+    assert not caplog.records
