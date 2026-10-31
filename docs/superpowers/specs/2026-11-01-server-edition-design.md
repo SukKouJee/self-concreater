@@ -316,7 +316,7 @@ media 대기 p95가 5분을 넘거나, 앱 재시작으로 작업을 잃는 일�
    키마다 트랜잭션 하나라 중간에 멈춰도 재실행하면 이어진다). 출력 JSON은 위 4번에 `dry_run`·`folders`(새 폴더 수)·`unchanged`·`excluded`(걸린 제외 규칙)·
    `changes`(docs+objects+shared_new+folders, 재실행 0)·`verify`를 더한다. `skipped`는 `bad_key`·`too_large`(객체 64MB 초과)·`not_regular`(링크 등).
    읽을 수 없는 파일은 건너뛰지 않고 `import_unreadable`로 멈춘다(재실행하면 이어서). `--no-verify`로 검증을 끈다. `add-user`·`disable-user`·`usage`는
-   `YTC_DB_OWNER_DSN`만 쓰고 가져오기만 저장소 설정 전부를 쓴다. `--overwrite`는 내 메모 가드를 거치지 않는다(원본 폴더로 되돌리는 명시적 동작).
+   `YTC_DB_OWNER_DSN`만 쓰고 가져오기만 저장소 설정 전부를 쓴다. `--overwrite`로 덮어써도 서버 문서의 `## 내 메모`가 바뀌면 건드리지 않고 conflict(reason `memo`)로 보고한다(내 메모 가드). 메모까지 되돌리려면 `--overwrite-memo`. 충돌이 있으면 종료 코드 0, 보고서 `ok:false`+`message`, 검증 `skipped_conflicts`. 비활성 사용자에게는 가져오지 않는다. 문서도 64MB 상한.
    서버 `Meta.mtime`은 `mtime_ns/1e9`라 로컬 `st_mtime`과 마지막 자리가 달라, 검증의 JSON 비교는 실수 1ms 허용.
    `export_tree`는 `plan_tree(...)`(키·폴더 먼저, 바이트는 키마다 읽는 `items()`·`hashes()`·`write()`)의 `collect()`다.
 6. 검증: 가져온 뒤 같은 프로세스에서 로컬 `Ctx(root=폴더)`와 서버 `Ctx(user, backend)`로 `status.overview()`를 각각 계산해

@@ -136,22 +136,27 @@ class PgDocStore:
         return version
 
     def import_raw(self, key: str, data: bytes, mtime_ns: int, *, overwrite: bool = False,
-                   dry_run: bool = False) -> ImportOutcome:
+                   overwrite_memo: bool = False, dry_run: bool = False) -> ImportOutcome:
         """관리 가져오기(Protocol 밖, `server.admin import`): 원본 mtime을 **그대로** 넣는다(미션·진단의 mtime 정렬, `api_refs`의
         "added"가 바뀌지 않게). 같은 내용(sha256)이면 건드리지 않고 `same`, 다르면 `overwrite`일 때만 덮어쓴다(`replaced`),
-        아니면 `conflict`. 사용자가 고른 원본 폴더로 되돌리는 일이라 내 메모 가드(`check_memo`)는 거치지 않는다.
-        `dry_run`이면 같은 판정만 하고 쓰지 않는다."""
+        아니면 `conflict`. 덮어쓸 때도 서버 문서의 `## 내 메모`가 바뀌면(`refstore.check_memo`) 건드리지 않고 `memo`를 돌려준다.
+        `overwrite_memo`면 메모까지 통째로 바꾼다(명시적 복원). `dry_run`이면 같은 판정만 하고 쓰지 않는다."""
         key = self._doc_key(key)
         data = bytes(data)
         version = sha256_hex(data)
         with self._tx() as conn:
             while True:
-                row = conn.execute("SELECT version FROM docs WHERE user_id = %s AND key = %s FOR UPDATE",
+                row = conn.execute("SELECT version, raw FROM docs WHERE user_id = %s AND key = %s FOR UPDATE",
                                    (self._uid, key)).fetchone()
                 if row is not None and str(row[0]) == version:
                     return "same"
-                if row is not None and not overwrite:
+                if row is not None and not (overwrite or overwrite_memo):
                     return "conflict"
+                if row is not None and not overwrite_memo:
+                    try:
+                        refstore.check_memo(key, bytes(row[1]), data)
+                    except ScriptError:
+                        return "memo"
                 outcome: ImportOutcome = "new" if row is None else "replaced"
                 if dry_run:
                     return outcome

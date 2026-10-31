@@ -523,7 +523,8 @@ class S3SharedCache(_S3Store):
         return None if row is None else str(row[0])
 
     def _upsert(self, conn: Conn, key: str, data: bytes, s3_key: str, mtime_ns: int | None = None) -> None:
-        stamp = "EXCLUDED.mtime_ns" if mtime_ns is not None             else "GREATEST(EXCLUDED.mtime_ns, shared_objects.mtime_ns + 1)"
+        stamp = ("EXCLUDED.mtime_ns" if mtime_ns is not None
+                 else "GREATEST(EXCLUDED.mtime_ns, shared_objects.mtime_ns + 1)")
         conn.execute(
             "INSERT INTO shared_objects (key, size, sha256, mtime_ns, s3_key, created_by) "
             "VALUES (%s, %s, %s, %s, %s, %s) "

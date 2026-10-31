@@ -2,7 +2,7 @@
 
 - `add-user <email> [--name N] [--daily-limit USD] [--admin]`: 초대. 이메일은 소문자로 저장.
 - `disable-user <email>`: 비활성 + `session_epoch` 증가(이미 나간 세션 쿠키가 다음 요청에서 죽는다).
-- `import <작업 폴더> --user <email> [--dry-run] [--overwrite] [--no-verify]`: 로컬 작업 폴더를 그 사용자 계정으로 올린다.
+- `import <작업 폴더> --user <email> [--dry-run] [--overwrite] [--overwrite-memo] [--no-verify]`: 로컬 작업 폴더를 그 사용자 계정으로 올린다.
 - `usage [--days N]`: 사용자·날짜(Asia/Seoul)별 LLM 사용량 합계(`llm_usage`, 아직 기록이 없으면 빈 목록).
 
 환경: 사용자 관리·사용량은 `YTC_DB_OWNER_DSN`만. 가져오기는 저장소 설정 전부(`YTC_DB_DSN`, `YTC_DB_OWNER_DSN`, `YTC_S3_*`).
@@ -11,11 +11,14 @@
 가져오기 규칙(§7):
 - 작업 폴더를 걸어 파일의 POSIX 상대 경로를 키로 쓴다. `keys.check`를 통과하지 못하면 `skipped.bad_key`.
 - 제외: `workspace/{tmp,trash,library}/`, `workspace/{library.lock,ui.lock,ui.log,timings.json,.last_fetch}`, `.git/`, `library.json`.
-  심볼릭 링크·일반 파일이 아닌 것은 `skipped.not_regular`, 객체·공유 캐시 64MB 초과는 `skipped.too_large`.
+  심볼릭 링크·Windows 정션(재해석 지점)·일반 파일이 아닌 것은 `skipped.not_regular`, 64MB 초과는(문서도) `skipped.too_large`.
+- 비활성 사용자에게는 가져오지 않는다(`user_disabled`).
 - `keys.kind`별: doc → `PgDocStore.import_raw`, object → `S3ObjectStore.import_raw`(둘 다 **원래 mtime 보존**),
   shared → 이미 있으면 건너뜀(`S3SharedCache.import_raw`), 빈 폴더 → 폴더 행.
-- 같은 sha256이면 건드리지 않는다(다시 실행해도 변경 0). 다르면 `--overwrite`가 없는 한 `conflicts`로 보고만 한다.
-  `--overwrite`는 사용자가 고른 원본으로 서버 문서를 되돌리는 일이라 내 메모 가드를 거치지 않는다.
+- 같은 sha256이면 건드리지 않는다(다시 실행해도 변경 0). 다르면 `--overwrite`가 없는 한 `conflicts`(reason `differs`)로 보고만 한다.
+  `--overwrite`로 덮어쓸 때도 서버 문서의 `## 내 메모`가 바뀌게 되면 건드리지 않고 reason `memo`로 보고한다.
+  메모까지 통째로 되돌리려면 `--overwrite-memo`(명시적 복원). 덮어쓴 키는 `replaced`에 나온다.
+- 충돌이 하나라도 있으면 종료 코드는 0이지만 보고서는 `ok: false`·`message`이고 검증은 건너뛴다(`verify: "skipped_conflicts"`).
 - 쓰기는 키마다 트랜잭션 하나라 중간에 멈춰도 다시 실행하면 이어진다.
 - 가져온 뒤(`--dry-run`·`--no-verify` 제외) 같은 프로세스에서 로컬 `Ctx(root=폴더)`와 서버 `Ctx(user, backend)`로 `status.overview()`를
   각각 계산해 `work_root`를 뺀 JSON을 비교한다. 다르면 종료 코드 1(`import_verify_failed`, 보고서가 오류 JSON에 들어간다).
@@ -62,6 +65,13 @@ EXCLUDED_FILES: Final = tuple(keys.WORKSPACE + name for name in
 
 # --- 걷기 -------------------------------------------------------------------------------------
 
+REPARSE_POINT: Final = 0x400      # FILE_ATTRIBUTE_REPARSE_POINT (Windows junctions, mount points, ...)
+
+
+def _is_link_like(info: os.stat_result) -> bool:
+    return bool(getattr(info, "st_file_attributes", 0) & REPARSE_POINT)
+
+
 @dataclass(frozen=True)
 class SourceFile:
     key: str
@@ -88,25 +98,28 @@ def _note(items: list[str], value: str) -> None:
 
 
 def walk_workfolder(folder: Path) -> Walked:
-    """`folder` 아래 모든 파일을 키(POSIX 상대 경로)와 함께 모은다. 심볼릭 링크는 따라가지 않는다."""
+    """`folder` 아래 모든 파일을 키(POSIX 상대 경로)와 함께 모은다. 심볼릭 링크·정션은 따라가지 않고,
+    걷는 폴더가 원본 폴더 밖으로 풀리면(resolve) 건너뛴다."""
     folder = Path(folder)
+    real_root = folder.resolve()
     out = Walked()
     for current, dirnames, filenames in os.walk(folder, followlinks=False):
         here = Path(current)
         rel_dir = here.relative_to(folder).as_posix()
         prefix = "" if rel_dir == "." else rel_dir + "/"
+        was_empty = not dirnames and not filenames          # before any filtering
         kept: list[str] = []
         for name in sorted(dirnames):
             path = here / name
             dir_key = f"{prefix}{name}/"
-            if path.is_symlink():
+            if path.is_symlink() or _is_link_like(path.lstat()) or not path.resolve().is_relative_to(real_root):
                 out.not_regular.append(dir_key)
             elif dir_key in EXCLUDED_DIRS:
                 _note(out.excluded, dir_key)
             else:
                 kept.append(name)
         dirnames[:] = kept
-        if not kept and not filenames and prefix:
+        if was_empty and prefix and not prefix.startswith((*keys.SHARED_PREFIXES, keys.TMP)):
             out.folders.append(prefix)
         for name in sorted(filenames):
             key = f"{prefix}{name}"
@@ -115,7 +128,7 @@ def walk_workfolder(folder: Path) -> Walked:
                 _note(out.excluded, key)
                 continue
             info = path.lstat()
-            if not stat.S_ISREG(info.st_mode):
+            if not stat.S_ISREG(info.st_mode) or _is_link_like(info):
                 out.not_regular.append(key)
                 continue
             try:
@@ -126,7 +139,7 @@ def walk_workfolder(folder: Path) -> Walked:
             if keys.kind(key) == "scratch":
                 _note(out.excluded, keys.TMP)
                 continue
-            if keys.kind(key) != "doc" and info.st_size > MAX_OBJECT_BYTES:
+            if info.st_size > MAX_OBJECT_BYTES:
                 out.too_large.append(key)
                 continue
             out.files.append(SourceFile(key, path, info.st_size, info.st_mtime_ns))
@@ -154,6 +167,8 @@ class Tally:
     unchanged_docs: int = 0
     unchanged_objects: int = 0
     conflicts: list[dict[str, str]] = field(default_factory=list)
+    replaced: list[str] = field(default_factory=list)
+    too_large: list[str] = field(default_factory=list)       # grew past the limit between the walk and the read
 
     def changes(self) -> int:
         return self.docs + self.objects + self.shared_new + self.folders
@@ -167,20 +182,24 @@ def _read(src: SourceFile) -> bytes:
 
 
 def import_files(walked: Walked, *, docs: PgDocStore, objects: S3ObjectStore, shared: S3SharedCache,
-                 overwrite: bool, dry_run: bool) -> Tally:
+                 overwrite: bool, overwrite_memo: bool = False, dry_run: bool) -> Tally:
     """걸은 결과를 저장소에 올린다. 쓰기는 키마다 트랜잭션 하나(중간에 멈춰도 다시 실행하면 이어진다)."""
     tally = Tally()
     for src in walked.files:
         data = _read(src)
+        if len(data) > MAX_OBJECT_BYTES:
+            tally.too_large.append(src.key)
+            continue
         kind = keys.kind(src.key)
         if kind == "doc":
-            outcome = docs.import_raw(src.key, data, src.mtime_ns, overwrite=overwrite, dry_run=dry_run)
+            outcome = docs.import_raw(src.key, data, src.mtime_ns, overwrite=overwrite,
+                                      overwrite_memo=overwrite_memo, dry_run=dry_run)
         elif kind == "shared":
             outcome = shared.import_raw(src.key, data, src.mtime_ns, dry_run=dry_run)
         else:
             outcome = objects.import_raw(src.key, data, src.mtime_ns, overwrite=overwrite, dry_run=dry_run)
-        if outcome == "conflict":
-            tally.conflicts.append({"key": src.key, "kind": kind})
+        if outcome in ("conflict", "memo"):
+            tally.conflicts.append({"key": src.key, "kind": kind, "reason": "memo" if outcome == "memo" else "differs"})
         elif kind == "shared":
             if outcome == "new":
                 tally.shared_new += 1
@@ -191,10 +210,13 @@ def import_files(walked: Walked, *, docs: PgDocStore, objects: S3ObjectStore, sh
                 tally.unchanged_docs += 1
             else:
                 tally.unchanged_objects += 1
-        elif kind == "doc":
-            tally.docs += 1
         else:
-            tally.objects += 1
+            if outcome == "replaced":
+                tally.replaced.append(src.key)
+            if kind == "doc":
+                tally.docs += 1
+            else:
+                tally.objects += 1
     for prefix in walked.folders:
         if docs.folder_exists(prefix):
             continue
@@ -209,9 +231,9 @@ def _strip_label(overview: dict[str, Any]) -> dict[str, Any]:
 
 
 def _same(a: Any, b: Any) -> bool:
-    """JSON 값 비교. 실수는 1ms 안이면 같다: 서버 `Meta.mtime`은 `mtime_ns / 1e9`, 로컬은 `st_mtime`이라 마지막 자리가 다르다."""
+    """JSON 값 비교. 실수는 1µs 안이면 같다: 서버 `Meta.mtime`은 `mtime_ns / 1e9`, 로컬은 `st_mtime`이라 마지막 자리가 다르다."""
     if isinstance(a, float) and isinstance(b, float):
-        return abs(a - b) < 1e-3
+        return abs(a - b) < 1e-6
     if isinstance(a, dict) and isinstance(b, dict):
         return a.keys() == b.keys() and all(_same(a[k], b[k]) for k in a)
     if isinstance(a, list) and isinstance(b, list):
@@ -309,16 +331,18 @@ def usage(env: Mapping[str, str], days: int) -> dict[str, Any]:
 
 
 def import_workfolder(env: Mapping[str, str], folder: str, user: str, *, dry_run: bool, overwrite: bool,
-                      verify: bool) -> dict[str, Any]:
+                      overwrite_memo: bool = False, verify: bool) -> dict[str, Any]:
     address = _email(user)
     source = Path(folder).resolve()
     if not source.is_dir():
         raise ScriptError("folder_not_found", f"작업 폴더가 없습니다: {folder}")
     settings = StorageSettings.from_env(env)
     with _owner_tx(env) as conn:
-        row = conn.execute("SELECT id FROM users WHERE email = %s", (address,)).fetchone()
+        row = conn.execute("SELECT id, disabled FROM users WHERE email = %s", (address,)).fetchone()
     if row is None:
         raise ScriptError("user_not_found", f"없는 사용자입니다: {address}. 먼저 add-user로 만드세요.")
+    if row[1]:
+        raise ScriptError("user_disabled", f"비활성 사용자에게는 가져올 수 없습니다: {address}")
     uid = uuid.UUID(str(row[0]))
     walked = walk_workfolder(source)
     db = Db(settings.db_dsn, settings.db_owner_dsn, min_size=settings.db_pool_min, max_size=settings.db_pool_max)
@@ -327,19 +351,29 @@ def import_workfolder(env: Mapping[str, str], folder: str, user: str, *, dry_run
         bucket = S3Bucket.connect(settings.s3_endpoint, settings.s3_access_key, settings.s3_secret_key,
                                   settings.s3_bucket, max_pool_connections=settings.s3_max_pool_connections)
         tally = import_files(walked, docs=PgDocStore(db, uid, address), objects=S3ObjectStore(db, bucket, uid),
-                             shared=S3SharedCache(db, bucket, uid), overwrite=overwrite, dry_run=dry_run)
+                             shared=S3SharedCache(db, bucket, uid), overwrite=overwrite,
+                             overwrite_memo=overwrite_memo, dry_run=dry_run)
+        too_large = sorted({*walked.too_large, *tally.too_large})
         report: dict[str, Any] = {
-            "user": address, "dry_run": dry_run, "docs": tally.docs, "objects": tally.objects,
+            "user": address, "dry_run": dry_run, "ok": not tally.conflicts, "docs": tally.docs,
+            "objects": tally.objects,
             "shared_new": tally.shared_new, "shared_skipped": tally.shared_skipped, "folders": tally.folders,
             "unchanged": {"docs": tally.unchanged_docs, "objects": tally.unchanged_objects},
-            "skipped": {"bad_key": walked.bad_key, "too_large": walked.too_large, "not_regular": walked.not_regular},
-            "excluded": walked.excluded, "conflicts": tally.conflicts, "changes": tally.changes(),
+            "skipped": {"bad_key": walked.bad_key, "too_large": too_large, "not_regular": walked.not_regular},
+            "excluded": walked.excluded, "replaced": tally.replaced, "conflicts": tally.conflicts,
+            "changes": tally.changes(),
         }
-        if verify and not dry_run:
+        if tally.conflicts:
+            report["message"] = (f"{len(tally.conflicts)}개 파일은 서버와 내용이 달라 건드리지 않았습니다. 서버 것을 원본으로 되돌리려면 "
+                                 "--overwrite, `## 내 메모`까지 되돌리려면 --overwrite-memo로 다시 실행하세요.")
+            if verify and not dry_run:
+                report["verify"] = "skipped_conflicts"
+        elif verify and not dry_run:
             with tempfile.TemporaryDirectory(prefix="ytc-admin-") as tmp:
                 backend = ServerBackend(db, bucket, scratch_dir=Path(tmp) / "scratch", state_dir=Path(tmp) / "state")
                 report["verify"] = verify_status(source, backend, uid)
             if not report["verify"]["ok"]:
+                report["ok"] = False
                 raise ScriptError("import_verify_failed",
                                   "가져온 뒤 현황이 원본 폴더와 다릅니다(status 비교). 새 계정에 가져왔는지 확인하세요.",
                                   report=report)
@@ -364,7 +398,10 @@ def _parser() -> ArgParser:
     imp.add_argument("folder")
     imp.add_argument("--user", required=True)
     imp.add_argument("--dry-run", dest="dry_run", action="store_true")
-    imp.add_argument("--overwrite", action="store_true")
+    imp.add_argument("--overwrite", action="store_true",
+                     help="서버와 내용이 다른 파일을 원본으로 덮어쓴다(서버의 내 메모가 바뀌는 문서는 건드리지 않는다)")
+    imp.add_argument("--overwrite-memo", dest="overwrite_memo", action="store_true",
+                     help="내 메모까지 원본으로 통째로 되돌린다(--overwrite 포함)")
     imp.add_argument("--no-verify", dest="verify", action="store_false")
     use = sub.add_parser("usage")
     use.add_argument("--days", type=int, default=7)
@@ -380,7 +417,7 @@ def main(argv: list[str], env: Mapping[str, str] | None = None) -> dict[str, Any
         return disable_user(environ, args.email)
     if args.command == "import":
         return import_workfolder(environ, args.folder, args.user, dry_run=args.dry_run, overwrite=args.overwrite,
-                                 verify=args.verify)
+                                 overwrite_memo=args.overwrite_memo, verify=args.verify)
     return usage(environ, args.days)
 
 

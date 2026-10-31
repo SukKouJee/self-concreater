@@ -14,7 +14,7 @@ import psycopg
 import pytest
 
 from scripts import ctx as ctx_mod
-from scripts import keys, status
+from scripts import keys, refstore, status
 from scripts.common import ScriptError
 from scripts.ctx import Ctx
 from server import admin
@@ -64,9 +64,39 @@ def test_walk_reports_bad_keys_and_empty_folders_and_size_limit(tmp_path: Path,
     walked = admin.walk_workfolder(tmp_path)
 
     assert walked.bad_key == ["mine/CON.md"]
-    assert walked.too_large == ["drafts/ok-conti.html"]
-    assert [f.key for f in walked.files] == ["drafts/note.md"]          # a doc has no 64MB object limit
+    assert walked.too_large == ["drafts/note.md", "drafts/ok-conti.html"]          # docs have the same limit
+    assert walked.files == []
     assert walked.folders == ["refs/ref_empty/videos/", "reports/"]
+
+
+def test_walk_skips_windows_reparse_points(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _touch(tmp_path, "real/a.md")
+    _touch(tmp_path, "junction/b.md")
+    _touch(tmp_path, "file.md")
+    real_lstat = Path.lstat
+
+    class _Reparse:
+        def __init__(self, st: os.stat_result) -> None:
+            self.st_mode, self.st_size, self.st_mtime_ns = st.st_mode, st.st_size, st.st_mtime_ns
+            self.st_file_attributes = 0x400
+
+    monkeypatch.setattr(Path, "lstat", lambda self: _Reparse(real_lstat(self)) if self.name in {"junction", "file.md"}
+                        else real_lstat(self))
+
+    walked = admin.walk_workfolder(tmp_path)
+
+    assert [f.key for f in walked.files] == ["real/a.md"]
+    assert sorted(walked.not_regular) == ["file.md", "junction/"]
+
+
+def test_walk_only_makes_folders_for_dirs_that_were_empty_before_filtering(tmp_path: Path) -> None:
+    (tmp_path / "workspace" / "tmp").mkdir(parents=True)             # only an excluded dir inside: not an empty folder
+    (tmp_path / "workspace" / "frames" / "abc").mkdir(parents=True)   # shared cache folders are not the user's
+    (tmp_path / "reviews" / "archive").mkdir(parents=True)
+
+    walked = admin.walk_workfolder(tmp_path)
+
+    assert walked.folders == ["reviews/archive/"]
 
 
 def test_walk_skips_symlinks(tmp_path: Path) -> None:
@@ -176,7 +206,8 @@ def test_usage_sums_by_user_and_day_in_seoul_time(env: dict[str, str]) -> None:
             (a, "now() - interval '30 days'", 1, 1, "9.000000", True)]
     with psycopg.connect(env["YTC_DB_OWNER_DSN"]) as conn:
         for uid, at, tin, tout, cost, ok in rows:
-            conn.execute(f"INSERT INTO llm_usage (user_id, at, job_kind, model, input_tokens, output_tokens, cost_usd, ok) "
+            conn.execute(f"INSERT INTO llm_usage (user_id, at, job_kind, model, input_tokens, output_tokens, cost_usd, "
+                         f"ok) "
                          f"VALUES (%s, {at}, 'analyze', 'm', %s, %s, %s, %s)", (uuid.UUID(uid), tin, tout, cost, ok))
 
     week = admin.main(["usage", "--days", "7"], env)
@@ -194,6 +225,21 @@ def test_usage_sums_by_user_and_day_in_seoul_time(env: dict[str, str]) -> None:
     assert by_user["b@example.com"]["cost"] == 0.25
     assert round(week["total_usd"], 6) == 0.265            # the 30-day-old row is outside --days 7
     assert admin.main(["usage", "--days", "60"], env)["total_usd"] == pytest.approx(9.265)
+
+
+def test_usage_splits_days_at_kst_midnight(env: dict[str, str]) -> None:
+    uid = uuid.UUID(admin.main(["add-user", "a@example.com"], env)["id"])
+    # 23:59:59, 00:00:01 and 00:00:02 KST
+    stamps = ["2026-10-30 14:59:59+00", "2026-10-30 15:00:01+00", "2026-10-30 15:00:02+00"]
+    with psycopg.connect(env["YTC_DB_OWNER_DSN"]) as conn:
+        for at in stamps:
+            conn.execute("INSERT INTO llm_usage (user_id, at, model, input_tokens, output_tokens, cost_usd, ok) "
+                         "VALUES (%s, %s, 'm', 1, 1, 0.5, true)", (uid, at))
+
+    out = admin.main(["usage", "--days", "36500"], env)
+
+    assert [(r["day"], r["calls"], r["cost_usd"]) for r in out["rows"]] == [("2026-10-30", 1, 0.5),
+                                                                          ("2026-10-31", 2, 1.0)]
 
 
 def test_usage_rejects_zero_days(env: dict[str, str]) -> None:
@@ -229,6 +275,16 @@ def test_import_unknown_user_is_user_not_found(env: dict[str, str], source: Path
     assert e.value.code == "user_not_found"
 
 
+def test_import_into_disabled_user_is_refused(env: dict[str, str], source: Path) -> None:
+    admin.main(["add-user", LOWER], env)
+    admin.main(["disable-user", LOWER], env)
+
+    with pytest.raises(ScriptError) as e:
+        _import(env, source)
+
+    assert e.value.code == "user_disabled"
+
+
 def test_import_missing_folder(env: dict[str, str], tmp_path: Path) -> None:
     admin.main(["add-user", LOWER], env)
     with pytest.raises(ScriptError) as e:
@@ -251,7 +307,7 @@ def test_import_fixture_is_byte_identical_and_status_matches_then_rerun_changes_
     assert report["skipped"] == {"bad_key": [], "too_large": [], "not_regular": []} and report["conflicts"] == []
     assert report["docs"] + report["objects"] + report["shared_new"] == len(expected)
     assert report["shared_new"] == 5 and report["docs"] > 0 and report["objects"] > 0
-    assert report["verify"] == {"ok": True, "differing": []}
+    assert report["verify"] == {"ok": True, "differing": []} and report["ok"] is True and report["replaced"] == []
     # status overview: FileStore Ctx vs ServerBackend Ctx, only the label differs
     with ctx_mod.use(Ctx(root=source)):
         local = status.overview()
@@ -284,7 +340,8 @@ def test_import_preserves_original_mtime(request: pytest.FixtureRequest, env: di
     _import(env, source)
 
     assert backend.store(str(uid)).stat("profile.md").mtime_ns == on_disk["profile.md"]
-    assert backend.objects(str(uid)).stat("reports/travel-2026-10-30.html").mtime_ns ==         on_disk["reports/travel-2026-10-30.html"]
+    report_mtime = backend.objects(str(uid)).stat("reports/travel-2026-10-30.html").mtime_ns
+    assert report_mtime == on_disk["reports/travel-2026-10-30.html"]
     assert backend.shared(str(uid)).stat(f"workspace/raw/{VID}.json").mtime_ns == on_disk[f"workspace/raw/{VID}.json"]
 
 
@@ -316,7 +373,8 @@ def test_empty_folders_become_folders(request: pytest.FixtureRequest, env: dict[
     report = _import(env, source, "--no-verify")
 
     store = _backend(request).store(str(uid))
-    assert report["folders"] == 1 and "verify" not in report                 # only the leaf is a folder to create (parents are implied)
+    # only the leaf is a folder to create (its parents are implied)
+    assert report["folders"] == 1 and "verify" not in report
     assert store.folder_exists("reviews/archive/deep/")
     assert "reviews/archive/" in store.folders("reviews/", "*")
     assert _import(env, source, "--no-verify")["folders"] == 0
@@ -329,7 +387,7 @@ def test_different_content_is_a_conflict_until_overwrite(request: pytest.Fixture
     backend = _backend(request)
     _import(env, source)
     server_profile = backend.store(str(uid)).read("profile.md").raw
-    (source / "profile.md").write_bytes(server_profile + "\n수정\n".encode())
+    (source / "profile.md").write_bytes(server_profile.replace("제주, 한 달 살기".encode(), "제주 수정".encode()))
     (source / "reports" / "travel-2026-10-30.html").write_bytes(b"<html>changed</html>")
 
     held = _import(env, source, "--no-verify")
@@ -345,6 +403,83 @@ def test_different_content_is_a_conflict_until_overwrite(request: pytest.Fixture
     assert backend.objects(str(uid)).get("reports/travel-2026-10-30.html") == b"<html>changed</html>"
     assert forced["verify"]["ok"] is True
     assert _import(env, source)["changes"] == 0
+
+
+def _memo_doc(memo: str, body: str = "본문") -> bytes:
+    return f"# 메모 문서{chr(10)}{chr(10)}{body}{chr(10)}{chr(10)}{refstore.MEMO_HEADING}{chr(10)}{memo}{chr(10)}".encode()
+
+
+NOTE = "mine/memo-note.md"
+
+
+def test_overwrite_never_replaces_a_changed_server_memo_without_overwrite_memo(
+        request: pytest.FixtureRequest, env: dict[str, str], source: Path) -> None:
+    admin.main(["add-user", LOWER], env)
+    uid = _uid(env)
+    backend = _backend(request)
+    (source / NOTE).write_bytes(_memo_doc("서버에서 쓴 메모"))
+    _import(env, source)
+    server_raw = backend.store(str(uid)).read(NOTE).raw
+    (source / NOTE).write_bytes(_memo_doc("로컬 메모", "새 본문"))
+    profile = (source / "profile.md").read_bytes()
+    (source / "profile.md").write_bytes(profile.replace("제주, 한 달 살기".encode(), "제주 수정".encode()))   # memo kept
+
+    held = _import(env, source, "--overwrite")
+
+    assert held["conflicts"] == [{"key": NOTE, "kind": "doc", "reason": "memo"}]
+    assert held["replaced"] == ["profile.md"] and held["ok"] is False and held["verify"] == "skipped_conflicts"
+    assert "message" in held and "overwrite-memo" in held["message"]
+    assert backend.store(str(uid)).read(NOTE).raw == server_raw                          # memo untouched
+
+    forced = _import(env, source, "--overwrite-memo")
+
+    assert forced["conflicts"] == [] and forced["replaced"] == [NOTE] and forced["ok"] is True
+    assert backend.store(str(uid)).read(NOTE).raw == (source / NOTE).read_bytes()
+
+
+def test_overwrite_replaces_a_doc_whose_memo_is_unchanged(request: pytest.FixtureRequest, env: dict[str, str],
+                                                          source: Path) -> None:
+    admin.main(["add-user", LOWER], env)
+    (source / NOTE).write_bytes(_memo_doc("같은 메모"))
+    _import(env, source)
+    (source / NOTE).write_bytes(_memo_doc("같은 메모", "고친 본문"))
+
+    out = _import(env, source, "--overwrite")
+
+    assert out["replaced"] == [NOTE] and out["conflicts"] == [] and out["ok"] is True
+
+
+def test_plain_conflict_reports_a_reason_and_ok_false(env: dict[str, str], source: Path) -> None:
+    admin.main(["add-user", LOWER], env)
+    _import(env, source)
+    (source / "reports" / "travel-2026-10-30.html").write_bytes(b"<html>changed</html>")
+
+    held = _import(env, source)
+
+    assert held["conflicts"] == [{"key": "reports/travel-2026-10-30.html", "kind": "object", "reason": "differs"}]
+    assert held["ok"] is False and held["verify"] == "skipped_conflicts"
+
+
+def test_oversized_doc_is_reported_and_size_is_rechecked_after_reading(
+        env: dict[str, str], source: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    admin.main(["add-user", LOWER], env)
+    monkeypatch.setattr(admin, "MAX_OBJECT_BYTES", 300)
+    big = source / "mine" / "big.md"
+    big.write_bytes(b"x" * 301)
+    grow = source / "mine" / "grows.md"
+    grow.write_bytes(b"y" * 10)
+    real_walk = admin.walk_workfolder
+
+    def walk_then_grow(folder: Path) -> admin.Walked:
+        walked = real_walk(folder)
+        grow.write_bytes(b"y" * 400)                       # grows between the walk and the read
+        return walked
+
+    monkeypatch.setattr(admin, "walk_workfolder", walk_then_grow)
+
+    out = _import(env, source, "--no-verify")
+
+    assert "mine/big.md" in out["skipped"]["too_large"] and "mine/grows.md" in out["skipped"]["too_large"]
 
 
 def test_shared_cache_first_writer_wins_even_with_overwrite(request: pytest.FixtureRequest, env: dict[str, str],
