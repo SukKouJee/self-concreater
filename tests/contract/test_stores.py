@@ -1,8 +1,12 @@
-"""저장소 계약(서버 설계 §3.3·§10-1): DocStore Protocol의 규칙을 FileDocStore·PgDocStore에서 같은 단언으로 고정한다.
+"""저장소 계약(서버 설계 §3.3·§10-1): Protocol의 규칙을 File 구현과 서버 구현에서 같은 단언으로 고정한다.
 
-각 테스트는 `doc_store` fixture(`file`·`pg` 매개변수)를 받는다. 대소문자 섞인 이름의 일치·순서는
-Windows FileStore가 기준이라(원본 작업 폴더가 Windows에서 만들어졌다), `file` 매개변수는 Windows에서만 돌고
-`pg`는 어디서나 같은 고정 기대 목록을 낸다.
+- DocStore: `doc_store` fixture(`file`·`pg`) — FileDocStore · PgDocStore
+- ObjectStore: `object_store`·`object_store_pair`(`file`·`s3`) — FileObjectStore · S3ObjectStore
+- SharedCache: `shared_cache`·`shared_cache_pair`(`file`·`s3`) — FileSharedCache · S3SharedCache
+대소문자 섞인 이름의 일치·순서는 Windows FileStore가 기준이라(원본 작업 폴더가 Windows에서 만들어졌다),
+`file` 매개변수는 Windows에서만 돌고 서버 구현은 어디서나 같은 고정 기대 목록을 낸다.
+File과 값이 원래 다른 규칙(표시 경로, 폴더 write_path가 예전 내용을 비움, 예외 때 아무것도 안 올림)은
+tests/server/test_s3store.py.
 """
 from __future__ import annotations
 
@@ -17,7 +21,7 @@ from typing import Any
 import pytest
 
 from scripts.common import ScriptError
-from scripts.stores import DocStore, Meta, VersionConflict
+from scripts.stores import DocStore, Meta, ObjectStore, SharedCache, VersionConflict
 
 THREADS = 6
 
@@ -491,3 +495,459 @@ def test_local_path_holds_the_doc_bytes_under_its_file_name(doc_store: DocStore)
 def test_label_is_a_non_empty_string(doc_store: DocStore) -> None:
     assert isinstance(doc_store.label(), str)
     assert doc_store.label()
+
+
+# =========================================================================================
+# ObjectStore 계약(서버 설계 §3.3): FileObjectStore · S3ObjectStore(PG 인덱스 + MinIO)
+# =========================================================================================
+
+def _case_rule(obj_backend: str) -> None:
+    if obj_backend == "file" and os.name != "nt":
+        pytest.skip("FileStore의 대소문자 무시 목록은 Windows 기준(리눅스 FileStore는 대소문자 구분, 서버 설계 §12)")
+
+
+OBJ_ROUND_TRIP = [
+    pytest.param("drafts/a-conti.html", b"<html>\n</html>\n", id="html"),
+    pytest.param("drafts/a-captions.srt", b"1\r\n00:00:00,000 --> 00:00:01,000\r\n\xec\x95\x88\r\n", id="crlf"),
+    pytest.param("drafts/a-footage.csv", b"\xef\xbb\xbfcut,file\n", id="bom"),
+    pytest.param("workspace/typify/travel.json", b'{\n "k": 1\n}', id="nested-json"),
+    pytest.param("workspace/conti_history/2026-제주/0001.json", '{"t": "🏆"}'.encode(), id="korean-folder"),
+    pytest.param("workspace/conti-art/🏆/c1-abcdefgh-123456.svg", b"<svg/>", id="emoji-folder"),
+    pytest.param("yt-coach.json", b"", id="top-level-empty"),
+    pytest.param("reports/raw.bin", bytes(range(256)) * 4, id="binary"),
+]
+
+
+@pytest.mark.parametrize(("key", "data"), OBJ_ROUND_TRIP)
+def test_object_put_then_get_returns_same_bytes(object_store: ObjectStore, key: str, data: bytes) -> None:
+    object_store.put(key, data)
+
+    assert object_store.get(key) == data
+    assert object_store.exists(key)
+    meta = object_store.stat(key)
+    assert (meta.key, meta.size) == (key, len(data))
+
+
+def test_object_put_overwrites(object_store: ObjectStore) -> None:
+    object_store.put("drafts/a-conti.html", b"one")
+
+    object_store.put("drafts/a-conti.html", b"two\r\n")
+
+    assert object_store.get("drafts/a-conti.html") == b"two\r\n"
+    assert object_store.stat("drafts/a-conti.html").size == 5
+
+
+def test_object_missing_key(object_store: ObjectStore) -> None:
+    with pytest.raises(FileNotFoundError):
+        object_store.get("drafts/none.html")
+    with pytest.raises(FileNotFoundError):
+        object_store.stat("drafts/none.html")
+    assert object_store.exists("drafts/none.html") is False
+    object_store.delete("drafts/none.html")                 # missing_ok
+    object_store.delete_prefix("workspace/none/")           # ignore_errors
+    with object_store.local_path("drafts/none.html") as path:
+        assert path.name == "none.html"
+        assert not path.exists()
+
+
+def test_object_missing_prefix_lists_nothing(object_store: ObjectStore) -> None:
+    assert object_store.list("drafts/") == []
+    assert object_store.folder_exists("drafts/") is False
+
+
+OBJ_MD_KEYS = ["drafts/a.md", "drafts/Idea.MD", "profile.md"]
+OBJ_BAD_KEYS = ["../x.json", "drafts/../x.json", "drafts\\x.json", "c:/x.json", "drafts//x.json", "drafts/con.json",
+                "drafts/x./a.json", "/abs.json", "drafts/\x00.json"]
+
+
+def _object_calls(store: ObjectStore, key: str) -> list[Callable[[], Any]]:
+    """키 하나를 받는 ObjectStore 메서드 전부(문맥 관리자는 들어갔다 나오기까지)."""
+    def enter(cm: Callable[[str], Any]) -> Callable[[], Any]:
+        def run() -> None:
+            with cm(key):
+                pass
+        return run
+
+    return [lambda: store.get(key), lambda: store.put(key, b"x"), lambda: store.exists(key),
+            lambda: store.stat(key), lambda: store.delete(key), lambda: store.display_path(key),
+            enter(store.local_path), enter(store.write_path)]
+
+
+@pytest.mark.parametrize("key", OBJ_MD_KEYS)
+def test_object_md_key_raises_value_error_everywhere(object_store: ObjectStore, key: str) -> None:
+    for call in _object_calls(object_store, key):
+        with pytest.raises(ValueError):
+            call()
+
+
+@pytest.mark.parametrize("key", OBJ_BAD_KEYS)
+def test_object_bad_key_raises_bad_path_everywhere(object_store: ObjectStore, key: str) -> None:
+    for call in _object_calls(object_store, key):
+        with pytest.raises(ScriptError) as e:
+            call()
+        assert e.value.code == "bad_path"
+
+
+@pytest.mark.parametrize("prefix", ["drafts", "workspace/frames/x"])
+def test_object_prefix_without_slash_raises_value_error(object_store: ObjectStore, prefix: str) -> None:
+    for call in (lambda: object_store.list(prefix), lambda: object_store.folder_exists(prefix),
+                 lambda: object_store.delete_prefix(prefix)):
+        with pytest.raises(ValueError):
+            call()
+
+
+@pytest.mark.parametrize("prefix", ["../", "drafts/../", "c:/", "con/", "a\\b/"])
+def test_object_bad_prefix_raises_bad_path(object_store: ObjectStore, prefix: str) -> None:
+    for call in (lambda: object_store.list(prefix), lambda: object_store.folder_exists(prefix),
+                 lambda: object_store.delete_prefix(prefix)):
+        with pytest.raises(ScriptError) as e:
+            call()
+        assert e.value.code == "bad_path"
+
+
+# --- list ----------------------------------------------------------------------------------
+
+OBJ_LIST_NAMES = ["b.json", "A.json", "c.JSON", "_x.json", "2026-🏆.json", "가.json", "a-conti.html", "B2.json",
+                  "🏆.svg"]
+OBJ_LIST_ORDER = ["2026-🏆.json", "_x.json", "a-conti.html", "A.json", "b.json", "B2.json", "c.JSON", "가.json",
+                  "🏆.svg"]
+
+
+def _seed_objects(store: ObjectStore) -> None:
+    for name in OBJ_LIST_NAMES:
+        store.put(f"workspace/typify/{name}", name.encode())
+    store.put("workspace/typify/sub/d.json", b"d")
+    store.put("workspace/typify/sub/deeper/e.json", b"e")
+    store.put("workspace/other/z.json", b"z")
+
+
+def test_object_list_order_constant_is_windows_path_order() -> None:
+    assert sorted(OBJ_LIST_NAMES, key=PureWindowsPath) == OBJ_LIST_ORDER
+
+
+def test_object_list_returns_direct_files_in_windows_order(object_store: ObjectStore, obj_backend: str) -> None:
+    _case_rule(obj_backend)
+    _seed_objects(object_store)
+
+    metas = object_store.list("workspace/typify/")
+
+    assert [m.key for m in metas] == [f"workspace/typify/{n}" for n in OBJ_LIST_ORDER]
+    assert [m.size for m in metas] == [len(n.encode()) for n in OBJ_LIST_ORDER]
+
+
+@pytest.mark.parametrize(("pattern", "expected"), [
+    ("*.json", ["2026-🏆.json", "_x.json", "A.json", "b.json", "B2.json", "c.JSON", "가.json"]),
+    ("a*", ["a-conti.html", "A.json"]),
+    ("*-CONTI.html", ["a-conti.html"]),
+    ("?.json", ["A.json", "b.json", "c.JSON", "가.json"]),
+    ("*", OBJ_LIST_ORDER),
+    ("*.mp4", []),
+])
+def test_object_list_pattern_matches_case_insensitively(object_store: ObjectStore, obj_backend: str, pattern: str,
+                                                        expected: list[str]) -> None:
+    _case_rule(obj_backend)
+    _seed_objects(object_store)
+
+    assert [m.key for m in object_store.list("workspace/typify/", pattern)] == \
+        [f"workspace/typify/{n}" for n in expected]
+
+
+def test_object_list_does_not_descend_or_return_folders(object_store: ObjectStore) -> None:
+    object_store.put("workspace/conti_history/a/0001.json", b"1")
+    object_store.put("workspace/conti_history/a/0002.json", b"2")
+    object_store.put("workspace/conti_history/top.json", b"t")
+
+    assert [m.key for m in object_store.list("workspace/conti_history/")] == ["workspace/conti_history/top.json"]
+    assert [m.key for m in object_store.list("workspace/conti_history/a/", "*.json")] == \
+        ["workspace/conti_history/a/0001.json", "workspace/conti_history/a/0002.json"]
+
+
+def test_object_list_metas_equal_stat(object_store: ObjectStore) -> None:
+    object_store.put("reports/a.html", b"a")
+    object_store.put("reports/b.html", b"bb")
+
+    assert object_store.list("reports/") == [object_store.stat("reports/a.html"), object_store.stat("reports/b.html")]
+
+
+# --- folder_exists·delete·delete_prefix ---------------------------------------------------
+
+def test_object_folder_exists_for_put_ancestors(object_store: ObjectStore) -> None:
+    object_store.put("workspace/conti_history/a/0001.json", b"1")
+
+    assert object_store.folder_exists("workspace/")
+    assert object_store.folder_exists("workspace/conti_history/")
+    assert object_store.folder_exists("workspace/conti_history/a/")
+    assert not object_store.folder_exists("workspace/conti_history/b/")
+    assert not object_store.folder_exists("workspace/conti_history/a/0001.json/")
+
+
+def test_object_delete_removes_only_that_key_and_keeps_its_folder(object_store: ObjectStore) -> None:
+    object_store.put("drafts/x-cuts/01_a.mp4", b"1")
+    object_store.put("drafts/x-cuts/02_b.mp4", b"2")
+
+    object_store.delete("drafts/x-cuts/01_a.mp4")
+
+    assert not object_store.exists("drafts/x-cuts/01_a.mp4")
+    assert object_store.get("drafts/x-cuts/02_b.mp4") == b"2"
+
+    object_store.delete("drafts/x-cuts/02_b.mp4")
+
+    assert object_store.list("drafts/x-cuts/") == []
+    assert object_store.folder_exists("drafts/x-cuts/")     # like unlink: the folder stays
+
+
+def test_object_delete_prefix_removes_the_folder_tree_only(object_store: ObjectStore) -> None:
+    object_store.put("workspace/footage/f1/scenes.json", b"s")
+    object_store.put("workspace/footage/f1/frames/0001.jpg", b"j")
+    object_store.put("workspace/footage/f1/montage/m.jpg", b"m")
+    object_store.put("workspace/footage/f10/scenes.json", b"other")      # same leading characters, other folder
+    object_store.put("workspace/footage/f1.json", b"sibling file")
+
+    object_store.delete_prefix("workspace/footage/f1/")
+
+    assert not object_store.folder_exists("workspace/footage/f1/")
+    assert not object_store.exists("workspace/footage/f1/scenes.json")
+    assert not object_store.exists("workspace/footage/f1/frames/0001.jpg")
+    assert object_store.get("workspace/footage/f10/scenes.json") == b"other"
+    assert object_store.get("workspace/footage/f1.json") == b"sibling file"
+    assert object_store.folder_exists("workspace/footage/")
+
+
+def test_object_delete_prefix_of_nested_folder_keeps_parent_files(object_store: ObjectStore) -> None:
+    object_store.put("workspace/footage/f1/scenes.json", b"s")
+    object_store.put("workspace/footage/f1/frames/0001.jpg", b"j")
+
+    object_store.delete_prefix("workspace/footage/f1/frames/")
+
+    assert object_store.get("workspace/footage/f1/scenes.json") == b"s"
+    assert not object_store.folder_exists("workspace/footage/f1/frames/")
+
+
+# --- Meta ------------------------------------------------------------------------------------
+
+def test_object_meta_mtime_is_write_time(object_store: ObjectStore) -> None:
+    before = time.time_ns()
+    object_store.put("reports/a.html", b"abc")
+    after = time.time_ns()
+
+    meta = object_store.stat("reports/a.html")
+
+    assert before - 2_000_000_000 <= meta.mtime_ns <= after + 2_000_000_000
+    assert meta.mtime == pytest.approx(meta.mtime_ns / 1e9, abs=1e-6)
+
+
+def test_object_meta_mtime_ns_moves_on_same_size_rewrite(object_store: ObjectStore) -> None:
+    key = "workspace/conti_history/a/0001.json"
+    object_store.put(key, b"one")
+    first = object_store.stat(key)
+    time.sleep(0.02)
+
+    object_store.put(key, b"two")
+
+    second = object_store.stat(key)
+    assert second.size == first.size
+    assert second.mtime_ns > first.mtime_ns
+
+
+# --- local_path·write_path·display_path -----------------------------------------------------
+
+def test_object_local_path_holds_the_bytes_under_its_file_name(object_store: ObjectStore) -> None:
+    object_store.put("drafts/2026-제주-conti.html", b"<p>\r\n")
+
+    with object_store.local_path("drafts/2026-제주-conti.html") as path:
+        assert path.name == "2026-제주-conti.html"
+        assert path.read_bytes() == b"<p>\r\n"
+
+
+def test_object_write_path_file_is_stored_on_clean_exit(object_store: ObjectStore) -> None:
+    with object_store.write_path("drafts/a-captions.mp4") as path:
+        assert path.name == "a-captions.mp4"
+        assert path.parent.is_dir()
+        path.write_bytes(b"\x00\x00\x00 ftypmp42")
+
+    assert object_store.get("drafts/a-captions.mp4") == b"\x00\x00\x00 ftypmp42"
+    assert object_store.folder_exists("drafts/")
+
+
+def test_object_write_path_file_left_unwritten_stores_nothing(object_store: ObjectStore) -> None:
+    with object_store.write_path("drafts/a-captions.mp4"):
+        pass
+
+    assert not object_store.exists("drafts/a-captions.mp4")
+
+
+def test_object_write_path_folder_uploads_files_and_subfolders(object_store: ObjectStore) -> None:
+    with object_store.write_path("workspace/footage/f1/") as base:
+        assert base.is_dir()
+        (base / "frames").mkdir()
+        (base / "frames" / "0002.jpg").write_bytes(b"j2")
+        (base / "frames" / "0001.jpg").write_bytes(b"j1")
+        (base / "montage").mkdir()
+        (base / "montage" / "m.jpg").write_bytes(b"m")
+
+    assert [m.key for m in object_store.list("workspace/footage/f1/frames/")] == \
+        ["workspace/footage/f1/frames/0001.jpg", "workspace/footage/f1/frames/0002.jpg"]
+    assert object_store.get("workspace/footage/f1/montage/m.jpg") == b"m"
+    assert object_store.folder_exists("workspace/footage/f1/montage/")
+
+
+def test_object_write_path_empty_folder_still_exists(object_store: ObjectStore) -> None:
+    with object_store.write_path("drafts/x-cuts/"):
+        pass                                     # export_clips: make the folder even if nothing is cut
+
+    assert object_store.folder_exists("drafts/x-cuts/")
+    assert object_store.list("drafts/x-cuts/") == []
+
+
+def test_object_display_path_names_the_key(object_store: ObjectStore) -> None:
+    shown = object_store.display_path("drafts/a-conti.html")
+
+    assert isinstance(shown, str)
+    assert shown.replace("\\", "/").endswith("drafts/a-conti.html")
+
+
+# --- 동시 put·사용자 격리 ----------------------------------------------------------------------
+
+def test_object_concurrent_puts_of_one_key_leave_one_writers_bytes(object_store: ObjectStore) -> None:
+    key = "workspace/footage_match/race.json"
+    datas = [f"writer {i} ".encode() * (i + 1) for i in range(THREADS)]
+
+    results = _run_together(THREADS, lambda i: object_store.put(key, datas[i]))
+
+    assert all(state == "ok" for state, _ in results)
+    final = object_store.get(key)
+    assert final in datas
+    assert object_store.stat(key).size == len(final)
+    assert [m.key for m in object_store.list("workspace/footage_match/")] == [key]
+
+
+def test_object_users_do_not_see_each_others_objects(object_store_pair: tuple[ObjectStore, ObjectStore]) -> None:
+    a, b = object_store_pair
+    a.put("drafts/a-conti.html", b"A's conti")
+    a.put("workspace/conti_history/a/0001.json", b"A's history")
+
+    with pytest.raises(FileNotFoundError):
+        b.get("drafts/a-conti.html")
+    with pytest.raises(FileNotFoundError):
+        b.stat("drafts/a-conti.html")
+    assert b.exists("drafts/a-conti.html") is False
+    assert b.list("drafts/") == []
+    assert b.folder_exists("workspace/conti_history/a/") is False
+    with b.local_path("drafts/a-conti.html") as path:
+        assert not path.exists()
+
+
+def test_object_user_writes_and_deletes_do_not_touch_the_other_user(
+        object_store_pair: tuple[ObjectStore, ObjectStore]) -> None:
+    a, b = object_store_pair
+    a.put("drafts/a-conti.html", b"A")
+    a.put("workspace/conti_history/a/0001.json", b"A1")
+
+    b.put("drafts/a-conti.html", b"B")
+    b.delete("drafts/a-conti.html")
+    b.delete_prefix("workspace/conti_history/")
+
+    assert a.get("drafts/a-conti.html") == b"A"
+    assert a.get("workspace/conti_history/a/0001.json") == b"A1"
+    assert b.exists("drafts/a-conti.html") is False
+
+
+# =========================================================================================
+# SharedCache 계약: FileSharedCache · S3SharedCache
+# =========================================================================================
+
+VID = "-C8U1fizcms"
+SHARED_ROUND_TRIP = [
+    pytest.param(f"workspace/raw/{VID}.json", '{\n  "title": "제주 🏆"\n}'.encode(), id="raw"),
+    pytest.param(f"workspace/cuts/{VID}.json", b'{\r\n "scenes": []\r\n}', id="cuts-crlf"),
+    pytest.param(f"workspace/shots/{VID}.json", b"{}", id="shots"),
+    pytest.param(f"workspace/frames/{VID}/0003.jpg", b"\xff\xd8\xff\xe0jpeg", id="frame"),
+]
+
+
+@pytest.mark.parametrize(("key", "data"), SHARED_ROUND_TRIP)
+def test_shared_put_then_get_returns_same_bytes(shared_cache: SharedCache, key: str, data: bytes) -> None:
+    shared_cache.put(key, data)
+
+    assert shared_cache.get(key) == data
+    assert shared_cache.exists(key)
+    assert shared_cache.stat(key).size == len(data)
+
+
+SHARED_OUTSIDE = ["drafts/a-conti.html", "workspace/typify/travel.json", "workspace/rawx/a.json", "yt-coach.json"]
+
+
+@pytest.mark.parametrize("key", SHARED_OUTSIDE)
+def test_shared_key_outside_shared_prefixes_raises_value_error(shared_cache: SharedCache, key: str) -> None:
+    for call in _object_calls(shared_cache, key):
+        with pytest.raises(ValueError):
+            call()
+    folder = key.rsplit("/", 1)[0] + "/" if "/" in key else "drafts/"
+    for call in (lambda: shared_cache.list(folder), lambda: shared_cache.folder_exists(folder),
+                 lambda: shared_cache.delete_prefix(folder)):
+        with pytest.raises(ValueError):
+            call()
+
+
+def test_shared_md_key_raises_value_error(shared_cache: SharedCache) -> None:
+    with pytest.raises(ValueError):
+        shared_cache.put(f"workspace/raw/{VID}.md", b"x")
+
+
+def test_shared_missing_key(shared_cache: SharedCache) -> None:
+    with pytest.raises(FileNotFoundError):
+        shared_cache.get(f"workspace/raw/{VID}.json")
+    assert shared_cache.exists(f"workspace/cuts/{VID}.json") is False
+    assert shared_cache.folder_exists(f"workspace/frames/{VID}/") is False
+
+
+def test_shared_frames_list_folder_and_delete_prefix(shared_cache: SharedCache) -> None:
+    frames = f"workspace/frames/{VID}/"
+    for n in (3, 1, 2):
+        shared_cache.put(f"{frames}{n:04d}.jpg", f"jpg {n}".encode())
+    shared_cache.put("workspace/frames/other/0001.jpg", b"other video")
+
+    assert [m.key for m in shared_cache.list(frames, "*.jpg")] == [f"{frames}{n:04d}.jpg" for n in (1, 2, 3)]
+    assert shared_cache.folder_exists(frames)
+
+    shared_cache.delete_prefix(frames)
+
+    assert shared_cache.list(frames) == []
+    assert not shared_cache.folder_exists(frames)
+    assert shared_cache.get("workspace/frames/other/0001.jpg") == b"other video"
+
+
+def test_shared_write_path_frames_folder_uploads_every_frame(shared_cache: SharedCache) -> None:
+    frames = f"workspace/frames/{VID}/"
+
+    with shared_cache.write_path(frames) as folder:
+        for n in (2, 1):
+            (folder / f"{n:04d}.jpg").write_bytes(f"frame {n}".encode())
+
+    assert [m.key for m in shared_cache.list(frames)] == [f"{frames}0001.jpg", f"{frames}0002.jpg"]
+    assert shared_cache.get(f"{frames}0002.jpg") == b"frame 2"
+    with shared_cache.local_path(f"{frames}0001.jpg") as path:
+        assert path.read_bytes() == b"frame 1"
+
+
+def test_shared_cache_is_the_same_for_every_user(shared_cache_pair: tuple[SharedCache, SharedCache]) -> None:
+    a, b = shared_cache_pair
+    a.put(f"workspace/raw/{VID}.json", b"from a")
+
+    assert b.get(f"workspace/raw/{VID}.json") == b"from a"
+    b.put(f"workspace/raw/{VID}.json", b"from b")              # anyone may overwrite raw data
+    assert a.get(f"workspace/raw/{VID}.json") == b"from b"
+    b.delete(f"workspace/raw/{VID}.json")
+    assert not a.exists(f"workspace/raw/{VID}.json")
+
+
+def test_shared_concurrent_puts_of_one_key_leave_one_writers_bytes(shared_cache: SharedCache) -> None:
+    key = f"workspace/cuts/{VID}.json"
+    datas = [f"cuts {i} ".encode() * (i + 1) for i in range(THREADS)]
+
+    results = _run_together(THREADS, lambda i: shared_cache.put(key, datas[i]))
+
+    assert all(state == "ok" for state, _ in results)
+    final = shared_cache.get(key)
+    assert final in datas
+    assert shared_cache.stat(key).size == len(final)

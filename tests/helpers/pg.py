@@ -183,3 +183,41 @@ def pg_doc_store(request: pytest.FixtureRequest, email: str = "a@example.com") -
     from server.pgstore import PgDocStore
 
     return PgDocStore(db, pg_user(request.getfixturevalue("migrated_db").owner_dsn, email), email)
+
+
+@pytest.fixture
+def s3_bucket(pg_stack: Stack) -> Iterator[Any]:
+    """테스트 하나의 MinIO 버킷(`server.s3store.S3Bucket`). 끝나면 객체를 비우고 버킷을 지운다."""
+    pytest.importorskip("boto3")
+    if not pg_stack.s3_endpoint:
+        pytest.skip("YTC_TEST_S3_ENDPOINT가 없다")
+    from server.s3store import S3Bucket
+
+    bucket = S3Bucket.connect(pg_stack.s3_endpoint, pg_stack.s3_access_key, pg_stack.s3_secret_key,
+                              f"t-{uuid.uuid4().hex[:16]}")
+    bucket.client.create_bucket(Bucket=bucket.name)
+    try:
+        yield bucket
+    finally:
+        left = bucket.keys("")
+        if left:
+            bucket.delete_many(left)
+        bucket.client.delete_bucket(Bucket=bucket.name)
+
+
+def pg_object_store(request: pytest.FixtureRequest, email: str = "a@example.com") -> Any:
+    """새 사용자(email)의 S3ObjectStore(같은 테스트 안에서는 같은 DB·버킷)."""
+    db = request.getfixturevalue("pg_db")
+    bucket = request.getfixturevalue("s3_bucket")
+    from server.s3store import S3ObjectStore
+
+    return S3ObjectStore(db, bucket, pg_user(request.getfixturevalue("migrated_db").owner_dsn, email))
+
+
+def pg_shared_cache(request: pytest.FixtureRequest, email: str = "a@example.com") -> Any:
+    """새 사용자(email)가 쓰는 S3SharedCache(공유 캐시는 사용자와 무관하게 같은 행·객체를 본다)."""
+    db = request.getfixturevalue("pg_db")
+    bucket = request.getfixturevalue("s3_bucket")
+    from server.s3store import S3SharedCache
+
+    return S3SharedCache(db, bucket, pg_user(request.getfixturevalue("migrated_db").owner_dsn, email))
