@@ -77,6 +77,7 @@ EMAIL_RE: Final = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 MAX_LIMIT: Final = Decimal("999999.99")      # users.daily_usd_limit numeric(8,2)
 MAX_NAME: Final = 100
 VIA_CLI: Final = "cli"
+ADMIN_LOCK: Final = 8751729245835585902      # migrations 0003/0004: the web admin functions take the same lock
 # 0004 function / constraint SQLSTATE -> CLI error (code, message)
 CLI_REFUSALS: Final[dict[str, tuple[str, str]]] = {
     "YTA02": ("user_not_found", "없는 사용자입니다"),
@@ -291,7 +292,9 @@ def _owner_dsn(env: Mapping[str, str]) -> str:
 
 @contextmanager
 def _owner_tx(env: Mapping[str, str]) -> Iterator[Conn]:
+    """owner 트랜잭션. 웹 관리 함수와 같은 advisory lock(ADMIN_LOCK)을 먼저 잡아 둘이 섞이지 않게 한다(트랜잭션 끝에 풀린다)."""
     with psycopg.connect(_owner_dsn(env)) as conn, conn.transaction():
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (ADMIN_LOCK,))
         yield conn
 
 

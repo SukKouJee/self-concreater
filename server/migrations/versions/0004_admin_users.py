@@ -6,7 +6,7 @@ Create Date: 2026-11-03
 
 보안 모델은 0003과 같다: 함수는 전부 owner 소유 `SECURITY DEFINER`, `SET search_path = pg_catalog, public, pg_temp`,
 이름은 `public.`으로 고정. 관리 함수는 맨 먼저 `admin_actor()`(호출자 = `app.user_id`가 활성 관리자, 아니면 `YTA01`),
-쓰는 함수는 `pg_advisory_xact_lock(ADMIN_LOCK)` 뒤에 호출자를 확인하고 감사 행을 하나 쓴다. 앱 롤은 여전히 users에 직접 쓰지 못한다.
+쓰는 함수는 `pg_advisory_xact_lock(ADMIN_LOCK)` 뒤에 호출자를 확인하고 감사 행을 하나 쓴다. 앱 롤의 users 직접 쓰기는 `UPDATE (google_sub)`(Google 로그인 고정)만 남는다(아래).
 
 스키마:
 - `users.last_login_at timestamptz NULL`: 로그인 성공 때 앱이 `user_record_login()`을 부른다(`Db.user_tx(그 사용자)` 안에서,
@@ -15,6 +15,8 @@ Create Date: 2026-11-03
   (id 열은 FK `ON DELETE SET NULL`로 비워진다). 읽을 때는 `coalesce(지금 users의 이메일, 남긴 이메일)`. 인덱스 `(actor_id)`, `(target_user_id)`.
 - `llm_usage.user_id`: NOT NULL을 풀고 FK를 `ON DELETE SET NULL`로 바꾼다. 사용자를 지워도 비용 기록은 익명으로 남는다
   (RLS 정책은 그대로라 user_id가 NULL인 행은 앱 롤에 보이지 않는다. 합계·사용량 표에는 "지운 사용자"로 잡힌다).
+- 앱 롤의 `UPDATE (display_name) ON users`를 걷는다(0001이 준 것. 앱 코드는 쓰지 않았고, 이제 이름은 감사되는 `admin_set_name`만 바꾼다).
+  앱 롤에 남는 users 쓰기는 Google 로그인의 `UPDATE (google_sub)`뿐이다.
 
 새 함수(앱 롤 EXECUTE):
 - `admin_list_users_page(q, status, role, login, sort, desc, limit, offset)` → jsonb `{total, rows}`.
@@ -425,9 +427,12 @@ def upgrade() -> None:
         op.execute(f"REVOKE ALL ON FUNCTION public.{signature} FROM PUBLIC")
     for signature in APP_FUNCTIONS:
         drv.execute(sql.SQL("GRANT EXECUTE ON FUNCTION public." + signature + " TO {}").format(role))
+    drv.execute(sql.SQL("REVOKE UPDATE (display_name) ON users FROM {}").format(role))
 
 
 def downgrade() -> None:
+    role = sql.Identifier(str(context.config.attributes["app_role"]))
+    _driver().execute(sql.SQL("GRANT UPDATE (display_name) ON users TO {}").format(role))
     for signature in (*APP_FUNCTIONS, *INTERNAL_FUNCTIONS):
         op.execute(f"DROP FUNCTION public.{signature}")
     op.execute(USAGE_TEMPLATE.format(path=PATH, join="JOIN"))

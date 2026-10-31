@@ -203,8 +203,10 @@ def test_delete_removes_the_users_rows_and_minio_objects_only(stack: AsgiStack) 
     assert root.post(f"/api/admin/users/{stack.users['root@example.com']}/delete",
                      json={"confirm_email": "root@example.com"}).json()["error"] == "self_delete"
 
+    bob = stack.login("bob@example.com")
     r = root.post(f"/api/admin/users/{bob_id}/delete", json={"confirm_email": "bob@example.com"})
     assert r.status_code == 200, r.text
+    assert bob.get("/api/ping").status_code == 401
     out = r.json()
     assert out["storage"]["ok"] is True and out["storage"]["left"] == 0 and out["storage"]["removed"] == 3
     assert out["deleted"]["objects"] == 1 and out["deleted"]["trash"] == 1 and out["deleted"]["docs"] >= 1
@@ -214,6 +216,8 @@ def test_delete_removes_the_users_rows_and_minio_objects_only(stack: AsgiStack) 
     assert _owner_one(stack, "SELECT count(*) FROM users WHERE id = %s", bob_id) == (0,)
     assert _owner_one(stack, "SELECT count(*) FROM shared_objects") == (1,)
     assert _owner_one(stack, "SELECT count(*), sum(cost_usd) FROM llm_usage WHERE user_id IS NULL")[0] == 1
+    assert [e["action"] for e in root.get("/api/admin/audit?target=bob@").json()["entries"]][:2] == [
+        "delete_user", "disable"]                                      # disabled first, in its own transaction
     entry = root.get("/api/admin/audit?action=delete_user").json()["entries"][0]
     assert (entry["actor_email"], entry["target_email"]) == ("root@example.com", "bob@example.com")
     usage = root.get("/api/admin/usage?days=7").json()

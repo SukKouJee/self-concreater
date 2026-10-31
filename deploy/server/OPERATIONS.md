@@ -24,16 +24,17 @@
   **바꾸면 Google 연결이 풀리고 모든 세션이 끊긴다** — 새 이메일의 Google 계정으로 다시 로그인하면 새로 연결된다), 이름, 하루 한도
   (비우면 `YTC_DAILY_USD`), 관리자, 비활성. 비밀번호 정하기(정한 비밀번호는 화면에 다시 나오지 않으니 직접 알려 준다)·지우기, 모든 기기 로그아웃.
 - 사용자 삭제(되돌릴 수 없다): 그 사람의 이메일을 그대로 입력해야 버튼이 켜지고 서버와 DB가 다시 확인한다(다르면 400 `confirm_mismatch`).
-  순서: 그 사용자의 작업 취소(최대 5초 기다림) → DB 함수가 문서·폴더·파일 인덱스·휴지통 행과 사용자 행을 지우고 감사 기록을 남김(커밋)
+  순서: 먼저 비활성으로 바꿔 커밋(감사 `disable`, 그 사람의 다음 요청은 401) → 그 사용자의 작업 취소(최대 5초, 그동안 새 작업도 막음) → DB 함수가 문서·폴더·파일 인덱스·휴지통 행과 사용자 행을 지우고 감사 기록을 남김(커밋)
   → 앱이 MinIO `users/{id}/`·`trash/{id}/`를 지움. 공유 캐시(`shared/`)는 그대로, AI 사용 기록(`llm_usage`)은 `user_id`를 비운 채 남아
   합계에 "삭제된 사용자"로 잡힌다. MinIO 정리가 실패하면 화면에 남은 개수를 알리고 서버 로그에 `user purge ... (S10)`을 남긴다
   (행은 이미 지워졌으므로 S10 정합성 점검이나 `mc rm`으로 치운다). 감사 기록은 지운 사람의 이메일을 계속 보여 준다.
+  DB가 삭제를 거절하면 작업 막음을 풀고, 원래 활성이었으면 다시 활성으로 돌린다(감사 `enable`).
   잠시 막기만 하려면 삭제 대신 비활성으로 바꾼다.
 - 막는 것: 자기 계정 비활성·강등(409 `self_protected`)·삭제(409 `self_delete`). 요청한 사람은 늘 활성 관리자이고 자기 자신은 뺄 수 없으니 화면으로는
   관리자가 0명이 되지 않는다(두 관리자가 동시에 서로를 빼도 DB가 차례로 처리해 한 명은 남는다). DB의 "마지막 관리자" 검사는
   그 규칙 밑의 받침일 뿐 화면에서 따로 보이는 경우는 없다.
 - 비밀번호 재설정·지우기·비활성·모든 기기 로그아웃은 그 사람의 세션을 바로 끊는다(`session_epoch` 증가).
-- 구조: 앱은 여전히 owner DB 자격이 없다. 앱 롤은 users에 직접 쓰지 못하고, 마이그레이션 `0003`·`0004`의 owner 소유 SECURITY DEFINER 함수
+- 구조: 앱은 여전히 owner DB 자격이 없다. 앱 롤이 users에 직접 쓸 수 있는 것은 Google 로그인의 `google_sub` 고정뿐이고(0004에서 `display_name` 권한도 걷음), 마이그레이션 `0003`·`0004`의 owner 소유 SECURITY DEFINER 함수
   (`admin_*`, 로그인 기록 `user_record_login`)만 실행할 수 있다. 함수는 먼저 요청한 사람(`app.user_id`)이 활성 관리자인지 확인하고, 바꾼 것은 `admin_audit`에 남긴다
   (비밀번호·해시는 남기지 않는다). 비밀번호 해시는 앱이 만들고 함수에는 해시만 넘어간다.
 - 관리자를 모두 잃었거나 화면이 잠겼으면 owner 경로로 되살린다: `... admin make-admin you@example.com`.
@@ -42,7 +43,12 @@
 - 명령줄로도 된다(owner 경로, 감사 기록 "운영자(명령줄)"): `... admin set-email old@example.com new@example.com`,
   `... admin set-name friend@example.com "지수"`, `... admin delete-user friend@example.com --confirm friend@example.com`
   (명령줄 삭제는 앱의 작업을 멈추지 못하므로 먼저 `disable-user`로 세션을 끊어 두거나 웹 화면에서 지운다).
-- `0004`를 되돌리면(`alembic downgrade 0003`) 지운 사용자의 익명 사용량 행은 함께 지워진다.
+  명령줄은 웹 관리 함수와 같은 DB 잠금을 잡아 순서대로 처리된다. 명령줄로 이메일을 바꾸면 세션은 바로 끊기지만, 떠 있는 앱은
+  문서 저장소 표시(`ytc:<이메일>`)에 옛 이메일을 앱을 다시 시작할 때까지 보여 줄 수 있다(웹 화면에서 바꾸면 바로 바뀐다).
+- 되돌리기(롤백): `docker compose run --rm migrate python -m alembic -c server/alembic.ini downgrade 0003`처럼 `0004`를 되돌리면
+  **지운 사용자의 익명 사용량 행(`llm_usage.user_id IS NULL`)이 함께 지워진다**(0003의 NOT NULL·CASCADE로 돌아가야 하므로).
+  지출 합계를 남기려면 되돌리기 전에 `admin usage --days 90` 출력이나 `llm_usage` 덤프를 받아 둔다. 마지막 로그인·감사 기록의
+  보존 이메일 열도 함께 사라진다(감사 행 자체는 남는다).
 - 감사 기록을 DB에서 직접 보기: `docker compose exec postgres psql -U ytc_owner -d ytc -c "SELECT at, action, detail FROM admin_audit ORDER BY id DESC LIMIT 20"`
 
 ## 사용자 추가·가져오기(명령줄)

@@ -2,7 +2,7 @@
 
 - 누가: `server.asgi`가 세션의 사용자 행(`is_admin`)을 요청마다 읽어 관리자가 아니면 여기 오기 전에 403 `admin_only`.
   DB도 따로 막는다: `PgAdmin`은 `Db.user_tx(행위자)` 안에서 0003·0004의 SECURITY DEFINER 함수만 부르고, 함수가 `app.user_id`가
-  활성 관리자인지 다시 본다(SQLSTATE `YTA01`). 앱 롤은 users에 직접 쓰지 못한다. 바꾸는 함수마다 감사 행이 하나 남는다.
+  활성 관리자인지 다시 본다(SQLSTATE `YTA01`). 앱 롤이 users에 직접 쓰는 것은 Google 로그인의 `google_sub` 고정뿐이다(0004가 `display_name` UPDATE를 걷음). 바꾸는 함수마다 감사 행이 하나 남는다.
 - 비밀번호: 규칙(`passwords.check_policy`) → 앱에서 scrypt 해시 → 함수에는 해시만. 응답·로그·감사 기록 어디에도 비밀번호·해시가 없다.
 - 경로(`handle`):
   GET  /api/admin/overview                   → {counts, spend, default_daily_usd, login, features_off}
@@ -213,9 +213,11 @@ class AdminStore(Protocol):
 
 
 class UserLifecycle(Protocol):
-    """DB 밖의 정리. 지우기: `stop_jobs` → (PG 함수, 커밋) → `purge_storage` → `forget`. 이메일 변경: `forget`."""
+    """DB 밖의 정리. 지우기: (비활성, 커밋) → `stop_jobs` → (PG 함수, 커밋) → `purge_storage` → `forget`.
+    DB가 지우기를 거절하면 `resume_jobs`. 이메일 변경: `forget`."""
 
     def stop_jobs(self, user: uuid.UUID) -> None: ...
+    def resume_jobs(self, user: uuid.UUID) -> None: ...
     def purge_storage(self, user: uuid.UUID, s3_keys: list[str]) -> dict[str, Any]: ...
     def forget(self, user: uuid.UUID) -> None: ...
 
@@ -507,7 +509,9 @@ def needs_hash(method: str, path: str) -> bool:
 
 def _delete(store: AdminStore, life: UserLifecycle, actor: uuid.UUID, target: uuid.UUID,
             body: Mapping[str, Any]) -> Reply:
-    """입력한 이메일 확인 → 자기 자신 거절 → 작업 멈춤 → PG 함수(행·감사, 커밋) → MinIO 정리 → 캐시 비우기."""
+    """입력한 이메일 확인 → 자기 자신 거절 → 비활성(따로 커밋: epoch 증가로 그 사람의 다음 요청은 401) → 작업 멈춤(표시를 남겨
+    새 작업 매니저도 막음) → PG 함수(행·감사, 커밋) → MinIO 정리 → 캐시 비우기. DB가 지우기를 거절하면 작업 표시를 걷고,
+    원래 활성이었으면 다시 활성으로(둘 다 감사 기록)."""
     typed = body.get("confirm_email")
     if not isinstance(typed, str) or not typed.strip():
         raise ScriptError("confirm_required", "지우려면 그 사용자의 이메일을 그대로 입력하세요")
@@ -517,10 +521,16 @@ def _delete(store: AdminStore, life: UserLifecycle, actor: uuid.UUID, target: uu
     email = str(detail["email"])
     if typed.strip().lower() != email:
         raise AdminError("confirm_mismatch")
+    was_enabled = not detail.get("disabled")
+    if was_enabled:
+        store.set_disabled(actor, target, True)
     life.stop_jobs(target)
     try:
         summary = store.delete_user(actor, target, email)
     except AdminError as e:
+        life.resume_jobs(target)
+        if was_enabled:
+            store.set_disabled(actor, target, False)
         if e.code == "self_protected":
             raise AdminError("self_delete") from e
         raise

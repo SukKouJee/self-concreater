@@ -23,6 +23,7 @@ from starlette.testclient import TestClient  # noqa: E402
 
 from scripts.ui import server as ui  # noqa: E402
 from server import admin_api, asgi  # noqa: E402
+from scripts.common import ScriptError  # noqa: E402
 from server.jobs_registry import Registry  # noqa: E402
 from tests.server.test_asgi_unit import ORIGIN, FakeBackend, FakeUsers, _settings  # noqa: E402
 from tests.test_ui_server import client, no_browser  # noqa: E402,F401  (local edition fixture 재사용)
@@ -133,6 +134,9 @@ class FakeLife:
 
     def forget(self, user: uuid.UUID) -> None:
         self.calls.append(("forget", user))
+
+    def resume_jobs(self, user: uuid.UUID) -> None:
+        self.calls.append(("resume_jobs", user))
 
 
 @pytest.fixture
@@ -431,8 +435,10 @@ def test_delete_checks_the_typed_email_stops_jobs_then_cleans_storage(root: Test
                               "usage_usd": 1.5}
     assert out["storage"] == {"ok": True, "removed": 2, "left": 0}
     assert "s3_keys" not in out
-    assert store.names() == ["user_detail", "delete_user"]
-    assert store.calls[1][1] == (_root_id(users), TARGET, "bob@example.com")
+    # disabled first (own transaction: epoch bump, their next request is 401), then the jobs, then the rows
+    assert store.names() == ["user_detail", "set_disabled", "delete_user"]
+    assert store.calls[1][1] == (_root_id(users), TARGET, True)
+    assert store.calls[2][1] == (_root_id(users), TARGET, "bob@example.com")
     assert life.calls == [("stop_jobs", TARGET), ("purge_storage", (TARGET, sorted(store.deleted_keys))),
                           ("forget", TARGET)]
 
@@ -462,7 +468,7 @@ def test_delete_reports_storage_left_behind(root: TestClient, life: FakeLife) ->
     assert r.status_code == 200 and r.json()["storage"] == {"ok": False, "removed": 1, "left": 1}
 
 
-def test_delete_refused_by_the_database_leaves_storage_alone(root: TestClient, store: FakeAdmin,
+def test_delete_refused_by_the_database_leaves_storage_alone(root: TestClient, users: FakeUsers, store: FakeAdmin,
                                                              life: FakeLife) -> None:
     def refuse_delete(*args: Any) -> Any:
         raise admin_api.AdminError("last_admin")
@@ -470,7 +476,23 @@ def test_delete_refused_by_the_database_leaves_storage_alone(root: TestClient, s
     store.delete_user = refuse_delete  # type: ignore[method-assign]
     r = root.post(f"/api/admin/users/{TARGET}/delete", json={"confirm_email": "bob@example.com"})
     assert r.status_code == 409 and r.json()["error"] == "last_admin"
-    assert life.calls == [("stop_jobs", TARGET)]
+    assert life.calls == [("stop_jobs", TARGET), ("resume_jobs", TARGET)]
+    # they were enabled before: enabled again (both changes are audited by the functions)
+    assert [c for c in store.calls if c[0] == "set_disabled"] == [
+        ("set_disabled", (_root_id(users), TARGET, True)), ("set_disabled", (_root_id(users), TARGET, False))]
+
+
+def test_delete_of_an_already_disabled_user_leaves_it_disabled_on_refusal(root: TestClient, store: FakeAdmin,
+                                                                          life: FakeLife) -> None:
+    store.detail = {**store.detail, "disabled": True}
+
+    def refuse_delete(*args: Any) -> Any:
+        raise admin_api.AdminError("last_admin")
+
+    store.delete_user = refuse_delete  # type: ignore[method-assign]
+    assert root.post(f"/api/admin/users/{TARGET}/delete", json={"confirm_email": "bob@example.com"}).status_code == 409
+    assert [c for c in store.calls if c[0] == "set_disabled"] == []
+    assert life.calls == [("stop_jobs", TARGET), ("resume_jobs", TARGET)]
 
 
 # ---- 목록: 검색·필터·정렬·쪽 ----------------------------------------------------------------------
@@ -645,4 +667,39 @@ def test_registry_drop_cancels_and_forgets_only_that_users_jobs() -> None:
     reg = Registry(factory=Manager)  # type: ignore[arg-type]
     mine, other = reg.for_user(TARGET), reg.for_user(uuid.UUID(int=43))
     assert reg.drop(TARGET) == 1 and mine.jobs[0].cancelled and not other.jobs[0].cancelled  # type: ignore[attr-defined]
-    assert reg.for_user(TARGET) is not mine and reg.drop(uuid.UUID(int=99)) == 0
+    with pytest.raises(ScriptError) as e:                     # tombstoned: no fresh manager for a dropped user
+        reg.for_user(TARGET)
+    assert e.value.code == "login_required"
+    assert reg.drop(uuid.UUID(int=99)) == 0
+    reg.undrop(TARGET)                                          # the delete was refused: the user may start jobs again
+    assert reg.for_user(TARGET) is not mine
+
+
+def test_registry_refuses_a_new_manager_while_drop_is_waiting() -> None:
+    """The race: a request for the user arrives while drop() waits for the cancelled jobs."""
+    import threading
+
+    started, release = threading.Event(), threading.Event()
+
+    class SlowJob:
+        def cancel(self) -> None:
+            return None
+
+        def join(self, timeout: float | None) -> None:
+            started.set()
+            release.wait(10)
+
+    class Manager:
+        def cancel_all(self) -> list[SlowJob]:
+            return [SlowJob()]
+
+    reg = Registry(factory=Manager)  # type: ignore[arg-type]
+    reg.for_user(TARGET)
+    dropper = threading.Thread(target=reg.drop, args=(TARGET,))
+    dropper.start()
+    assert started.wait(10)
+    with pytest.raises(ScriptError) as e:
+        reg.for_user(TARGET)
+    assert e.value.code == "login_required"
+    release.set()
+    dropper.join(10)

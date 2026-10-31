@@ -132,3 +132,31 @@ def test_delete_user_reports_admins_left(env: dict[str, str]) -> None:
     out = admin.main(["delete-user", "root@example.com", "--confirm", "root@example.com"], env)
     assert out["admins"] == 0                                    # the operator's escape hatch, like revoke-admin
     assert uuid.UUID(out["id"]) == root
+
+
+def test_cli_owner_writes_wait_for_the_admin_lock(env: dict[str, str]) -> None:
+    """The CLI takes the same advisory lock as the web admin functions (ADMIN_LOCK), so the two never interleave."""
+    import threading
+
+    pg_user(env["YTC_DB_OWNER_DSN"], "a@example.com")
+    done = threading.Event()
+    with psycopg.connect(env["YTC_DB_OWNER_DSN"]) as holder, holder.transaction():
+        holder.execute("SELECT pg_advisory_xact_lock(%s)", (admin.ADMIN_LOCK,))
+        worker = threading.Thread(target=lambda: (admin.main(["set-name", "a@example.com", "x"], env), done.set()))
+        worker.start()
+        assert not done.wait(1.5)                                  # blocked behind the held lock
+    worker.join(10)
+    assert done.is_set()
+    assert _owner(env, "SELECT display_name FROM users") == [("x",)]
+
+
+def test_admin_lock_key_matches_the_migrations() -> None:
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(admin.__file__).parent / "migrations" / "versions" / "0004_admin_users.py"
+    spec = importlib.util.spec_from_file_location("m0004", path)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert admin.ADMIN_LOCK == mod.ADMIN_LOCK

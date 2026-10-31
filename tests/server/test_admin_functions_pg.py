@@ -142,6 +142,7 @@ def test_app_role_has_no_direct_access_to_the_audit_table(db: Db, people: dict[s
     "UPDATE users SET password_hash = NULL", "UPDATE users SET daily_usd_limit = 1",
     "INSERT INTO users (email) VALUES ('x@example.com')", "DELETE FROM users",
     "UPDATE users SET email = 'x@example.com'", "UPDATE users SET last_login_at = now()",
+    "UPDATE users SET display_name = 'x'",
 ])
 def test_app_role_still_cannot_write_users_directly_even_as_an_admin(db: Db, people: dict[str, uuid.UUID],
                                                                      stmt: str) -> None:

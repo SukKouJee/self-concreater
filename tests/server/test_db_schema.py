@@ -228,6 +228,8 @@ def test_0004_downgrade_restores_0003_and_drops_anonymous_usage(migrated_db: Tes
     names = {r[0] for r in _q(migrated_db.owner_dsn,
                               "SELECT proname FROM pg_proc WHERE pronamespace = 'public'::regnamespace")}
     assert "admin_delete_user" not in names and "user_record_login" not in names and "admin_usage" in names
+    with psycopg.connect(migrated_db.app_dsn) as conn:                  # 0003 grant is back: UPDATE (display_name)
+        assert conn.execute("UPDATE users SET display_name = 'r'").rowcount == 1
     run_alembic(migrated_db, "upgrade", "head")
     assert _columns(migrated_db.owner_dsn, "users") == EXPECTED_COLUMNS["users"]
 

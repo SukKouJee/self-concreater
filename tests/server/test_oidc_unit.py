@@ -129,6 +129,26 @@ def test_refused_google_login_records_nothing(client, idp, users):
     assert users.logins == []
 
 
+def test_admit_refuses_when_the_email_changed_between_lookup_and_pin(users):
+    """admin_set_email races the login: the pin does not bind (email no longer matches) and admit says not_invited."""
+    from server import auth
+    from server.oidc import GoogleClaims
+
+    row = users.add("a@example.com")
+    real = users.pin_google_sub
+
+    def renamed_then_pin(user_id, sub, email):
+        users.update(row.id, email="renamed@example.com")
+        return real(user_id, sub, email)
+
+    users.pin_google_sub = renamed_then_pin
+    claims = GoogleClaims(sub=SUB, email="a@example.com", email_verified=True, name=None)
+    with pytest.raises(auth.LoginDenied) as e:
+        auth.admit_google(users, claims)
+    assert e.value.reason == "not_invited"
+    assert users.rows[row.id].google_sub is None
+
+
 def test_second_login_with_the_pinned_sub_succeeds(client, idp, users):
     users.add("a@example.com", google_sub=SUB)
     assert _login(client, idp).status_code == 302

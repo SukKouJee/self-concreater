@@ -374,7 +374,7 @@ class _ServerApp:
         """마지막 로그인 시각(0004). 편의 정보라서 실패해도 로그인은 그대로 두고 로그만 남긴다."""
         try:
             await anyio.to_thread.run_sync(self.users.record_login, user_id)
-        except psycopg.Error as e:
+        except Exception as e:  # noqa: BLE001 - logged; a missing timestamp must not turn a good login into a 500
             auth_log.error("last login not recorded for user %s: %s", user_id, type(e).__name__)
 
     # ---- 이메일+비밀번호 -------------------------------------------------------------
@@ -505,6 +505,9 @@ class ServerLifecycle:
         stopped = self._registry.drop(user)
         if stopped:
             auth_log.info("admin delete: cancelled %d jobs of user %s", stopped, user)
+
+    def resume_jobs(self, user: uuid.UUID) -> None:
+        self._registry.undrop(user)
 
     def purge_storage(self, user: uuid.UUID, s3_keys: list[str]) -> dict[str, Any]:
         return admin_api.purge_user_objects(self._backend.bucket, user, s3_keys)
