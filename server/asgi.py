@@ -116,15 +116,25 @@ class _ServerApp:
     def __init__(self, settings: AuthSettings, backend: ServerBackend, users: auth.UserDirectory,
                  registry: Registry, google: oidc.GoogleOidc | None = None,
                  login_limits: login_limit.LoginLimiter | None = None,
-                 admin: admin_api.AdminStore | None = None) -> None:
+                 admin: admin_api.AdminStore | None = None,
+                 lifecycle: admin_api.UserLifecycle | None = None) -> None:
         self.settings = settings
         self.backend = backend
         self.admin = admin
+        self.lifecycle: admin_api.UserLifecycle = lifecycle or ServerLifecycle(backend, registry)
         self.users = users
         self.registry = registry
         self.google = google
         self.login_limits = login_limits or login_limit.LoginLimiter()
         self._hash_limiter: anyio.CapacityLimiter | None = None
+
+    @property
+    def admin_info(self) -> admin_api.AdminInfo:
+        """관리 화면의 서버 정보(env 값, 화면에서 바꾸지 않는다)."""
+        return admin_api.AdminInfo(
+            default_daily_usd=self.backend.daily_usd, google=self.google is not None,
+            password_login=self.settings.password_login, dev_login=self.settings.dev_login,
+            features_off=tuple((name, ui.FEATURE_TEXT.get(name, "")) for name in sorted(SERVER_FEATURES)))
 
     @property
     def hash_limiter(self) -> anyio.CapacityLimiter:
@@ -298,8 +308,8 @@ class _ServerApp:
         query = dict(parse_qsl(request.scope.get("query_string", b"").decode("latin-1"), keep_blank_values=True))
 
         def run() -> tuple[int, dict[str, Any]]:
-            return admin_api.handle(store, user.id, method, path, query, body,
-                                    default_daily_usd=self.backend.daily_usd)
+            return admin_api.handle(store, user.id, method, path, query, body, info=self.admin_info,
+                                    life=self.lifecycle)
 
         limiter = self.hash_limiter if admin_api.needs_hash(method, path) else None
         try:
@@ -357,7 +367,15 @@ class _ServerApp:
         if row is None or row.disabled:
             return self._json(403, dict(auth.LOGIN_DENIED), path)
         auth.start_session(request.session, row)
+        await self._record_login(row.id)
         return self._reply({"ok": True, "email": row.email}, path)
+
+    async def _record_login(self, user_id: uuid.UUID) -> None:
+        """마지막 로그인 시각(0004). 편의 정보라서 실패해도 로그인은 그대로 두고 로그만 남긴다."""
+        try:
+            await anyio.to_thread.run_sync(self.users.record_login, user_id)
+        except psycopg.Error as e:
+            auth_log.error("last login not recorded for user %s: %s", user_id, type(e).__name__)
 
     # ---- 이메일+비밀번호 -------------------------------------------------------------
 
@@ -417,6 +435,7 @@ class _ServerApp:
             auth_log.warning("password login refused: %s", reason)
             return self._json(401, dict(auth.LOGIN_FAILED), path)
         auth.start_session(request.session, row)
+        await self._record_login(row.id)
         auth_log.info("password login: user %s", row.id)
         return self._reply({"ok": True, "email": row.email}, path)
 
@@ -447,6 +466,7 @@ class _ServerApp:
             auth_log.warning("google login refused: %s", e.reason)
             return self._refusal(e.reason, email, path)
         auth.start_session(request.session, row)         # drops everything else in the session
+        await self._record_login(row.id)
         auth_log.info("google login: user %s", row.id)
         return self._redirect("/", path)
 
@@ -472,6 +492,25 @@ class _ServerApp:
             return self._json(503, {"ok": False, "error": UNHEALTHY, "message": "저장소(PostgreSQL·MinIO)에 연결할 수 없습니다"},
                               path)
         return self._reply({"ok": True}, path)
+
+
+class ServerLifecycle:
+    """관리 화면 지우기·이메일 변경의 DB 밖 정리(`admin_api.UserLifecycle`): 그 사용자의 작업 멈춤, MinIO 객체, 이메일 캐시."""
+
+    def __init__(self, backend: ServerBackend, registry: Registry) -> None:
+        self._backend = backend
+        self._registry = registry
+
+    def stop_jobs(self, user: uuid.UUID) -> None:
+        stopped = self._registry.drop(user)
+        if stopped:
+            auth_log.info("admin delete: cancelled %d jobs of user %s", stopped, user)
+
+    def purge_storage(self, user: uuid.UUID, s3_keys: list[str]) -> dict[str, Any]:
+        return admin_api.purge_user_objects(self._backend.bucket, user, s3_keys)
+
+    def forget(self, user: uuid.UUID) -> None:
+        self._backend.forget_user(user)
 
 
 class _Endpoint:
@@ -505,17 +544,18 @@ def create_app(settings: AuthSettings, backend: ServerBackend, *, users: auth.Us
                registry: Registry | None = None, close_backend: bool = False,
                runtime: LlmSettings | None = None, google: oidc.GoogleOidc | None = None,
                login_limits: login_limit.LoginLimiter | None = None,
-               admin: admin_api.AdminStore | None = None) -> Starlette:
+               admin: admin_api.AdminStore | None = None,
+               lifecycle: admin_api.UserLifecycle | None = None) -> Starlette:
     """설정·저장소로 앱을 만든다. users 기본값은 PG(`auth.PgUsers`). close_backend면 종료 때 저장소를 닫는다.
     runtime을 주면 지금 전역 자원 슬롯·수집 잠금·LLM 고정을 설치하고 종료 때 걷는다(`jobs_registry.install_runtime`).
     google 기본값은 설정에 Google 클라이언트가 있으면 실제 Google(`oidc.GoogleOidc`), 없으면 Google 로그인 없음.
     테스트는 가짜 IdP 전송 계층을 넣은 GoogleOidc를 준다. login_limits 기본값은 이메일 10분에 5번·IP 10분에 20번(`server.login_limit`).
-    admin 기본값은 PG 관리 함수(`admin_api.PgAdmin(backend.db)`)."""
+    admin 기본값은 PG 관리 함수(`admin_api.PgAdmin(backend.db)`), lifecycle 기본값은 `ServerLifecycle`(작업·MinIO·캐시)."""
     ui.register_routes()
     if google is None and settings.google is not None:
         google = oidc.GoogleOidc(settings.google)
     handler = _ServerApp(settings, backend, users or auth.PgUsers(backend.db), registry or Registry(), google,
-                         login_limits, admin if admin is not None else admin_api.PgAdmin(backend.db))
+                         login_limits, admin if admin is not None else admin_api.PgAdmin(backend.db), lifecycle)
     if runtime is not None:
         install_runtime(runtime, backend.db)
     if settings.password_login:

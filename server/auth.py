@@ -13,6 +13,8 @@
 - 이메일+비밀번호 로그인(T15, `YTC_PASSWORD_LOGIN=1`): `PgUsers.password_login`이 행과 `password_hash`를 함께 읽는다(해시는
   `UserRow`에 넣지 않는다: 세션 확인 경로에는 해시가 오가지 않는다). 해시·검증은 `server.passwords`, 실패 횟수 제한은
   `server.login_limit`, 경로는 `server.asgi`(`POST /auth/password`). 모든 실패는 같은 문구(`LOGIN_FAILED`).
+- 마지막 로그인(0004): 로그인에 성공하면(Google·비밀번호·dev) `record_login`이 `users.last_login_at`을 적는다. 실패해도 로그인은 막지 않는다
+  (`server.asgi`가 로그만 남긴다).
 """
 from __future__ import annotations
 
@@ -64,6 +66,7 @@ class UserDirectory(Protocol):
     def by_email(self, email: str) -> UserRow | None: ...
     def pin_google_sub(self, user_id: uuid.UUID, sub: str) -> UserRow | None: ...
     def password_login(self, email: str) -> tuple[UserRow, str | None] | None: ...
+    def record_login(self, user_id: uuid.UUID) -> None: ...
 
 
 class PgUsers:
@@ -95,6 +98,12 @@ class PgUsers:
         if row is None:
             return None
         return _row(row[:6]), None if row[6] is None else str(row[6])
+
+    def record_login(self, user_id: uuid.UUID) -> None:
+        """로그인 성공 기록(`users.last_login_at`, 0004 `user_record_login()`). 그 사용자 자신의 `user_tx` 안에서 부르므로
+        함수는 그 행만 바꿀 수 있다(앱 롤의 users 쓰기 권한은 늘지 않는다)."""
+        with self._db.user_tx(user_id) as conn:
+            conn.execute("SELECT user_record_login()")
 
     def pin_google_sub(self, user_id: uuid.UUID, sub: str) -> UserRow | None:
         """`google_sub`가 비었을 때만 sub를 넣고(경합해도 먼저 넣은 쪽이 남는다) 그 뒤의 행을 돌려준다. 이미 있으면 바꾸지 않는다

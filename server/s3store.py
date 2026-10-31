@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import builtins
 import errno
+import logging
 import re
 import tempfile
 import time
@@ -43,6 +44,7 @@ _LOCK_OBJECTS: Final = 0x79746301                   # advisory lock class ids ("
 _LOCK_SHARED: Final = 0x79746302
 _VID_RE: Final = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _MISSING_CODES: Final = frozenset({"NoSuchKey", "404", "NotFound"})
+log = logging.getLogger("ytc.s3")
 
 
 class S3Error(OSError):
@@ -180,6 +182,32 @@ class S3Bucket:
 def user_s3_key(uid: uuid.UUID, key: str) -> str:
     """사용자 객체 이름 `users/{uid}/{key}`(`objects.s3_key` CHECK와 같은 꼴)."""
     return f"users/{uid}/{key}"
+
+
+def user_prefixes(uid: uuid.UUID) -> tuple[str, str]:
+    """한 사용자의 MinIO 이름 앞부분(`users/{uid}/`, `trash/{uid}/`, 0001 CHECK와 같은 꼴). 공유 캐시 `shared/`는 들지 않는다."""
+    return f"users/{uid}/", f"trash/{uid}/"
+
+
+def purge_user_objects(bucket: S3Bucket, uid: uuid.UUID, s3_keys: builtins.list[str]) -> dict[str, Any]:
+    """지운 사용자의 객체를 지운다(관리 화면·CLI `delete-user`, 행은 이미 커밋으로 지워진 뒤): 행이 가리키던 이름(그 사용자 앞부분 안만)
+    + 두 앞부분 아래에 남은 것(고아). 지운 뒤 다시 목록을 본다. 실패하거나 남으면 로그(S10 점검이 치운다)와 남은 개수를 돌려준다.
+    행이 없으므로 다시 불러도 된다."""
+    prefixes = user_prefixes(uid)
+    wanted = {k for k in s3_keys if k.startswith(prefixes)}
+    try:
+        for prefix in prefixes:
+            wanted.update(bucket.keys(prefix))
+        if wanted:
+            bucket.delete_many(sorted(wanted))
+        left = [k for prefix in prefixes for k in bucket.keys(prefix)]
+    except OSError as e:
+        log.error("user purge: storage cleanup failed for user %s (%d objects may remain, S10): %s",
+                  uid, len(wanted), e)
+        return {"ok": False, "removed": 0, "left": len(wanted)}
+    if left:
+        log.error("user purge: %d objects remain under users/%s/ or trash/%s/ (S10)", len(left), uid, uid)
+    return {"ok": not left, "removed": len(wanted) - len(left), "left": len(left)}
 
 
 def object_lock_name(uid: uuid.UUID, key: str) -> str:

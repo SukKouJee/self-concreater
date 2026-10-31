@@ -98,6 +98,11 @@ class ServerBackend:
             self._emails[uid] = email
         return email
 
+    def forget_user(self, user_id: uuid.UUID) -> None:
+        """이메일 캐시(문서 저장소 라벨)를 비운다. 관리자가 이메일을 바꾸거나 사용자를 지운 뒤 부른다."""
+        with self._emails_lock:
+            self._emails.pop(user_id, None)
+
     # --- Backend ---
 
     def store(self, user_id: str | None) -> PgDocStore:

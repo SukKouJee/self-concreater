@@ -22,6 +22,8 @@ from scripts.ui.jobs import JobManager, join_until
 from server.config import LlmSettings
 from server.db import Db
 
+DROP_WAIT = 5.0          # seconds a deleted user's cancelled jobs get to stop before the rows go
+
 
 def install_runtime(settings: LlmSettings, db: Db) -> None:
     """프로세스 전역 자원 제한과 LLM 정책을 설치한다(서버 시작 때 한 번)."""
@@ -57,6 +59,17 @@ class Registry:
                 manager = self._factory()
                 self._managers[uid] = manager
             return manager
+
+    def drop(self, user_id: uuid.UUID, timeout: float | None = DROP_WAIT) -> int:
+        """지운 사용자의 작업을 모두 취소하고(timeout초까지 기다린다) 매니저를 버린다. 취소한 작업 수.
+        사용자 행이 지워진 뒤에는 그 작업의 쓰기가 FK로 실패하므로, 지우기 전에 부른다(관리 화면 지우기)."""
+        with self._lock:
+            manager = self._managers.pop(user_id, None)
+        if manager is None:
+            return 0
+        jobs = manager.cancel_all()
+        join_until(jobs, None if timeout is None else time.monotonic() + timeout)
+        return len(jobs)
 
     def close(self) -> None:
         """새 작업을 받지 않는다(이미 있는 매니저는 조회·취소용으로 남는다)."""

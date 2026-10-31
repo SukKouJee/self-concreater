@@ -87,6 +87,14 @@ def test_right_password_starts_a_session(client, users):
     assert client.get("/api/ping").json()["user"] == "a@example.com"
 
 
+def test_password_login_records_the_last_login_only_on_success(client, users):
+    row = users.add_pw("a@example.com")
+    assert _login(client, "a@example.com", "wrong password!").status_code == 401
+    assert users.logins == []
+    assert _login(client, "a@example.com").status_code == 200
+    assert users.logins == [row.id]
+
+
 def test_login_replaces_any_previous_session(client, users):
     users.add_pw("a@example.com")
     users.add_pw("b@example.com")

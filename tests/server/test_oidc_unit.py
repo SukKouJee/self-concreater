@@ -117,6 +117,18 @@ def test_google_login_happy_path_pins_sub_and_starts_a_session(client, idp, user
     assert fake_idp.s256(sent["code_verifier"]) == q["code_challenge"] and 43 <= len(sent["code_verifier"]) <= 128
 
 
+def test_google_login_records_the_last_login(client, idp, users):
+    row = users.add("a@example.com")
+    assert _login(client, idp).status_code == 302
+    assert users.logins == [row.id]
+
+
+def test_refused_google_login_records_nothing(client, idp, users):
+    users.add("a@example.com", disabled=True)
+    assert _login(client, idp).status_code == 403
+    assert users.logins == []
+
+
 def test_second_login_with_the_pinned_sub_succeeds(client, idp, users):
     users.add("a@example.com", google_sub=SUB)
     assert _login(client, idp).status_code == 302

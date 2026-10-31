@@ -33,6 +33,8 @@ SECRET = "t" * 40
 class FakeUsers:
     def __init__(self) -> None:
         self.rows: dict[uuid.UUID, auth.UserRow] = {}
+        self.logins: list[uuid.UUID] = []             # record_login calls (last login hook, 0004)
+        self.login_hook_fails = False
 
     def add(self, email: str, **over: Any) -> auth.UserRow:
         row = auth.UserRow(uuid.uuid4(), email, over.get("disabled", False), over.get("session_epoch", 0),
@@ -48,6 +50,12 @@ class FakeUsers:
 
     def by_email(self, email: str) -> auth.UserRow | None:
         return next((r for r in self.rows.values() if r.email == email.strip().lower()), None)
+
+    def record_login(self, user_id: uuid.UUID) -> None:
+        if self.login_hook_fails:
+            import psycopg
+            raise psycopg.OperationalError("db down")
+        self.logins.append(user_id)
 
     def pin_google_sub(self, user_id: uuid.UUID, sub: str) -> auth.UserRow | None:
         """PgUsers와 같은 의미: 비어 있을 때만 채운다, 다른 사용자가 이미 가진 sub면 LoginDenied(sub_taken)."""
@@ -192,6 +200,21 @@ def test_dev_login_refuses_unknown_or_disabled(client, users, disabled):
     r = _login(client, "a@example.com")
     assert r.status_code == 403 and r.json()["error"] == "login_denied"
     assert "set-cookie" not in r.headers
+
+
+def test_dev_login_records_the_last_login_and_a_failing_hook_does_not_block(client, users):
+    row = users.add("a@example.com")
+    assert _login(client, "a@example.com").status_code == 200
+    assert users.logins == [row.id]
+    users.login_hook_fails = True                       # last_login_at is a convenience, not a gate
+    assert _login(client, "a@example.com").status_code == 200
+    assert users.logins == [row.id]
+
+
+def test_refused_dev_login_records_nothing(client, users):
+    users.add("a@example.com", disabled=True)
+    assert _login(client, "a@example.com").status_code == 403
+    assert users.logins == []
 
 
 def test_dev_login_needs_an_email(client):
