@@ -21,7 +21,8 @@ EXPECTED_COLUMNS: dict[str, list[tuple[str, str, str, str | None]]] = {
         ("display_name", "text", "YES", None), ("is_admin", "boolean", "NO", None),
         ("disabled", "boolean", "NO", None), ("session_epoch", "integer", "NO", None),
         ("daily_usd_limit", "numeric(8,2)", "YES", None), ("created_at", "timestamp with time zone", "NO", None),
-        ("password_hash", "text", "YES", None)],                                          # 0002
+        ("password_hash", "text", "YES", None),                                           # 0002
+        ("last_login_at", "timestamp with time zone", "YES", None)],                      # 0004
     "docs": [
         ("user_id", "uuid", "NO", None), ("key", "text", "NO", "C"), ("raw", "bytea", "NO", None),
         ("version", "character(64)", "NO", None), ("size", "integer", "NO", None), ("mtime_ns", "bigint", "NO", None)],
@@ -38,7 +39,8 @@ EXPECTED_COLUMNS: dict[str, list[tuple[str, str, str, str | None]]] = {
         ("s3_key", "text", "YES", None), ("size", "bigint", "NO", None), ("mtime_ns", "bigint", "NO", None),
         ("moved_at", "timestamp with time zone", "NO", None)],
     "llm_usage": [
-        ("id", "bigint", "NO", None), ("user_id", "uuid", "NO", None), ("at", "timestamp with time zone", "NO", None),
+        ("id", "bigint", "NO", None), ("user_id", "uuid", "YES", None),                    # 0004: NULL = deleted user
+        ("at", "timestamp with time zone", "NO", None),
         ("job_kind", "text", "YES", None), ("model", "text", "NO", None), ("input_tokens", "integer", "NO", None),
         ("output_tokens", "integer", "NO", None), ("cache_read_tokens", "integer", "NO", None),
         ("cache_write_tokens", "integer", "NO", None), ("cost_usd", "numeric(10,6)", "NO", None),
@@ -46,7 +48,8 @@ EXPECTED_COLUMNS: dict[str, list[tuple[str, str, str, str | None]]] = {
     "admin_audit": [                                                                      # 0003
         ("id", "bigint", "NO", None), ("actor_id", "uuid", "YES", None), ("action", "text", "NO", None),
         ("target_user_id", "uuid", "YES", None), ("detail", "jsonb", "NO", None),
-        ("at", "timestamp with time zone", "NO", None)],
+        ("at", "timestamp with time zone", "NO", None),
+        ("actor_email", "text", "YES", None), ("target_email", "text", "YES", None)],       # 0004
 }
 
 # 테이블별 인덱스 정의(PK·UNIQUE 포함). pg_indexes.indexdef에서 이름을 뺀 "ON … USING …" 부분
@@ -58,7 +61,7 @@ EXPECTED_INDEXES: dict[str, set[str]] = {
     "shared_objects": {"UNIQUE (key)"},
     "trash_items": {"UNIQUE (id)", "UNIQUE (user_id, stamp, key)"},
     "llm_usage": {"UNIQUE (id)", "(user_id, at)"},
-    "admin_audit": {"UNIQUE (id)", "(at)"},
+    "admin_audit": {"UNIQUE (id)", "(at)", "(actor_id)", "(target_user_id)"},
 }
 
 
@@ -101,7 +104,7 @@ def _role(dsn: str, role: str) -> tuple[Any, ...] | None:
 
 def test_upgrade_creates_exactly_the_design_tables(migrated_db: TestDb) -> None:
     assert _tables(migrated_db.owner_dsn) == ALL_TABLES | {"alembic_version"}
-    assert _q(migrated_db.owner_dsn, "SELECT version_num FROM alembic_version") == [("0003",)]
+    assert _q(migrated_db.owner_dsn, "SELECT version_num FROM alembic_version") == [("0004",)]
 
 
 @pytest.mark.parametrize("table", sorted(EXPECTED_COLUMNS))
@@ -131,7 +134,7 @@ def test_upgrade_defaults_constraints_and_foreign_keys(migrated_db: TestDb) -> N
          WHERE contype = 'f' AND connamespace = 'public'::regnamespace""")}
     cascade = "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE"
     assert fks == {("docs", cascade), ("folders", cascade), ("objects", cascade), ("trash_items", cascade),
-                   ("llm_usage", cascade),
+                   ("llm_usage", "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL"),       # 0004
                    ("admin_audit", "FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE SET NULL"),
                    ("admin_audit", "FOREIGN KEY (target_user_id) REFERENCES users(id) ON DELETE SET NULL"),
                    ("shared_objects", "FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL")}
@@ -189,7 +192,7 @@ def test_0002_downgrade_drops_only_the_password_column_and_upgrade_restores_it(m
             conn.execute("UPDATE users SET password_hash = 'plain-text'")
     run_alembic(migrated_db, "downgrade", "0001")      # through 0003 (admin functions, audit) as well
     assert _q(migrated_db.owner_dsn, "SELECT version_num FROM alembic_version") == [("0001",)]
-    assert [c[0] for c in _columns(migrated_db.owner_dsn, "users")] == [c[0] for c in EXPECTED_COLUMNS["users"][:-1]]
+    assert [c[0] for c in _columns(migrated_db.owner_dsn, "users")] == [c[0] for c in EXPECTED_COLUMNS["users"][:-2]]
     assert _q(migrated_db.owner_dsn, "SELECT email FROM users") == [("a@x.com",)]          # users are kept
     assert _q(migrated_db.app_dsn, "SELECT count(*) FROM users") == [(1,)]                 # grants unchanged
     run_alembic(migrated_db, "upgrade", "head")
@@ -208,6 +211,25 @@ def test_0003_downgrade_drops_only_the_audit_table_and_functions(migrated_db: Te
     with psycopg.connect(migrated_db.app_dsn) as conn:                  # grants are back: the function runs (and refuses)
         conn.execute("SELECT set_config('app.user_id', (SELECT id::text FROM users), true)")
         assert [r[1] for r in conn.execute("SELECT * FROM admin_list_users()").fetchall()] == ["root@x.com"]
+
+
+def test_0004_downgrade_restores_0003_and_drops_anonymous_usage(migrated_db: TestDb) -> None:
+    """0004 → 0003: new functions and columns go, llm_usage is NOT NULL + CASCADE again (anonymous rows are removed)."""
+    with psycopg.connect(migrated_db.owner_dsn) as conn:
+        uid = conn.execute("INSERT INTO users (email, is_admin) VALUES ('root@x.com', true) RETURNING id").fetchone()[0]
+        for who in (uid, None):
+            conn.execute("INSERT INTO llm_usage (user_id, model, input_tokens, output_tokens, cost_usd, ok) "
+                         "VALUES (%s, 'm', 1, 1, 0.5, true)", (who,))
+    run_alembic(migrated_db, "downgrade", "0003")
+    assert _q(migrated_db.owner_dsn, "SELECT version_num FROM alembic_version") == [("0003",)]
+    assert [c[0] for c in _columns(migrated_db.owner_dsn, "users")] == [c[0] for c in EXPECTED_COLUMNS["users"][:-1]]
+    assert ("user_id", "uuid", "NO", None) in _columns(migrated_db.owner_dsn, "llm_usage")
+    assert _q(migrated_db.owner_dsn, "SELECT count(*) FROM llm_usage") == [(1,)]
+    names = {r[0] for r in _q(migrated_db.owner_dsn,
+                              "SELECT proname FROM pg_proc WHERE pronamespace = 'public'::regnamespace")}
+    assert "admin_delete_user" not in names and "user_record_login" not in names and "admin_usage" in names
+    run_alembic(migrated_db, "upgrade", "head")
+    assert _columns(migrated_db.owner_dsn, "users") == EXPECTED_COLUMNS["users"]
 
 
 def test_upgrade_is_idempotent_for_existing_app_role(test_db: TestDb) -> None:
