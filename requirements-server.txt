@@ -1,0 +1,12 @@
+-r requirements.txt
+# 서버판(v2) 전용 의존성. 플러그인 .venv(requirements.txt)에는 넣지 않는다. 메이저 상한으로 고정
+starlette>=1.10,<2
+uvicorn>=0.54,<1
+authlib>=1.9,<2
+itsdangerous>=2.2,<3
+httpx>=0.28,<1
+psycopg[binary]>=3.3,<4
+psycopg_pool>=3.3,<4
+alembic>=1.20,<2
+sqlalchemy>=2.1,<3
+boto3>=1.43,<2

@@ -21,6 +21,7 @@ from scripts import count_work_root
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = PLUGIN_ROOT / "scripts"
+SERVER = PLUGIN_ROOT / "server"
 
 FORBIDDEN_CALLS = set(count_work_root.NAMES)
 TOP_NAMES = ("refs", "drafts", "mine", "missions", "reviews", "reports", "workspace",
@@ -46,6 +47,19 @@ _CTX_CALLS = {"here", "current", "use"}
 EXEMPT_CONSTANTS: dict[tuple[str, str], str] = {
     ("scripts/library.py", "refs/remotes/origin/"): "git 원격 추적 ref 이름(작업 폴더 경로가 아니다)",
 }
+
+
+# 서버판(서버 설계 §2 게이트 ②③): `server/**`도 같은 규칙. 경로를 직접 다루는 모듈만 이유와 함께 허용한다.
+# 키 문자열은 server/에서도 만들지 않는다(`scripts/keys.py`).
+SERVER_ALLOWED: dict[str, str] = {
+    "server/scratch.py": "ServerScratch: 작업 중 임시 파일·폴더(로컬 디스크)",
+    "server/files.py": "/files 프록시: 요청 경로를 키로 바꾸고 임시 파일을 다룬다",
+    "server/admin.py": "admin import: 로컬 작업 폴더를 걸어 키로 올리는 CLI",
+}
+
+
+def _server_modules() -> list[Path]:
+    return [p for p in sorted(SERVER.rglob("*.py")) if p.relative_to(PLUGIN_ROOT).as_posix() not in SERVER_ALLOWED]
 
 
 def _modules() -> list[Path]:
@@ -168,6 +182,23 @@ def violations(path: Path, source: str | None = None) -> list[str]:
 @pytest.mark.parametrize("path", _modules(), ids=lambda p: p.relative_to(SCRIPTS).as_posix())
 def test_module_has_no_direct_path_handling(path: Path) -> None:
     assert violations(path) == []
+
+
+@pytest.mark.parametrize("path", _server_modules(), ids=lambda p: "server/" + p.relative_to(SERVER).as_posix())
+def test_server_module_has_no_direct_path_handling(path: Path) -> None:
+    assert violations(path) == []
+
+
+def test_server_allowlist_is_only_existing_or_planned_modules() -> None:
+    assert set(SERVER_ALLOWED) <= {"server/scratch.py", "server/files.py", "server/admin.py"}
+    for rel in SERVER_ALLOWED:
+        assert not (PLUGIN_ROOT / rel).exists() or (PLUGIN_ROOT / rel).is_file()
+
+
+def test_server_checker_flags_paths_and_keys() -> None:
+    src = "k = 'refs/travel'\nr = ctx.root\nc = Path.cwd()\nx = prefix + 'index.md'\n"
+    assert len(violations(Path("server/pgstore.py"), src)) == 4
+    assert violations(Path("server/pgstore.py"), "k = keys.doc_key(c)\n") == []
 
 
 def test_count_work_root_outside_is_zero() -> None:

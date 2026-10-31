@@ -8,3 +8,8 @@ workspace/
 .superpowers/
 remotion/node_modules/
 remotion/out/
+
+# 서버판: 비밀값은 .env 에만 두고 커밋하지 않는다(.env.example 만 추적)
+.env
+.env.*
+!.env.example
