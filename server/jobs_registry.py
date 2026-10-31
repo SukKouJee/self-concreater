@@ -3,7 +3,7 @@
 - 앱 프로세스 하나(uvicorn `--workers 1`) 안에서 사용자마다 JobManager 하나. `SINGLE_KINDS`·`EXCLUSIVE`는 사용자별로 적용되고,
   남의 job_id는 그 사용자의 매니저에 없으므로 `job_not_found`다(격리).
 - 종료: `close()` 뒤에는 새 매니저를 만들지 않고(`closing`) 어댑터가 상태를 바꾸는 요청을 503 `restarting`으로 거절한다.
-  `shutdown(timeout)`은 모든 사용자의 작업을 멈추고 기다린다.
+  `shutdown(timeout)`은 모든 사용자의 작업에 먼저 취소를 알리고 마감 하나(timeout)까지만 기다린다.
 - 전역 자원(T11, 설계 §5.2): `install_runtime(llm_settings, db)`가 시작 때 한 번 media·llm 세마포어(`YTC_MEDIA_SLOTS`·`YTC_LLM_SLOTS`),
   같은 영상 수집 잠금(`Db.collect_lock`, PG advisory lock), LLM 고정(`llm.pin`: 엔진·모델·호출당 max_tokens 상한)을 꽂는다.
   YouTube 간격은 `fetch.wait_turn`의 프로세스 잠금 + `.last_fetch`(서버 상태 폴더)라 따로 설치할 것이 없다(프로세스 하나 = 서버 전체 1개).
@@ -12,12 +12,13 @@
 from __future__ import annotations
 
 import threading
+import time
 import uuid
 from collections.abc import Callable
 
 from scripts import limits, llm
 from scripts.common import ScriptError
-from scripts.ui.jobs import JobManager
+from scripts.ui.jobs import JobManager, join_until
 from server.config import LlmSettings
 from server.db import Db
 
@@ -63,9 +64,11 @@ class Registry:
             self._closing = True
 
     def shutdown(self, timeout: float | None = None) -> None:
-        """close() 뒤 모든 사용자의 작업을 멈추고 각 작업 스레드를 timeout초까지 기다린다."""
+        """close() 뒤 모든 사용자의 모든 작업에 먼저 취소를 알리고, timeout초 뒤의 마감 하나까지만 기다린다.
+        사용자·작업 수와 상관없이 전체 대기가 timeout을 넘지 않는다(compose 종료 유예 안에 끝나게)."""
         self.close()
+        deadline = None if timeout is None else time.monotonic() + timeout
         with self._lock:
             managers = list(self._managers.values())
-        for manager in managers:
-            manager.shutdown(timeout)
+        jobs = [job for manager in managers for job in manager.cancel_all()]
+        join_until(jobs, deadline)

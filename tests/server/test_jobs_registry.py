@@ -69,3 +69,44 @@ def test_shutdown_cancels_jobs_and_refuses_new_managers():
     with pytest.raises(ScriptError) as e:
         reg.for_user(uuid.uuid4())
     assert e.value.code == "restarting"
+
+
+def _stubborn(release: threading.Event):
+    def target(job):
+        release.wait(10)          # ignores cancel until released
+    return target
+
+
+def test_shutdown_uses_one_deadline_across_all_users_and_jobs():
+    import time
+    reg = Registry()
+    release = threading.Event()
+    try:
+        for _ in range(3):
+            mgr = reg.for_user(uuid.uuid4())
+            mgr.start("help_chat", _stubborn(release))
+            mgr.start("draft", _stubborn(release))
+        t0 = time.monotonic()
+        reg.shutdown(timeout=0.5)
+        elapsed = time.monotonic() - t0
+    finally:
+        release.set()
+    assert 0.4 <= elapsed < 1.2, elapsed
+
+
+def test_shutdown_cancels_every_users_jobs_before_any_join(monkeypatch):
+    from scripts.ui.jobs import Job
+    events = []
+    real_cancel, real_join = Job.cancel, Job.join
+    monkeypatch.setattr(Job, "cancel", lambda self: (events.append("cancel"), real_cancel(self))[1])
+    monkeypatch.setattr(Job, "join", lambda self, timeout=None: (events.append("join"), real_join(self, timeout))[1])
+    reg = Registry()
+    release = threading.Event()
+    try:
+        for _ in range(3):
+            reg.for_user(uuid.uuid4()).start("help_chat", _stubborn(release))
+        reg.shutdown(timeout=0.1)
+    finally:
+        release.set()
+    assert events[:3] == ["cancel"] * 3
+    assert "cancel" not in events[3:]

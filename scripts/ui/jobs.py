@@ -479,10 +479,21 @@ class JobManager:
         return [j for j in jobs if j.is_active()]
 
     def shutdown(self, timeout: float | None = None) -> None:
-        """진행 중인 작업을 모두 멈추고 스레드가 끝나기를 기다린다."""
+        """진행 중인 작업을 모두 멈추고 스레드가 끝나기를 기다린다.
+        모든 작업에 먼저 취소를 알린 뒤, timeout초 뒤의 마감 하나까지만 기다린다(작업마다 timeout씩 늘지 않는다)."""
+        jobs = self.cancel_all()
+        join_until(jobs, None if timeout is None else time.monotonic() + timeout)
+
+    def cancel_all(self) -> list[Job]:
+        """모든 작업에 취소를 알리고(기다리지 않음) 그 작업들을 돌려준다."""
         with self._lock:
             jobs = list(self._jobs.values())
         for job in jobs:
             job.cancel()
-        for job in jobs:
-            job.join(timeout)
+        return jobs
+
+
+def join_until(jobs: Iterable[Job], deadline: float | None) -> None:
+    """작업 스레드들을 `time.monotonic()` 기준 마감 하나까지 기다린다(None이면 끝날 때까지)."""
+    for job in jobs:
+        job.join(None if deadline is None else max(0.0, deadline - time.monotonic()))
