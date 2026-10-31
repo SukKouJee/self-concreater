@@ -134,7 +134,7 @@ services:
     volumes:
       - state:/var/lib/ytc/state
     tmpfs:
-      - "/tmp/ytc:uid=10001,gid=10001,mode=0700,size=${YTC_SCRATCH_SIZE:-2g}"
+      - "/tmp/ytc:uid=10001,gid=10001,mode=0700,size=${YTC_SCRATCH_SIZE:-1g}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -146,7 +146,7 @@ services:
         condition: service_completed_successfully
     stop_grace_period: 90s
     # 메모리 상한(OOM이면 이 컨테이너만 재시작). 영상 처리 슬롯(YTC_MEDIA_SLOTS)을 늘리면 같이 올린다.
-    mem_limit: "${YTC_APP_MEM_LIMIT:-2g}"
+    mem_limit: "${YTC_APP_MEM_LIMIT:-3g}"
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     healthcheck:

@@ -210,8 +210,19 @@ def test_compose_every_service_rotates_json_logs() -> None:
 
 
 def test_compose_app_has_a_configurable_memory_limit() -> None:
-    assert _services()["app"]["mem_limit"] == "${YTC_APP_MEM_LIMIT:-2g}"
+    assert _services()["app"]["mem_limit"] == "${YTC_APP_MEM_LIMIT:-3g}"
     assert "YTC_APP_MEM_LIMIT" in _env_names(ENV_EXAMPLE)
+
+
+def test_compose_scratch_tmpfs_defaults_to_1g_inside_the_memory_limit() -> None:
+    # tmpfs pages count against the container memory limit: 1g scratch inside a 3g limit
+    tmpfs = [t for t in _services()["app"]["tmpfs"] if t.startswith("/tmp/ytc:")]
+    assert tmpfs and "size=${YTC_SCRATCH_SIZE:-1g}" in tmpfs[0]
+    text = ENV_EXAMPLE.read_text(encoding="utf-8")
+    assert "# YTC_SCRATCH_SIZE=1g" in text and "# YTC_APP_MEM_LIMIT=3g" in text
+    assert "메모리 상한에 포함" in text
+    ops = (ROOT / "deploy" / "server" / "OPERATIONS.md").read_text(encoding="utf-8")
+    assert "YTC_SCRATCH_SIZE" in ops and "메모리 상한에 포함" in ops
 
 
 def test_compose_stores_are_only_on_the_back_network_and_caddy_only_on_front() -> None:

@@ -445,7 +445,7 @@ media 대기 p95가 5분을 넘거나, 앱 재시작으로 작업을 잃는 일�
 - **구현(T13)**: 설정은 `env_file`이 아니라 compose 변수 치환이다 — `deploy/server/.env`(또는 `--env-file`)를 compose가 읽고, `docker-compose.yml`의 `environment:`가
   앱이 읽는 변수만 이름으로 넘긴다(필수 값은 `${VAR:?메시지}`로 비어 있으면 `up` 자체가 실패, DSN은 비밀번호에서 조립 → 비밀번호는 URL 안전 문자만).
   app·migrate·admin은 같은 `build`(target server)와 이미지 이름(`YTC_IMAGE`, 기본 `ytc:server`)을 쓴다. app·migrate·admin은 `cap_drop: ALL`, `no-new-privileges`.
-  app의 `/tmp/ytc`는 tmpfs(uid 10001, 크기 `YTC_SCRATCH_SIZE` 기본 2g). caddy는 `reverse_proxy app:8080`(`flush_interval -1`).
+  app의 `/tmp/ytc`는 tmpfs(uid 10001, 크기 `YTC_SCRATCH_SIZE` 기본 1g, tmpfs는 앱 메모리 상한 `YTC_APP_MEM_LIMIT` 기본 3g에 포함). caddy는 `reverse_proxy app:8080`(`flush_interval -1`).
   `--proxy-headers`는 uvicorn 기본 신뢰 대상(127.0.0.1)만 믿으므로 다른 컨테이너의 caddy가 보내는 `X-Forwarded-*`는 무시된다 — 앱은 scheme을 `YTC_PUBLIC_URL`로 정하므로 영향 없음.
 - **smoke server(T13)**: `python deploy/smoke.py server`(`pytest`는 `YTC_TEST_DOCKER=1 tests/test_deploy_smoke.py::test_server_stack_smoke`). `YTC_ENV=test` + `YTC_DEV_LOGIN=1`로 전체 스택을 올려
   `admin add-user` 2명 → dev 로그인 → `/healthz`·`/api/status` → `/api/draft/save`·`/files` 읽기 → 격리(목록·`/files` 404) → `down -v`(남은 컨테이너·볼륨까지 확인, 남으면 실패).

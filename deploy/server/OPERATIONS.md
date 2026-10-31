@@ -70,5 +70,6 @@ postgres·caddy 이미지도 같은 방식으로 다이제스트를 갱신한다
 ## 자주 보는 것
 
 - 상태: `docker compose ps`, 로그: `docker compose logs -f app` (컨테이너당 최대 30MB로 순환).
-- 메모리 상한 조정: `.env`의 `YTC_APP_MEM_LIMIT`.
+- 메모리 상한 조정: `.env`의 `YTC_APP_MEM_LIMIT`(기본 3g). 임시 폴더 `YTC_SCRATCH_SIZE`(tmpfs, 기본 1g)에 쓴 만큼이
+  메모리 상한에 포함되므로, 임시 폴더를 키우면 상한도 같이 올린다(임시 폴더 + 작업 메모리 < 상한).
 - `--profile tls`에서 caddy가 `YTC_DOMAIN이 비어 있습니다`로 끝나면 `.env`에 도메인을 넣는다(다른 서비스는 도메인 없이도 뜬다).
