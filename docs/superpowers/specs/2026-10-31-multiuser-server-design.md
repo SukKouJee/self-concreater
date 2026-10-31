@@ -1,7 +1,7 @@
 # yt-coach 다중 사용자 서버 분리 설계·계획
 
 작성일: 2026-10-31 / 기준 코드: `main` @ f2347d9 (커밋 337개)
-상태: 확정(2026-10-31) — 7절 결정 기록. S0·S2·S4부터 진행
+상태: 확정(2026-10-31) — 7절 결정 기록. 서버판 구현 완료(2026-11-01, 구현 설계 `2026-11-01-server-edition-design.md`). 2·3.2·4·6절은 구현에 맞게 고쳤고, 다르면 구현 설계가 우선
 
 ## 0. 요약
 
@@ -34,18 +34,21 @@
 
 ## 2. 목표 구조
 
+**결정(2026-11-01): 물리 이동 없음.** 처음 안의 `core/ local/ web/` 재배치는 하지 않았다. 플러그인 경로(`commands/*.md`의 `${CLAUDE_PLUGIN_ROOT}`, `bin/ytc`, `.mcp.json`)를
+그대로 두려는 것이고, 로컬판 동작을 바꾸지 않는다. `scripts/`가 코어와 로컬 UI를 겸하고, 서버판은 새 패키지 `server/`, 배포는 `deploy/`다.
+
 ```
-yt-coach/                          (모노레포, 기존 저장소에서 시작)
-├── core/        수집(fetch, cuts, stt, footage 처리), 계산(features, cluster, similarity, timings),
-│                도메인 검증·저장 규칙(videomd, draft, conti, motif, mission …), skills/ 규칙 파일,
-│                templates/, 저장소·객체 저장·LLM 인터페이스
-├── local/       v1 로컬판: Claude Code 플러그인(commands, .claude-plugin, .mcp.json), bin/ytc,
-│                로컬 UI 서버(stdlib), FileStore 구현, git 공용 라이브러리
-├── server/      v2 서버판: API 서버, 인증, PgStore + S3ObjectStore 구현, 작업 큐·워커,
-│                사용량 계측, 관리 도구(import, 정합성 점검)
-├── web/         UI 정적 파일(scripts/ui/static에서 이동). 두 판이 같이 쓰고, 서버판만 로그인 화면 추가
-└── tests/       core 테스트는 두 저장소 구현에 같이 돌린다
+yt-coach/
+├── scripts/      코어(수집·계산·도메인 규칙·저장소 Protocol·LLM) + 로컬 UI(stdlib). ui/static = 두 판 공용 웹
+├── server/       서버판(Python 패키지): config, auth·oidc, asgi(Starlette 어댑터), pgstore·s3store·keyindex·scratch·files,
+│                 jobs_registry, usage, admin(CLI), migrations(Alembic), web/(로그인·메시지 화면). scripts만 import
+├── deploy/       Dockerfile(base·local·server), local/·server/ compose + .env.example, Caddyfile, smoke.py
+├── commands/ skills/ templates/ remotion/ bin/ .claude-plugin/ .mcp.json   로컬 플러그인(변경 없음)
+└── tests/        코어 테스트 + tests/contract(File·Pg·S3 같은 계약) + tests/server(PG·MinIO 필요, YTC_TEST_DOCKER=1)
 ```
+
+의존 방향은 `server → scripts`만이다. `scripts`가 `server`를 import하면 `tests/test_layout_gates.py`가 실패한다.
+서버 구현은 `Ctx(backend=…)`로만 들어온다.
 
 ### 2.1 코어 인터페이스
 
@@ -92,6 +95,11 @@ class DocStore:                 # 경로 대신 "문서 키"
 - 유형화는 `role = 'ref'`만 쓴다(기존 원칙). 쿼리와 테스트로 보장한다.
 
 ### 3.2 PostgreSQL 스키마 골격
+
+> **실제 구현(2026-11-01)은 이 골격보다 작다.** 문서는 종류별 테이블 대신 `docs` 한 테이블(원문 바이트 + version + mtime), 객체는 `objects`·`shared_objects`
+> 인덱스 + MinIO, 그 밖에 `users`·`folders`·`trash`·`usage` 정도다. `projects`·`doc_versions`·`analysis_runs`·`jobs`·`library_items`는 만들지 않았다
+> (버전은 문서 쪽 규칙이 이미 있고, 작업은 프로세스 메모리, 사용량은 `usage`). 정확한 DDL은 구현 설계 §3.1(`server/migrations`)을 본다.
+> 아래는 처음 골격이며 S10·S11에서 필요하면 되살린다.
 
 ```sql
 -- 사용자
@@ -164,13 +172,13 @@ trash/{uid}/{date}/…                                           30일 뒤 삭�
 
 | 구성 | 내용 |
 |---|---|
-| API 서버 | 기존 `api_*.py` 핸들러를 ASGI(FastAPI)로 감싼다. 요청마다 인증 → `Ctx(user_id, PgStore, S3ObjectStore, …)`를 contextvar에 설정 |
-| 인증 | 로컬판의 주소 key 대신 로그인(7절). 세션 쿠키, CSRF 보호 |
-| 작업 큐 | `jobs` 테이블 + 워커 프로세스(`SELECT … FOR UPDATE SKIP LOCKED`). `SINGLE_KINDS`는 **사용자별**, `EXCLUSIVE`는 워커 자원 기준으로 재해석. 확인 대기(awaiting)·결정(decide)·취소는 DB 상태로 |
-| 워커 종류 | `light`(LLM 호출, 계산), `media`(컷·프레임·STT·촬영본), `render`(Remotion). 큐를 나눠 무거운 일이 가벼운 일을 막지 않게 |
-| 진행 표시 | 기존 progress 콜백 → `jobs.progress` 갱신 → 화면은 폴링(현재와 같음) 또는 SSE |
-| LLM | `anthropic-api` 엔진만. 호출마다 `analysis_runs`에 토큰·비용 기록, 사용자별 일/월 한도. `claude-cli`는 로컬판 전용 |
-| YouTube 수집 | 서버 IP 차단 대비 프록시 필수(`YT_PROXY`). `YT_FETCH_INTERVAL`을 **서버 전체** 속도 제한으로. 공유 캐시에 있으면 수집 생략 |
+| API 서버 | Starlette(ASGI) 어댑터 한 개(`server/asgi.py`)가 기존 `ROUTES` 표를 그대로 부른다. 요청마다 세션·사용자(비활성·epoch) 확인 → `Ctx(user_id, PgBackend)` |
+| 인증 | Google 로그인(OIDC, PKCE·state·nonce), 초대한 이메일만, 첫 로그인에 `google_sub` 고정. 세션 쿠키 + CSRF(Origin·JSON). 로컬판의 주소 key는 쓰지 않는다 |
+| 작업 실행 (ADR-S6) | **앱 프로세스 안 `JobManager`를 사용자마다 하나**(`jobs_registry.Registry.for_user`, uvicorn `--workers 1`). `SINGLE_KINDS`·`EXCLUSIVE`가 사용자별로 적용되고, 진행 표시·확인 대기·취소는 기존 메모리 구조 그대로(화면은 폴링). 전역 자원은 `scripts/limits.py` 슬롯: media 2, llm 4, 유튜브 수집은 서버 전체 1개 순번. 재시작하면 진행 중 작업은 사라진다(저장된 md는 그대로) |
+| S7b (보류) | PG `jobs` 큐 + 별도 `media` 워커 프로세스. 조건: media 대기 p95가 5분을 넘거나, 재시작으로 작업을 잃는 일이 주 1회 이상 |
+| LLM | `anthropic-api` 엔진만(엔진·모델·max_tokens는 env로 고정, 사용자 설정 무시). 호출마다 `usage` 기록, 사용자별 일 한도(한국 시간, `YTC_DAILY_USD`), 가격표에 없는 모델은 시작 거부. `claude-cli`는 로컬판 전용 |
+| YouTube 수집 | `YT_PROXY`, `YT_FETCH_INTERVAL`을 서버 전체 순번으로. 같은 영상 수집은 PG advisory lock, 공유 캐시에 있으면 생략 |
+| 비활성 | 공용 라이브러리, 자막 영상, 촬영 영상, srtfit(`/api/features`로 숨기고 API는 403 `feature_disabled`) |
 | 도움말 챗봇 | 지금처럼 개수·상태만 입력(본문·메모·경로 제외) |
 
 ## 5. 로컬판(v1) 유지 방침
@@ -188,17 +196,17 @@ trash/{uid}/{date}/…                                           30일 뒤 삭�
 | 단계 | 작업 | 완료 조건 |
 |---|---|---|
 | S0 준비 | `v1.0.0` 태그, `release/v1` 브랜치, 7절 결정, CLAUDE.md 범위 수정 | 결정 사항이 이 문서에 기록됨 |
-| S1 모노레포 재배치 | `core/ local/ web/ server/` 이동만(동작 변경 없음), import 경로 정리, `bin/ytc`·플러그인 경로 수정 | 플러그인 재설치 후 커맨드 12개·`ytc ui` 정상, pytest 통과 |
+| S1 모노레포 재배치 | `core/ local/ web/ server/` 이동만(동작 변경 없음), import 경로 정리, `bin/ytc`·플러그인 경로 수정 | 플러그인 재설치 후 커맨드 12개·`ytc ui` 정상, pytest 통과 **대체(2026-11-01).** 물리 이동 없이 `server/`·`deploy/`만 추가(2절). 로컬 동작 변경 0 |
 | S2 Ctx 도입 | `Ctx`·contextvar, `work_root()`가 Ctx를 보게 변경, 로컬판 시작 지점에서 설정 | 동작 동일, `work_root()` 호출 수 측정 스크립트 추가. 측정(2026-10-31, `python -m scripts.count_work_root`): `work_root(` 100 · `workspace_dir(` 42 · `category_dir(` 4, 합계 146곳 / 36개 모듈(많은 순 conti 12, mission 12, videomd 10, common 8, ui/api_diagnose 8). 로컬판 시작 지점은 `common.run`과 UI 요청 스레드가 `ctx.use()`로 호출 동안만 설정하고, 작업 스레드는 `copy_context()`로 이어받는다 |
 | S3 저장소 인터페이스 | `DocStore`·`ObjectStore`·`SharedCache` 정의, `FileStore` 구현, 모듈별로 파일 입출력 이전(refstore → videomd → motif → draft → conti·conti_history → mission → similarity → report …) | **완료(2026-10-31).** 허용 목록 밖 `work_root(`·`workspace_dir(`·`category_dir(`·`existing_category_dir(`·`move_to_trash(` 호출 0, 경로 문자열 상수·`ctx.root` 접근 0(`tests/test_no_direct_paths.py`가 AST로 강제). 측정(`python -m scripts.count_work_root`): 허용 목록(allowed) 6곳(common 3 · ctx 1 · ui/__main__ 2), 그 밖(outside) 0곳. S2 측정 146곳 → 0 |
 | S4 콘티 그림 분리 | 콘티 HTML이 그림을 박지 않고 별도 파일을 참조(로컬판에도 적용, 인쇄용 단일 파일은 옵션) | 콘티 HTML 수백 KB 수준, 화면·인쇄 동일 |
-| S5 PG·S3 구현 | 스키마·마이그레이션(Alembic), RLS, `PgStore`, `S3ObjectStore`, `storage_objects`·`doc_versions`, docker-compose(PG + MinIO) | core 테스트를 FileStore·PgStore 두 구현으로 같이 돌려 통과 |
-| S6 서버 API·인증 | ASGI 앱, 로그인, 요청별 Ctx, 기존 핸들러 연결, presigned 업로드·다운로드 | 사용자 2명이 서로 데이터를 못 보는 것을 테스트로 확인 |
-| S7 작업 큐·워커 | `jobs` 테이블, light/media/render 워커, 사용자별 동시 실행 제한, 진행 표시·확인 대기·취소 | 두 사용자가 동시에 수집·콘티를 돌려도 서로 막히지 않음 |
-| S8 사용량·쿼터 | `analysis_runs` 기록, 사용자별 LLM 한도·스토리지 쿼터, 관리자 집계 화면 | 한도 초과 시 친절한 오류 |
-| S9 가져오기·내보내기 | 로컬 작업 폴더 → 서버 계정 import(현재 travel 데이터로 검증), 프로젝트 zip 내보내기 | 현재 레퍼런스 20개·모티브 22장·기획안 6편·콘티 이력이 그대로 보임 |
-| S10 정합성·운영 | 스토리지 정합성 점검, 휴지통 만료, 백업(PG 덤프 + 버킷 복제), 수집 프록시·속도 제한 | 점검 리포트에 고아·깨진 참조 0 |
-| S11 공유 라이브러리 | `library_items` + 공개 범위, git 라이브러리에서 가져오기 | 지인 기법이 서버에서 검색·사용됨 |
+| S5 PG·S3 구현 | 스키마·마이그레이션(Alembic), RLS, `PgStore`, `S3ObjectStore`, `storage_objects`·`doc_versions`, docker-compose(PG + MinIO) | core 테스트를 FileStore·PgStore 두 구현으로 같이 돌려 통과 **완료(2026-10-31).** PgDocStore·S3ObjectStore·S3SharedCache·ServerScratch, Alembic `0001_init`, RLS(앱 롤 NOBYPASSRLS). 계약 테스트가 File·Pg·S3에서 같이 통과 |
+| S6 서버 API·인증 | ASGI 앱, 로그인, 요청별 Ctx, 기존 핸들러 연결, presigned 업로드·다운로드 | 사용자 2명이 서로 데이터를 못 보는 것을 테스트로 확인 **완료(2026-10-31).** Starlette 어댑터, Google 로그인, 요청별 Ctx, `/files` 프록시(presigned 대신 앱이 스트리밍). 두 사용자 격리 테스트 통과 |
+| S7 작업 큐·워커 | `jobs` 테이블, light/media/render 워커, 사용자별 동시 실행 제한, 진행 표시·확인 대기·취소 | 두 사용자가 동시에 수집·콘티를 돌려도 서로 막히지 않음 **완료(2026-10-31), 변경:** 큐·워커 프로세스 대신 사용자별 JobManager(4절). 분리는 S7b로 보류 |
+| S8 사용량·쿼터 | `analysis_runs` 기록, 사용자별 LLM 한도·스토리지 쿼터, 관리자 집계 화면 | 한도 초과 시 친절한 오류 **최소판 완료(2026-10-31):** 호출 기록 + 사용자별 일 한도 + `admin usage`. 월 한도·스토리지 쿼터·집계 화면은 보류 |
+| S9 가져오기·내보내기 | 로컬 작업 폴더 → 서버 계정 import(현재 travel 데이터로 검증), 프로젝트 zip 내보내기 | 현재 레퍼런스 20개·모티브 22장·기획안 6편·콘티 이력이 그대로 보임 **최소판 완료(2026-10-31):** `admin import`(재실행 안전, 내 메모 보호, 가져온 뒤 목록 비교). zip 내보내기는 보류 |
+| S10 정합성·운영 | 스토리지 정합성 점검, 휴지통 만료, 백업(PG 덤프 + 버킷 복제), 수집 프록시·속도 제한 | 점검 리포트에 고아·깨진 참조 0 **대기.** 백업(PG 덤프 + 버킷), 정합성 점검, 휴지통 만료 |
+| S11 공유 라이브러리 | `library_items` + 공개 범위, git 라이브러리에서 가져오기 | 지인 기법이 서버에서 검색·사용됨 **대기.** 서버 v1에서는 비활성 |
 
 S1~S4는 로컬판에도 이득이 되는 리팩터링이라 서버 결정이 늦어져도 먼저 진행할 수 있다.
 

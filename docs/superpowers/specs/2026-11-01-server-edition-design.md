@@ -2,7 +2,7 @@
 
 작성일: 2026-11-01 / 기준: `feat/server` (main @ db8ffd5, S2·S3 완료)
 상위 설계: `2026-10-31-multiuser-server-design.md`(§2~§7 결정), `2026-10-31-s3-storage-design.md`(ADR-1~7, Protocol)
-상태: 초안. 이 문서와 상위 설계가 다르면 이 문서의 ADR이 우선하고, 구현이 끝나면 상위 설계 §2·§4·§6을 고친다(T14).
+상태: 구현 완료(2026-11-01). 이 문서와 상위 설계가 다르면 이 문서의 ADR이 우선한다. 상위 설계 §2·§3.2·§4·§6은 구현에 맞게 고쳤다(T14). 운영 체크리스트는 §13.
 
 ## 0. 범위와 완료 정의
 
@@ -507,3 +507,17 @@ T3은 서버 작업과 독립이라 먼저 끝내 개인판을 바로 쓸 수 �
 | LLM 비용 초과(호출 하나가 한도를 넘김, 가격표 오류) | 호출 전 검사 + `max_tokens` 상한 + 가격표에 없는 모델 시작 거부 + `admin usage` |
 | 공유 캐시 오염(T7 리뷰, T9): 공유 캐시는 "먼저 쓴 쪽이 이긴다". `admin import`가 shared 키를 넣으면, 틀린·악의적인 작업 폴더(`workspace/raw/<vid>.json`·`frames/`가 다른 영상 내용)가 모든 사용자의 그 영상 분석에 섞인다. 수집 경로도 같은 구조(첫 수집자의 raw가 고정) | 가져오기는 운영자만 실행(`ytc_owner` 필요)하고 신뢰하는 지인의 폴더만 올린다. 이미 있는 shared 키는 `--overwrite`로도 덮지 않는다(`skipped`). 영상 md는 사용자 것이라 교정은 md에서 하고 캐시는 원본 데이터로만 쓴다. 후속(S10): raw `id`와 키의 영상 id 일치 검사, `shared_objects.created_by` 기준 점검·삭제 명령 |
 | 인증 우회·세션 탈취 | 초대제 + sub 고정 + Secure/HttpOnly/Lax 쿠키 + Origin·JSON 강제 + RLS. dev 로그인은 production에서 시작 거부 |
+
+## 13. 운영 체크리스트
+
+배포 전에 한 번씩 확인한다. 명령은 `deploy/server`에서, 자세한 절차는 README "서버".
+
+- [ ] Google OAuth 클라이언트: 웹 애플리케이션, 리디렉션 URI `https://<도메인>/auth/google/callback`(`YTC_PUBLIC_URL`과 같은 출처), 범위 `openid email profile`. 설계 T12의 "실제 Google 로그인 1회 확인"은 여기서 한다(테스트는 가짜 IdP만 썼다).
+- [ ] 도메인과 HTTPS: DNS가 서버를 가리키고 `--profile tls`(caddy), 또는 Tailscale 등 사설망. production은 https `YTC_PUBLIC_URL`이 아니면 시작하지 않는다.
+- [ ] `YTC_SESSION_SECRET`·DB 비밀번호 둘(owner와 app은 서로 다르게)·MinIO 키는 `secrets.token_urlsafe`로 만들고 `.env`는 커밋하지 않는다.
+- [ ] `ANTHROPIC_API_KEY`와 `YTC_DAILY_USD`(사용자당 하루 한도, 기본 1.00). 사용자별 값은 `add-user --daily-limit`. `admin usage`로 주기적으로 본다.
+- [ ] 초대 목록: `admin add-user`로 넣은 이메일만 로그인된다. 나갈 사람은 `disable-user`(세션도 끊긴다). Google 동의 화면이 "테스트"면 테스트 사용자에도 넣어야 한다.
+- [ ] `YT_PROXY`: 서버 IP에서 자막 수집이 막히면 채운다. `YT_FETCH_INTERVAL`은 서버 전체가 나눠 쓴다.
+- [ ] 기존 작업 폴더가 있으면 `admin import --dry-run` 후 실제 가져오기.
+- [ ] 백업: **아직 없음(S10 대기).** 그때까지 `pgdata`·`minio` 볼륨을 직접 백업한다(PG 덤프 + 버킷 복사). 복구 절차도 한 번 시험해 둔다.
+- [ ] 알려진 한계: 재시작하면 진행 중 작업이 멈춘다, 서버 v1 비활성 기능(라이브러리·자막 영상·촬영 영상·srtfit), 정합성 점검·휴지통 만료 없음.

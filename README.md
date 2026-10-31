@@ -7,6 +7,7 @@
 - 설계: [`yt-coach-plugin-design.md`](yt-coach-plugin-design.md) (v2.2)
 - 로컬 UI 설계: [`docs/superpowers/specs/2026-10-23-local-ui-design.md`](docs/superpowers/specs/2026-10-23-local-ui-design.md)
 - 개발 계획: [`PLAN.md`](PLAN.md)
+- 서버판 설계: [`docs/superpowers/specs/2026-11-01-server-edition-design.md`](docs/superpowers/specs/2026-11-01-server-edition-design.md)
 
 ## 커맨드
 
@@ -72,6 +73,70 @@ bin\ytc.cmd ui           # Git Bash 없는 Windows
 - `anthropic-api`는 환경 변수 `ANTHROPIC_API_KEY`가 필요합니다. 키는 파일·로그에 남기지 않습니다.
 - 오류 코드: `llm_not_configured`(설정·키 없음), `llm_auth`(키 거부), `llm_failed`(호출 실패). `claude-cli`는 기존 `claude_missing`·`claude_login`을 그대로 씁니다.
 - 터미널의 `/yt-coach:*` 커맨드는 Claude Code가 직접 해석하므로 이 설정과 무관합니다.
+
+## 두 가지 판
+
+같은 코어를 세 가지 방법으로 쓸 수 있습니다. 작업 폴더 형식은 모두 같습니다.
+
+| 판 | 대상 | 실행 |
+|---|---|---|
+| 플러그인(기본) | 내 PC의 Claude Code | 아래 "설치". 이 문서의 나머지는 이 판 기준이고 바뀐 것이 없습니다 |
+| 개인 컨테이너 | 한 사람, 내 PC에서 Docker로 | `deploy/local` |
+| 서버 | 지인 몇 명이 각자 로그인해서 쓰는 한 대의 서버 | `deploy/server` |
+
+컨테이너 두 판은 Claude를 `ANTHROPIC_API_KEY`로 부르고(구독 로그인이 아닙니다), Docker와 Compose가 필요합니다.
+
+### 개인 컨테이너 (`deploy/local`)
+
+```bash
+cd deploy/local
+cp .env.example .env        # ANTHROPIC_API_KEY 채우기
+docker compose up -d --build
+docker compose logs ytc     # 나온 http://127.0.0.1:8765/?key=... 주소를 브라우저로 연다
+```
+
+- 비워 두면 `deploy/local/work/`에 새 작업 폴더를 만듭니다. 쓰던 폴더를 쓰려면 `.env`에 `YTC_WORK_DIR=C:/내/작업폴더`(슬래시)를 적습니다.
+- 주의: 그 폴더는 **읽기/쓰기**로 붙습니다(컨테이너가 `workspace/`와 `ui.lock`을 씁니다). 같은 폴더를 내 PC의 `ytc ui`와 동시에 열지 말고, 먼저 `ytc ui --stop` 하세요.
+- 꺼져 있는 기능(화면에서 숨김, API는 403): 공용 라이브러리, 자막 영상 만들기. 촬영 영상 처리는 compose의 `/footage:ro` 줄을 풀어 쓸 수 있습니다.
+- 화면은 `127.0.0.1`에만 열립니다. 끄기: `docker compose down`.
+
+### 서버 (`deploy/server`)
+
+PostgreSQL + MinIO + 앱 + 마이그레이션이 한 compose로 뜹니다. 사용자는 초대한 Google 계정만 들어옵니다.
+
+1. `cd deploy/server && cp .env.example .env` 후 필수 값을 채웁니다: `YTC_PUBLIC_URL`(`https://도메인`), `YTC_SESSION_SECRET`, DB 비밀번호 둘, MinIO 키 둘, `ANTHROPIC_API_KEY`. 비밀번호는 `python -c "import secrets;print(secrets.token_urlsafe(48))"`로 만들고 `$`는 넣지 않습니다.
+2. Google Cloud Console에서 OAuth 클라이언트를 만듭니다.
+   - 동의 화면: 사용자 유형 **외부**, 범위는 `openid email profile`만. 게시 상태가 "테스트"면 테스트 사용자로 넣은 계정만 로그인됩니다.
+   - 사용자 인증 정보 > OAuth 클라이언트 ID > 유형 **웹 애플리케이션**.
+   - 승인된 리디렉션 URI: `https://<도메인>/auth/google/callback` (`YTC_PUBLIC_URL`과 글자 그대로 같고 끝에 `/` 없음).
+   - 클라이언트 ID·보안 비밀을 `.env`의 `YTC_GOOGLE_CLIENT_ID`, `YTC_GOOGLE_CLIENT_SECRET`에 넣습니다.
+3. `docker compose up -d --build` — DB 마이그레이션(`migrate`)과 버킷 생성이 먼저 돌고 앱이 뜹니다.
+4. HTTPS: 도메인이 이 서버를 가리키면 `docker compose --profile tls up -d`(caddy, 자동 인증서, `YTC_DOMAIN` 필요). 앱은 `127.0.0.1:8080`에만 열리므로 Tailscale serve 같은 사설망 프록시를 앞에 둬도 됩니다. production은 https 주소가 아니면 시작하지 않습니다.
+5. 사용자 초대(초대한 이메일만 로그인됩니다):
+
+```bash
+docker compose --profile admin run --rm admin add-user you@gmail.com --admin
+docker compose --profile admin run --rm admin add-user friend@gmail.com --daily-limit 0.5
+```
+
+| 관리 명령 (`python -m server.admin`) | 하는 일 |
+|---|---|
+| `add-user <이메일> [--name N] [--daily-limit USD] [--admin]` | 초대(이미 있으면 `user_exists` 오류) |
+| `disable-user <이메일>` | 비활성. 로그인 중이던 세션도 끊김 |
+| `import <폴더> --user <이메일> [--dry-run] [--overwrite] [--overwrite-memo]` | 내 PC 작업 폴더를 그 사용자 계정으로 올림. 다시 실행해도 안전하고, 서버에서 고친 `## 내 메모`는 `--overwrite-memo`가 없으면 지키며 올린 뒤 목록을 비교해 확인 |
+| `usage [--days N]` | 사용자별 LLM 사용량 집계 |
+
+```bash
+docker compose --profile admin run --rm -v C:/내/작업폴더:/import:ro admin import /import --user you@gmail.com --dry-run
+```
+
+- LLM 비용: 운영자 키 하나를 같이 씁니다. 사용자당 하루(한국 시간) 한도 `YTC_DAILY_USD`(기본 1.00), 넘으면 안내 문구와 함께 막힙니다. 서버 전체 동시 작업은 영상 `YTC_MEDIA_SLOTS`(2)·Claude `YTC_LLM_SLOTS`(4)입니다.
+- 서버 v1에서 꺼진 기능: 공용 라이브러리, 자막 영상 만들기, 촬영 영상 처리, 자막 시간 맞추기(srtfit). 촬영 영상은 내 PC 판에서 처리한 뒤 `import`로 옮깁니다.
+- 앱이 다시 시작되면 진행 중이던 작업은 멈춥니다(저장된 문서는 그대로).
+- 유튜브가 서버 IP를 막으면 `.env`의 `YT_PROXY`를 채웁니다.
+- 참고: MinIO 공식 이미지가 중단돼 Chainguard 빌드(`cgr.dev/chainguard/minio`)를 다이제스트로 고정해 씁니다. 갱신 방법은 서버 설계 §9.3.
+- 아직 없는 것: 백업·정합성 점검·휴지통 만료(S10). 운영 전에 `pgdata`, `minio` 볼륨을 직접 백업하세요.
+- 설계: [`docs/superpowers/specs/2026-11-01-server-edition-design.md`](docs/superpowers/specs/2026-11-01-server-edition-design.md)
 
 ## 설치
 
@@ -214,6 +279,8 @@ Claude가 라이브러리를 직접 부를 수 있는 도구 8개를 제공합�
 ```bash
 pytest tests/
 ```
+
+서버판 테스트(`tests/server`, `tests/contract`)는 Docker가 있을 때만 `YTC_TEST_DOCKER=1 pytest tests/server tests/contract`로 돌립니다(없으면 건너뜁니다).
 
 실제 링크 테스트용 목록은 `tests/fixtures/links.txt`에 둡니다.
 

@@ -4,6 +4,7 @@
 개인 크리에이터용 Claude Code 플러그인. 사용자가 직접 모은 유튜브 레퍼런스를 분석해
 무엇을 만들지, 어떤 흐름·촬영으로 갈지에 대한 **모티브**를 주고, 기획·진단·일일 미션으로 이어간다.
 - 설계: `yt-coach-plugin-design.md` (v2). 설계와 충돌하면 설계서를 먼저 고친다.
+- 서버판(2026-11-01 구현): `server/`(ASGI·PG·MinIO·Google 로그인·관리 CLI)와 `deploy/`(Dockerfile, `local`·`server` compose). 설계는 `docs/superpowers/specs/2026-11-01-server-edition-design.md`. `scripts/`는 `server`를 import하지 않는다(AST 게이트). **로컬판(플러그인·`ytc ui`) 동작은 바이트·JSON까지 그대로 둔다.** `scripts/` 변경은 기본값이 로컬 동작인 작은 이음매만.
 - 작업 순서: `PLAN.md`. Phase 순서를 지키고, 완료 조건을 실제 링크로 확인한 뒤 체크한다.
 
 ## 핵심 원칙
@@ -24,11 +25,11 @@
 ## 개발 환경
 - Python 3.11+. 의존성은 `requirements.txt`. ffmpeg는 선택(현재 코드는 쓰지 않음: 컷은 OpenCV, STT·촬영 영상 디코딩은 PyAV).
 - 로컬 실행 전제. 자막 차단 시 `YT_PROXY` 안내.
-- 테스트: `pytest tests/`. 실제 링크는 `tests/fixtures/links.txt`.
+- 테스트: `pytest tests/`. 실제 링크는 `tests/fixtures/links.txt`. `tests/server`·`tests/contract`는 PG·MinIO가 필요해 `YTC_TEST_DOCKER=1`(Docker)이 없으면 skip된다. 서버를 건드리면 이 값을 켜고 돌린다.
 - 프로세스를 이미지 이름으로 일괄 종료하지 않는다(`taskkill /IM python.exe`, `Stop-Process -Name python`, `pkill python`, `node.exe` 포함 금지). 사용자의 UI 서버와 다른 프로그램까지 죽인다. UI 서버는 `ytc ui --stop`, 남은 프로세스는 직접 띄운 PID나 그 포트를 쓰는 PID만 끈다.
 
 ## 작업 방식
 - 스킬 프롬프트와 사용자 대면 문구는 한국어. 출력 포맷은 스킬 안에 고정 예시로 둔다.
 - 커맨드·스킬을 추가하면 README 커맨드 표를 갱신한다.
-- 보류 항목(채널 자동 수집, Analytics 연동)은 구현하지 않는다. 로컬 전용 UI(`ytc ui`)는 허용. 공용 라이브러리(지인 GitHub 저장소 공유)는 허용. 자막 영상 렌더(Remotion, 사용자가 설치할 때만)도 허용.
+- 보류 항목(채널 자동 수집, Analytics 연동)은 구현하지 않는다. 지인 규모 서버판(`server/`, 초대제)은 허용하되 공개 서비스는 하지 않는다. 로컬 전용 UI(`ytc ui`)는 허용. 공용 라이브러리(지인 GitHub 저장소 공유)는 허용. 자막 영상 렌더(Remotion, 사용자가 설치할 때만)도 허용.
 - 호스팅·다중 사용자 웹 서비스는 서버판(v2, `docs/superpowers/specs/2026-10-31-multiuser-server-design.md`)에 한해 허용한다. 지인 규모, 공개 서비스는 하지 않는다. 로컬판(v1)의 작업 폴더 형식과 md 내용은 바꾸지 않는다(동작 변경은 설계서 결정에 따른다).
