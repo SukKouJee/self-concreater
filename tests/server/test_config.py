@@ -64,3 +64,16 @@ def test_s3_bucket_connect_uses_max_pool_connections() -> None:
     bucket = S3Bucket.connect("http://127.0.0.1:9", "ak", "sk", "b", max_pool_connections=33)
     assert bucket.client.meta.config.max_pool_connections == 33
     assert S3Bucket.connect("http://127.0.0.1:9", "ak", "sk", "b").client.meta.config.max_pool_connections == 10
+
+
+@pytest.mark.parametrize("name", ["YTC_SCRATCH_DIR", "YTC_STATE_DIR"])
+@pytest.mark.parametrize("value", ["tmp/ytc", "./state", "ytc"])
+def test_relative_scratch_or_state_dir_is_config_invalid(name: str, value: str) -> None:
+    with pytest.raises(ScriptError) as e:
+        StorageSettings.from_env({**BASE, name: value})
+    assert e.value.code == "config_invalid" and name in e.value.message
+
+
+def test_native_absolute_dirs_are_accepted(tmp_path: Path) -> None:
+    s = StorageSettings.from_env({**BASE, "YTC_SCRATCH_DIR": str(tmp_path / "t"), "YTC_STATE_DIR": str(tmp_path)})
+    assert s.scratch_dir == tmp_path / "t" and s.state_dir == tmp_path

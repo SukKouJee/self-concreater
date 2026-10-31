@@ -1,17 +1,22 @@
 """동등성 시나리오(서버 설계 §10-2): 같은 코어 작업 순서를 File Ctx(작업 폴더)와 서버 Ctx(ServerBackend)에서 돌리고
 작업 폴더 트리 바이트·폴더·반환 JSON을 비교한다. PG 16 + MinIO가 없으면 skip.
 
-시나리오: scaffold·init_category·프로필 → 수집 캐시(raw·cuts) → 영상 md 쓰기(ref 7 + mine 1)·relabel → 유형화 run·apply
+시나리오: scaffold·init_category·프로필 → 수집 캐시(raw·cuts, 지울 영상은 frames·shots도)
+→ 영상 md 쓰기(ref 7 + mine 1)·relabel
+→ 유형화 run·apply
 → 모티브 카드 → 기획안 저장 → 콘티 저장·컷 수정·이름 붙이기·되돌리기·이력 → 미션 give·submit → 리포트 → 현황
 → 휴지통(영상 하나, 기획안+콘티+이력 폴더).
 
-허용하는 차이(문서화된 것만, 이 파일의 `_normalize`·`_local_view`가 그것만 지운다):
+허용하는 차이(문서화된 것만. 반환 JSON은 `RULES`의 (단계, 필드 경로) 쌍에서만 바꾸고, 규칙마다 두 쪽에서 실제로
+걸렸는지 확인한다. 트리는 `_local_view`가 아래 3·4만 뺀다):
 1. 표시 문자열: 작업 폴더 라벨(`scaffold.root`, `status.work_root`)은 File = 폴더 절대 경로, 서버 = `ytc:{email}`.
    `abs_html`·`abs_path`(display_path)는 File = 절대 경로, 서버 = 키(§3.3). 둘 다 "작업 폴더 + 키" 꼴로 맞춰 비교한다.
 2. 시각: `videomd.write`의 `written_at`(반환값만, 파일에는 없다)은 지운다. 휴지통 스탬프(`workspace/trash/<stamp>`)는
    순서 번호로 바꿔 비교한다. 파일 안의 시각은 고정 시계(cluster `datetime`, conti `now`)로 두 쪽이 같다.
 3. 휴지통의 공유 캐시: 서버는 `workspace/{raw,cuts,frames,shots}/` 키를 옮기지 않는다(§3.3, 다른 사용자 데이터).
-   File의 휴지통에서 그 키를 빼고 비교하고, 서버에는 그 캐시가 남아 있는지 따로 본다.
+   File의 휴지통(과 `trash.*`의 `moved`)에서 그 키를 빼고 비교하고, 서버에는 그 캐시가 남아 있는지 따로 본다.
+   주의: `trash.video`의 `kept_data`는 "다른 카테고리에도 같은 영상 md가 있어 분석 데이터를 옮기지 않았다"는 뜻이지
+   서버가 공유 캐시를 남겼다는 뜻이 아니다. 이 시나리오에서는 두 판 모두 false다(같은 값으로 비교된다).
 4. 임시 폴더 `workspace/tmp/`(scratch)는 저장소가 아니다: File 트리에서 뺀다.
    공유 캐시 폴더도 사용자 폴더 목록에서 뺀다.
 """
@@ -48,6 +53,7 @@ REFS = [(f"refA{i}", SKELETON_A, "result_first" if i < 3 else "question", NARRAT
     + [(f"refB{i}", SKELETON_B, "result_first" if i < 2 else "situation", NARRATIVES[(i + 2) % 5], i * 0.2)
        for i in range(3)]
 MINE = "mineVid01"
+TRASHED = "refB2"
 
 
 class _FrozenDatetime(datetime):
@@ -142,10 +148,7 @@ def scenario(c: Ctx, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, Any]]:
 
     def step(name: str, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
         result = fn(*args, **kwargs)
-        shown = json.loads(json.dumps(result, ensure_ascii=False))
-        if isinstance(shown, dict):
-            shown.pop("written_at", None)                       # allowed difference 2 (return value only)
-        out.append((name, shown))
+        out.append((name, json.loads(json.dumps(result, ensure_ascii=False))))
         return result
 
     with ctx_mod.use(c):
@@ -155,6 +158,10 @@ def scenario(c: Ctx, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, Any]]:
         for vid, skeleton, hook, narrative, shift in [*REFS, (MINE, SKELETON_A, "question", "journey", 0.0)]:
             fetch.save_raw(_raw(vid, f"제주 한 달 살기 {vid}! 🏝️"))
             c.shared.put(keys.cuts(vid), refstore.text_bytes(json.dumps(_cuts(vid, shift), ensure_ascii=False)))
+            if vid == TRASHED:                                   # its whole cache goes to File's trash
+                c.shared.put(keys.frames_dir(vid) + "0001.jpg", b"JPEG frame 1")
+                c.shared.put(keys.frames_dir(vid) + "0002.jpg", b"JPEG frame 2")
+                c.shared.put(keys.shots(vid), refstore.text_bytes(json.dumps({"id": vid, "frames": []}, indent=1)))
             role = "mine" if vid == MINE else "ref"
             path = _handoff(c, f"analysis_{vid}.json", _analysis(skeleton, hook, narrative, shift))
             step(f"videomd.write {vid}", videomd.write, vid, CAT, role, path)
@@ -177,7 +184,7 @@ def scenario(c: Ctx, monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, Any]]:
         step("mission.submit", mission.submit, "C:\\clips\\wave.mp4", "right", "좋았다 👍", DAY, "파도 찍음")
         step("report.build", report.build, CAT, DAY)
         step("status", status.overview)
-        step("trash.video", videomd.trash_video, "refB2", CAT)
+        step("trash.video", videomd.trash_video, TRASHED, CAT)
         step("trash.draft", draft.trash, draft_key)
         step("status.after", status.overview)
     return out
@@ -228,26 +235,61 @@ def _server_view(backend: Any, uid: str) -> tuple[dict[str, str], set[str]]:
             {f for f in out.folders if not f.startswith(keys.TRASH)})
 
 
-ABS_FIELDS = ("abs_html", "abs_path")      # display_path: File = str(root / key), server = key (§3.3)
-LABEL_FIELDS = ("root", "work_root")       # store.label(): File = str(root), server = ytc:{email}
-TIME_FIELDS = ("mtime",)                   # status.recent: wall-clock write time (the order is still compared)
+WRITE_STEPS = [f"videomd.write {vid}" for vid, *_ in REFS] + [f"videomd.write {MINE}"]
+# (step, field path, kind). "*" = every list item. Nothing outside these pairs is normalized.
+RULES: list[tuple[str, tuple[str, ...], str]] = [
+    ("scaffold", ("root",), "label"),                       # 1. store.label(): File = str(root), server = ytc:{email}
+    ("status", ("work_root",), "label"),
+    ("status.after", ("work_root",), "label"),
+    ("conti.save", ("abs_html",), "display"),               # 1. display_path: File = str(root / key), server = key
+    ("conti.update_cut", ("abs_html",), "display"),
+    ("report.build", ("abs_path",), "display"),
+    *((name, ("written_at",), "time") for name in WRITE_STEPS),   # 2. wall clock, return value only
+    ("status", ("recent", "*", "mtime"), "time"),           # 2. write time (the order of `recent` is still compared)
+    ("status.after", ("recent", "*", "mtime"), "time"),
+    ("trash.video", ("trash",), "stamp"),                   # 2. trash folder stamp
+    ("trash.draft", ("trash",), "stamp"),
+    ("trash.video", ("moved",), "shared"),                  # 3. the server does not move shared-cache keys
+]
 
 
-def _normalize(value: Any, to_key: Callable[[str], str]) -> Any:
-    """허용 차이 1·2만 지운다: 라벨 필드 → `<root>`, display_path 필드 → `<root>/<키>`, 쓰기 시각 → `<mtime>`,
-    휴지통 스탬프 → `<stamp>`."""
-    if isinstance(value, dict):
-        return {k: ("<root>" if k in LABEL_FIELDS and isinstance(v, str)
-                    else "<mtime>" if k in TIME_FIELDS and isinstance(v, (int, float))
-                    else f"<root>/{to_key(v)}" if k in ABS_FIELDS and isinstance(v, str)
-                    else _normalize(v, to_key)) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_normalize(v, to_key) for v in value]
-    if isinstance(value, str):
-        m = _STAMP_RE.match(value)
-        if m and not m.group(2):
-            return f"{keys.TRASH}<stamp>"
-    return value
+def _at(value: Any, path: tuple[str, ...], fn: Callable[[Any], Any]) -> int:
+    """value 안 path 자리의 값을 fn(값)으로 바꾼다(제자리). -> 바꾼 개수."""
+    head, rest = path[0], path[1:]
+    if head == "*":
+        items = list(enumerate(value)) if isinstance(value, list) else []
+    else:
+        items = [(head, value[head])] if isinstance(value, dict) and head in value else []
+    hits = 0
+    for k, v in items:
+        if rest:
+            hits += _at(v, rest, fn)
+        else:
+            value[k] = fn(v)
+            hits += 1
+    return hits
+
+
+def _normalized(outs: list[tuple[str, Any]], to_key: Callable[[str], str], *, local: bool) -> list[tuple[str, Any]]:
+    """RULES만 적용한 사본. 규칙이 하나라도 이 쪽에서 안 걸리면 실패
+    (규칙이 낡아 아무것도 안 비교하게 되는 것을 막는다)."""
+    def stamp(v: str) -> str:
+        assert _STAMP_RE.match(v) and not _STAMP_RE.match(v).group(2), v   # type: ignore[union-attr]
+        return f"{keys.TRASH}<stamp>"
+
+    def shared(v: list[str]) -> list[str]:
+        kept = [k for k in v if keys.kind(k) != "shared"]
+        assert local or kept == v, v                          # the server never lists a shared key as moved
+        return kept
+
+    kinds: dict[str, Callable[[Any], Any]] = {
+        "label": lambda v: "<root>", "display": lambda v: f"<root>/{to_key(v)}", "time": lambda v: "<time>",
+        "stamp": stamp, "shared": shared}
+    copied = json.loads(json.dumps(outs, ensure_ascii=False))
+    by_step = {name: value for name, value in copied}
+    for step_name, path, kind in RULES:
+        assert _at(by_step[step_name], path, kinds[kind]) >= 1, (step_name, path)
+    return [(name, value) for name, value in copied]
 
 
 @pytest.fixture
@@ -270,15 +312,19 @@ def test_work_tree_bytes_and_folders_are_equal(runs: dict[str, Any]) -> None:
     assert sorted(server_folders) == sorted(local_folders)
     # the scenario really reached every store: docs, objects, shared cache, trash (doc, object, folder)
     trash = [k for k in local_files if k.startswith(keys.TRASH)]
-    assert keys.TRASH + "#1/" + keys.video_md(CAT, "refB2") in trash
+    assert keys.TRASH + "#1/" + keys.video_md(CAT, TRASHED) in trash
     assert any(k.startswith(keys.TRASH + "#2/workspace/conti_history/") for k in trash)
     assert keys.typify(CAT) in local_files and keys.report_html(CAT, DAY) in local_files
     assert keys.raw("refA0") in local_files and keys.mission_md(DAY) in local_files
     # allowed difference 3: the server keeps the trashed video's shared cache in place
     server = runs["server"]
     with ctx_mod.use(server):
-        assert server.shared.exists(keys.raw("refB2")) and server.shared.exists(keys.cuts("refB2"))
-    assert not (runs["root"] / "workspace" / "raw" / "refB2.json").exists()       # File moved it to its trash
+        cache = (keys.raw(TRASHED), keys.cuts(TRASHED), keys.shots(TRASHED), keys.frames_dir(TRASHED) + "0001.jpg")
+        for key in cache:
+            assert server.shared.exists(key), key
+    for key in (keys.raw(TRASHED), keys.shots(TRASHED), keys.frames_dir(TRASHED) + "0002.jpg"):
+        assert not runs["root"].joinpath(*key.split("/")).exists(), key            # File moved them to its trash
+        assert f"{keys.TRASH}#1/{key}" not in local_files                           # ...and they are not compared
 
 
 def test_returned_json_is_equal_except_documented_display_strings(runs: dict[str, Any]) -> None:
@@ -288,12 +334,12 @@ def test_returned_json_is_equal_except_documented_display_strings(runs: dict[str
         assert s.startswith(root), s
         return s[len(root):].lstrip("\\/").replace("\\", "/")
 
-    local = [(n, _normalize(v, local_key)) for n, v in runs["local_out"]]
-    for _, value in local:                                     # allowed difference 3: shared keys stay on the server
-        if isinstance(value, dict) and isinstance(value.get("moved"), list):
-            value["moved"] = [k for k in value["moved"] if keys.kind(k) != "shared"]
-    remote = [(n, _normalize(v, lambda s: s)) for n, v in runs["server_out"]]
+    local = _normalized(runs["local_out"], local_key, local=True)
+    remote = _normalized(runs["server_out"], lambda s: s, local=False)
     assert [n for n, _ in remote] == [n for n, _ in local]
     for (name, a), (_, b) in zip(local, remote, strict=True):
         assert b == a, name
     assert dict(runs["server_out"])["scaffold"]["root"] == "ytc:eq@example.com"
+    trashed = dict(runs["local_out"])["trash.video"]
+    assert trashed["kept_data"] is False                        # see the header: not about the shared cache
+    assert set(trashed["moved"]) > {keys.raw(TRASHED), keys.shots(TRASHED), keys.frames_dir(TRASHED).rstrip("/")}

@@ -27,6 +27,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Final
 
+import psycopg
+
 from scripts import keys as _keys
 from scripts import refstore
 from scripts.common import ScriptError
@@ -237,7 +239,9 @@ class PgTrash:
     - 공유 캐시 키(`workspace/{raw,cuts,frames,shots}/`)는 옮기지 않고 `moved`에서 뺀다:
       다른 사용자도 쓰는 원본 데이터다(§3.3).
     - 한 트랜잭션: 사용자 잠금 → 스탬프 고르기 → 행 잠금(문서 FOR UPDATE, 객체는 S3ObjectStore와 같은 키 잠금, 키 순서)
-      → 휴지통 객체 복사 → trash_items 넣기 → 원래 행 지우기 → 커밋 → 원래 MinIO 객체 지우기.
+      → 휴지통 객체 복사 → trash_items 넣기 → 원래 행 지우기 → 커밋 → 원래 MinIO 객체 지우기
+      (`_delete_originals`: 따로 트랜잭션, 같은 키 잠금, 그사이 다시 생긴 행의 객체는 남긴다).
+      커밋 중 연결이 끊기면(결과 불명) 복사본을 지우지 않고 경고를 남긴 뒤 예외를 그대로 낸다(S10 점검).
       커밋 전 실패면 롤백하고 복사본을 지운다(아무것도 옮기지 않음).
       원래 객체 삭제는 커밋 뒤라 "행이 있으면 객체가 있다"가 늘 성립한다.
       그 삭제가 실패하면 행 없는 고아 객체(S10 점검)로 남고 경고 로그를 남긴다(이동은 이미 끝났다).
@@ -261,7 +265,7 @@ class PgTrash:
         names.sort(key=lambda n: n == last_name)
         moving = [n for n in names if _keys.kind(n) != "shared"]
         copied: builtins.list[str] = []
-        originals: builtins.list[str] = []
+        committing = False
         try:
             with self._db.user_tx(self._uid) as conn:
                 conn.execute("SELECT pg_advisory_xact_lock(%s::int, hashtext(%s))", (_LOCK_TRASH, str(self._uid)))
@@ -272,19 +276,46 @@ class PgTrash:
                     self._bucket.copy(user_s3_key(self._uid, key), dst)
                     copied.append(dst)
                 self._record(conn, stamp, plan)
-                originals = [user_s3_key(self._uid, k) for k in plan.objects]
+                committing = True                 # leaving the block commits
         except BaseException as e:
+            if committing and isinstance(e, psycopg.OperationalError):
+                # The connection died during COMMIT: the move may or may not have committed. If it did, the
+                # trash rows point at these copies, so they must not be deleted. Keep them (and the originals)
+                # and leave it to the S10 check, which can see which side has rows.
+                log.warning("휴지통 이동의 커밋 결과를 알 수 없습니다. "
+                            "복사본·원래 객체를 그대로 둡니다(S10 점검): %s: %s",
+                            copied, e)
+                e.add_note(f"휴지통 이동 커밋 결과 불명(S10 점검): {copied}")
+                raise
             if copied:
                 self._discard(copied, e)
             if isinstance(e, OSError):
                 raise _trash_failed(e) from e
             raise
-        if originals:
-            try:
-                self._bucket.delete_many(originals)
-            except OSError as e:          # moved already (rows point at the trash copies): leftovers are orphans
-                log.warning("휴지통 이동 뒤 원래 객체를 지우지 못했습니다(고아, S10 점검): %s: %s", originals, e)
+        self._delete_originals(plan.objects)
         return {"trash": f"{_keys.TRASH}{stamp}", "moved": moving}
+
+    def _delete_originals(self, object_keys: builtins.list[str]) -> None:
+        """커밋 뒤 원래 MinIO 객체를 지운다. 이동 트랜잭션은 끝났으므로 S3ObjectStore.put·delete와 같은
+        키 잠금을 키 순서로 다시 잡고, 그사이 같은 키에 행이 다시 생긴 것(동시 put의 새 바이트)은 건드리지 않고
+        행이 없는 것만 지운다. 실패하면 행 없는 고아 객체(S10 점검)로 남기고 경고 로그만 남긴다
+        (이동은 이미 끝났고 행은 휴지통 복사본을 가리킨다)."""
+        if not object_keys:
+            return
+        wanted = sorted(set(object_keys))
+        stale: builtins.list[str] = []
+        try:
+            with self._db.user_tx(self._uid) as conn:
+                for key in wanted:
+                    lock_user_object(conn, self._uid, key)
+                rows = conn.execute("SELECT key FROM objects WHERE user_id = %s AND key = ANY(%s)",
+                                    (self._uid, wanted)).fetchall()
+                alive = {str(r[0]) for r in rows}
+                stale = [user_s3_key(self._uid, k) for k in wanted if k not in alive]
+                if stale:
+                    self._bucket.delete_many(stale)       # inside the locks: no put of these keys can interleave
+        except (OSError, psycopg.Error) as e:
+            log.warning("휴지통 이동 뒤 원래 객체를 지우지 못했습니다(고아, S10 점검): %s: %s", stale or wanted, e)
 
     def _stamp(self, conn: Conn) -> str:
         """`YYYYmmdd-HHMMSS`, 같은 초에 이미 쓴 스탬프면 `-2`, `-3` …(FileTrash의 폴더 이름과 같다)."""

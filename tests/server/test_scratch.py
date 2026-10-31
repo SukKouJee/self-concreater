@@ -4,6 +4,7 @@ PG·MinIO가 필요 없다(디스크만).
 """
 from __future__ import annotations
 
+import os
 import uuid
 from pathlib import Path
 
@@ -168,3 +169,91 @@ def test_clear_scratch_root_removes_only_user_folders(base: Path, state: Path) -
 def test_clear_scratch_root_creates_a_missing_root(base: Path) -> None:
     clear_scratch_root(base)
     assert base.is_dir()
+
+
+# --- fix round 1: PC paths (m-001), symlinks (m-007) ------------------------------------------
+
+def _symlink_or_skip(link: Path, target: Path) -> None:
+    """디렉터리 심볼릭 링크, 안 되면(Windows 권한) junction, 그것도 안 되면 skip."""
+    try:
+        link.symlink_to(target, target_is_directory=True)
+        return
+    except (OSError, NotImplementedError) as e:
+        error = e
+    if os.name == "nt":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+        return
+    pytest.skip(f"cannot create a directory link here: {error}")
+
+
+def test_arg_path_outside_is_both_bad_path_and_value_error_with_server_message(scratch: ServerScratch,
+                                                                              tmp_path: Path) -> None:
+    from server.scratch import PcPathError
+
+    with pytest.raises(PcPathError) as e:
+        scratch.arg_path(tmp_path / "clip.mp4")
+    assert isinstance(e.value, ScriptError) and isinstance(e.value, ValueError)
+    assert e.value.code == "bad_path"
+    assert e.value.message.startswith("서버에서는 PC 파일 경로를 읽을 수 없습니다")
+
+
+def _server_ctx(scratch: ServerScratch) -> object:
+    from scripts.ctx import Ctx
+
+    class OnlyScratch:
+        def scratch(self, user_id: str | None) -> ServerScratch:
+            return scratch
+
+    return Ctx(user_id=str(UID), backend=OnlyScratch())  # type: ignore[arg-type]
+
+
+def test_mission_submit_file_translates_the_pc_path_to_bad_file(scratch: ServerScratch, tmp_path: Path) -> None:
+    from scripts import ctx as ctx_mod
+    from scripts.ui import api_mission
+
+    pc_file = tmp_path / "clip.mp4"
+    pc_file.write_bytes(b"x")
+    with ctx_mod.use(_server_ctx(scratch)):  # type: ignore[arg-type]
+        with pytest.raises(ScriptError) as e:
+            api_mission._user_file(str(pc_file))
+    assert e.value.code == "bad_file"
+
+
+def test_conti_video_path_translates_the_pc_path_to_bad_video(scratch: ServerScratch, tmp_path: Path) -> None:
+    from scripts import conti
+    from scripts import ctx as ctx_mod
+
+    pc_file = tmp_path / "clip.mp4"
+    pc_file.write_bytes(b"x")
+    with ctx_mod.use(_server_ctx(scratch)):  # type: ignore[arg-type]
+        with pytest.raises(ScriptError) as e:
+            conti._clean_video_path(str(pc_file))
+    assert e.value.code == "bad_video"
+
+
+def test_clear_scratch_root_removes_uuid_named_symlinks_without_following(base: Path, tmp_path: Path) -> None:
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    (target / "keep.txt").write_text("keep", encoding="utf-8")
+    base.mkdir()
+    link = base / str(UID)
+    _symlink_or_skip(link, target)
+    clear_scratch_root(base)
+    assert not link.exists() and not link.is_symlink()
+    assert (target / "keep.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_scratch_refuses_a_symlinked_user_tmp_folder(base: Path, state: Path, tmp_path: Path) -> None:
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    base.mkdir()
+    _symlink_or_skip(base / str(UID), target)
+    s = ServerScratch(base, state, UID)
+    for call in (lambda: s.tmp_path("x.json"), lambda: s.local_path("tmp"), lambda: s.arg_path(target / "x"),
+                 lambda: s.key_of(target / "x")):
+        with pytest.raises(ScriptError) as e:
+            call()
+        assert e.value.code == "scratch_unsafe"
+    assert list(target.iterdir()) == []

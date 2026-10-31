@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -193,3 +194,88 @@ def test_server_copy_failure_rolls_back_and_cleans_copies(server_c: Ctx, request
     assert c.store.exists(CONTI) and c.objects.exists(HTML) and c.objects.exists(keys.history_version(CONTI, 2))
     assert not [n for n in bucket.keys("") if n.startswith("trash/")]
     assert c.objects.get(HTML) == b"<html>\r\n</html>\r\n"
+
+
+# --- fix round 1: cleanup after commit (I-001, m-006), ambiguous commit (m-002) --------------
+
+def test_server_put_between_commit_and_cleanup_survives(server_c: Ctx, request: pytest.FixtureRequest,
+                                                        monkeypatch: pytest.MonkeyPatch) -> None:
+    """커밋과 원래 객체 삭제 사이에 같은 키를 다시 쓰면(동시 put) 새 바이트가 남아야 한다."""
+    from server.backend import export_tree
+    from server.pgstore import PgTrash
+
+    c = server_c
+    _seed(c)
+    real = PgTrash._delete_originals
+
+    def racing(self: PgTrash, object_keys: list[str]) -> None:
+        c.objects.put(HTML, b"new bytes")                     # another request writes the same key right now
+        real(self, object_keys)
+
+    monkeypatch.setattr(PgTrash, "_delete_originals", racing)
+    out = c.trash.move([HTML, HIST], last=HTML)
+    assert c.objects.get(HTML) == b"new bytes"
+    assert not c.objects.exists(keys.history_version(CONTI, 1))
+    bucket = request.getfixturevalue("s3_bucket")
+    assert not [n for n in bucket.keys(f"users/{c.user_id}/") if "conti_history" in n]   # stale ones deleted
+    tree = export_tree(request.getfixturevalue("pg_backend"), c.user_id).files
+    assert tree[f"{out['trash']}/{HTML}"] == b"<html>\r\n</html>\r\n"                 # the trash copy is the old one
+
+
+def test_server_cleanup_failure_after_commit_is_logged_not_raised(server_c: Ctx, request: pytest.FixtureRequest,
+                                                                 monkeypatch: pytest.MonkeyPatch,
+                                                                 caplog: pytest.LogCaptureFixture) -> None:
+    c = server_c
+    _seed(c)
+    bucket = request.getfixturevalue("s3_bucket")
+
+    real_delete_many = bucket.delete_many
+
+    def broken(names: list[str]) -> None:
+        if all(n.startswith("users/") for n in names):           # only the post-commit cleanup (not teardown)
+            raise OSError(5, "minio down", names[0])
+        real_delete_many(names)
+
+    monkeypatch.setattr(bucket, "delete_many", broken)
+    with caplog.at_level("WARNING", logger="server.pgstore"):
+        out = c.trash.move([HTML, CONTI], last=CONTI)
+    assert out["moved"] == [HTML, CONTI]
+    assert not c.objects.exists(HTML) and not c.store.exists(CONTI)
+    backend = request.getfixturevalue("pg_backend")
+    with backend.db.user_tx(c.user_id) as conn:
+        assert conn.execute("SELECT count(*) FROM trash_items").fetchone() == (2,)
+    assert f"users/{c.user_id}/{HTML}" in bucket.keys("")                  # orphan left for S10
+    assert any("고아" in r.getMessage() and HTML in r.getMessage() for r in caplog.records)
+
+
+def test_server_ambiguous_commit_keeps_trash_copies(server_c: Ctx, request: pytest.FixtureRequest,
+                                                    caplog: pytest.LogCaptureFixture) -> None:
+    """커밋 중 연결이 끊기면(결과를 모름) 휴지통 복사본을 지우지 않는다: 커밋됐다면 행이 그 복사본을 가리킨다."""
+    import psycopg
+
+    c = server_c
+    _seed(c)
+    trash = c.trash
+    real_db = trash._db                                          # type: ignore[attr-defined]
+
+    class CommitLost:
+        calls = 0
+
+        @contextmanager
+        def user_tx(self, uid: Any) -> Iterator[Any]:
+            CommitLost.calls += 1
+            with real_db.user_tx(uid) as conn:
+                yield conn
+            if CommitLost.calls == 1:
+                raise psycopg.OperationalError("server closed the connection during COMMIT")
+
+    trash._db = CommitLost()                                     # type: ignore[attr-defined]
+    with caplog.at_level("WARNING", logger="server.pgstore"), pytest.raises(psycopg.OperationalError):
+        trash.move([HTML, CONTI], last=CONTI)
+    bucket = request.getfixturevalue("s3_bucket")
+    assert f"trash/{c.user_id}/" in "".join(bucket.keys("trash/"))           # copies kept
+    assert any("S10" in r.getMessage() for r in caplog.records)
+    backend = request.getfixturevalue("pg_backend")
+    with backend.db.user_tx(c.user_id) as conn:                  # here the commit did happen: rows point at copies
+        rows = conn.execute("SELECT s3_key FROM trash_items WHERE kind = 'object'").fetchall()
+    assert rows and all(str(r[0]) in bucket.keys("trash/") for r in rows)

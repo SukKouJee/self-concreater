@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Final
 
 from scripts.common import ScriptError
@@ -40,6 +40,14 @@ def _int(env: Mapping[str, str], name: str, default: int, minimum: int) -> int:
     if value < minimum:
         raise ScriptError("config_invalid", f"{name}은(는) {minimum} 이상이어야 합니다: {value}")
     return value
+
+
+def _abs_dir(env: Mapping[str, str], name: str, default: str) -> Path:
+    """절대 경로만(상대 경로는 프로세스 cwd에 따라 달라진다). 서버는 POSIX 경로, 테스트는 그 OS의 절대 경로도 받는다."""
+    text = (env.get(name) or "").strip() or default
+    if not (PurePosixPath(text).is_absolute() or Path(text).is_absolute()):
+        raise ScriptError("config_invalid", f"{name}은(는) 절대 경로여야 합니다: {text!r}")
+    return Path(text)
 
 
 @dataclass(frozen=True)
@@ -73,6 +81,6 @@ class StorageSettings:
             db_pool_min=pool_min,
             db_pool_max=pool_max,
             s3_max_pool_connections=_int(env, "YTC_S3_MAX_POOL_CONNECTIONS", DEFAULT_S3_MAX_POOL, 1),
-            scratch_dir=Path((env.get("YTC_SCRATCH_DIR") or "").strip() or DEFAULT_SCRATCH_DIR),
-            state_dir=Path((env.get("YTC_STATE_DIR") or "").strip() or DEFAULT_STATE_DIR),
+            scratch_dir=_abs_dir(env, "YTC_SCRATCH_DIR", DEFAULT_SCRATCH_DIR),
+            state_dir=_abs_dir(env, "YTC_STATE_DIR", DEFAULT_STATE_DIR),
         )
