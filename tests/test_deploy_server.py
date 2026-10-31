@@ -177,8 +177,8 @@ def test_env_example_has_no_values_and_korean_comments() -> None:
     for line in text.splitlines():
         if re.match(r"^[A-Z][A-Z0-9_]*=", line):
             name, value = line.split("=", 1)
-            # secrets and passwords are always empty; only harmless defaults (YTC_ENV) carry a value
-            assert value == "" or name == "YTC_ENV", line
+            # secrets and passwords are always empty; only harmless defaults carry a value
+            assert value == "" or (name, value) in {("YTC_ENV", "production"), ("YTC_PASSWORD_LOGIN", "1")}, line
     assert re.search(r"[가-힣]", text) and "secrets.token_urlsafe" in text
     assert "sk-ant" not in text
 
@@ -230,7 +230,7 @@ def test_compose_stores_are_only_on_the_back_network_and_caddy_only_on_front() -
     for name in ("postgres", "minio", "minio-init", "migrate", "admin"):
         assert services[name]["networks"] == ["back"], name
     assert sorted(services["app"]["networks"]) == ["back", "front"]
-    assert services["caddy"]["networks"] == ["front"]          # caddy cannot reach postgres or minio
+    assert list(services["caddy"]["networks"]) == ["front"]    # caddy cannot reach postgres or minio
 
 
 def test_compose_caddy_fails_fast_with_a_clear_message_when_the_domain_is_empty() -> None:
@@ -261,3 +261,55 @@ def test_docs_explain_that_logout_is_per_browser_and_how_to_sign_out_everywhere(
     for path in (ROOT / "deploy" / "server" / "OPERATIONS.md", ROOT / "README.md"):
         text = path.read_text(encoding="utf-8")
         assert "logout-all" in text and "이 브라우저" in text, path
+
+
+# ---- 이메일+비밀번호 로그인(T15) ------------------------------------------------------------------
+
+def _front_net_default() -> str:
+    m = re.search(r"\$\{YTC_FRONT_NET:-([0-9.]+)\}", COMPOSE.read_text(encoding="utf-8"))
+    assert m is not None
+    return m.group(1)
+
+
+def _expand(value: str) -> str:
+    return value.replace("${YTC_FRONT_NET:-" + _front_net_default() + "}", _front_net_default())
+
+
+def test_compose_passes_password_login_and_env_example_turns_it_on() -> None:
+    env = _services()["app"]["environment"]
+    assert env["YTC_PASSWORD_LOGIN"] == "${YTC_PASSWORD_LOGIN:-}"
+    assert "YTC_PASSWORD_LOGIN=1" in ENV_EXAMPLE.read_text(encoding="utf-8").splitlines()
+
+
+def test_compose_trusts_forwarded_headers_only_from_caddys_fixed_ip() -> None:
+    import ipaddress
+    doc = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+    (pool,) = doc["networks"]["front"]["ipam"]["config"]
+    subnet, dynamic = ipaddress.ip_network(_expand(pool["subnet"])), ipaddress.ip_network(_expand(pool["ip_range"]))
+    caddy_ip = ipaddress.ip_address(_expand(doc["services"]["caddy"]["networks"]["front"]["ipv4_address"]))
+    trusted = _expand(doc["services"]["app"]["environment"]["FORWARDED_ALLOW_IPS"])
+    assert ipaddress.ip_address(trusted) == caddy_ip                      # one exact address, no CIDR, no '*'
+    assert caddy_ip in subnet and caddy_ip not in dynamic                 # app and others cannot take caddy's IP
+    assert caddy_ip != next(subnet.hosts())                               # not the gateway (port-published traffic)
+    assert dynamic.subnet_of(subnet)  # type: ignore[arg-type]
+    assert "--proxy-headers" in _server_stage()
+
+
+def test_caddy_does_not_trust_incoming_forwarded_headers() -> None:
+    text = (SERVER_DIR / "Caddyfile").read_text(encoding="utf-8")
+    directives = [ln for ln in text.splitlines() if not ln.lstrip().startswith("#")]
+    assert not any("trusted_proxies" in ln for ln in directives)
+
+
+def test_env_example_boots_production_with_password_login_only() -> None:
+    env = {"YTC_PUBLIC_URL": "https://ytc.example.com", "YTC_SESSION_SECRET": "x" * 48, "YTC_PASSWORD_LOGIN": "1",
+           "YTC_ENV": "", "YTC_DEV_LOGIN": "", "YTC_GOOGLE_CLIENT_ID": "", "YTC_GOOGLE_CLIENT_SECRET": ""}
+    s = AuthSettings.from_env(env)
+    assert s.production and s.password_login and s.google is None
+
+
+def test_docs_explain_password_users_and_resets() -> None:
+    for path in (SERVER_DIR / "OPERATIONS.md", ROOT / "README.md"):
+        text = path.read_text(encoding="utf-8")
+        for needle in ("--password", "set-password", "clear-password", "--password-stdin", "YTC_PASSWORD_LOGIN"):
+            assert needle in text, (path.name, needle)

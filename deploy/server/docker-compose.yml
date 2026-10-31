@@ -2,7 +2,7 @@
 #   cd deploy/server && cp .env.example .env     # 값을 채운다(.env는 커밋하지 않는다)
 #   docker compose up -d --build                  # postgres, minio, 버킷 생성, 마이그레이션, app
 #   docker compose --profile tls up -d            # 도메인 + 자동 HTTPS가 필요하면 caddy도 함께
-#   docker compose --profile admin run --rm admin add-user you@gmail.com --admin    # 첫 사용자(초대)
+#   docker compose --profile admin run --rm admin add-user you@gmail.com --admin --password    # 첫 사용자(초대, 비밀번호는 물어본다)
 # 변수는 같은 폴더의 .env에서 읽는다(compose 변수 치환). 값에 $ 문자를 넣지 않는다(생성 방법은 .env.example 참고).
 name: ytc-server
 
@@ -23,9 +23,16 @@ x-logging: &logging
     max-file: "3"
 
 # 네트워크: back = 저장소(postgres·minio)와 이를 쓰는 서비스, front = caddy <-> app. postgres·minio는 front에 없다.
+# front는 주소 대역을 고정한다: caddy만 고정 IP(<대역>.2)이고, 앱은 그 IP에서 온 X-Forwarded-For만 클라이언트 IP로 믿는다
+# (uvicorn --proxy-headers + FORWARDED_ALLOW_IPS, 비밀번호 로그인의 IP별 실패 횟수 제한). 다른 컨테이너는 .8~.15(ip_range)에서 받는다.
+# 대역이 이 호스트의 다른 docker 네트워크와 겹치면 .env의 YTC_FRONT_NET(앞 세 자리, 기본 172.31.254)을 바꾼다.
 networks:
   back:
   front:
+    ipam:
+      config:
+        - subnet: "${YTC_FRONT_NET:-172.31.254}.0/28"
+          ip_range: "${YTC_FRONT_NET:-172.31.254}.8/29"
 
 services:
   postgres:
@@ -113,6 +120,9 @@ services:
       YTC_GOOGLE_CLIENT_ID: "${YTC_GOOGLE_CLIENT_ID:-}"
       YTC_GOOGLE_CLIENT_SECRET: "${YTC_GOOGLE_CLIENT_SECRET:-}"
       YTC_DEV_LOGIN: "${YTC_DEV_LOGIN:-}"
+      YTC_PASSWORD_LOGIN: "${YTC_PASSWORD_LOGIN:-}"
+      # uvicorn --proxy-headers: X-Forwarded-For/Proto는 caddy(고정 IP)에서 온 것만 믿는다. 직접 들어온 요청의 헤더는 무시
+      FORWARDED_ALLOW_IPS: "${YTC_FRONT_NET:-172.31.254}.2"
       YTC_DB_DSN: *db-dsn
       YTC_DB_POOL_MIN: "${YTC_DB_POOL_MIN:-}"
       YTC_DB_POOL_MAX: "${YTC_DB_POOL_MAX:-}"
@@ -185,7 +195,10 @@ services:
 
   caddy:
     logging: *logging
-    networks: [front]
+    # 고정 IP: 앱의 FORWARDED_ALLOW_IPS와 같은 값. caddy는 들어온 X-Forwarded-For를 믿지 않고 실제 접속 IP로 새로 쓴다(Caddyfile).
+    networks:
+      front:
+        ipv4_address: "${YTC_FRONT_NET:-172.31.254}.2"
     # 도메인 + 자동 HTTPS(Let's Encrypt). 80·443이 호스트에 열려 있고 YTC_DOMAIN의 DNS가 이 서버를 가리켜야 한다.
     # 쓸 때: docker compose --profile tls up -d  (YTC_PUBLIC_URL=https://<YTC_DOMAIN>)
     image: caddy:2@sha256:36c24ad91a7ff7bc4c87fe22bfa8df3c4b18da0773d73fc12ee2c52b98c0bb7e

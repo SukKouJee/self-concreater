@@ -102,26 +102,30 @@ docker compose logs ytc     # 나온 http://127.0.0.1:8765/?key=... 주소를 �
 
 ### 서버 (`deploy/server`)
 
-PostgreSQL + MinIO + 앱 + 마이그레이션이 한 compose로 뜹니다. 사용자는 초대한 Google 계정만 들어옵니다.
+PostgreSQL + MinIO + 앱 + 마이그레이션이 한 compose로 뜹니다. 초대한 사용자만 들어옵니다. 로그인은 **이메일+비밀번호**(관리자가 정함, `YTC_PASSWORD_LOGIN=1`, `.env.example` 기본값)와 **Google 로그인**(선택) 중 하나 이상을 씁니다. Google OAuth 없이도 됩니다.
 
 1. `cd deploy/server && cp .env.example .env` 후 필수 값을 채웁니다: `YTC_PUBLIC_URL`(`https://도메인`), `YTC_SESSION_SECRET`, DB 비밀번호 둘, MinIO 키 둘, `ANTHROPIC_API_KEY`. 비밀번호는 `python -c "import secrets;print(secrets.token_urlsafe(48))"`로 만들고 `$`는 넣지 않습니다.
-2. Google Cloud Console에서 OAuth 클라이언트를 만듭니다.
+2. (선택) Google 로그인도 쓰려면 Google Cloud Console에서 OAuth 클라이언트를 만듭니다. 비밀번호 로그인만 쓰면 건너뜁니다.
    - 동의 화면: 사용자 유형 **외부**, 범위는 `openid email profile`만. 게시 상태가 "테스트"면 테스트 사용자로 넣은 계정만 로그인됩니다.
    - 사용자 인증 정보 > OAuth 클라이언트 ID > 유형 **웹 애플리케이션**.
    - 승인된 리디렉션 URI: `https://<도메인>/auth/google/callback` (`YTC_PUBLIC_URL`과 글자 그대로 같고 끝에 `/` 없음).
    - 클라이언트 ID·보안 비밀을 `.env`의 `YTC_GOOGLE_CLIENT_ID`, `YTC_GOOGLE_CLIENT_SECRET`에 넣습니다.
 3. `docker compose up -d --build` — DB 마이그레이션(`migrate`)과 버킷 생성이 먼저 돌고 앱이 뜹니다.
 4. HTTPS: 도메인이 이 서버를 가리키면 `docker compose --profile tls up -d`(caddy, 자동 인증서, `YTC_DOMAIN` 필요). 앱은 `127.0.0.1:8080`에만 열리므로 Tailscale serve 같은 사설망 프록시를 앞에 둬도 됩니다. production은 https 주소가 아니면 시작하지 않습니다.
-5. 사용자 초대(초대한 이메일만 로그인됩니다):
+5. 사용자 초대(초대한 이메일만 로그인됩니다). `--password`를 주면 비밀번호를 터미널에서 두 번 묻습니다(화면에 보이지 않음, 10자 이상):
 
 ```bash
-docker compose --profile admin run --rm admin add-user you@gmail.com --admin
-docker compose --profile admin run --rm admin add-user friend@gmail.com --daily-limit 0.5
+docker compose --profile admin run --rm admin add-user you@example.com --admin --password
+docker compose --profile admin run --rm admin add-user friend@example.com --daily-limit 0.5 --password
+# 스크립트에서는 표준 입력으로(셸 기록에 남지 않게 파일·비밀 관리 도구에서 읽어 넘깁니다)
+docker compose --profile admin run --rm -T admin set-password friend@example.com --password-stdin < friend-password.txt
 ```
 
 | 관리 명령 (`python -m server.admin`) | 하는 일 |
 |---|---|
-| `add-user <이메일> [--name N] [--daily-limit USD] [--admin]` | 초대(이미 있으면 `user_exists` 오류) |
+| `add-user <이메일> [--name N] [--daily-limit USD] [--admin] [--password \| --password-stdin]` | 초대(이미 있으면 `user_exists` 오류). `--password`면 비밀번호를 묻고, `--password-stdin`이면 표준 입력 한 줄에서 읽음 |
+| `set-password <이메일> [--password-stdin]` | 비밀번호를 정하거나 바꿈(잊어버렸을 때 재설정). 그 사용자의 모든 기기 세션도 끊김 |
+| `clear-password <이메일>` | 비밀번호를 지워 비밀번호 로그인을 막음(Google 로그인은 그대로). 세션도 끊김 |
 | `disable-user <이메일>` | 비활성. 로그인 중이던 세션도 끊김 |
 | `logout-all <이메일>` | 계정은 그대로 두고 모든 기기의 세션을 끊음(기기 분실 등). 다시 로그인하면 됨 |
 | `import <폴더> --user <이메일> [--dry-run] [--overwrite] [--overwrite-memo]` | 내 PC 작업 폴더를 그 사용자 계정으로 올림. 다시 실행해도 안전하고, 서버에서 고친 `## 내 메모`는 `--overwrite-memo`가 없으면 지키며 올린 뒤 목록을 비교해 확인 |
@@ -133,6 +137,7 @@ docker compose --profile admin run --rm -v C:/내/작업폴더:/import:ro admin 
 
 - LLM 비용: 운영자 키 하나를 같이 씁니다. 사용자당 하루(한국 시간) 한도 `YTC_DAILY_USD`(기본 1.00), 넘으면 안내 문구와 함께 막힙니다. 서버 전체 동시 작업은 영상 `YTC_MEDIA_SLOTS`(2)·Claude `YTC_LLM_SLOTS`(4)입니다.
 - 서버 v1에서 꺼진 기능: 공용 라이브러리, 자막 영상 만들기, 촬영 영상 처리, 자막 시간 맞추기(srtfit). 촬영 영상은 내 PC 판에서 처리한 뒤 `import`로 옮깁니다.
+- 비밀번호 로그인은 이메일별 10분에 5번, 접속 IP별 10분에 20번 틀리면 잠시 막힙니다(429, 몇 분 뒤 다시). 맞히면 그 이메일의 횟수는 초기화됩니다. 사용자가 스스로 비밀번호를 바꾸는 화면은 없고 관리자가 `set-password`로 바꿉니다.
 - 화면의 로그아웃은 이 브라우저의 쿠키만 지웁니다. 다른 기기까지 모두 로그아웃하려면(기기 분실 등) 관리자가 `logout-all <이메일>`을 실행합니다.
 - 앱이 다시 시작되면 진행 중이던 작업은 멈춥니다(저장된 문서는 그대로).
 - 유튜브가 서버 IP를 막으면 `.env`의 `YT_PROXY`를 채웁니다.

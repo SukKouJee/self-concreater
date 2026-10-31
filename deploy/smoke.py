@@ -3,9 +3,11 @@
 사용법:  python deploy/smoke.py local [--project ytc-t3] [--image ytc:local-t3] [--with-youtube]
          python deploy/smoke.py server [--project ytc-t13] [--image ytc:server-t13] [--no-browser]
 
-- server: deploy/server/docker-compose.yml 전체(postgres·minio·버킷·migrate·app)를 YTC_ENV=test + dev 로그인으로 띄우고
+- server: deploy/server/docker-compose.yml 전체(postgres·minio·버킷·migrate·app)를 YTC_ENV=test + dev 로그인 + 비밀번호 로그인으로 띄우고
   admin add-user 2명 -> dev 로그인 -> /healthz·/api/status -> 기획안 저장·읽기 -> 두 사용자 격리 1건 ->
-  (Chrome이 있으면) /files의 HTML이 FILES_CSP(sandbox allow-same-origin) 아래서 이미지를 그리는지 -> down -v.
+  add-user --password-stdin -> POST /auth/password(틀림 401·맞음 200) ->
+  (Chrome이 있으면) 로그인 화면의 비밀번호 폼(틀림 문구·맞으면 /로 이동)과 /files의 HTML이 FILES_CSP(sandbox allow-same-origin) 아래서
+  이미지를 그리는지 -> 게시 포트로 보낸 X-Forwarded-For를 믿지 않는지(IP별 실패 제한 429) -> down -v.
   Chrome은 YTC_CHROME 또는 흔한 설치 경로에서 찾는다. 없으면 그 점검만 건너뛴다고 출력한다(--no-browser로 끌 수도 있다).
 
 - 임시 작업 폴더와 가짜 API 키만 쓴다(실제 Claude 호출 없음). 표준 라이브러리만 쓴다.
@@ -59,9 +61,10 @@ def free_port() -> int:
         return int(s.getsockname()[1])
 
 
-def run(cmd: list[str], env: dict[str, str], timeout: int = 900, ok_codes: tuple[int, ...] = (0,)) -> str:
+def run(cmd: list[str], env: dict[str, str], timeout: int = 900, ok_codes: tuple[int, ...] = (0,),
+        stdin_text: str | None = None) -> str:
     proc = subprocess.run(cmd, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                          timeout=timeout)
+                          timeout=timeout, input=stdin_text)
     if proc.returncode not in ok_codes:
         raise SmokeFailure(f"{' '.join(cmd[:6])} ... 종료 코드 {proc.returncode}\n{proc.stdout[-1500:]}\n{proc.stderr[-1500:]}")
     return proc.stdout + proc.stderr
@@ -183,6 +186,9 @@ DRAFT: dict[str, Any] = {
 }
 FRAME_VIDEO = "smokevid001"
 SESSION_COOKIE = "ytc_session"
+PW_EMAIL = "carol@example.com"
+LOGIN_FAILED = "이메일 또는 비밀번호가 맞지 않습니다"
+IP_FAILURES = 20                                   # server.login_limit.IP_FAILURES
 FILES_CSP_PARTS = ("default-src 'none'", "img-src 'self' data:", "sandbox allow-same-origin")
 
 # 컨테이너 안에서 앱과 같은 설정으로 저장소를 열어 카테고리·HTML·이미지를 넣는다(앱 임시 폴더는 건드리지 않게 따로 지정).
@@ -230,8 +236,10 @@ class Client:
         self.jar = CookieJar()
         self._opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.jar), _NoRedirect())
 
-    def request(self, method: str, path: str, body: Any = None, origin: bool = True) -> tuple[int, Any, dict[str, str]]:
+    def request(self, method: str, path: str, body: Any = None, origin: bool = True,
+                extra: dict[str, str] | None = None) -> tuple[int, Any, dict[str, str]]:
         headers = {"Origin": self.base} if origin and method != "GET" else {}
+        headers.update(extra or {})
         data = None
         if body is not None:
             data = json.dumps(body).encode("utf-8")
@@ -368,6 +376,36 @@ new Promise((resolve, reject) => {
 """
 
 
+LOGIN_FORM_JS = """
+new Promise((resolve, reject) => {
+  const t0 = Date.now();
+  (function poll() {
+    const form = document.getElementById('password-form');
+    if (form) {
+      document.getElementById('pw-email').value = %s;
+      document.getElementById('pw-password').value = %s;
+      form.requestSubmit();
+      resolve(true);
+      return;
+    }
+    if (Date.now() - t0 > 10000) { reject(new Error('password form did not appear')); return; }
+    setTimeout(poll, 100);
+  })();
+})
+"""
+LOGIN_ERROR_JS = """
+new Promise((resolve, reject) => {
+  const t0 = Date.now();
+  (function poll() {
+    const error = document.getElementById('pw-error');
+    if (error && !error.hidden) { resolve(error.textContent); return; }
+    if (Date.now() - t0 > 10000) { reject(new Error('no error message')); return; }
+    setTimeout(poll, 100);
+  })();
+})
+"""
+
+
 class BrowserUnavailable(Exception):
     """Chrome이 있지만 이 환경에서 뜨지 않는다(샌드박스·디스플레이 문제 등): 점검을 건너뛴다(실패 아님)."""
 
@@ -382,9 +420,11 @@ def collect_csp_violations(page: Any) -> list[str]:
     return [text for text in texts if "Content Security Policy" in text]
 
 
-def browser_check(chrome: str, base: str, cookie: tuple[str, str], files_path: str) -> None:
+def browser_check(chrome: str, base: str, cookie: tuple[str, str], files_path: str,
+                  login: tuple[str, str] | None = None) -> None:
     """실제 브라우저로 /files의 HTML(콘티·리포트)이 FILES_CSP 아래서 이미지를 그리는지 본다:
-    (1) 최상위로 열 때 (2) 앱 화면 안의 iframe으로 열 때(같은 출처 접근 포함). CSP 위반 로그가 있으면 실패."""
+    (1) 최상위로 열 때 (2) 앱 화면 안의 iframe으로 열 때(같은 출처 접근 포함). CSP 위반 로그가 있으면 실패.
+    login(이메일, 비밀번호)을 주면 먼저 로그인 화면의 비밀번호 폼을 쓴다: 틀린 비밀번호 문구 -> 맞으면 /로 이동."""
     with tempfile.TemporaryDirectory(prefix="ytc-chrome-") as profile:
         port = free_port()
         args = [chrome, "--headless=new", f"--remote-debugging-port={port}", f"--user-data-dir={profile}", "--no-first-run",
@@ -416,7 +456,6 @@ def browser_check(chrome: str, base: str, cookie: tuple[str, str], files_path: s
             cdp = page
             for domain in ("Page", "Network", "Log"):
                 page.call(f"{domain}.enable")
-            page.call("Network.setCookie", name=cookie[0], value=cookie[1], url=base)
 
             def navigate(path: str) -> None:
                 page.events.clear()
@@ -427,6 +466,21 @@ def browser_check(chrome: str, base: str, cookie: tuple[str, str], files_path: s
             def csp_violations() -> list[str]:
                 return collect_csp_violations(page)
 
+            if login is not None:
+                email, password = login
+                navigate("/auth/login")
+                page.evaluate(LOGIN_FORM_JS % (json.dumps(email), json.dumps("not the password!")))
+                shown = page.evaluate(LOGIN_ERROR_JS)
+                check(shown == LOGIN_FAILED, f"브라우저: 로그인 화면 비밀번호 폼, 틀리면 문구가 보인다: {shown}")
+                page.events.clear()
+                page.evaluate(LOGIN_FORM_JS % (json.dumps(email), json.dumps(password)))
+                page.wait_event("Page.loadEventFired")
+                time.sleep(0.5)
+                where = page.evaluate("location.pathname")
+                check(where == "/", f"브라우저: 맞는 비밀번호로 로그인하면 앱 화면(/)으로 간다: {where}")
+                check(not csp_violations(), "브라우저: 로그인 화면·앱 화면에 CSP 위반 로그 없음")
+
+            page.call("Network.setCookie", name=cookie[0], value=cookie[1], url=base)
             navigate(files_path)
             top = json.loads(page.evaluate(IMAGES_JS))
             check(len(top) == 2 and all(i["ok"] for i in top), f"브라우저: {files_path} 를 최상위로 열어도 이미지 2개(JPEG·SVG)가 그려진다 {top}")
@@ -480,7 +534,7 @@ def smoke_server(project: str, image: str, with_browser: bool) -> None:
     with tempfile.TemporaryDirectory(prefix="ytc-smoke-server-") as tmp:
         env_file = Path(tmp) / "smoke.env"
         env_file.write_text("\n".join([
-            "YTC_ENV=test", "YTC_DEV_LOGIN=1", f"YTC_PUBLIC_URL={base}", f"YTC_PORT={port}", f"YTC_IMAGE={image}",
+            "YTC_ENV=test", "YTC_DEV_LOGIN=1", "YTC_PASSWORD_LOGIN=1", f"YTC_PUBLIC_URL={base}", f"YTC_PORT={port}", f"YTC_IMAGE={image}",
             f"YTC_SESSION_SECRET={secrets.token_urlsafe(48)}",
             f"YTC_DB_OWNER_PASSWORD={secrets.token_urlsafe(24)}", f"YTC_DB_APP_PASSWORD={secrets.token_urlsafe(24)}",
             f"YTC_S3_ACCESS_KEY=smoke{secrets.token_hex(4)}", f"YTC_S3_SECRET_KEY={secrets.token_urlsafe(24)}",
@@ -556,6 +610,20 @@ def smoke_server(project: str, image: str, with_browser: bool) -> None:
             frame = f"/files/workspace/frames/{FRAME_VIDEO}/0001.jpg"
             check(alice.request("GET", frame)[0] == 200 and bob.request("GET", frame)[0] == 200, "공유 프레임은 두 사용자 모두 읽는다")
 
+            password = secrets.token_urlsafe(18)           # never printed; goes to the admin CLI on stdin only
+            added = last_json(run(admin + ["add-user", PW_EMAIL, "--password-stdin"], env, stdin_text=password + "\n"))
+            check(added.get("email") == PW_EMAIL and added.get("password") is True and password not in json.dumps(added),
+                  f"admin add-user {PW_EMAIL} --password-stdin (출력에 비밀번호·해시 없음)")
+            carol = Client(base)
+            check(carol.request("GET", "/auth/methods")[1].get("password") is True, "/auth/methods: password true")
+            status, body, headers = carol.request("POST", "/auth/password", {"email": PW_EMAIL, "password": "wrong-password!"})
+            check(status == 401 and body.get("message") == LOGIN_FAILED and "set-cookie" not in headers,
+                  "틀린 비밀번호는 401 '이메일 또는 비밀번호가 맞지 않습니다'")
+            status, body, _ = carol.request("POST", "/auth/password", {"email": PW_EMAIL, "password": password})
+            check(status == 200 and body.get("email") == PW_EMAIL, "POST /auth/password 맞는 비밀번호로 로그인 200")
+            status, body, _ = carol.request("GET", "/api/ping")
+            check(status == 200 and body.get("user") == PW_EMAIL, "비밀번호로 만든 세션으로 /api/ping")
+
             chrome = find_chrome() if with_browser else None
             if not with_browser:
                 print("SKIP 브라우저 점검(--no-browser)", flush=True)
@@ -563,9 +631,22 @@ def smoke_server(project: str, image: str, with_browser: bool) -> None:
                 print("SKIP 브라우저 점검: Chrome을 찾지 못했습니다(YTC_CHROME으로 경로를 주면 한다)", flush=True)
             else:
                 try:
-                    browser_check(chrome, base, alice.session_cookie(), html)
+                    browser_check(chrome, base, alice.session_cookie(), html, login=(PW_EMAIL, password))
                 except BrowserUnavailable as e:
                     print(f"SKIP 브라우저 점검: {e}", flush=True)
+
+            # last: this blocks the published-port client IP for password login for 10 minutes
+            # every attempt uses a new email and a new X-Forwarded-For: only a per-IP count on the real peer can reach 429
+            # (the earlier wrong passwords from this host already count, so 429 may come before IP_FAILURES attempts)
+            spoof = Client(base)
+            status, body, headers, tries = 401, {}, {}, 0
+            while status == 401 and tries <= IP_FAILURES:
+                tries += 1
+                status, body, headers = spoof.request("POST", "/auth/password",
+                                                      {"email": f"nobody{tries}@example.com", "password": "x" * 12},
+                                                      extra={"X-Forwarded-For": f"203.0.113.{tries}"})
+            check(status == 429 and "retry-after" in headers and "로그인 시도가 너무 많습니다" in str(body.get("message")),
+                  f"게시 포트로 보낸 X-Forwarded-For는 믿지 않는다(값을 바꿔도 같은 IP로 세어 {tries}번째에 429, Retry-After)")
         except BaseException as e:
             failure = e
             raise

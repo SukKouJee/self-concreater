@@ -140,6 +140,9 @@ CREATE POLICY own ON <t> USING (user_id = nullif(current_setting('app.user_id', 
   사용자당 문서 수백 개 규모라 추가 인덱스 없음. `llm_usage`만 한도 조회용 `(user_id, at)`.
 - `users`는 RLS 없음: 로그인 전 이메일 조회가 필요. `ytc_app`은 `users`에 SELECT·UPDATE(google_sub, display_name)만.
   사용자 추가·비활성은 `admin.py`가 `ytc_owner`로.
+- Alembic `0002`(T15): `users.password_hash text NULL`, CHECK `password_hash IS NULL OR password_hash LIKE 'scrypt$%'`.
+  앱 롤 권한은 그대로(표 SELECT로 읽기만, UPDATE 열 목록에 없음). 값은 `admin add-user --password`·`set-password`·`clear-password`(owner)만 쓴다.
+  되돌리면 열만 지운다.
 - `trash_items.raw`(문서) / `s3_key`(객체 `trash/{uid}/{stamp}/{key}`). 만료(30일)는 S10.
 - `s3_key` CHECK: `objects`는 정확히 `users/{user_id}/{key}`, `trash_items`는 NULL 또는 `trash/{user_id}/{stamp}/{key}`.
   RLS가 행을 막아도 행 안의 `s3_key`가 남의 MinIO 객체를 가리키면 `/files`·휴지통 복원이 그 바이트를 읽는다 — 행과 객체 위치를 DB에서 묶는다.
@@ -243,7 +246,8 @@ CREATE POLICY own ON <t> USING (user_id = nullif(current_setting('app.user_id', 
    시작: `server.asgi:app`은 lifespan 시작 때 한 번만 앱을 만들고, 실패하면 `lifespan.startup.failed`. 시작 전 http 요청은 503 `starting`.
    `YTC_ENV`는 production·dev·test만(그 밖 `config_invalid`).
    상태를 바꾸는 요청은 `Registry.close()` 뒤 503 `restarting`. `/auth/login`은 `server/web/login.html`+`login.js`(인라인 스크립트 없음),
-   `/auth/methods`가 `{"dev_login", "google"}`을 알려 주고 login.js가 그에 맞는 버튼·폼만 보인다(T12).
+   `/auth/methods`가 `{"dev_login", "google", "password"}`을 알려 주고 login.js가 그에 맞는 버튼·폼만 보인다(T12, password는 T15:
+   폼은 login.js가 `h()`로 만든다. `h()`는 `scripts/ui/static/dom.js`를 로그인 전에도 받을 수 있게 `/auth/dom.js`로 같은 바이트를 내준다).
 
 ### 4.2 인증·세션·CSRF (`server/auth.py`)
 
@@ -257,7 +261,8 @@ CREATE POLICY own ON <t> USING (user_id = nullif(current_setting('app.user_id', 
 | 보안 헤더 | 기존 `nosniff`, `no-store`, `Referrer-Policy` + `Strict-Transport-Security`(HTTPS일 때), `Content-Security-Policy: default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'` (정적 JS가 인라인 스크립트를 쓰면 T10에서 확인 후 조정), SVG CSP 유지 |
 | dev 로그인 | `YTC_DEV_LOGIN=1`일 때만 `POST /auth/dev {"email"}`(users에 있는 이메일). `YTC_ENV=production`이면 설정 자체를 시작 시 거부 |
 | 시크릿 | `YTC_SESSION_SECRET`(32바이트 이상), `YTC_GOOGLE_CLIENT_ID/SECRET`, `ANTHROPIC_API_KEY`, DB·S3 비밀번호는 env만. 로그에 쿠키·키를 남기지 않는다(접근 로그는 경로만, 쿼리 제외). uvicorn 기본 접근 로그는 쿼리 문자열(OIDC `code`·`state` 등)까지 찍으므로 `--no-access-log`로 끄거나 쿼리를 지우는 log config를 준다(T13이 연결) |
-| 구현(T12) | `server/oidc.py`. 대기 로그인 `{state, nonce, verifier, exp}` 하나를 세션 쿠키에 두고(10분, 새로 시작하면 덮어씀) 콜백에서 **먼저 꺼내 지운다**(재사용 불가). state는 상수 시간 비교, 실패하면 code를 교환하지 않는다. 토큰 엔드포인트는 httpx로 직접(client_secret_post + code_verifier), ID 토큰은 joserfc(RS256만)로 Google JWKS(`/oauth2/v3/certs`, 1시간 캐시, 모르는 kid면 60초에 한 번까지 다시 받음) 서명 확인 + `authlib.oidc.core.CodeIDToken` 클레임 규칙(iss ∈ {`https://accounts.google.com`, `accounts.google.com`}, aud = 클라이언트 id, exp·iat 60초 여유, nonce, azp, at_hash) + aud가 정확히 클라이언트 id 하나인지·nonce·sub·email을 따로 한 번 더. authlib의 httpx 통합(`AsyncOAuth2Client`)은 설치 환경에 따라 httpx2/httpx를 바꿔 고르므로 쓰지 않았다. 허용: `email_verified`(true 또는 "true") → `users`의 이메일(대소문자 무시) → 비활성 아님 → `google_sub`가 비었으면 `UPDATE … WHERE google_sub IS NULL`로 고정, 있으면 같아야 함, 그 sub가 다른 사용자에게 있으면(UNIQUE) 거부. 계정을 자동으로 만들지 않는다. 성공하면 `start_session`(세션 내용 전부 교체, 그때의 epoch) 후 항상 `/`로 302 — `next`·`redirect_uri` 같은 요청 매개변수는 읽지 않는다(열린 리디렉션 없음). 실패는 한국어 HTML 화면(이메일은 이스케이프) + 로그에는 이유 코드만(`ytc.auth`, 코드·state·토큰·비밀은 남기지 않음). Google 설정은 `YTC_GOOGLE_CLIENT_ID`·`YTC_GOOGLE_CLIENT_SECRET`(둘 다 또는 둘 다 없음), 리디렉션 URI = `YTC_PUBLIC_URL` + `/auth/google/callback`. 없으면 Google 로그인을 내놓지 않고, production에서는 로그인 방법이 없으므로 시작 거부(`config_missing`) |
+| 구현(T12) | `server/oidc.py`. 대기 로그인 `{state, nonce, verifier, exp}` 하나를 세션 쿠키에 두고(10분, 새로 시작하면 덮어씀) 콜백에서 **먼저 꺼내 지운다**(재사용 불가). state는 상수 시간 비교, 실패하면 code를 교환하지 않는다. 토큰 엔드포인트는 httpx로 직접(client_secret_post + code_verifier), ID 토큰은 joserfc(RS256만)로 Google JWKS(`/oauth2/v3/certs`, 1시간 캐시, 모르는 kid면 60초에 한 번까지 다시 받음) 서명 확인 + `authlib.oidc.core.CodeIDToken` 클레임 규칙(iss ∈ {`https://accounts.google.com`, `accounts.google.com`}, aud = 클라이언트 id, exp·iat 60초 여유, nonce, azp, at_hash) + aud가 정확히 클라이언트 id 하나인지·nonce·sub·email을 따로 한 번 더. authlib의 httpx 통합(`AsyncOAuth2Client`)은 설치 환경에 따라 httpx2/httpx를 바꿔 고르므로 쓰지 않았다. 허용: `email_verified`(true 또는 "true") → `users`의 이메일(대소문자 무시) → 비활성 아님 → `google_sub`가 비었으면 `UPDATE … WHERE google_sub IS NULL`로 고정, 있으면 같아야 함, 그 sub가 다른 사용자에게 있으면(UNIQUE) 거부. 계정을 자동으로 만들지 않는다. 성공하면 `start_session`(세션 내용 전부 교체, 그때의 epoch) 후 항상 `/`로 302 — `next`·`redirect_uri` 같은 요청 매개변수는 읽지 않는다(열린 리디렉션 없음). 실패는 한국어 HTML 화면(이메일은 이스케이프) + 로그에는 이유 코드만(`ytc.auth`, 코드·state·토큰·비밀은 남기지 않음). Google 설정은 `YTC_GOOGLE_CLIENT_ID`·`YTC_GOOGLE_CLIENT_SECRET`(둘 다 또는 둘 다 없음), 리디렉션 URI = `YTC_PUBLIC_URL` + `/auth/google/callback`. 없으면 Google 로그인을 내놓지 않는다. production에서 Google도 비밀번호 로그인(T15)도 없으면 로그인 방법이 없으므로 시작 거부(`config_missing`) |
+| 비밀번호 로그인(T15) | Google 없이도 쓰게(사용자 결정 2026-11-02). `YTC_PASSWORD_LOGIN=1`일 때만 `POST /auth/password {email, password}`(JSON, CSRF는 다른 POST와 같음). 허용은 Google과 같다: `users`에 있는 이메일(초대제, 자동 생성 없음), 비활성 아님, 그리고 `password_hash`가 있고 맞아야 함. 성공하면 `start_session` 후 `{"ok", "email"}`(이동은 login.js가 `/`로). 실패(모르는 이메일·비밀번호 없는 계정·틀림·비활성)는 모두 401 `login_failed` "이메일 또는 비밀번호가 맞지 않습니다", 로그에는 이유 코드만. 해시(`server/passwords.py`, 표준 라이브러리만): `scrypt$N$r$p$salt$hash`(N=2^15, r=8, p=1, maxmem 64MB, salt 16바이트, 키 32바이트), `hmac.compare_digest`, 해시가 없으면 같은 매개변수의 더미 해시로 한 번 계산(계정 유무가 시간으로 드러나지 않음), 저장 값이 깨졌으면 `BadHash`(로그 + 같은 401). 동시 scrypt는 2개(`HASH_SLOTS`). 규칙: 10자 이상 1024자 이하. 실패 횟수(`server/login_limit.py`, 프로세스 메모리): 이메일별 10분 5번, 클라이언트 IP별 10분 20번(공유 IP 고려) → 429 `too_many_attempts` + `Retry-After` + "로그인 시도가 너무 많습니다. N분 뒤 다시 시도하세요"(막힌 동안은 해시를 계산하지 않음), 성공하면 그 이메일 기록만 지움. 클라이언트 IP = ASGI `client`: uvicorn `--proxy-headers`가 `FORWARDED_ALLOW_IPS`(= caddy의 고정 IP, compose front 대역 `YTC_FRONT_NET`.0/28의 .2, 다른 컨테이너는 .8/29에서 받음)에서 온 요청의 `X-Forwarded-For`만 반영한다. caddy는 들어온 `X-Forwarded-For`를 버리고 실제 접속 IP로 쓴다(`trusted_proxies` 없음). 게시 포트(127.0.0.1:8080, Tailscale serve 등)로 들어온 요청은 docker 게이트웨이 IP로 보이고 그 헤더는 믿지 않는다(IP 제한을 함께 나눠 씀, 이메일 제한은 그대로). 관리: `add-user --password`(값 없음/`-`면 getpass 두 번, `--password-stdin`은 한 줄), `set-password`(+ `session_epoch` 증가), `clear-password`(NULL + `session_epoch` 증가). 사용자가 스스로 바꾸는 화면은 v1에 없다. 남의 이메일로 일부러 틀려 10분 막는 것은 감수(재시작하면 풀림) |
 | TLS | 앱은 HTTP(내부 127.0.0.1:8080). 외부는 Caddy(자동 TLS) 또는 Tailscale 등 사설망 — §11 사용자 결정 |
 | 구현(T10) | `YTC_ENV` 기본 production. production이면 `YTC_PUBLIC_URL`은 https만(쿠키 `Secure`·HSTS), 개발(`YTC_ENV=dev` 등)의 http 주소는 `Secure` 없이(파이썬 스모크가 http로 쿠키를 보내게). `YTC_SESSION_SECRET` 32바이트 미만·`YTC_DEV_LOGIN` 0/1 밖 → `config_invalid`. 사용자 조회는 `Db.public_tx()`(app.user_id 없음: RLS 테이블 0행). 세션 `{uid, epoch, iat}`, iat 뒤 14일(+시계 60초) 밖·비활성·epoch 다름·없는 사용자면 세션을 비우고 401. Origin 비교는 소문자·끝 `/` 제거 후 출처 일치(`null` 거부) |
 
@@ -274,7 +279,8 @@ CREATE POLICY own ON <t> USING (user_id = nullif(current_setting('app.user_id', 
 `YTC_ENV`, `YTC_PUBLIC_URL`, `YTC_SESSION_SECRET`, `YTC_GOOGLE_CLIENT_ID`, `YTC_GOOGLE_CLIENT_SECRET`(production 필수), `YTC_DB_DSN`(ytc_app),
 `YTC_DB_OWNER_DSN`(migrate·admin만), `YTC_S3_ENDPOINT`, `YTC_S3_BUCKET`, `YTC_S3_ACCESS_KEY`, `YTC_S3_SECRET_KEY`, `ANTHROPIC_API_KEY`,
 `YTC_LLM_ENGINE=anthropic-api`, `YTC_LLM_MODEL`(기본 claude-sonnet-5-5, 가격표에 있어야 함), `YTC_LLM_MAX_TOKENS`(호출당 상한, 기본 16000), `YTC_DAILY_USD`(기본 1.00), `YTC_MEDIA_SLOTS`(2), `YTC_LLM_SLOTS`(4),
-`YT_PROXY`, `YT_FETCH_INTERVAL`, `YTC_DEV_LOGIN`. 필수 값이 없으면 시작하지 않는다(`config_missing`).
+`YT_PROXY`, `YT_FETCH_INTERVAL`, `YTC_DEV_LOGIN`, `YTC_PASSWORD_LOGIN`(T15, 0/1, 코드 기본 0·`.env.example` 1). 필수 값이 없으면 시작하지 않는다(`config_missing`).
+production은 Google 클라이언트(`YTC_GOOGLE_CLIENT_ID/SECRET`) 또는 `YTC_PASSWORD_LOGIN=1` 중 하나 이상이 있어야 시작한다(둘 다 없으면 `config_missing`, T15에서 Google 필수를 바꿈).
 저장소(T8, `StorageSettings`): `YTC_DB_POOL_MIN`(1)·`YTC_DB_POOL_MAX`(10), `YTC_S3_MAX_POOL_CONNECTIONS`(10, boto 연결 풀),
 `YTC_SCRATCH_DIR`(`/tmp/ytc`), `YTC_STATE_DIR`(`/var/lib/ytc/state`). 잘못된 값은 `config_invalid`.
 
@@ -446,7 +452,11 @@ media 대기 p95가 5분을 넘거나, 앱 재시작으로 작업을 잃는 일�
   앱이 읽는 변수만 이름으로 넘긴다(필수 값은 `${VAR:?메시지}`로 비어 있으면 `up` 자체가 실패, DSN은 비밀번호에서 조립 → 비밀번호는 URL 안전 문자만).
   app·migrate·admin은 같은 `build`(target server)와 이미지 이름(`YTC_IMAGE`, 기본 `ytc:server`)을 쓴다. app·migrate·admin은 `cap_drop: ALL`, `no-new-privileges`.
   app의 `/tmp/ytc`는 tmpfs(uid 10001, 크기 `YTC_SCRATCH_SIZE` 기본 1g, tmpfs는 앱 메모리 상한 `YTC_APP_MEM_LIMIT` 기본 3g에 포함). caddy는 `reverse_proxy app:8080`(`flush_interval -1`).
-  `--proxy-headers`는 uvicorn 기본 신뢰 대상(127.0.0.1)만 믿으므로 다른 컨테이너의 caddy가 보내는 `X-Forwarded-*`는 무시된다 — 앱은 scheme을 `YTC_PUBLIC_URL`로 정하므로 영향 없음.
+  `--proxy-headers`는 `FORWARDED_ALLOW_IPS`에 있는 주소에서 온 `X-Forwarded-*`만 믿는다. T15부터 compose가 front 네트워크 대역을 고정하고
+  (`${YTC_FRONT_NET:-172.31.254}.0/28`, 동적 할당은 `.8/29`) caddy에 `.2`를 주며 앱의 `FORWARDED_ALLOW_IPS`를 그 주소 하나로 둔다 —
+  비밀번호 로그인의 IP별 실패 횟수 제한이 caddy 뒤의 실제 클라이언트 IP를 본다(§4.2). scheme은 여전히 `YTC_PUBLIC_URL`로 정한다.
+  smoke server(T15)는 `YTC_PASSWORD_LOGIN=1`로 올려 `add-user --password-stdin` → `POST /auth/password` 성공·실패를 한 번 확인하고,
+  게시 포트로 들어온 요청이 보낸 `X-Forwarded-For`를 믿지 않는지(값을 바꿔도 같은 IP로 세어 429)도 본다.
 - **smoke server(T13)**: `python deploy/smoke.py server`(`pytest`는 `YTC_TEST_DOCKER=1 tests/test_deploy_smoke.py::test_server_stack_smoke`). `YTC_ENV=test` + `YTC_DEV_LOGIN=1`로 전체 스택을 올려
   `admin add-user` 2명 → dev 로그인 → `/healthz`·`/api/status` → `/api/draft/save`·`/files` 읽기 → 격리(목록·`/files` 404) → `down -v`(남은 컨테이너·볼륨까지 확인, 남으면 실패).
   Chrome(`YTC_CHROME` 또는 흔한 경로)이 있으면 DevTools 프로토콜(표준 라이브러리 websocket)로 `/files`의 HTML이 `FILES_CSP` 아래서 JPEG·SVG를 그리는지(최상위·앱 화면 iframe, CSP 위반 로그 0)까지 확인한다.
@@ -492,6 +502,7 @@ media 대기 p95가 5분을 넘거나, 앱 재시작으로 작업을 잃는 일�
 | T11 | 자원·한도: media/llm 슬롯 설치, fetch 전역 제한, advisory lock, `UsageMeter`(가격표·일 한도·오류 문구), media 슬롯 수 측정 | server/usage·jobs_registry | 한도 초과 테스트(가짜 usage), 두 사용자 동시 수집이 서로 job_running을 내지 않음 |
 | T12 | Google OIDC: authlib 로그인·콜백·허용 목록·sub 고정·로그아웃·epoch, login.html | server/auth | 콜백을 가짜 IdP 토큰으로 단위 테스트(서명 검증 경로 포함), 실제 Google 1회 수동 |
 | T13 | 서버판 패키징: Dockerfile server, `deploy/server` compose(pg·minio·init·migrate·app·caddy profile), healthcheck, smoke server | deploy | smoke server 통과 |
+| T15 | 이메일+비밀번호 로그인(Google 없이 쓰기): Alembic `0002` `password_hash`, `server/passwords.py`(scrypt), `server/login_limit.py`, `POST /auth/password`, login.js 폼, admin `--password`·`set-password`·`clear-password`, compose 고정 caddy IP + `FORWARDED_ALLOW_IPS`, smoke server 비밀번호 로그인 | server, deploy, docs | 해시·규칙·제한 단위, ASGI(성공·실패 4종·429·CSRF·프록시 헤더), PG(CLI·epoch·clear), 설정 행렬, smoke |
 | T14 | 문서: README(두 판 실행·커맨드 표), CLAUDE.md 범위, 상위 설계 §2(배치)·§3.2(최소 스키마)·§4(작업 ADR-S6)·§6 갱신 | docs | 리뷰 |
 
 T3은 서버 작업과 독립이라 먼저 끝내 개인판을 바로 쓸 수 있게 한다. T5~T9는 서버 앱 없이 검증된다(저장소 → 데이터 → 앱 순).

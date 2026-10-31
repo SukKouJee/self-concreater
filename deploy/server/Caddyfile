@@ -1,5 +1,6 @@
 # 자동 HTTPS(Let's Encrypt). YTC_DOMAIN은 .env에서 compose가 넘긴다(예: ytc.example.com).
 # 업로드·영상 응답이 커서 응답 버퍼링은 끈다(flush_interval -1).
+# trusted_proxies를 두지 않는다: 클라이언트가 보낸 X-Forwarded-For는 버리고 실제 접속 IP로 새로 쓴다(앱은 caddy의 값만 믿는다).
 {$YTC_DOMAIN} {
 	reverse_proxy app:8080 {
 		flush_interval -1

@@ -4,15 +4,35 @@
 
 ## 처음 올리기
 
-1. `cp .env.example .env` 후 필수 값(`YTC_PUBLIC_URL`, `YTC_SESSION_SECRET`, DB·S3 비밀번호, Google 클라이언트)을 채운다.
+1. `cp .env.example .env` 후 필수 값(`YTC_PUBLIC_URL`, `YTC_SESSION_SECRET`, DB·S3 비밀번호)을 채운다. 로그인 방법은
+   `YTC_PASSWORD_LOGIN=1`(이메일+비밀번호, 예시 파일 기본값)과 Google 클라이언트(선택) 중 하나 이상이 있어야 production이 시작한다.
    비밀번호·키는 영문·숫자·`-_`만 쓴다(주소에 끼워 넣는다). `python -c "import secrets;print(secrets.token_urlsafe(48))"`
 2. `docker compose up -d --build` (도메인과 자동 HTTPS가 필요하면 `--profile tls`, `.env`에 `YTC_DOMAIN`).
-3. 첫 사용자: `docker compose --profile admin run --rm admin add-user you@gmail.com --admin`
+3. 첫 사용자: `docker compose --profile admin run --rm admin add-user you@example.com --admin --password`
+   (비밀번호를 두 번 묻는다. 화면에 보이지 않고 출력·로그에도 남지 않는다. 10자 이상)
 
 ## 사용자 추가·가져오기
 
-- 초대: `docker compose --profile admin run --rm admin add-user friend@gmail.com [--daily-limit 2.00]`
-  초대된 이메일만 Google로 로그인할 수 있다.
+- 초대: `docker compose --profile admin run --rm admin add-user friend@example.com [--daily-limit 2.00] [--password]`
+  초대된 이메일만 로그인할 수 있다(비밀번호를 정했으면 이메일+비밀번호로, Google이 켜져 있으면 그 이메일의 Google 계정으로).
+
+## 비밀번호(이메일+비밀번호 로그인, `YTC_PASSWORD_LOGIN=1`)
+
+- 정하기·재설정(잊어버렸을 때): `docker compose --profile admin run --rm admin set-password friend@example.com`
+  터미널에서 두 번 묻는다. 바꾸면 그 사용자의 모든 기기 세션이 끊긴다(`session_epoch` 증가). 새 비밀번호는 안전한 경로로 전한다.
+- 스크립트·터미널 없는 곳: `--password-stdin`으로 표준 입력 한 줄을 넘긴다(`run`에 `-T`).
+  `docker compose --profile admin run --rm -T admin set-password friend@example.com --password-stdin < pw.txt`
+  `add-user ... --password <값>`처럼 값을 직접 쓰면 셸 기록·프로세스 목록에 남으므로 쓰지 않는다.
+- 비밀번호 로그인 막기: `... admin clear-password friend@example.com` (비밀번호를 지우고 세션도 끊는다. Google 로그인은 그대로)
+- 규칙: 10자 이상. 저장은 scrypt 해시(`scrypt$N$r$p$salt$hash`)만, 평문은 어디에도 남지 않는다.
+- 틀린 횟수 제한(앱 메모리, 재시작하면 초기화): 이메일별 10분에 5번, 접속 IP별 10분에 20번 → 429 "로그인 시도가 너무 많습니다".
+  맞히면 그 이메일의 횟수는 초기화된다. 누가 남의 이메일로 일부러 틀리면 그 이메일은 10분까지 막힐 수 있다(재시작하면 풀린다).
+- 접속 IP: caddy(`--profile tls`) 뒤에서는 caddy가 쓴 `X-Forwarded-For`를 쓴다(앱은 caddy의 고정 IP `YTC_FRONT_NET`.2에서 온 것만 믿는다).
+  Tailscale serve처럼 `127.0.0.1:8080`으로 직접 들어오면 모든 요청이 docker 게이트웨이 IP 하나로 보이므로 IP별 제한을 다 같이 나눠 쓴다
+  (이메일별 제한은 그대로). 클라이언트가 보낸 `X-Forwarded-For`는 믿지 않는다.
+- 이 기능 전에 올린 스택을 갱신할 때: front 네트워크에 고정 대역이 생겨 compose가 네트워크를 다시 만들어야 한다.
+  `docker compose --profile tls down`(볼륨 `-v`는 붙이지 않는다: 데이터가 지워진다) 후 `docker compose up -d --build`.
+  `migrate`가 `0002`(비밀번호 열)를 적용한다. 기존 사용자는 `set-password`로 비밀번호를 정할 때까지 Google로만 로그인한다.
 - 끄기: `... admin disable-user friend@gmail.com` (이미 나간 세션도 다음 요청에서 끊긴다)
 - 모든 기기에서 로그아웃: `... admin logout-all friend@gmail.com`. 화면의 로그아웃은 이 브라우저의 쿠키만 지우므로,
   기기를 잃어버렸을 때는 이 명령으로 세션을 모두 끊는다(`session_epoch` 증가, 계정은 그대로라 다시 로그인하면 된다).
