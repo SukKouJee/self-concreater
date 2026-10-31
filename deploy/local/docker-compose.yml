@@ -1,0 +1,49 @@
+# 개인판(단일 사용자) 컨테이너. 사용법은 .env.example 참고.
+#   cd deploy/local && cp .env.example .env   # ANTHROPIC_API_KEY 채우기
+#   docker compose up -d --build
+#   docker compose logs ytc                    # 나온 http://127.0.0.1:<포트>/?key=... 주소를 브라우저로 연다
+# 같은 작업 폴더를 내 PC의 `ytc ui`와 동시에 열지 않는다(ui.lock이 컨테이너 안 pid라 서로 못 본다).
+name: ytc-local
+
+services:
+  ytc:
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile
+      target: local
+    image: ${YTC_IMAGE:-ytc:local}
+    # 게시 포트와 내부 포트는 같은 번호여야 한다(UI 서버의 Host 헤더 검사). localhost로만 연다.
+    ports:
+      - "127.0.0.1:${YTC_PORT:-8765}:${YTC_PORT:-8765}"
+    command:
+      - python
+      - -m
+      - scripts.ui
+      - --host
+      - 0.0.0.0
+      - --port
+      - "${YTC_PORT:-8765}"
+      - --no-open
+      - --foreground
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      YTC_IN_CONTAINER: "1"
+      YTC_PORT: "${YTC_PORT:-8765}"
+    user: "${YTC_UID:-1000}:${YTC_GID:-1000}"
+    volumes:
+      - "${YTC_WORK_DIR:-./work}:/work"
+      # 촬영 영상 처리가 필요하면 호스트 폴더를 읽기 전용으로 붙인다(YTC_FOOTAGE_DIR 설정 후 아래 줄 주석 해제):
+      # - "${YTC_FOOTAGE_DIR}:/footage:ro"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/healthz' % os.environ['YTC_PORT'], timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped

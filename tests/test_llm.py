@@ -16,6 +16,8 @@ FAKE_KEY = "sk-ant-TEST-NOT-A-REAL-KEY"
 def home(monkeypatch, tmp_path):
     monkeypatch.setenv("YT_COACH_HOME", str(tmp_path))
     monkeypatch.delenv("YTC_LLM_ENGINE", raising=False)
+    monkeypatch.delenv("YTC_LLM_MODEL", raising=False)
+    monkeypatch.delenv("YTC_LLM_MAX_TOKENS", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     return tmp_path
 
@@ -40,6 +42,45 @@ def test_config_env_overrides_file(home, monkeypatch):
     _write_config(home, {"llm": {"engine": "claude-cli"}})
     monkeypatch.setenv("YTC_LLM_ENGINE", "anthropic-api")
     assert llm.config()["engine"] == "anthropic-api"
+
+
+def test_config_env_model_and_max_tokens_work_without_file():
+    import os
+    os.environ["YTC_LLM_MODEL"] = " m-env "
+    os.environ["YTC_LLM_MAX_TOKENS"] = "777"
+    try:
+        assert llm.config() == {"engine": "claude-cli", "model": "m-env", "max_tokens": 777}
+    finally:
+        del os.environ["YTC_LLM_MODEL"], os.environ["YTC_LLM_MAX_TOKENS"]
+
+
+def test_config_env_model_and_max_tokens_override_file(home, monkeypatch):
+    _write_config(home, {"llm": {"engine": "anthropic-api", "model": "m-file", "max_tokens": 5}})
+    monkeypatch.setenv("YTC_LLM_MODEL", "m-env")
+    monkeypatch.setenv("YTC_LLM_MAX_TOKENS", "999")
+    assert llm.config() == {"engine": "anthropic-api", "model": "m-env", "max_tokens": 999}
+
+
+def test_config_empty_env_values_are_ignored(home, monkeypatch):
+    # compose의 env_file에서 `YTC_LLM_MODEL=`처럼 비어 오는 값은 설정 없음으로 본다
+    _write_config(home, {"llm": {"model": "m-file", "max_tokens": 5}})
+    monkeypatch.setenv("YTC_LLM_MODEL", "")
+    monkeypatch.setenv("YTC_LLM_MAX_TOKENS", "  ")
+    monkeypatch.setenv("YTC_LLM_ENGINE", "")
+    assert llm.config() == {"engine": "claude-cli", "model": "m-file", "max_tokens": 5}
+
+
+@pytest.mark.parametrize("name,value", [
+    ("YTC_LLM_MAX_TOKENS", "abc"),
+    ("YTC_LLM_MAX_TOKENS", "0"),
+    ("YTC_LLM_MAX_TOKENS", "-3"),
+    ("YTC_LLM_MAX_TOKENS", "1.5"),
+])
+def test_config_invalid_env_is_llm_not_configured(monkeypatch, name, value):
+    monkeypatch.setenv(name, value)
+    with pytest.raises(ScriptError) as e:
+        llm.config()
+    assert e.value.code == "llm_not_configured" and name in e.value.message
 
 
 @pytest.mark.parametrize("content", [

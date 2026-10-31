@@ -1,7 +1,8 @@
 """LLM 엔진 계층: 화면·라이브러리가 Claude를 부르는 모든 호출의 단일 입구.
 
 엔진은 작업 폴더 `yt-coach.json`의 `{"llm": {"engine": ..., "model": ..., "max_tokens": ...}}`로 고른다.
-파일이 없으면 `claude-cli`(기존 동작 그대로). 환경 변수 `YTC_LLM_ENGINE`이 있으면 우선한다.
+파일이 없으면 `claude-cli`(기존 동작 그대로). 환경 변수 `YTC_LLM_ENGINE`·`YTC_LLM_MODEL`·`YTC_LLM_MAX_TOKENS`가
+비어 있지 않게 있으면 파일보다 우선한다(컨테이너가 yt-coach.json 없이 엔진을 고정한다).
 새 엔진은 `check()`와 `ask(...)`를 가진 모듈을 만들어 ENGINES에 등록하면 끝난다.
 """
 from __future__ import annotations
@@ -18,6 +19,8 @@ from scripts.common import ScriptError
 CONFIG_FILE = keys.CONFIG
 DEFAULT_ENGINE = "claude-cli"
 ENV_ENGINE = "YTC_LLM_ENGINE"
+ENV_MODEL = "YTC_LLM_MODEL"
+ENV_MAX_TOKENS = "YTC_LLM_MAX_TOKENS"
 
 ENGINES: dict[str, ModuleType] = {
     "claude-cli": claude_cli,
@@ -53,12 +56,20 @@ def config() -> dict[str, Any]:
         names = ", ".join(ENGINES)
         raise _not_configured(f"알 수 없는 LLM 엔진입니다: {engine!r} (사용 가능: {names})")
     result: dict[str, Any] = {"engine": engine}
-    model = section.get("model")
+    model = (os.environ.get(ENV_MODEL) or "").strip() or section.get("model")
     if model is not None:
         if not isinstance(model, str) or not model.strip():
             raise _not_configured('llm.model은 비어 있지 않은 문자열이어야 합니다')
         result["model"] = model.strip()
     max_tokens = section.get("max_tokens")
+    env_tokens = (os.environ.get(ENV_MAX_TOKENS) or "").strip()
+    if env_tokens:
+        try:
+            max_tokens = int(env_tokens)
+        except ValueError:
+            max_tokens = 0
+        if max_tokens <= 0:
+            raise _not_configured(f"{ENV_MAX_TOKENS}는 양의 정수여야 합니다: {env_tokens!r}")
     if max_tokens is not None:
         if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
             raise _not_configured("llm.max_tokens는 양의 정수여야 합니다")

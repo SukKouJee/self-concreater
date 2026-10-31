@@ -1,0 +1,9 @@
+# 허용 목록: 이미지에 필요한 것만 컨텍스트로 보낸다(.env·workspace·.git·.venv는 자동으로 빠진다).
+*
+!scripts
+!templates
+!skills
+!docs/help
+!requirements.txt
+**/__pycache__
+**/*.pyc
