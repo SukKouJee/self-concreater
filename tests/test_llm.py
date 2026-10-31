@@ -44,14 +44,10 @@ def test_config_env_overrides_file(home, monkeypatch):
     assert llm.config()["engine"] == "anthropic-api"
 
 
-def test_config_env_model_and_max_tokens_work_without_file():
-    import os
-    os.environ["YTC_LLM_MODEL"] = " m-env "
-    os.environ["YTC_LLM_MAX_TOKENS"] = "777"
-    try:
-        assert llm.config() == {"engine": "claude-cli", "model": "m-env", "max_tokens": 777}
-    finally:
-        del os.environ["YTC_LLM_MODEL"], os.environ["YTC_LLM_MAX_TOKENS"]
+def test_config_env_model_and_max_tokens_work_without_file(monkeypatch):
+    monkeypatch.setenv("YTC_LLM_MODEL", " m-env ")
+    monkeypatch.setenv("YTC_LLM_MAX_TOKENS", "777")
+    assert llm.config() == {"engine": "claude-cli", "model": "m-env", "max_tokens": 777}
 
 
 def test_config_env_model_and_max_tokens_override_file(home, monkeypatch):

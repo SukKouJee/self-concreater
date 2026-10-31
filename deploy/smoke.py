@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import socket
 import subprocess
 import sys
 import tempfile
-import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -65,6 +65,16 @@ def http(url: str, key: str | None = None) -> tuple[int, dict | str]:
         return status, body
 
 
+def parse_ps(text: str) -> list[dict]:
+    """`docker compose ps --format json`은 버전에 따라 JSON 배열이거나 줄마다 객체(NDJSON)다."""
+    text = text.strip()
+    if not text:
+        return []
+    if text.startswith("["):
+        return list(json.loads(text))
+    return [json.loads(ln) for ln in text.splitlines() if ln.strip().startswith("{")]
+
+
 def first_link() -> str:
     for line in LINKS.read_text(encoding="utf-8").splitlines():
         line = line.split("#", 1)[0].strip()
@@ -74,7 +84,6 @@ def first_link() -> str:
 
 
 def smoke_local(project: str, image: str, with_youtube: bool) -> None:
-    import os
     port = free_port()
     with tempfile.TemporaryDirectory(prefix="ytc-smoke-") as tmp:
         tmp_path = Path(tmp)
@@ -85,6 +94,8 @@ def smoke_local(project: str, image: str, with_youtube: bool) -> None:
         override = tmp_path / "override.yml"
         override.write_text(f'services:\n  ytc:\n    env_file:\n      - "{env_file.as_posix()}"\n', encoding="utf-8")
         env = dict(os.environ, YTC_WORK_DIR=str(work), YTC_PORT=str(port), YTC_IMAGE=image)
+        if hasattr(os, "getuid"):                      # Linux: 임시 폴더 소유자와 컨테이너 uid를 맞춘다
+            env.update(YTC_UID=str(os.getuid()), YTC_GID=str(os.getgid()))
         compose = ["docker", "compose", "-p", project, "-f", str(LOCAL_DIR / "docker-compose.yml"), "-f", str(override)]
         try:
             run(compose + ["up", "-d", "--build", "--wait", "--wait-timeout", str(UP_TIMEOUT_SEC)], env, timeout=1500)
@@ -128,16 +139,18 @@ def smoke_local(project: str, image: str, with_youtube: bool) -> None:
                 out = run(compose + ["exec", "-T", "ytc", "python", "-m", "scripts.cuts", url], env, timeout=600)
                 check('"error"' not in out, f"360p 다운로드·장면 분석 통과: {out.strip()[:160]}")
         finally:
-            run(compose + ["down", "-v", "--remove-orphans"], env, timeout=300, ok_codes=(0, 1))
-            print("down -v 완료", flush=True)
-            time.sleep(0.1)
+            try:                                           # 정리 실패가 원래 실패를 가리지 않게 한다
+                run(compose + ["down", "-v", "--remove-orphans"], env, timeout=300)
+                print("down -v 완료", flush=True)
+            except (SmokeFailure, subprocess.TimeoutExpired) as e:
+                print(f"WARN down -v 실패(수동 정리 필요: docker compose -p {project} down -v): {e}", file=sys.stderr)
 
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(prog="deploy/smoke.py")
     parser.add_argument("edition", choices=["local"])
-    parser.add_argument("--project", default="ytc-smoke-local")
-    parser.add_argument("--image", default="ytc:local-smoke")
+    parser.add_argument("--project", default=f"ytc-smoke-{os.getpid()}")
+    parser.add_argument("--image", default=f"ytc:smoke-{os.getpid()}")
     parser.add_argument("--with-youtube", action="store_true")
     args = parser.parse_args(argv)
     try:

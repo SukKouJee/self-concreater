@@ -13,7 +13,9 @@ RUN apt-get update \
 WORKDIR /app
 
 # 의존성 먼저(소스가 바뀌어도 이 레이어는 캐시). 테스트 도구(pytest)는 런타임에 필요 없어 뺀다.
-# scenedetect가 GUI판 opencv-python을 끌어와 같은 cv2 폴더를 덮어쓰므로(libxcb 필요) 지우고 headless를 다시 깐다.
+# opencv 교체: scenedetect가 GUI판 opencv-python을 의존성으로 끌어와, headless와 같은 cv2 폴더를 덮어쓴다.
+# GUI판은 libxcb 등 X11 라이브러리가 있어야 import 되므로(slim 이미지에는 없음) 지우고 headless를 다시 깐다.
+# (--no-deps 재설치는 numpy 등 이미 깔린 의존성을 건드리지 않기 위함. 아래 import 검사가 결과를 확인한다.)
 COPY requirements.txt ./
 RUN --mount=type=cache,target=/root/.cache/pip \
     grep -v '^pytest' requirements.txt > /tmp/requirements.runtime.txt \
@@ -51,4 +53,6 @@ ENV YT_COACH_HOME=/work \
 WORKDIR /app
 VOLUME ["/work"]
 EXPOSE 8765
+# 맨 docker run 도 점검되도록(compose의 healthcheck와 같은 /healthz). 포트는 컨테이너의 YTC_PORT(없으면 8765).
+HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=5     CMD ["python", "-c", "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/healthz' % os.environ.get('YTC_PORT', '8765'), timeout=3)"]
 CMD ["python", "-m", "scripts.ui", "--host", "0.0.0.0", "--port", "8765", "--no-open", "--foreground"]

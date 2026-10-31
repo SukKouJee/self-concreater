@@ -110,3 +110,14 @@ def test_env_example_lists_the_documented_variables_with_empty_values() -> None:
     for ln in ENV_EXAMPLE.read_text(encoding="utf-8").splitlines():
         if ln.startswith("ANTHROPIC_API_KEY="):
             assert ln == "ANTHROPIC_API_KEY="
+
+
+def test_dockerfile_local_target_has_healthz_healthcheck() -> None:
+    local = DOCKERFILE.read_text(encoding="utf-8").split("AS local", 1)[1]
+    assert "HEALTHCHECK " in local and 'CMD ["python", "-c"' in local and "/healthz" in local
+
+
+def test_env_example_documents_existing_work_folder_mount() -> None:
+    text = ENV_EXAMPLE.read_text(encoding="utf-8")
+    for needle in ("새 빈 작업 폴더", "C:/ai/projects/orca/nahon-workspace", "ui.lock", "ytc ui --stop", "id -u", "id -g"):
+        assert needle in text
