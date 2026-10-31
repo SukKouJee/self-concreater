@@ -7,7 +7,8 @@
   순서는 `sorted(key=PureWindowsPath)` — Windows FileStore의 `sorted(glob)`과 같다(§3.3).
 - 접두사 질의는 `starts_with(key, prefix)`: 설계 §3.1의 `key < prefix || U&'\\FFFF'` 상한은
   COLLATE "C"(UTF-8 바이트 순)에서 U+FFFF보다 큰 글자(이모지)로 시작하는 이름을 놓친다.
-- 폴더는 `folders` 행(쓰기·ensure_folder 때 조상까지 upsert) ∪ 문서·객체 키에서 유도한 폴더.
+- 폴더는 `folders` 행(쓰기·ensure_folder 때 조상까지 upsert) ∪ 문서·객체 키에서 유도한 폴더. `folder_exists`는
+  조상 행에 기대지 않고 prefix 아래의 폴더 행·문서·객체가 하나라도 있으면 참이다.
 """
 from __future__ import annotations
 
@@ -40,7 +41,8 @@ def _matcher(pattern: str) -> Callable[[str], re.Match[str] | None]:
 
 
 def _windows_order(names: Iterable[str]) -> builtins.list[str]:
-    return sorted(names, key=PureWindowsPath)
+    """Windows FileStore 순서. 대소문자만 다른 두 키(Windows에는 없다)는 키 문자열로 순서를 고정한다."""
+    return sorted(names, key=lambda k: (PureWindowsPath(k), k))
 
 
 def _prefix(prefix: str) -> str:
@@ -192,7 +194,7 @@ class PgDocStore:
         prefix = _prefix(prefix)
         with self._tx() as conn:
             row = conn.execute(
-                "SELECT EXISTS (SELECT 1 FROM folders WHERE user_id = %(u)s AND prefix = %(p)s) "
+                "SELECT EXISTS (SELECT 1 FROM folders WHERE user_id = %(u)s AND starts_with(prefix, %(p)s)) "
                 "OR EXISTS (SELECT 1 FROM docs WHERE user_id = %(u)s AND starts_with(key, %(p)s)) "
                 "OR EXISTS (SELECT 1 FROM objects WHERE user_id = %(u)s AND starts_with(key, %(p)s))",
                 {"u": self._uid, "p": prefix}).fetchone()
@@ -224,7 +226,7 @@ class PgDocStore:
         key = self._doc_key(key)
         with self._tx() as conn:
             row = conn.execute("SELECT raw FROM docs WHERE user_id = %s AND key = %s", (self._uid, key)).fetchone()
-        with tempfile.TemporaryDirectory(prefix="ytc-doc-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="ytc-doc-", ignore_cleanup_errors=True) as tmp:
             path = Path(tmp) / key.rsplit("/", 1)[-1]
             if row is not None:
                 path.write_bytes(bytes(row[0]))

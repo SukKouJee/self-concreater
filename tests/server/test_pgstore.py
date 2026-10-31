@@ -137,3 +137,35 @@ def test_mtime_ns_moves_forward_even_if_the_clock_does_not(store: Any, monkeypat
     store.write("drafts/a.md", b"same size")
 
     assert store.stat("drafts/a.md").mtime_ns == first + 1
+
+
+def _owner_exec(request: pytest.FixtureRequest, query: str, *params: Any) -> None:
+    owner = request.getfixturevalue("migrated_db").owner_dsn
+    with psycopg.connect(owner) as conn:
+        uid = conn.execute("SELECT id FROM users WHERE email = 'a@example.com'").fetchone()[0]
+        conn.execute(query, (uid, *params))
+
+
+@pytest.mark.parametrize("order", [("drafts/a.md", "drafts/A.md"), ("drafts/A.md", "drafts/a.md")])
+def test_case_only_different_keys_list_in_a_fixed_order(store: Any, order: tuple[str, str]) -> None:
+    """Windows에는 없는 경우(대소문자만 다른 두 키)도 순서가 정해져 있다: PureWindowsPath 다음 키 문자열."""
+    for key in order:
+        store.write(key, b"x")
+    store.ensure_folder("refs/ref_b/" if order[0].endswith("a.md") else "refs/Ref_b/")
+    store.ensure_folder("refs/Ref_b/" if order[0].endswith("a.md") else "refs/ref_b/")
+
+    assert [m.key for m in store.list("drafts/")] == ["drafts/A.md", "drafts/a.md"]
+    assert store.folders("refs/", "*") == ["refs/Ref_b/", "refs/ref_b/"]
+
+
+def test_folder_exists_without_ancestor_rows(store: Any, request: pytest.FixtureRequest) -> None:
+    """조상 행이 없어도(옛 데이터·직접 넣은 행) 아래에 폴더 행이나 문서가 있으면 폴더가 있다."""
+    _owner_exec(request, "INSERT INTO folders (user_id, prefix) VALUES (%s, 'refs/ref_a/videos/')")
+    _owner_exec(request, "INSERT INTO docs (user_id, key, raw, version, size, mtime_ns) "
+                         "VALUES (%s, 'mine/deep/x.md', '\x78', repeat('0', 64), 1, 1)")
+
+    assert store.folder_exists("refs/")
+    assert store.folder_exists("refs/ref_a/")
+    assert store.folder_exists("mine/")
+    assert store.folder_exists("mine/deep/")
+    assert not store.folder_exists("refs/ref_b/")

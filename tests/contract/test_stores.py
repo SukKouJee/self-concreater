@@ -170,6 +170,9 @@ def test_bad_doc_key_raises_bad_path(doc_store: DocStore, key: str) -> None:
         with pytest.raises(ScriptError) as e:
             call()
         assert e.value.code == "bad_path"
+    with pytest.raises(ScriptError) as e, doc_store.local_path(key):
+        pass
+    assert e.value.code == "bad_path"
 
 
 @pytest.mark.parametrize("prefix", ["drafts", "refs/ref_a"])
@@ -468,11 +471,11 @@ def test_meta_mtime_ns_does_not_go_back_on_rewrite(doc_store: DocStore) -> None:
     first = doc_store.stat("drafts/a.md")
     time.sleep(0.02)
 
-    doc_store.write("drafts/a.md", b"three")
+    doc_store.write("drafts/a.md", b"two")                # same size: only mtime_ns can move the stamp
     second = doc_store.stat("drafts/a.md")
 
-    assert second.mtime_ns >= first.mtime_ns
-    assert (second.mtime_ns, second.size) != (first.mtime_ns, first.size)
+    assert second.size == first.size
+    assert second.mtime_ns > first.mtime_ns
 
 
 # --- local_path ---------------------------------------------------------------------------
