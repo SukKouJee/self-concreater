@@ -317,3 +317,120 @@ def test_a_database_error_is_503_and_does_not_count_as_a_failed_guess(client, us
         assert r.status_code == 503 and r.json()["error"] == "unavailable"
     monkeypatch.setattr(users, "password_login", real)
     assert _login(client, "a@example.com").status_code == 200       # nothing was recorded, nothing is pending
+
+
+# ---- fix round 1 ----------------------------------------------------------------------------
+
+ESCAPED = chr(92) + "ud800"                   # the six characters \ud800 inside a JSON string: a lone surrogate
+
+
+@pytest.mark.parametrize("case", ["with_hash", "no_password", "unknown_email", "disabled"])
+def test_unencodable_password_is_the_generic_401_with_one_scrypt_for_every_account(client, users, case, monkeypatch):
+    if case == "with_hash":
+        users.add_pw("a@example.com")
+    elif case == "no_password":
+        users.add_pw("a@example.com", None)
+    elif case == "disabled":
+        users.add_pw("a@example.com", disabled=True)
+    passwords.dummy_hash()
+    calls: list[int] = []
+    real = passwords.hashlib.scrypt
+    monkeypatch.setattr(passwords.hashlib, "scrypt", lambda *a, **k: calls.append(k["n"]) or real(*a, **k))
+    r = client.post("/auth/password", content='{"email": "a@example.com", "password": "' + ESCAPED * 12 + '"}',
+                    headers={"Content-Type": "application/json"})
+    assert r.status_code == 401 and r.json() == FAILED
+    assert calls == [passwords.SCRYPT_N]
+
+
+def test_unencodable_password_counts_as_a_failure(client, users):
+    users.add_pw("a@example.com")
+    raw = '{"email": "a@example.com", "password": "' + ESCAPED * 12 + '"}'
+    for _ in range(3):
+        r = client.post("/auth/password", content=raw, headers={"Content-Type": "application/json"})
+        assert r.status_code == 401
+    assert _login(client, "a@example.com").status_code == 429
+
+
+def test_unencodable_email_is_400_before_the_lookup(client, users, monkeypatch):
+    monkeypatch.setattr(users, "password_login", lambda e: pytest.fail("looked up an unencodable email"))
+    r = client.post("/auth/password", content='{"email": "a' + ESCAPED + '@example.com", "password": "x"}',
+                    headers={"Content-Type": "application/json"})
+    assert r.status_code == 400 and r.json()["error"] == "bad_request"
+
+
+def test_dummy_hash_is_ready_when_the_app_is_built(users, limits):
+    passwords.dummy_hash.cache_clear()
+    _app(users, limits)
+    assert passwords.dummy_hash.cache_info().currsize == 1
+    passwords.dummy_hash.cache_clear()
+    asgi.create_app(_settings(YTC_PASSWORD_LOGIN="0", YTC_DEV_LOGIN="1"), FakeBackend(), users=users)  # type: ignore[arg-type]
+    assert passwords.dummy_hash.cache_info().currsize == 0
+
+
+class BlockingUsers(PwUsers):
+    """password_login이 gate가 열릴 때까지 작업 스레드를 붙잡는다(동시 로그인 흉내)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        import threading
+        self.gate = threading.Event()
+        self.block = False
+
+    def password_login(self, email: str) -> tuple[auth.UserRow, str | None] | None:
+        if self.block:
+            assert self.gate.wait(20)
+        return super().password_login(email)
+
+
+def _queued_logins_scenario(extra_after_queue: int) -> dict[str, Any]:
+    import asyncio
+
+    import anyio
+    import httpx
+
+    users = BlockingUsers()
+    users.add_pw("a@example.com")
+    limits = login_limit.LoginLimiter(email_failures=99, ip_failures=999, window=600)
+    app = _app(users, limits)
+    handler = app.state.handler
+    out: dict[str, Any] = {}
+
+    async def main() -> None:
+        anyio.to_thread.current_default_thread_limiter().total_tokens = 4     # a small default pool
+        transport = httpx.ASGITransport(app=app, client=("203.0.113.10", 1))
+        async with httpx.AsyncClient(transport=transport, base_url=ORIGIN, headers={"Origin": ORIGIN}) as c:
+            r = await c.post("/auth/password", json={"email": "a@example.com", "password": PW})
+            assert r.status_code == 200
+            users.block = True
+            tasks = [asyncio.create_task(c.post("/auth/password", json={"email": f"q{i}@example.com", "password": PW}))
+                     for i in range(2 + asgi.MAX_HASH_WAITING)]
+            for _ in range(200):
+                await asyncio.sleep(0.02)
+                if handler.hash_limiter.statistics().tasks_waiting >= asgi.MAX_HASH_WAITING:
+                    break
+            out["waiting"] = handler.hash_limiter.statistics().tasks_waiting
+            ping = await asyncio.wait_for(c.get("/api/ping"), timeout=5)       # the session check needs a thread
+            out["ping"] = ping.status_code
+            extra = [await c.post("/auth/password", json={"email": f"x{i}@example.com", "password": PW})
+                     for i in range(extra_after_queue)]
+            out["extra"] = [(r.status_code, r.json()) for r in extra]
+            users.gate.set()
+            out["queued"] = [r.status_code for r in await asyncio.gather(*tasks)]
+            out["pending_left"] = limits.begin("x0@example.com", "203.0.113.10")
+        anyio.to_thread.current_default_thread_limiter().total_tokens = 40
+
+    asyncio.run(main())
+    return out
+
+
+def test_queued_logins_do_not_take_the_default_thread_pool():
+    out = _queued_logins_scenario(extra_after_queue=0)
+    assert out["waiting"] == asgi.MAX_HASH_WAITING
+    assert out["ping"] == 200                         # 18 logins in flight, yet a session check still gets a thread
+    assert out["queued"] == [401] * (2 + asgi.MAX_HASH_WAITING)
+
+
+def test_too_many_queued_logins_are_503_and_not_counted():
+    out = _queued_logins_scenario(extra_after_queue=2)
+    assert all(status == 503 and body["error"] == "unavailable" for status, body in out["extra"])
+    assert out["pending_left"] is None                # the refused attempts released their reservation

@@ -93,12 +93,21 @@ def dummy_hash() -> str:
     return hash_password(secrets.token_urlsafe(24))
 
 
+def encodable(text: str) -> bool:
+    """UTF-8로 바꿀 수 있는가(JSON 이스케이프로 들어온 짝 없는 서로게이트 U+D800~U+DFFF는 안 된다)."""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def verify_password(password: str, encoded: str | None) -> bool:
-    """맞으면 True. encoded가 None이거나 비밀번호가 너무 길면 더미 해시로 같은 계산을 하고 False.
+    """맞으면 True. encoded가 None이거나 비밀번호가 너무 길거나 UTF-8로 못 바꾸면 같은 비용의 계산을 하고 False.
     저장된 값이 깨졌으면 BadHash."""
     target = dummy_hash() if encoded is None else encoded
     n, r, p, salt, digest = _parse(target)
-    usable = encoded is not None and len(password) <= MAX_LENGTH
+    usable = encoded is not None and len(password) <= MAX_LENGTH and encodable(password)
     candidate = _derive(password if usable else "", salt, n, r, p)
     same = hmac.compare_digest(candidate, digest)
     return usable and same
@@ -110,4 +119,6 @@ def check_policy(password: str) -> str:
         raise ScriptError("weak_password", f"비밀번호는 {MIN_LENGTH}자 이상이어야 합니다(공백만으로는 안 됩니다).")
     if len(password) > MAX_LENGTH:
         raise ScriptError("weak_password", f"비밀번호는 {MAX_LENGTH}자 이하여야 합니다.")
+    if not encodable(password):
+        raise ScriptError("weak_password", "비밀번호에 쓸 수 없는 문자가 있습니다(깨진 유니코드 문자).")
     return password

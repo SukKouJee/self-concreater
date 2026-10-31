@@ -271,3 +271,49 @@ def test_end_with_an_unknown_outcome_is_an_error(clock: Clock):
     assert limits.begin("a@example.com", "10.0.0.1") is None
     with pytest.raises(ValueError):
         limits.end("a@example.com", "10.0.0.1", "maybe")
+
+
+# ---- fix round 1 ----------------------------------------------------------------------------
+
+LONE = chr(0xD800) * 12                      # JSON "\ud800" decodes to this; it cannot be encoded as UTF-8
+
+
+@pytest.mark.parametrize("stored", ["real", "none"])
+def test_unencodable_password_is_a_plain_false_after_one_scrypt(monkeypatch: pytest.MonkeyPatch, stored: str):
+    encoded = passwords.hash_password(PW) if stored == "real" else None
+    calls = _count_scrypt(monkeypatch)
+    assert passwords.verify_password(LONE, encoded) is False
+    assert calls == [passwords.SCRYPT_N]
+
+
+def test_policy_refuses_unencodable_passwords():
+    with pytest.raises(ScriptError) as e:
+        passwords.check_policy(LONE)
+    assert e.value.code == "weak_password"
+
+
+def test_ipv6_clients_are_counted_per_64_and_ipv4_mapped_as_ipv4():
+    assert login_limit.ip_key("2001:db8:1:2:aaaa::1") == login_limit.ip_key("2001:db8:1:2:bbbb::2") == "2001:db8:1:2::/64"
+    assert login_limit.ip_key("2001:db8:1:3::1") != login_limit.ip_key("2001:db8:1:2::1")
+    assert login_limit.ip_key("::ffff:192.0.2.7") == "192.0.2.7"
+    assert login_limit.ip_key("192.0.2.7") == "192.0.2.7"
+    assert login_limit.ip_key("testclient") == "testclient"           # not an address: kept as is
+
+
+def test_one_ipv6_host_rotating_addresses_in_its_64_is_still_blocked(clock: Clock):
+    limits = login_limit.LoginLimiter(email_failures=99, ip_failures=3, window=600, clock=clock)
+    for i in range(3):
+        limits.failed(f"u{i}@example.com", f"2001:db8:9:9::{i + 1}")
+    assert limits.blocked("x@example.com", "2001:db8:9:9:ffff::1") is not None
+    assert limits.blocked("x@example.com", "2001:db8:9:a::1") is None
+
+
+def test_flooding_new_keys_does_not_evict_a_victims_failures(clock: Clock):
+    w = login_limit.FailureWindow(max_failures=5, window=600, clock=clock, max_keys=100)
+    for _ in range(4):
+        w.fail("victim@example.com")
+    for i in range(1000):                     # attacker floods one-failure keys
+        w.fail(f"flood{i}@example.com")
+    assert len(w) <= 100
+    w.fail("victim@example.com")
+    assert w.retry_after("victim@example.com") is not None    # all five failures are still there

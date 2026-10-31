@@ -1,7 +1,9 @@
 """비밀번호 로그인 실패 횟수 제한(서버 설계 §4.2, T15). 프로세스 메모리 안(uvicorn worker 1개)이라 재시작하면 비워진다.
 
 - `FailureWindow`: 키마다 최근 실패 시각(미끄러지는 창). 창 안에 `max_failures`번 실패했으면 막히고, `retry_after`는
-  가장 오래된 실패가 창을 벗어날 때까지 남은 초(올림). 키 수는 `max_keys`로 묶는다(넘으면 지난 기록부터, 그래도 많으면 오래된 키부터 버림).
+  가장 오래된 실패가 창을 벗어날 때까지 남은 초(올림). 키 수는 `max_keys`로 묶는다(아래).
+- 키 수가 `max_keys`에 닿으면(지난 기록을 지운 뒤에도) 실패가 가장 적은 키부터 한 묶음(10%)을 버린다: 새 키를 마구 만들어도
+  한도에 가까운 피해자 이메일 기록은 남는다. IP 키는 `ip_key`(IPv6는 /64, IPv4 매핑은 IPv4).
 - `LoginLimiter`: 이메일별(기본 10분에 5번)·클라이언트 IP별(기본 10분에 20번: 공유기·사설망 프록시 뒤 여러 사람이 한 IP일 수 있다).
   성공하면 그 이메일의 기록만 지운다(IP 기록은 남긴다: 한 IP가 여러 계정을 돌며 맞히는 것을 늦춘다).
   이메일 키는 소문자·앞뒤 공백 제거(로그인과 같은 정규화). 모르는 이메일도 똑같이 센다(계정 유무를 드러내지 않는다).
@@ -12,6 +14,7 @@
 """
 from __future__ import annotations
 
+import ipaddress
 import math
 import threading
 import time
@@ -57,8 +60,14 @@ class FailureWindow:
             return
         for key in list(self._hits):
             self._recent(key, now)
-        while len(self._hits) >= self._max_keys:
-            del self._hits[next(iter(self._hits))]          # dicts keep insertion order: the oldest key goes
+        if len(self._hits) < self._max_keys:
+            return
+        # Still full: drop a batch of the keys with the fewest failures (oldest first among equals), so flooding
+        # one-failure keys cannot push out a victim's record that is close to the limit.
+        batch = max(1, self._max_keys // 10)
+        order = sorted(enumerate(self._hits.items()), key=lambda item: (len(item[1][1]), item[0]))
+        for _, (key, _hits) in order[:batch]:
+            del self._hits[key]
 
     def fail(self, key: str) -> None:
         with self._lock:
@@ -106,6 +115,20 @@ def email_key(email: str) -> str:
     return email.strip().lower()[:MAX_EMAIL_KEY]
 
 
+def ip_key(host: str) -> str:
+    """클라이언트 IP → 세는 키. IPv6는 /64로 묶는다(한 가입자가 보통 /64를 통째로 받아 주소를 바꿔 가며 보낼 수 있다).
+    IPv4가 매핑된 IPv6(`::ffff:a.b.c.d`)는 그 IPv4. 주소가 아니면(테스트 클라이언트 등) 그대로."""
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return host
+    if isinstance(address, ipaddress.IPv6Address):
+        if address.ipv4_mapped is not None:
+            return str(address.ipv4_mapped)
+        return str(ipaddress.IPv6Network((address, 64), strict=False))
+    return str(address)
+
+
 class LoginLimiter:
     def __init__(self, *, email_failures: int = EMAIL_FAILURES, ip_failures: int = IP_FAILURES,
                  window: float = WINDOW_SEC, clock: Callable[[], float] = time.monotonic) -> None:
@@ -115,7 +138,7 @@ class LoginLimiter:
 
     def blocked(self, email: str, ip: str) -> int | None:
         """이메일이나 IP가 막혀 있으면 기다릴 초(둘 중 긴 쪽), 아니면 None."""
-        waits = [w for w in (self._email.retry_after(email_key(email)), self._ip.retry_after(ip)) if w is not None]
+        waits = [w for w in (self._email.retry_after(email_key(email)), self._ip.retry_after(ip_key(ip))) if w is not None]
         return max(waits) if waits else None
 
     def begin(self, email: str, ip: str) -> int | None:
@@ -124,7 +147,7 @@ class LoginLimiter:
             wait = self.blocked(email, ip)
             if wait is None:
                 self._email.reserve(email_key(email))
-                self._ip.reserve(ip)
+                self._ip.reserve(ip_key(ip))
             return wait
 
     def end(self, email: str, ip: str, outcome: str) -> None:
@@ -133,7 +156,7 @@ class LoginLimiter:
             raise ValueError(f"unknown outcome: {outcome!r}")
         with self._lock:
             self._email.release(email_key(email))
-            self._ip.release(ip)
+            self._ip.release(ip_key(ip))
             if outcome == "failed":
                 self.failed(email, ip)
             elif outcome == "succeeded":
@@ -141,7 +164,7 @@ class LoginLimiter:
 
     def failed(self, email: str, ip: str) -> None:
         self._email.fail(email_key(email))
-        self._ip.fail(ip)
+        self._ip.fail(ip_key(ip))
 
     def succeeded(self, email: str) -> None:
         self._email.reset(email_key(email))

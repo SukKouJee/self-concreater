@@ -313,3 +313,14 @@ def test_docs_explain_password_users_and_resets() -> None:
         text = path.read_text(encoding="utf-8")
         for needle in ("--password", "set-password", "clear-password", "--password-stdin", "YTC_PASSWORD_LOGIN"):
             assert needle in text, (path.name, needle)
+
+
+def test_operations_says_public_exposure_must_go_through_caddy() -> None:
+    text = (SERVER_DIR / "OPERATIONS.md").read_text(encoding="utf-8")
+    assert "Funnel" in text and "caddy 경로(`--profile tls`)만" in text
+
+
+def test_design_says_google_is_required_only_without_password_login() -> None:
+    text = (ROOT / "docs" / "superpowers" / "specs" / "2026-11-01-server-edition-design.md").read_text(encoding="utf-8")
+    assert "(production 필수)" not in text
+    assert "add-user you@example.com --admin --password" in text

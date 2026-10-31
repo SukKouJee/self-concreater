@@ -24,7 +24,6 @@ import math
 import os
 import string
 import sys
-import threading
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import asynccontextmanager
@@ -70,8 +69,11 @@ UNHEALTHY: Final = "unhealthy"
 INTERNAL_MESSAGE: Final = "서버 오류가 났습니다. 잠시 뒤 다시 시도해 주세요"
 STARTING: Final = {"error": "starting", "message": "서버가 아직 시작하는 중입니다. 잠시 뒤 새로고침하세요"}
 PASSWORD_PATH: Final = "/auth/password"
-# scrypt needs ~32 MiB and tens of ms per call: at most this many run at once (others wait in their worker thread)
-HASH_SLOTS: Final = threading.BoundedSemaphore(2)
+# scrypt needs ~32 MiB and tens of ms per call: at most HASH_SLOTS run at once. The others wait in the event loop
+# (anyio.CapacityLimiter), not in a worker thread, so queued logins never take the default thread pool that session
+# checks and API calls use. More than MAX_HASH_WAITING already waiting -> 503 (not counted as a failed guess).
+HASH_SLOTS: Final = 2
+MAX_HASH_WAITING: Final = 16
 UNKNOWN_CLIENT: Final = "unknown"
 LOGIN_UNAVAILABLE: Final = {"error": "unavailable", "message": "지금은 로그인할 수 없습니다. 잠시 뒤 다시 시도하세요"}
 
@@ -116,6 +118,14 @@ class _ServerApp:
         self.registry = registry
         self.google = google
         self.login_limits = login_limits or login_limit.LoginLimiter()
+        self._hash_limiter: anyio.CapacityLimiter | None = None
+
+    @property
+    def hash_limiter(self) -> anyio.CapacityLimiter:
+        """scrypt 동시 실행 한도. 이벤트 루프 안에서 처음 쓸 때 만든다(anyio 객체는 루프 밖에서 만들 수 없다)."""
+        if self._hash_limiter is None:
+            self._hash_limiter = anyio.CapacityLimiter(HASH_SLOTS)
+        return self._hash_limiter
 
     # ---- 응답 --------------------------------------------------------------------
 
@@ -311,12 +321,11 @@ class _ServerApp:
         비활성 계정도 검증을 끝낸 뒤 거부한다. 돌려주는 이유 코드는 로그에만 쓴다."""
         found = self.users.password_login(email)
         row, stored = found if found is not None else (None, None)
-        with HASH_SLOTS:
-            try:
-                ok = passwords.verify_password(password, stored)
-            except passwords.BadHash as e:
-                auth_log.error("password login refused: bad_hash (user %s: %s)", row.id if row else "?", e)
-                return None, "bad_hash"
+        try:
+            ok = passwords.verify_password(password, stored)
+        except passwords.BadHash as e:
+            auth_log.error("password login refused: bad_hash (user %s: %s)", row.id if row else "?", e)
+            return None, "bad_hash"
         if row is None:
             return None, "not_invited"
         if stored is None:
@@ -337,6 +346,8 @@ class _ServerApp:
         email, password = body.get("email"), body.get("password")
         if not isinstance(email, str) or not email.strip() or not isinstance(password, str):
             return self._json(400, {"error": "bad_request", "message": "email과 password가 필요합니다"}, path)
+        if not passwords.encodable(email):            # a lone surrogate from JSON cannot reach the database driver
+            return self._json(400, {"error": "bad_request", "message": "이메일 형식이 아닙니다"}, path)
         ip = request.client.host if request.client is not None else UNKNOWN_CLIENT
         wait = self.login_limits.begin(email, ip)        # counts this attempt while it runs (parallel requests)
         if wait is not None:
@@ -346,7 +357,11 @@ class _ServerApp:
             return self._reply(ui.Response(status, body_bytes, "application/json; charset=utf-8", headers), path)
         outcome = "aborted"                                # an exception (e.g. database down) is not a failed guess
         try:
-            row, reason = await anyio.to_thread.run_sync(self._password_attempt, email, password)
+            limiter = self.hash_limiter
+            if limiter.statistics().tasks_waiting >= MAX_HASH_WAITING:
+                auth_log.warning("password login refused: hash queue full")
+                return self._json(503, dict(LOGIN_UNAVAILABLE), path)
+            row, reason = await anyio.to_thread.run_sync(self._password_attempt, email, password, limiter=limiter)
             outcome = "failed" if row is None else "succeeded"
         except psycopg.Error as e:
             auth_log.error("password login unavailable: %s", type(e).__name__)
@@ -456,6 +471,8 @@ def create_app(settings: AuthSettings, backend: ServerBackend, *, users: auth.Us
                          login_limits)
     if runtime is not None:
         install_runtime(runtime, backend.db)
+    if settings.password_login:
+        passwords.dummy_hash()                     # pay the one-time dummy hash at start, not on the first login
 
     @asynccontextmanager
     async def lifespan(app: Starlette) -> AsyncIterator[None]:

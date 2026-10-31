@@ -30,6 +30,10 @@
 - 접속 IP: caddy(`--profile tls`) 뒤에서는 caddy가 쓴 `X-Forwarded-For`를 쓴다(앱은 caddy의 고정 IP `YTC_FRONT_NET`.2에서 온 것만 믿는다).
   Tailscale serve처럼 `127.0.0.1:8080`으로 직접 들어오면 모든 요청이 docker 게이트웨이 IP 하나로 보이므로 IP별 제한을 다 같이 나눠 쓴다
   (이메일별 제한은 그대로). 클라이언트가 보낸 `X-Forwarded-For`는 믿지 않는다.
+- **공개 인터넷에 열 때는 caddy 경로(`--profile tls`)만 쓴다.** Tailscale Funnel·ngrok·cloudflared 같은 터널이나 다른 프록시가
+  게시 포트(`127.0.0.1:8080`)로 바로 붙으면 모든 사람이 게이트웨이 IP 하나를 나눠 써서, 한 사람이 IP별 한도(10분 20번)를 채우면
+  모두의 비밀번호 로그인이 10분 동안 막히고 IP별 제한이 공격자를 따로 막지 못한다. 그런 도구는 tailnet 안(지인끼리)에서만 쓴다.
+- IPv6 클라이언트는 /64 단위로 센다(한 가입자가 주소를 바꿔 가며 보내도 같은 IP로 친다).
 - 이 기능 전에 올린 스택을 갱신할 때: front 네트워크에 고정 대역이 생겨 compose가 네트워크를 다시 만들어야 한다.
   `docker compose --profile tls down`(볼륨 `-v`는 붙이지 않는다: 데이터가 지워진다) 후 `docker compose up -d --build`.
   `migrate`가 `0002`(비밀번호 열)를 적용한다. 기존 사용자는 `set-password`로 비밀번호를 정할 때까지 Google로만 로그인한다.
